@@ -1,0 +1,44 @@
+{
+  "mcpServers": {
+    "pmc-shopify": {
+      "command": "node",
+      "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/shopify-server.js"],
+      "env": {}
+    },
+    "pmc-ebay": {
+      "command": "node",
+      "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/ebay-server.js"],
+      "env": {}
+    },
+    "pmc-alibaba": {
+      "command": "node",
+      "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/alibaba-server.js"],
+      "env": {}
+    },
+    "pmc-shopee": {
+      "command": "node",
+      "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/shopee-server.js"],
+      "env": {}
+    },
+    "pmc-qoo10": {
+      "command": "node",
+      "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/qoo10-server.js"],
+      "env": {}
+    },
+    "pmc-coupang": {
+      "command": "node",
+      "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/coupang-server.js"],
+      "env": {}
+    },
+    "pmc-naver": {
+      "command": "node",
+      "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/naver-server.js"],
+      "env": {}
+    },
+    "pmc-dashboard": {
+      "command": "node",
+      "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/dashboard-server.js"],
+      "env": {}
+    }
+  }
+}
