@@ -1,140 +1,100 @@
-require('dotenv').config({ path: '../../config/.env' });
+require('dotenv').config({ path: require('path').join(__dirname, '../../config/.env') });
 const axios = require('axios');
+const crypto = require('crypto');
 
 /**
- * Alibaba/1688 API 클래스
- * Alibaba Open Platform API를 사용하여 소싱 데이터를 관리
+ * Alibaba.com ICBU Open Platform API 클래스
+ * IOP 프로토콜 (HMAC-SHA256 서명) 사용
  */
 class AlibabaAPI {
   constructor() {
     this.appKey = process.env.ALIBABA_APP_KEY;
     this.appSecret = process.env.ALIBABA_APP_SECRET;
     this.accessToken = process.env.ALIBABA_ACCESS_TOKEN;
-
-    // Alibaba.com (국제) 또는 1688.com (중국 내수)
-    this.platform = process.env.ALIBABA_PLATFORM || 'international';
-    this.baseUrl = this.platform === '1688'
-      ? 'https://gw.open.1688.com/openapi'
-      : 'https://eco.taobao.com/router/rest';
+    this.gateway = 'https://openapi-api.alibaba.com/rest';
   }
 
   /**
-   * 상품 검색 (소싱용)
-   * @param {string} keyword - 검색 키워드
-   * @param {Object} options - 검색 옵션
+   * IOP 서명 생성 (HMAC-SHA256, 대문자 HEX)
    */
-  async searchProducts(keyword, options = {}) {
+  generateSign(apiPath, params) {
+    const sorted = Object.keys(params).sort();
+    let baseString = apiPath;
+    for (const key of sorted) {
+      baseString += key + params[key];
+    }
+    return crypto.createHmac('sha256', this.appSecret).update(baseString).digest('hex').toUpperCase();
+  }
+
+  /**
+   * API 호출
+   */
+  async request(apiPath, bizParams = {}, method = 'GET') {
+    const timestamp = Date.now().toString();
+    const params = {
+      app_key: this.appKey,
+      timestamp,
+      sign_method: 'sha256',
+      access_token: this.accessToken,
+      ...bizParams,
+    };
+    params.sign = this.generateSign(apiPath, params);
+
+    const url = this.gateway + apiPath;
+
     try {
-      const {
-        page = 1,
-        pageSize = 20,
-        sortBy = 'price_asc',
-        minPrice,
-        maxPrice,
-      } = options;
-
-      // Alibaba.com Product Search API
-      const params = {
-        app_key: this.appKey,
-        keyword: keyword,
-        page_no: page,
-        page_size: pageSize,
-        sort: sortBy,
-      };
-
-      if (minPrice) params.min_price = minPrice;
-      if (maxPrice) params.max_price = maxPrice;
-
-      const response = await axios.get(`${this.baseUrl}/product/search`, {
-        params,
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-        },
-        timeout: 15000,
-      });
-
+      const config = { timeout: 15000 };
+      let response;
+      if (method === 'POST') {
+        response = await axios.post(url, null, { params, ...config });
+      } else {
+        response = await axios.get(url, { params, ...config });
+      }
       return response.data;
     } catch (error) {
-      console.error('Alibaba 상품 검색 실패:', error.message);
+      console.error(`Alibaba API 오류 [${apiPath}]:`, error.response?.data || error.message);
       throw error;
     }
+  }
+
+  /**
+   * 내 상품 목록 조회
+   */
+  async getProductList(page = 1, pageSize = 20) {
+    return this.request('/alibaba/icbu/product/list', {
+      current_page: String(page),
+      page_size: String(pageSize),
+      language: 'en',
+    });
   }
 
   /**
    * 상품 상세 정보
-   * @param {string} productId - 상품 ID
    */
   async getProductDetail(productId) {
-    try {
-      const response = await axios.get(`${this.baseUrl}/product/detail`, {
-        params: {
-          app_key: this.appKey,
-          product_id: productId,
-        },
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-        },
-        timeout: 15000,
-      });
-
-      return response.data;
-    } catch (error) {
-      console.error('Alibaba 상품 상세 실패:', error.message);
-      throw error;
-    }
+    return this.request('/alibaba/icbu/product/detail/get', {
+      product_id: String(productId),
+      language: 'en',
+    });
   }
 
   /**
-   * 공급업체 정보 조회
-   * @param {string} supplierId - 공급업체 ID
+   * 카테고리 ID 매핑
    */
-  async getSupplierInfo(supplierId) {
-    try {
-      const response = await axios.get(`${this.baseUrl}/supplier/detail`, {
-        params: {
-          app_key: this.appKey,
-          supplier_id: supplierId,
-        },
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-        },
-        timeout: 15000,
-      });
-
-      return response.data;
-    } catch (error) {
-      console.error('공급업체 정보 조회 실패:', error.message);
-      throw error;
-    }
+  async getCategoryMapping(id, idType = 'cid') {
+    return this.request('/alibaba/icbu/category/id/mapping', {
+      id: String(id),
+      id_type: idType,
+    });
   }
 
   /**
-   * 가격 비교 (여러 공급업체)
-   * @param {string} keyword - 검색 키워드
-   * @param {number} topN - 상위 N개
+   * 토큰 갱신
    */
-  async comparePrices(keyword, topN = 10) {
-    try {
-      const results = await this.searchProducts(keyword, {
-        pageSize: topN,
-        sortBy: 'price_asc',
-      });
-
-      const products = results?.products || results?.data?.products || [];
-
-      return products.map(p => ({
-        id: p.product_id || p.id,
-        title: p.subject || p.title,
-        price: p.price || p.min_price,
-        moq: p.moq || p.min_order_quantity,
-        supplier: p.supplier_name || p.company_name,
-        rating: p.supplier_rating,
-        trade_assurance: p.trade_assurance || false,
-      }));
-    } catch (error) {
-      console.error('가격 비교 실패:', error.message);
-      throw error;
-    }
+  async refreshToken() {
+    return this.request('/auth/token/refresh', {
+      refresh_token: process.env.ALIBABA_REFRESH_TOKEN,
+    });
   }
 }
 

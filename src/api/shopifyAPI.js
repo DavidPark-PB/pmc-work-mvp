@@ -157,6 +157,86 @@ class ShopifyAPI {
   }
 
   /**
+   * 상품 1페이지만 가져오기 (페이지네이션 없이)
+   */
+  async getProductsPage(limit = 50) {
+    try {
+      const url = `${this.baseUrl}/products.json?limit=${limit}`;
+      const response = await axios.get(url, { headers: this.getHeaders() });
+      return response.data.products || [];
+    } catch (error) {
+      console.error('❌ Shopify 상품 가져오기 실패:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Variant 가격/재고 수정
+   */
+  async updateVariant(variantId, updates) {
+    try {
+      const url = `${this.baseUrl}/variants/${variantId}.json`;
+      const response = await axios.put(url, { variant: updates }, { headers: this.getHeaders() });
+      return { success: true, data: response.data.variant };
+    } catch (error) {
+      return { success: false, error: error.response?.data?.errors || error.message };
+    }
+  }
+
+  /**
+   * 상품 생성
+   */
+  async createProduct({ title, sku, price, bodyHtml, vendor, productType, imageUrl }) {
+    try {
+      const url = `${this.baseUrl}/products.json`;
+      const productData = {
+        product: {
+          title,
+          body_html: bodyHtml || '',
+          vendor: vendor || 'PMC',
+          product_type: productType || '',
+          variants: [{
+            sku: sku || '',
+            price: String(price),
+            inventory_management: 'shopify',
+            inventory_quantity: 1,
+          }]
+        }
+      };
+      if (imageUrl) {
+        productData.product.images = [{ src: imageUrl }];
+      }
+      const response = await axios.post(url, productData, { headers: this.getHeaders() });
+      return {
+        success: true,
+        productId: response.data.product.id,
+        variantId: response.data.product.variants[0].id,
+      };
+    } catch (error) {
+      return { success: false, error: error.response?.data?.errors || error.message };
+    }
+  }
+
+  /**
+   * SKU로 상품 검색
+   */
+  async findBySKU(sku) {
+    try {
+      const products = await this.getAllProducts(250);
+      for (const product of products) {
+        for (const variant of product.variants) {
+          if (variant.sku === sku) {
+            return { productId: product.id, variantId: variant.id, title: product.title, price: variant.price, sku: variant.sku };
+          }
+        }
+      }
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
    * 상품 삭제
    * @param {string} productId - 삭제할 상품 ID
    */

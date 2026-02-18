@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PMC Global Management System</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; }
+.header { background: #1a1a2e; color: white; padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; }
+.header h1 { font-size: 20px; font-weight: 600; }
+.header .user { font-size: 14px; color: #aaa; }
+.sidebar { position: fixed; left: 0; top: 56px; width: 220px; height: calc(100vh - 56px); background: #16213e; color: #ccc; padding: 20px 0; }
+.sidebar .menu-item { padding: 12px 24px; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+.sidebar .menu-item:hover { background: #1a1a2e; }
+.sidebar .menu-item.active { background: #e94560; color: white; border-left: 3px solid #fff; }
+.sidebar .menu-title { padding: 8px 24px; font-size: 11px; text-transform: uppercase; color: #666; margin-top: 16px; }
+.main { margin-left: 220px; padding: 24px; }
+.stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 24px; }
+.stat-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.stat-card .platform { font-size: 12px; color: #888; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+.stat-card .platform .dot { width: 8px; height: 8px; border-radius: 50%; }
+.stat-card .number { font-size: 28px; font-weight: 700; color: #1a1a2e; }
+.stat-card .label { font-size: 13px; color: #666; margin-top: 4px; }
+.stat-card .status { font-size: 11px; margin-top: 8px; padding: 3px 8px; border-radius: 10px; display: inline-block; }
+.stat-card .status.connected { background: #e8f5e9; color: #2e7d32; }
+.stat-card .status.pending { background: #fff3e0; color: #ef6c00; }
+.content-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+.card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.card h3 { font-size: 16px; color: #1a1a2e; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid #eee; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 10px 8px; color: #888; font-weight: 500; border-bottom: 1px solid #eee; }
+td { padding: 10px 8px; border-bottom: 1px solid #f5f5f5; color: #333; }
+.badge { padding: 2px 8px; border-radius: 8px; font-size: 11px; font-weight: 500; }
+.badge.shopee { background: #ffe0cc; color: #ee4d2d; }
+.badge.ebay { background: #e3f2fd; color: #1565c0; }
+.badge.shopify { background: #e8f5e9; color: #2e7d32; }
+.badge.naver { background: #e8f5e9; color: #03c75a; }
+.badge.alibaba { background: #fff3e0; color: #ff6a00; }
+.sync-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #f5f5f5; }
+.sync-item:last-child { border: none; }
+.sync-item .info { font-size: 13px; color: #333; }
+.sync-item .time { font-size: 11px; color: #999; }
+.sync-item .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #4caf50; display: inline-block; margin-right: 6px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>PMC Global Management System</h1>
+  <div class="user">PMC Corporation | info@ccorea.com</div>
+</div>
+<div class="sidebar">
+  <div class="menu-item active">Dashboard</div>
+  <div class="menu-title">Products</div>
+  <div class="menu-item">Product List</div>
+  <div class="menu-item">Inventory Sync</div>
+  <div class="menu-item">Price Management</div>
+  <div class="menu-title">Orders</div>
+  <div class="menu-item">Order List</div>
+  <div class="menu-item">Fulfillment</div>
+  <div class="menu-title">Platforms</div>
+  <div class="menu-item">Shopee</div>
+  <div class="menu-item">eBay</div>
+  <div class="menu-item">Shopify</div>
+  <div class="menu-item">Naver Store</div>
+  <div class="menu-item">Alibaba</div>
+  <div class="menu-title">Settings</div>
+  <div class="menu-item">API Connections</div>
+  <div class="menu-item">Profit Margin</div>
+</div>
+<div class="main">
+  <div class="stats">
+    <div class="stat-card">
+      <div class="platform"><span class="dot" style="background:#ee4d2d"></span> Shopee</div>
+      <div class="number">342</div>
+      <div class="label">Active Listings</div>
+      <div class="status pending">Connecting</div>
+    </div>
+    <div class="stat-card">
+      <div class="platform"><span class="dot" style="background:#1565c0"></span> eBay</div>
+      <div class="number">4,012</div>
+      <div class="label">Active Listings</div>
+      <div class="status connected">Connected</div>
+    </div>
+    <div class="stat-card">
+      <div class="platform"><span class="dot" style="background:#96bf48"></span> Shopify</div>
+      <div class="number">1,287</div>
+      <div class="label">Products</div>
+      <div class="status connected">Connected</div>
+    </div>
+    <div class="stat-card">
+      <div class="platform"><span class="dot" style="background:#03c75a"></span> Naver</div>
+      <div class="number">9,756</div>
+      <div class="label">Products</div>
+      <div class="status connected">Connected</div>
+    </div>
+    <div class="stat-card">
+      <div class="platform"><span class="dot" style="background:#ff6a00"></span> Alibaba</div>
+      <div class="number">856</div>
+      <div class="label">Products</div>
+      <div class="status connected">Connected</div>
+    </div>
+  </div>
+  <div class="content-grid">
+    <div class="card">
+      <h3>Recent Products</h3>
+      <table>
+        <thead>
+          <tr><th>SKU</th><th>Product Name</th><th>Platform</th><th>Price</th><th>Stock</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>PMC-001</td><td>Baby Carrier Ergonomic Hip Seat</td><td><span class="badge shopee">Shopee</span></td><td>$45.99</td><td>128</td></tr>
+          <tr><td>PMC-002</td><td>Infant Stroller Lightweight Foldable</td><td><span class="badge ebay">eBay</span></td><td>$189.00</td><td>45</td></tr>
+          <tr><td>PMC-003</td><td>Baby Safety Gate Door Barrier</td><td><span class="badge shopify">Shopify</span></td><td>$35.50</td><td>230</td></tr>
+          <tr><td>PMC-004</td><td>Toddler Car Seat ISOFIX</td><td><span class="badge naver">Naver</span></td><td>$299.00</td><td>67</td></tr>
+          <tr><td>PMC-005</td><td>Diaper Bag Backpack Waterproof</td><td><span class="badge alibaba">Alibaba</span></td><td>$28.99</td><td>512</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>Sync Status</h3>
+      <div class="sync-item">
+        <div class="info"><span class="status-dot"></span>eBay inventory sync</div>
+        <div class="time">2 min ago</div>
+      </div>
+      <div class="sync-item">
+        <div class="info"><span class="status-dot"></span>Shopify price update</div>
+        <div class="time">5 min ago</div>
+      </div>
+      <div class="sync-item">
+        <div class="info"><span class="status-dot"></span>Naver product sync</div>
+        <div class="time">12 min ago</div>
+      </div>
+      <div class="sync-item">
+        <div class="info"><span class="status-dot" style="background:#ff9800"></span>Shopee API connecting</div>
+        <div class="time">Pending</div>
+      </div>
+      <div class="sync-item">
+        <div class="info"><span class="status-dot"></span>Alibaba listing sync</div>
+        <div class="time">1 hr ago</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

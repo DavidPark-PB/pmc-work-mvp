@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PMC 글로벌 관리 시스템</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="header">
+    <h1>PMC 글로벌 관리 시스템</h1>
+    <div class="header-right">
+      <span class="last-updated" id="lastUpdated">로딩 중...</span>
+      <button class="refresh-btn" id="refreshBtn">새로고침</button>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <div class="menu-item active" data-page="dashboard">대시보드</div>
+    <div class="menu-title">상품 관리</div>
+    <div class="menu-item" data-page="products">전체 상품</div>
+    <div class="menu-item" data-page="register">상품 등록</div>
+    <div class="menu-title">분석</div>
+    <div class="menu-item" data-page="analysis">매출/마진 분석</div>
+    <div class="menu-item" data-page="anomalies">이상 탐지</div>
+    <div class="menu-item" data-page="top">효자상품 TOP</div>
+    <div class="menu-title">플랫폼</div>
+    <div class="menu-item" data-page="shopify">Shopify</div>
+    <div class="menu-item" data-page="ebay">eBay</div>
+    <div class="menu-item" data-page="naver">네이버</div>
+    <div class="menu-item" data-page="alibaba">Alibaba</div>
+    <div class="menu-item" data-page="shopee">Shopee</div>
+    <div class="menu-title">시스템</div>
+    <div class="menu-item" data-page="sync">동기화</div>
+  </div>
+
+  <div class="main">
+    <!-- 로딩 -->
+    <div class="loading" id="loading">
+      <div class="spinner"></div>
+      <p>데이터 로딩 중...</p>
+    </div>
+
+    <!-- ===== 대시보드 페이지 ===== -->
+    <div id="page-dashboard" class="page active">
+      <!-- 플랫폼 카드 -->
+      <div class="stats" id="platformCards"></div>
+
+      <!-- 매출 요약 카드 -->
+      <div class="stats summary-stats" id="summaryCards"></div>
+
+      <!-- 콘텐츠 -->
+      <div class="content-grid">
+        <div class="card">
+          <div class="card-header">
+            <h3>최근 상품 <span class="count" id="productCount"></span></h3>
+            <select id="platformFilter">
+              <option value="">전체 플랫폼</option>
+              <option value="shopify">Shopify</option>
+              <option value="ebay">eBay</option>
+              <option value="naver">Naver</option>
+              <option value="alibaba">Alibaba</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>SKU</th><th>상품명</th><th>플랫폼</th><th>가격</th></tr>
+              </thead>
+              <tbody id="productTable">
+                <tr><td colspan="4" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>동기화</h3>
+          <div id="syncHistory">
+            <p class="empty">이력 없음</p>
+          </div>
+          <div class="sync-actions">
+            <h4>수동 동기화</h4>
+            <button class="sync-btn" data-platform="shopify">Shopify</button>
+            <button class="sync-btn" data-platform="ebay">eBay</button>
+            <button class="sync-btn" data-platform="naver">Naver</button>
+            <button class="sync-btn" data-platform="alibaba">Alibaba</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 전체 상품 페이지 ===== -->
+    <div id="page-products" class="page">
+      <div class="card">
+        <div class="card-header">
+          <h3>전체 상품 목록 <span class="count" id="allProductCount"></span></h3>
+          <select id="allPlatformFilter">
+            <option value="">전체 플랫폼</option>
+            <option value="shopify">Shopify</option>
+            <option value="ebay">eBay</option>
+            <option value="naver">Naver</option>
+            <option value="alibaba">Alibaba</option>
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>SKU</th><th>상품명</th><th>플랫폼</th><th>가격</th><th>재고</th><th></th></tr>
+            </thead>
+            <tbody id="allProductTable">
+              <tr><td colspan="6" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 상품 등록 페이지 ===== -->
+    <div id="page-register" class="page">
+      <div class="card">
+        <h3>신규 상품 등록</h3>
+        <form id="registerForm" class="register-form">
+          <div class="form-grid">
+            <div class="form-group">
+              <label>SKU <span class="required">*</span></label>
+              <input type="text" name="sku" required placeholder="예: PMC-001">
+            </div>
+            <div class="form-group">
+              <label>상품명 <span class="required">*</span></label>
+              <input type="text" name="title" required placeholder="상품명 입력">
+            </div>
+            <div class="form-group">
+              <label>매입가 (KRW)</label>
+              <input type="number" name="purchasePrice" placeholder="예: 5000">
+            </div>
+            <div class="form-group">
+              <label>무게 (kg)</label>
+              <input type="number" name="weight" step="0.01" placeholder="예: 0.5">
+            </div>
+            <div class="form-group">
+              <label>판매가 (USD)</label>
+              <input type="number" name="priceUSD" step="0.01" placeholder="예: 19.99">
+            </div>
+            <div class="form-group">
+              <label>배송비 (USD)</label>
+              <input type="number" name="shippingUSD" step="0.01" value="3.9" placeholder="3.9">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>등록 플랫폼</label>
+            <div class="checkbox-group">
+              <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="sheets" checked disabled> Google Sheets</label>
+              <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="ebay"> eBay</label>
+              <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="shopify"> Shopify</label>
+              <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="naver"> Naver</label>
+            </div>
+          </div>
+          <div class="form-group" id="marginPreview" style="display:none">
+            <div class="preview-card">
+              <span class="preview-label">예상 마진</span>
+              <span class="preview-value" id="previewMargin">-</span>
+              <span class="preview-label">예상 순이익</span>
+              <span class="preview-value" id="previewProfit">-</span>
+            </div>
+          </div>
+          <button type="submit" class="submit-btn">상품 등록</button>
+          <div id="registerResult" class="register-result"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- ===== 매출/마진 분석 페이지 ===== -->
+    <div id="page-analysis" class="page">
+      <!-- 매출 요약 카드 -->
+      <div class="stats" id="analysisCards"></div>
+
+      <!-- 플랫폼별 매출 비교 -->
+      <div class="content-grid">
+        <div class="card">
+          <h3>플랫폼별 매출 비교</h3>
+          <div id="platformRevenue"></div>
+        </div>
+        <div class="card">
+          <h3>마진 분포</h3>
+          <div id="marginDistribution"></div>
+        </div>
+      </div>
+
+      <!-- 상품별 원가/이익 테이블 -->
+      <div class="card" style="margin-top:16px">
+        <div class="card-header">
+          <h3>상품별 원가/이익 분석 <span class="count" id="analysisProductCount"></span></h3>
+          <select id="analysisSortBy">
+            <option value="margin">마진율순</option>
+            <option value="profit">순이익순</option>
+            <option value="settlement">매출순</option>
+            <option value="purchase">매입가순</option>
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>SKU</th><th>상품명</th><th>매입가</th><th>판매가(USD)</th>
+                <th>정산액(KRW)</th><th>순이익(KRW)</th><th>마진율</th>
+              </tr>
+            </thead>
+            <tbody id="analysisTable">
+              <tr><td colspan="7" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 이상 탐지 페이지 ===== -->
+    <div id="page-anomalies" class="page">
+      <div class="anomaly-summary" id="anomalySummary"></div>
+
+      <div class="content-grid">
+        <div class="card">
+          <h3>마진 위험 <span class="count anomaly-count red" id="lowMarginCount">0</span></h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>SKU</th><th>상품명</th><th>마진율</th><th>순이익</th></tr>
+              </thead>
+              <tbody id="lowMarginTable">
+                <tr><td colspan="4" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>재고 부족 <span class="count anomaly-count orange" id="lowStockCount">0</span></h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>SKU</th><th>상품명</th><th>현재고</th><th>안전재고</th></tr>
+              </thead>
+              <tbody id="lowStockTable">
+                <tr><td colspan="4" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h3>판매 급감 <span class="count anomaly-count yellow" id="salesDropCount">0</span></h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>SKU</th><th>상품명</th><th>최근 7일</th><th>3주 평균</th><th>변동</th></tr>
+            </thead>
+            <tbody id="salesDropTable">
+              <tr><td colspan="5" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 효자상품 TOP 페이지 ===== -->
+    <div id="page-top" class="page">
+      <div class="card">
+        <h3>효자상품 TOP (마진 20% 이상)</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>SKU</th><th>상품명</th><th>판매가(USD)</th>
+                <th>순이익(KRW)</th><th>마진율</th>
+              </tr>
+            </thead>
+            <tbody id="topProductsTable">
+              <tr><td colspan="6" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 동기화 페이지 ===== -->
+    <div id="page-sync" class="page">
+      <div class="card">
+        <h3>동기화 관리</h3>
+        <div class="sync-actions-full">
+          <div class="sync-platform-card">
+            <h4>Shopify</h4>
+            <p>Shopify → Google Sheets 동기화</p>
+            <button class="sync-btn" data-platform="shopify">동기화 실행</button>
+          </div>
+          <div class="sync-platform-card">
+            <h4>eBay</h4>
+            <p>eBay → Google Sheets 동기화</p>
+            <button class="sync-btn" data-platform="ebay">동기화 실행</button>
+          </div>
+          <div class="sync-platform-card">
+            <h4>Naver</h4>
+            <p>네이버 → Google Sheets 동기화</p>
+            <button class="sync-btn" data-platform="naver">동기화 실행</button>
+          </div>
+          <div class="sync-platform-card">
+            <h4>Alibaba</h4>
+            <p>Alibaba → Google Sheets 동기화</p>
+            <button class="sync-btn" data-platform="alibaba">동기화 실행</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h3>동기화 이력</h3>
+        <div id="syncHistoryFull">
+          <p class="empty">이력 없음</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 가격/재고 수정 모달 -->
+  <div class="modal-overlay" id="editModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="editModalTitle">상품 수정</h3>
+        <button class="modal-close" onclick="closeEditModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="edit-product-info">
+          <span class="badge" id="editPlatformBadge"></span>
+          <span id="editProductName"></span>
+        </div>
+        <div class="edit-sku" id="editSKU"></div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>가격 <span id="editPriceUnit"></span></label>
+            <input type="number" id="editPrice" step="0.01" placeholder="변경할 가격">
+            <div class="edit-current" id="editCurrentPrice"></div>
+          </div>
+          <div class="form-group">
+            <label>재고 수량</label>
+            <input type="number" id="editQuantity" step="1" placeholder="변경할 수량">
+            <div class="edit-current" id="editCurrentQuantity"></div>
+          </div>
+        </div>
+        <div id="editResult" class="register-result"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="submit-btn" id="editSubmitBtn" onclick="submitEdit()">수정 적용</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>

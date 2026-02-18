@@ -110,13 +110,16 @@ class EbayAPI {
       // XML 파싱
       const items = this.parseActiveListings(response);
       const totalPagesMatch = response.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/);
+      const totalEntriesMatch = response.match(/<TotalNumberOfEntries>(\d+)<\/TotalNumberOfEntries>/);
       const totalPages = totalPagesMatch ? parseInt(totalPagesMatch[1]) : 1;
+      const totalEntries = totalEntriesMatch ? parseInt(totalEntriesMatch[1]) : items.length;
 
-      console.log(`📄 페이지 ${pageNumber}/${totalPages}: ${items.length}개 상품`);
+      console.log(`📄 페이지 ${pageNumber}/${totalPages}: ${items.length}개 상품 (총 ${totalEntries})`);
 
       return {
         items,
         totalPages,
+        totalEntries,
         hasMore: pageNumber < totalPages
       };
     } catch (error) {
@@ -158,9 +161,100 @@ class EbayAPI {
    * XML에서 값 추출
    */
   extractValue(xml, tagName) {
-    const regex = new RegExp(`<${tagName}>(.*?)<\/${tagName}>`);
+    const regex = new RegExp(`<${tagName}[^>]*>(.*?)<\/${tagName}>`);
     const match = xml.match(regex);
     return match ? match[1] : '';
+  }
+
+  /**
+   * 가격/수량 수정 (ReviseInventoryStatus)
+   */
+  async updateItem(itemId, { price, quantity }) {
+    try {
+      let inventoryFields = `<ItemID>${itemId}</ItemID>`;
+      if (price !== undefined) inventoryFields += `<StartPrice>${price}</StartPrice>`;
+      if (quantity !== undefined) inventoryFields += `<Quantity>${quantity}</Quantity>`;
+
+      const requestBody = `<InventoryStatus>${inventoryFields}</InventoryStatus>`;
+      const response = await this.callTradingAPI('ReviseInventoryStatus', requestBody);
+
+      const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
+      const ack = ackMatch ? ackMatch[1] : 'Unknown';
+
+      if (ack === 'Success' || ack === 'Warning') {
+        return { success: true };
+      } else {
+        const errMatch = response.match(/<ShortMessage>(.*?)<\/ShortMessage>/);
+        return { success: false, error: errMatch ? errMatch[1] : 'Unknown error' };
+      }
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * XML 특수문자 이스케이프
+   */
+  escapeXml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  }
+
+  /**
+   * 상품 등록 (AddFixedPriceItem)
+   */
+  async createProduct({ title, description, price, quantity, sku, categoryId, conditionId, shippingCost, imageUrl, currency }) {
+    try {
+      const requestBody = `
+  <Item>
+    <Title>${this.escapeXml(title)}</Title>
+    <Description><![CDATA[${description || title}]]></Description>
+    <PrimaryCategory>
+      <CategoryID>${categoryId || '11450'}</CategoryID>
+    </PrimaryCategory>
+    <StartPrice currencyID="${currency || 'USD'}">${price}</StartPrice>
+    <ConditionID>${conditionId || '1000'}</ConditionID>
+    <CategoryMappingAllowed>true</CategoryMappingAllowed>
+    <Country>US</Country>
+    <Currency>${currency || 'USD'}</Currency>
+    <DispatchTimeMax>3</DispatchTimeMax>
+    <ListingDuration>GTC</ListingDuration>
+    <ListingType>FixedPriceItem</ListingType>
+    <Quantity>${quantity || 1}</Quantity>
+    ${sku ? `<SKU>${this.escapeXml(sku)}</SKU>` : ''}
+    <ShippingDetails>
+      <ShippingType>Flat</ShippingType>
+      <ShippingServiceOptions>
+        <ShippingServiceCost>${shippingCost || 0}</ShippingServiceCost>
+        <ShippingService>USPSMedia</ShippingService>
+        <ShippingServicePriority>1</ShippingServicePriority>
+      </ShippingServiceOptions>
+    </ShippingDetails>
+    <ReturnPolicy>
+      <ReturnsAcceptedOption>ReturnsAccepted</ReturnsAcceptedOption>
+      <RefundOption>MoneyBack</RefundOption>
+      <ReturnsWithinOption>Days_30</ReturnsWithinOption>
+      <ShippingCostPaidByOption>Buyer</ShippingCostPaidByOption>
+    </ReturnPolicy>
+    ${imageUrl ? `<PictureDetails><PictureURL>${imageUrl}</PictureURL></PictureDetails>` : ''}
+  </Item>`;
+
+      const response = await this.callTradingAPI('AddFixedPriceItem', requestBody);
+      const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
+      const ack = ackMatch ? ackMatch[1] : 'Unknown';
+      const itemIdMatch = response.match(/<ItemID>(.*?)<\/ItemID>/);
+
+      if (ack === 'Success' || ack === 'Warning') {
+        return { success: true, itemId: itemIdMatch ? itemIdMatch[1] : null };
+      } else {
+        const longMatch = response.match(/<LongMessage>(.*?)<\/LongMessage>/);
+        const errMatch = response.match(/<ShortMessage>(.*?)<\/ShortMessage>/);
+        return { success: false, error: longMatch ? longMatch[1] : (errMatch ? errMatch[1] : 'Unknown error') };
+      }
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
   }
 
   /**

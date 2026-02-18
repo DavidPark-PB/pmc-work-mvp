@@ -1,6 +1,6 @@
-require('dotenv').config({ path: '../../config/.env' });
+require('dotenv').config({ path: require('path').join(__dirname, '../../config/.env') });
 const axios = require('axios');
-const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 
 /**
  * 네이버 커머스 API 클래스 (스마트스토어)
@@ -11,28 +11,29 @@ class NaverAPI {
   constructor() {
     this.clientId = process.env.NAVER_CLIENT_ID;
     this.clientSecret = process.env.NAVER_CLIENT_SECRET;
-    this.commerceId = process.env.NAVER_COMMERCE_ID;
-    this.accessToken = process.env.NAVER_ACCESS_TOKEN;
+    this.accessToken = null;
+    this.tokenExpiry = 0;
 
     this.baseUrl = 'https://api.commerce.naver.com/external';
   }
 
   /**
-   * HMAC 서명 생성 (네이버 커머스 API 인증)
+   * bcrypt 서명 생성 (네이버 커머스 API 인증)
+   * sign = Base64( bcrypt(clientId + "_" + timestamp, clientSecret) )
    */
   generateSignature(timestamp) {
     const password = `${this.clientId}_${timestamp}`;
-    return crypto
-      .createHmac('sha256', this.clientSecret)
-      .update(password)
-      .digest('base64');
+    const hashed = bcrypt.hashSync(password, this.clientSecret);
+    return Buffer.from(hashed).toString('base64');
   }
 
   /**
    * OAuth 토큰 발급
    */
   async getToken() {
-    if (this.accessToken) return this.accessToken;
+    if (this.accessToken && Date.now() < this.tokenExpiry) {
+      return this.accessToken;
+    }
 
     try {
       const timestamp = Date.now();
@@ -49,13 +50,14 @@ class NaverAPI {
       const response = await axios.post(
         'https://api.commerce.naver.com/external/v1/oauth2/token',
         params.toString(),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000 }
       );
 
       this.accessToken = response.data.access_token;
+      this.tokenExpiry = Date.now() + (response.data.expires_in - 60) * 1000;
       return this.accessToken;
     } catch (error) {
-      console.error('네이버 토큰 발급 실패:', error.message);
+      console.error('네이버 토큰 발급 실패:', error.response?.data || error.message);
       throw error;
     }
   }
@@ -92,7 +94,7 @@ class NaverAPI {
    * 상품 목록 조회
    */
   async getProducts(page = 1, size = 100) {
-    return this.request('POST', '/v2/products/search', {
+    return this.request('POST', '/v1/products/search', {
       page,
       size,
     });
@@ -125,6 +127,62 @@ class NaverAPI {
         stockQuantity: stockQuantity,
       },
     });
+  }
+
+  /**
+   * 상품 등록
+   */
+  async createProduct({ productName, salePrice, stockQuantity, categoryId, detailContent, imageUrls }) {
+    try {
+      const productData = {
+        originProduct: {
+          statusType: 'SALE',
+          saleType: 'NEW',
+          leafCategoryId: categoryId || '50000803',
+          name: productName,
+          detailContent: detailContent || `<p>${productName}</p>`,
+          saleStartDate: new Date().toISOString(),
+          salePrice: parseInt(salePrice),
+          stockQuantity: parseInt(stockQuantity) || 1,
+          deliveryInfo: {
+            deliveryType: 'DELIVERY',
+            deliveryAttributeType: 'NORMAL',
+            deliveryFee: { deliveryFeeType: 'FREE', baseFee: 0 },
+          },
+          detailAttribute: {
+            naverShoppingSearchInfo: { manufacturerName: 'PMC' },
+            afterServiceInfo: {
+              afterServiceTelephoneNumber: '010-0000-0000',
+              afterServiceGuideContent: 'AS 문의',
+            },
+            originAreaInfo: {
+              originAreaCode: '0200037',
+              importer: 'PMC Corporation',
+            },
+          },
+        },
+        smartstoreChannelProduct: {
+          channelProductName: productName,
+        },
+      };
+
+      if (imageUrls && imageUrls.length > 0) {
+        productData.originProduct.images = {
+          representativeImage: { url: imageUrls[0] },
+        };
+      }
+
+      const result = await this.request('POST', '/v2/products', productData);
+      return {
+        success: true,
+        originProductNo: result.originProductNo || result.id,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.response?.data?.message || error.message,
+      };
+    }
   }
 
   /**
