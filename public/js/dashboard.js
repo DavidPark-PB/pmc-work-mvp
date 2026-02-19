@@ -82,6 +82,8 @@ async function loadSummaryCards() {
     const data = await res.json();
     if (data.error === 'no_data') return;
     renderSummaryCards(data);
+    renderDashboardPlatformRevenue(data.byPlatform || {});
+    renderDashboardMarginSummary(data);
   } catch (e) {}
 }
 
@@ -201,8 +203,13 @@ function renderAnalysisCards(data) {
   container.style.gridTemplateColumns = 'repeat(5, 1fr)';
 }
 
-function renderPlatformRevenue(byPlatform) {
-  const container = document.getElementById('platformRevenue');
+const PLATFORM_COLORS = {
+  eBay: '#1565c0', Shopify: '#96bf48', Naver: '#03c75a',
+  Alibaba: '#ff6a00', Shopee: '#ee4d2d'
+};
+
+function renderPlatformRevenueHTML(byPlatform, containerId) {
+  const container = document.getElementById(containerId);
   const entries = Object.entries(byPlatform);
   if (entries.length === 0) {
     container.innerHTML = '<p class="empty">데이터 없음</p>';
@@ -210,23 +217,122 @@ function renderPlatformRevenue(byPlatform) {
   }
 
   const maxRevenue = Math.max(...entries.map(([, v]) => v.revenue));
-  const colors = { eBay: '#1565c0', Shopify: '#96bf48', Naver: '#03c75a', Alibaba: '#ff6a00' };
+  const totalRevenue = entries.reduce((sum, [, v]) => sum + v.revenue, 0);
 
   container.innerHTML = entries.map(([name, v]) => {
     const pct = maxRevenue > 0 ? (v.revenue / maxRevenue * 100) : 0;
-    const color = colors[name] || '#888';
+    const sharePct = totalRevenue > 0 ? (v.revenue / totalRevenue * 100).toFixed(1) : 0;
+    const color = PLATFORM_COLORS[name] || '#888';
+    const profitColor = v.profit >= 0 ? '#2e7d32' : '#c62828';
     return `
       <div class="revenue-bar">
-        <div class="name">${esc(name)}</div>
+        <div class="name">
+          <span class="platform-dot" style="background:${color}"></span>
+          ${esc(name)}
+        </div>
         <div class="bar-wrap">
           <div class="bar" style="width:${pct}%;background:${color}">
-            <span>${v.count}개</span>
+            <span>${v.count}개 (${sharePct}%)</span>
           </div>
         </div>
-        <div class="amount">${krw(v.revenue)}</div>
+        <div class="amount-col">
+          <div class="amount">${krw(v.revenue)}</div>
+          <div class="profit" style="color:${profitColor}">${krw(v.profit)}</div>
+        </div>
       </div>
     `;
   }).join('');
+}
+
+function renderPlatformRevenue(byPlatform) {
+  renderPlatformRevenueHTML(byPlatform, 'platformRevenue');
+}
+
+function renderDashboardPlatformRevenue(byPlatform) {
+  const container = document.getElementById('dashboardPlatformRevenue');
+  if (!container) return;
+  const entries = Object.entries(byPlatform);
+  if (entries.length === 0) {
+    container.innerHTML = '<p class="empty">분석 데이터 없음</p>';
+    return;
+  }
+
+  const totalRevenue = entries.reduce((sum, [, v]) => sum + v.revenue, 0);
+  const totalProfit = entries.reduce((sum, [, v]) => sum + v.profit, 0);
+
+  // 도넛 차트 스타일 요약
+  let html = '<div class="platform-donut-summary">';
+  html += '<div class="donut-chart">';
+
+  // CSS conic-gradient로 도넛 만들기
+  let gradientParts = [];
+  let cumPct = 0;
+  entries.forEach(([name, v]) => {
+    const pct = totalRevenue > 0 ? (v.revenue / totalRevenue * 100) : 0;
+    const color = PLATFORM_COLORS[name] || '#888';
+    gradientParts.push(`${color} ${cumPct}% ${cumPct + pct}%`);
+    cumPct += pct;
+  });
+  html += `<div class="donut" style="background:conic-gradient(${gradientParts.join(', ')})">`;
+  html += `<div class="donut-hole"><div class="donut-total">${krw(totalRevenue)}</div><div class="donut-label">총 매출</div></div>`;
+  html += '</div></div>';
+
+  // 범례
+  html += '<div class="donut-legend">';
+  entries.forEach(([name, v]) => {
+    const pct = totalRevenue > 0 ? (v.revenue / totalRevenue * 100).toFixed(1) : 0;
+    const color = PLATFORM_COLORS[name] || '#888';
+    html += `<div class="legend-item">
+      <span class="legend-dot" style="background:${color}"></span>
+      <span class="legend-name">${esc(name)}</span>
+      <span class="legend-pct">${pct}%</span>
+      <span class="legend-amount">${krw(v.revenue)}</span>
+    </div>`;
+  });
+  html += '</div></div>';
+
+  container.innerHTML = html;
+}
+
+function renderDashboardMarginSummary(data) {
+  const container = document.getElementById('dashboardMarginSummary');
+  if (!container || !data) return;
+
+  const marginRate = parseFloat(data.avgMargin) || 0;
+  const marginColor = marginRate >= 20 ? '#2e7d32' : marginRate >= 10 ? '#1565c0' : marginRate >= 5 ? '#e65100' : '#c62828';
+
+  container.innerHTML = `
+    <div class="margin-gauge">
+      <div class="gauge-circle">
+        <svg viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r="50" fill="none" stroke="#f0f2f5" stroke-width="10"/>
+          <circle cx="60" cy="60" r="50" fill="none" stroke="${marginColor}" stroke-width="10"
+            stroke-dasharray="${Math.min(marginRate, 100) * 3.14} 314"
+            stroke-linecap="round" transform="rotate(-90 60 60)"/>
+        </svg>
+        <div class="gauge-value" style="color:${marginColor}">${marginRate}%</div>
+        <div class="gauge-label">평균 마진율</div>
+      </div>
+      <div class="margin-details">
+        <div class="margin-detail-item">
+          <span class="detail-label">총 순이익</span>
+          <span class="detail-value" style="color:${data.totalProfit >= 0 ? '#2e7d32' : '#c62828'}">${krw(data.totalProfit)}</span>
+        </div>
+        <div class="margin-detail-item">
+          <span class="detail-label">효자상품 (20%+)</span>
+          <span class="detail-value" style="color:#2e7d32">${data.highMarginCount || 0}개</span>
+        </div>
+        <div class="margin-detail-item">
+          <span class="detail-label">마진 위험 (10%-)</span>
+          <span class="detail-value" style="color:#e65100">${data.lowMarginCount || 0}개</span>
+        </div>
+        <div class="margin-detail-item">
+          <span class="detail-label">역마진</span>
+          <span class="detail-value" style="color:#c62828">${data.negativeMarginCount || 0}개</span>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderMarginDistribution(products) {

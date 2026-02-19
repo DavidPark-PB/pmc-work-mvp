@@ -32,14 +32,16 @@ class NaverToSheetsSync {
         if (products.length === 0) break;
 
         products.forEach(p => {
+          // Naver Commerce API: contents[].channelProducts[0] 에 실제 상품 데이터
+          const cp = (p.channelProducts && p.channelProducts[0]) || p;
           allItems.push({
-            productNo: p.channelProductNo || p.productNo || '',
-            name: p.name || p.channelProductName || '',
-            salePrice: p.salePrice || p.discountedPrice || 0,
-            stockQuantity: p.stockQuantity || 0,
-            statusType: p.statusType || p.channelProductDisplayStatusType || '',
-            categoryId: p.categoryId || '',
-            imageUrl: p.representativeImage?.url || p.channelProductImageUrl || '',
+            productNo: String(cp.channelProductNo || p.originProductNo || ''),
+            name: cp.name || cp.channelProductName || p.name || '',
+            salePrice: cp.salePrice || cp.discountedPrice || p.salePrice || 0,
+            stockQuantity: cp.stockQuantity ?? p.stockQuantity ?? 0,
+            statusType: cp.channelProductDisplayStatusType || cp.statusType || p.statusType || '',
+            categoryId: cp.wholeCategoryId || p.categoryId || '',
+            imageUrl: cp.representativeImage?.url || cp.channelProductImageUrl || '',
           });
         });
 

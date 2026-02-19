@@ -49,6 +49,18 @@
       <!-- 매출 요약 카드 -->
       <div class="stats summary-stats" id="summaryCards"></div>
 
+      <!-- 플랫폼별 매출 비교 (대시보드 전용) -->
+      <div class="content-grid dashboard-top-grid">
+        <div class="card">
+          <h3>플랫폼별 매출 비교</h3>
+          <div id="dashboardPlatformRevenue"></div>
+        </div>
+        <div class="card">
+          <h3>마진 현황</h3>
+          <div id="dashboardMarginSummary"></div>
+        </div>
+      </div>
+
       <!-- 콘텐츠 -->
       <div class="content-grid">
         <div class="card">
@@ -60,6 +72,7 @@
               <option value="ebay">eBay</option>
               <option value="naver">Naver</option>
               <option value="alibaba">Alibaba</option>
+              <option value="shopee">Shopee</option>
             </select>
           </div>
           <div class="table-wrap">
@@ -85,6 +98,7 @@
             <button class="sync-btn" data-platform="ebay">eBay</button>
             <button class="sync-btn" data-platform="naver">Naver</button>
             <button class="sync-btn" data-platform="alibaba">Alibaba</button>
+            <button class="sync-btn" data-platform="shopee">Shopee</button>
           </div>
         </div>
       </div>
@@ -101,6 +115,7 @@
             <option value="ebay">eBay</option>
             <option value="naver">Naver</option>
             <option value="alibaba">Alibaba</option>
+            <option value="shopee">Shopee</option>
           </select>
         </div>
         <div class="table-wrap">
@@ -154,6 +169,7 @@
               <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="ebay"> eBay</label>
               <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="shopify"> Shopify</label>
               <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="naver"> Naver</label>
+              <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="shopee"> Shopee</label>
             </div>
           </div>
           <div class="form-group" id="marginPreview" style="display:none">
@@ -307,6 +323,11 @@
             <h4>Alibaba</h4>
             <p>Alibaba → Google Sheets 동기화</p>
             <button class="sync-btn" data-platform="alibaba">동기화 실행</button>
+          </div>
+          <div class="sync-platform-card">
+            <h4>Shopee</h4>
+            <p>Shopee → Google Sheets 동기화</p>
+            <button class="sync-btn" data-platform="shopee">동기화 실행</button>
           </div>
         </div>
       </div>
