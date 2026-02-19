@@ -686,10 +686,24 @@ async function getPlatformStatuses() {
           break;
         }
         case 'ebay': {
-          const api = getEbayAPI();
-          const result = await api.getActiveListings(1, 1);
-          productCount = result.totalEntries || 0;
-          status = productCount > 0 ? 'connected' : (result.totalPages >= 0 ? 'connected' : 'error');
+          try {
+            const api = getEbayAPI();
+            const result = await api.getActiveListings(1, 1);
+            productCount = result.totalEntries || 0;
+            status = 'connected';
+          } catch (e) {
+            // API 실패시 시트에서 카운트
+          }
+          // API가 0이면 eBay Products 시트에서 fallback
+          if (productCount === 0 && SPREADSHEET_ID) {
+            try {
+              const sheets = getGoogleSheets();
+              await sheets.authenticate();
+              const rows = await sheets.readData(SPREADSHEET_ID, 'eBay Products!A2:A');
+              productCount = rows ? rows.length : 0;
+              if (productCount > 0) status = 'connected';
+            } catch (e2) {}
+          }
           break;
         }
         case 'naver': {
@@ -812,14 +826,14 @@ async function readShopifySheetData(sheets) {
 }
 
 // Naver Products 시트 읽기
+// 주의: Naver 시트는 리스팅 정보만 있고 실제 판매 데이터가 없음
+// settlement = 0 (판매 데이터 없음)
 async function readNaverSheetData(sheets) {
   try {
     const rows = await sheets.readData(SPREADSHEET_ID, 'Naver Products!A2:J');
     if (!rows || rows.length === 0) return [];
     return rows.map(row => {
       const priceKRW = parseFloat(row[2]) || 0;
-      const feeRate = parseFloat(row[7]) || 5.5;
-      const settlement = priceKRW * (1 - feeRate / 100);
       return {
         image: row[9] || '', sku: row[0] || '', title: row[1] || '',
         weight: '', purchase: '', shippingKRW: '', fee: '', tax: '',
@@ -827,7 +841,7 @@ async function readNaverSheetData(sheets) {
         profit: '', margin: '',
         itemId: '', salesCount: '', stock: row[3] || '',
         ebayStatus: '', shopifyStatus: '',
-        platform: 'Naver', settlement: Math.round(settlement),
+        platform: 'Naver', settlement: 0,
         priceKRW: String(priceKRW || ''),
       };
     }).filter(r => r.sku);

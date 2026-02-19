@@ -216,13 +216,31 @@ function renderPlatformRevenueHTML(byPlatform, containerId) {
     return;
   }
 
-  const maxRevenue = Math.max(...entries.map(([, v]) => v.revenue));
+  const maxRevenue = Math.max(...entries.map(([, v]) => v.revenue), 1);
   const totalRevenue = entries.reduce((sum, [, v]) => sum + v.revenue, 0);
 
   container.innerHTML = entries.map(([name, v]) => {
+    const color = PLATFORM_COLORS[name] || '#888';
+    if (v.revenue === 0) {
+      // 매출 데이터 없는 플랫폼
+      return `
+        <div class="revenue-bar" style="opacity:0.6">
+          <div class="name">
+            <span class="platform-dot" style="background:${color}"></span>
+            ${esc(name)}
+          </div>
+          <div class="bar-wrap">
+            <div class="bar" style="width:0%;background:${color}"></div>
+          </div>
+          <div class="amount-col">
+            <div class="amount" style="color:#999">${v.count}개 리스팅</div>
+            <div class="profit" style="color:#999">매출 데이터 없음</div>
+          </div>
+        </div>
+      `;
+    }
     const pct = maxRevenue > 0 ? (v.revenue / maxRevenue * 100) : 0;
     const sharePct = totalRevenue > 0 ? (v.revenue / totalRevenue * 100).toFixed(1) : 0;
-    const color = PLATFORM_COLORS[name] || '#888';
     const profitColor = v.profit >= 0 ? '#2e7d32' : '#c62828';
     return `
       <div class="revenue-bar">
@@ -257,29 +275,32 @@ function renderDashboardPlatformRevenue(byPlatform) {
     return;
   }
 
-  const totalRevenue = entries.reduce((sum, [, v]) => sum + v.revenue, 0);
-  const totalProfit = entries.reduce((sum, [, v]) => sum + v.profit, 0);
+  // 매출 있는 플랫폼과 없는 플랫폼 분리
+  const withRevenue = entries.filter(([, v]) => v.revenue > 0);
+  const withoutRevenue = entries.filter(([, v]) => v.revenue === 0);
+  const totalRevenue = withRevenue.reduce((sum, [, v]) => sum + v.revenue, 0);
 
-  // 도넛 차트 스타일 요약
+  // 도넛 차트 (매출 있는 플랫폼만)
   let html = '<div class="platform-donut-summary">';
-  html += '<div class="donut-chart">';
 
-  // CSS conic-gradient로 도넛 만들기
-  let gradientParts = [];
-  let cumPct = 0;
-  entries.forEach(([name, v]) => {
-    const pct = totalRevenue > 0 ? (v.revenue / totalRevenue * 100) : 0;
-    const color = PLATFORM_COLORS[name] || '#888';
-    gradientParts.push(`${color} ${cumPct}% ${cumPct + pct}%`);
-    cumPct += pct;
-  });
-  html += `<div class="donut" style="background:conic-gradient(${gradientParts.join(', ')})">`;
-  html += `<div class="donut-hole"><div class="donut-total">${krw(totalRevenue)}</div><div class="donut-label">총 매출</div></div>`;
-  html += '</div></div>';
+  if (withRevenue.length > 0) {
+    html += '<div class="donut-chart">';
+    let gradientParts = [];
+    let cumPct = 0;
+    withRevenue.forEach(([name, v]) => {
+      const pct = totalRevenue > 0 ? (v.revenue / totalRevenue * 100) : 0;
+      const color = PLATFORM_COLORS[name] || '#888';
+      gradientParts.push(`${color} ${cumPct}% ${cumPct + pct}%`);
+      cumPct += pct;
+    });
+    html += `<div class="donut" style="background:conic-gradient(${gradientParts.join(', ')})">`;
+    html += `<div class="donut-hole"><div class="donut-total">${krw(totalRevenue)}</div><div class="donut-label">매출 합계</div></div>`;
+    html += '</div></div>';
+  }
 
   // 범례
   html += '<div class="donut-legend">';
-  entries.forEach(([name, v]) => {
+  withRevenue.forEach(([name, v]) => {
     const pct = totalRevenue > 0 ? (v.revenue / totalRevenue * 100).toFixed(1) : 0;
     const color = PLATFORM_COLORS[name] || '#888';
     html += `<div class="legend-item">
@@ -287,6 +308,16 @@ function renderDashboardPlatformRevenue(byPlatform) {
       <span class="legend-name">${esc(name)}</span>
       <span class="legend-pct">${pct}%</span>
       <span class="legend-amount">${krw(v.revenue)}</span>
+    </div>`;
+  });
+  // 매출 없는 플랫폼 (리스팅만)
+  withoutRevenue.forEach(([name, v]) => {
+    const color = PLATFORM_COLORS[name] || '#888';
+    html += `<div class="legend-item" style="opacity:0.6">
+      <span class="legend-dot" style="background:${color}"></span>
+      <span class="legend-name">${esc(name)}</span>
+      <span class="legend-pct">${v.count}개</span>
+      <span class="legend-amount" style="color:#999">리스팅만</span>
     </div>`;
   });
   html += '</div></div>';
