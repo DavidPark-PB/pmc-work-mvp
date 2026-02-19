@@ -159,7 +159,7 @@ router.get('/analysis/summary', async (req, res) => {
       const profit = parseFloat(row.profit) || 0;
       const purchase = parseFloat(row.purchase) || 0;
       const margin = parseFloat(row.margin);
-      const platform = row.platform || 'eBay';
+      const platform = row.platform || '미분류';
 
       totalRevenue += settlement;
       totalProfit += profit;
@@ -173,12 +173,19 @@ router.get('/analysis/summary', async (req, res) => {
         if (margin >= 20) highMarginCount++;
       }
 
-      if (!byPlatform[platform]) {
-        byPlatform[platform] = { count: 0, revenue: 0, profit: 0 };
-      }
-      byPlatform[platform].count++;
-      byPlatform[platform].revenue += settlement;
-      byPlatform[platform].profit += profit;
+      // 판매 플랫폼만 집계 (소싱처 제외)
+      const validPlatforms = ['eBay', 'Shopify', 'Naver', 'Alibaba', 'Shopee'];
+      // platform이 "eBay, Shopify" 같이 콤마로 여러 개일 수 있음
+      const platforms = platform.split(',').map(p => p.trim());
+      platforms.forEach(p => {
+        if (!validPlatforms.includes(p)) return;
+        if (!byPlatform[p]) {
+          byPlatform[p] = { count: 0, revenue: 0, profit: 0 };
+        }
+        byPlatform[p].count++;
+        byPlatform[p].revenue += settlement;
+        byPlatform[p].profit += profit;
+      });
     });
 
     res.json({
@@ -740,7 +747,8 @@ async function readDashboardSheet(sheets) {
         profit: row[11] || '', margin: row[12] || '',
         itemId: row[13] || '', salesCount: row[14] || '', stock: row[15] || '',
         ebayStatus: row[16] || '', shopifyStatus: row[17] || '',
-        platform: row[18] || 'eBay',
+        supplier: row[18] || '',
+        platform: '',
         settlement: Math.round(settlement),
       };
     }).filter(r => r.sku);
@@ -881,8 +889,10 @@ async function getAllPlatformData(sheets) {
     }
     if (sellingPlatforms.length > 0) {
       item.platform = sellingPlatforms.join(', ');
+    } else {
+      // 어떤 플랫폼 시트에도 없으면 '미분류'
+      item.platform = '미분류';
     }
-    // platform이 여전히 기본 'eBay'이면 Dashboard S열 원본값 유지
     skuMap.set(item.sku, item);
   });
 
