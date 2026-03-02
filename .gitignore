@@ -6,9 +6,11 @@ config/credentials.json
 config/.env
 
 # Data files (contains sensitive/large data)
-data/*.json
-data/*.xml
+data/
 !data/.gitkeep
+
+# Uploaded files
+public/uploads/
 
 # Backups
 backups/

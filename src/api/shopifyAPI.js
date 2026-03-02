@@ -253,6 +253,75 @@ class ShopifyAPI {
   }
 
   /**
+   * 주문 목록 조회 (매출 데이터)
+   * @param {Object} params - 조회 조건
+   * @param {string} params.created_at_min - 시작일 (ISO8601)
+   * @param {string} params.created_at_max - 종료일 (ISO8601)
+   * @param {string} params.status - 주문 상태 (any, open, closed, cancelled)
+   * @param {number} params.limit - 페이지당 개수 (최대 250)
+   */
+  async getOrders(params = {}) {
+    try {
+      const defaults = {
+        status: 'any',
+        limit: 250,
+        financial_status: 'paid',
+      };
+      const query = new URLSearchParams({ ...defaults, ...params });
+      let url = `${this.baseUrl}/orders.json?${query}`;
+      const allOrders = [];
+
+      while (url) {
+        const response = await axios.get(url, { headers: this.getHeaders() });
+        const orders = response.data.orders || [];
+        allOrders.push(...orders);
+
+        const linkHeader = response.headers.link;
+        url = this.getNextPageUrl(linkHeader);
+        if (url) await this.sleep(500);
+      }
+
+      return allOrders;
+    } catch (error) {
+      console.error('Shopify 주문 조회 실패:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * 매출 요약 (주문 기반)
+   * @param {number} days - 최근 N일
+   */
+  async getRevenueSummary(days = 30) {
+    const since = new Date(Date.now() - days * 86400000).toISOString();
+    const orders = await this.getOrders({ created_at_min: since });
+
+    let totalRevenue = 0;
+    let orderCount = 0;
+    const dailySales = {};
+
+    orders.forEach(order => {
+      if (order.cancelled_at) return;
+      const amount = parseFloat(order.total_price) || 0;
+      totalRevenue += amount;
+      orderCount++;
+
+      const date = order.created_at.split('T')[0];
+      if (!dailySales[date]) dailySales[date] = { revenue: 0, orders: 0 };
+      dailySales[date].revenue += amount;
+      dailySales[date].orders++;
+    });
+
+    return {
+      totalRevenue,
+      orderCount,
+      currency: 'USD',
+      period: `${days}days`,
+      dailySales,
+    };
+  }
+
+  /**
    * Sleep 함수 (Rate limiting 방지)
    */
   sleep(ms) {

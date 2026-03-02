@@ -107,8 +107,28 @@ td { padding: 8px 6px; border-bottom: 1px solid #f5f5f5; max-width: 300px; overf
 .form-group { margin-bottom: 12px; }
 .form-group label { display: block; font-size: 12px; font-weight: 500; color: #555; margin-bottom: 4px; }
 .form-group input[type="text"],
-.form-group input[type="number"] { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; transition: border-color 0.15s; }
-.form-group input:focus { border-color: #e94560; outline: none; }
+.form-group input[type="number"],
+.form-group select,
+.form-group textarea { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; transition: border-color 0.15s; box-sizing: border-box; font-family: inherit; }
+.form-group textarea { resize: vertical; }
+.form-group input:focus, .form-group textarea:focus, .form-group select:focus { border-color: #e94560; outline: none; }
+.form-section-title { font-size: 14px; font-weight: 600; color: #1a1a2e; margin: 20px 0 10px 0; padding-bottom: 6px; border-bottom: 2px solid #e94560; }
+.form-section-title:first-child { margin-top: 0; }
+.image-upload-area { border: 2px dashed #ddd; border-radius: 8px; padding: 16px; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; min-height: 100px; }
+.image-upload-area:hover, .image-upload-area.dragover { border-color: #e94560; background: #fff5f7; }
+.upload-placeholder { color: #999; font-size: 13px; padding: 20px 0; }
+.image-preview-list { display: flex; gap: 10px; flex-wrap: wrap; }
+.image-preview-item { position: relative; width: 100px; height: 100px; border-radius: 6px; overflow: hidden; border: 1px solid #e0e0e0; }
+.image-preview-item img { width: 100%; height: 100%; object-fit: cover; }
+.image-preview-item .remove-img { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.6); color: white; border: none; border-radius: 50%; width: 20px; height: 20px; font-size: 12px; cursor: pointer; line-height: 20px; text-align: center; }
+.image-preview-item:first-child::after { content: '대표'; position: absolute; bottom: 0; left: 0; right: 0; background: rgba(233,69,96,0.85); color: white; font-size: 10px; text-align: center; padding: 2px; }
+.category-results { max-height: 180px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 6px; padding: 6px; }
+.category-results label { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.category-results label:hover { background: #f5f5f5; }
+.category-results label input[type="radio"] { margin: 0; }
+.category-results .cat-name { flex: 1; }
+.category-results .cat-id { color: #999; font-size: 11px; }
+.empty-cat { color: #999; font-size: 12px; padding: 10px; display: block; text-align: center; }
 .required { color: #e94560; }
 .checkbox-group { display: flex; gap: 16px; flex-wrap: wrap; }
 .checkbox { display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; }
@@ -120,6 +140,18 @@ td { padding: 8px 6px; border-bottom: 1px solid #f5f5f5; max-width: 300px; overf
 .preview-card { background: #f0f7ff; border: 1px solid #c8dff7; border-radius: 8px; padding: 12px 16px; display: flex; gap: 20px; align-items: center; }
 .preview-label { font-size: 11px; color: #888; }
 .preview-value { font-size: 16px; font-weight: 700; color: #1a1a2e; margin-right: 16px; }
+.price-preview-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.price-preview-card { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px; }
+.price-preview-card.error { background: #fff5f5; border-color: #ffccc7; }
+.price-preview-card .platform-name { font-size: 12px; font-weight: 600; color: #666; margin-bottom: 6px; }
+.price-preview-card .platform-price { font-size: 20px; font-weight: 700; color: #1a1a2e; }
+.price-preview-card .platform-detail { font-size: 11px; color: #888; margin-top: 4px; }
+.price-preview-card .platform-profit { font-size: 13px; font-weight: 600; margin-top: 4px; }
+.price-preview-card .platform-profit.positive { color: #52c41a; }
+.price-preview-card .platform-profit.negative { color: #ff4d4f; }
+.platform-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.platform-badge.active { background: #e6f7e6; color: #389e0d; }
+.platform-badge.none { background: #f5f5f5; color: #999; }
 
 .register-result { margin-top: 12px; font-size: 13px; padding: 10px; border-radius: 6px; display: none; }
 .register-result.success { display: block; background: #e8f5e9; color: #2e7d32; }
@@ -219,6 +251,41 @@ td { padding: 8px 6px; border-bottom: 1px solid #f5f5f5; max-width: 300px; overf
 .save-status.error { color: #c62828; }
 .save-cell { width: 70px; text-align: center; }
 
+/* eBay 트렌드 - 바 차트 */
+.bar-chart {
+  display: flex; gap: 2px; align-items: flex-end; height: 220px;
+  padding: 10px 0; overflow-x: auto;
+}
+.bar-col {
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 32px; flex: 1;
+}
+.bar-value {
+  font-size: 9px; color: #888; margin-bottom: 2px; white-space: nowrap;
+}
+.bar-fill {
+  width: 100%; min-height: 2px; border-radius: 3px 3px 0 0;
+  transition: height 0.3s;
+}
+.bar-label {
+  font-size: 9px; color: #666; margin-top: 4px; white-space: nowrap;
+}
+.bar-orders {
+  font-size: 8px; color: #aaa;
+}
+.chart-area { min-height: 240px; }
+
+/* 주간 비교 */
+.weekly-compare {
+  display: flex; align-items: center; justify-content: center; gap: 24px;
+  padding: 24px 0;
+}
+.week-block { text-align: center; }
+.week-title { font-size: 13px; color: #888; margin-bottom: 6px; }
+.week-revenue { font-size: 28px; font-weight: 700; color: #1a1a2e; }
+.week-orders { font-size: 12px; color: #888; margin-top: 4px; }
+.week-arrow { font-size: 28px; color: #e53935; }
+
 /* Responsive */
 @media (max-width: 1200px) {
   .stats { grid-template-columns: repeat(3, 1fr); }
@@ -228,10 +295,115 @@ td { padding: 8px 6px; border-bottom: 1px solid #f5f5f5; max-width: 300px; overf
   .platform-donut-summary { flex-direction: column; }
   .margin-gauge { flex-direction: column; align-items: center; }
 }
+/* SKU Score Page */
+.sku-score-stats { grid-template-columns: repeat(5, 1fr); }
+.class-badge { display: inline-block; padding: 2px 10px; border-radius: 8px; font-size: 11px; font-weight: 600; }
+.class-badge.A { background: #e3f2fd; color: #1565c0; }
+.class-badge.B { background: #e8f5e9; color: #2e7d32; }
+.class-badge.C { background: #fff3e0; color: #e65100; }
+.class-badge.D { background: #ffebee; color: #c62828; }
+#skuScoreModal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+#skuScoreModal .modal { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 8px 32px rgba(0,0,0,0.2); }
+
+/* ===== AI 리메이커 (Remarker) ===== */
+.remarker-step { margin-bottom: 8px; }
+.remarker-step-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.step-dot {
+  width: 26px; height: 26px; border-radius: 50%; background: #e0e0e0; color: white;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0;
+}
+.step-dot.active { background: #7c4dff; }
+.step-dot.done { background: #4caf50; }
+
+.remarker-comparison {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px;
+}
+.remarker-column {
+  background: #f8f9fa; border-radius: 8px; padding: 16px; border: 1px solid #e0e0e0;
+}
+.remarker-column.before { border-top: 3px solid #1565c0; }
+.remarker-column.after { border-top: 3px solid #7c4dff; }
+.remarker-column h4 { font-size: 13px; margin-bottom: 10px; }
+
+.remarker-label {
+  display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600;
+}
+.remarker-label.before { background: #e3f2fd; color: #1565c0; }
+.remarker-label.after { background: #ede7f6; color: #7c4dff; }
+
+.remarker-field { margin-bottom: 10px; }
+.remarker-field .field-label { font-size: 11px; font-weight: 500; color: #888; margin-bottom: 3px; }
+.remarker-field .field-value { font-size: 13px; color: #333; word-break: break-word; }
+.remarker-field .field-value.price { font-size: 18px; font-weight: 700; }
+
+.remarker-desc-preview {
+  max-height: 300px; overflow-y: auto; background: white;
+  border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; font-size: 12px;
+}
+.remarker-images { display: flex; gap: 6px; flex-wrap: wrap; }
+.remarker-images img { width: 60px; height: 60px; object-fit: cover; border-radius: 4px; border: 1px solid #e0e0e0; }
+
+@media (max-width: 900px) {
+  .remarker-comparison { grid-template-columns: 1fr; }
+}
+
+/* ===== 전투 상황판 (Battle Dashboard) ===== */
+.battle-stats { grid-template-columns: repeat(5, 1fr); }
+
+.battle-status {
+  display: inline-block; padding: 3px 10px; border-radius: 12px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.battle-status.losing { background: #ffebee; color: #c62828; }
+.battle-status.winning { background: #e8f5e9; color: #2e7d32; }
+.battle-status.neutral { background: #f5f5f5; color: #888; }
+
+.battle-diff { font-weight: 700; font-size: 13px; }
+.battle-diff.positive { color: #c62828; }
+.battle-diff.negative { color: #2e7d32; }
+.battle-diff.neutral { color: #888; }
+
+.kill-price-btn {
+  background: #c62828; color: white; border: none;
+  padding: 4px 10px; border-radius: 4px; cursor: pointer;
+  font-size: 11px; font-weight: 600; transition: background 0.15s;
+}
+.kill-price-btn:hover { background: #b71c1c; }
+.kill-price-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.kill-price-btn.applied { background: #2e7d32; cursor: default; }
+
+.battle-price-cell { text-align: center; font-size: 12px; line-height: 1.5; }
+.battle-price-cell .price-main { font-weight: 700; font-size: 13px; }
+.battle-price-cell .price-ship { font-size: 10px; color: #888; }
+.battle-price-cell .price-total { font-size: 11px; color: #555; margin-top: 2px; }
+
+.battle-sold { font-weight: 600; color: #1565c0; }
+.battle-seller { font-size: 11px; color: #666; max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+
+.battle-live-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: #4caf50; margin-right: 4px; vertical-align: middle;
+}
+.battle-live-dot.stale { background: #ff9800; }
+
+.battle-product-info { display: flex; align-items: center; gap: 8px; }
+.battle-product-info img { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; }
+.battle-product-info .sku { font-size: 10px; color: #888; }
+.battle-product-info .title { font-size: 12px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.battle-row-losing { background: #fff5f5; }
+.battle-row-winning { background: #f5fff5; }
+
+@media (max-width: 1200px) {
+  .battle-stats { grid-template-columns: repeat(3, 1fr); }
+}
+
 @media (max-width: 900px) {
   .sidebar { display: none; }
   .main { margin-left: 0; }
   .stats { grid-template-columns: repeat(2, 1fr); }
+  .sku-score-stats { grid-template-columns: repeat(2, 1fr); }
+  .battle-stats { grid-template-columns: repeat(2, 1fr); }
   .content-grid { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
 }

@@ -93,6 +93,33 @@ class GoogleSheetsAPI {
   }
 
   /**
+   * 여러 범위에 한 번에 데이터 쓰기 (API 호출 1회)
+   * @param {string} spreadsheetId
+   * @param {Array<{range: string, values: Array<Array>}>} data - [{range, values}, ...]
+   */
+  async batchWriteData(spreadsheetId, data) {
+    try {
+      if (!this.sheets) {
+        await this.authenticate();
+      }
+
+      const response = await this.sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        resource: {
+          valueInputOption: 'USER_ENTERED',
+          data: data.map(d => ({ range: d.range, values: d.values })),
+        },
+      });
+
+      console.log(`✅ 배치 업데이트: ${response.data.totalUpdatedCells}개 셀`);
+      return response.data;
+    } catch (error) {
+      console.error('❌ 배치 쓰기 실패:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * 스프레드시트에 데이터 추가 (기존 데이터 뒤에 추가)
    * @param {string} spreadsheetId - 스프레드시트 ID
    * @param {string} range - 추가할 시트 범위 (예: 'Sheet1!A:D')
@@ -125,22 +152,21 @@ class GoogleSheetsAPI {
    * @param {string} spreadsheetId - 스프레드시트 ID
    * @param {string} sheetTitle - 새 시트 이름
    */
-  async createSheet(spreadsheetId, sheetTitle) {
+  async createSheet(spreadsheetId, sheetTitle, index) {
     try {
       if (!this.sheets) {
         await this.authenticate();
       }
+
+      const properties = { title: sheetTitle };
+      if (index !== undefined) properties.index = index;
 
       const response = await this.sheets.spreadsheets.batchUpdate({
         spreadsheetId,
         resource: {
           requests: [
             {
-              addSheet: {
-                properties: {
-                  title: sheetTitle,
-                },
-              },
+              addSheet: { properties },
             },
           ],
         },
@@ -151,6 +177,74 @@ class GoogleSheetsAPI {
       return newSheetId;
     } catch (error) {
       console.error('❌ 시트 생성 실패:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * 시트 이름 변경
+   */
+  async renameSheet(spreadsheetId, sheetId, newTitle) {
+    try {
+      if (!this.sheets) {
+        await this.authenticate();
+      }
+
+      await this.sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        resource: {
+          requests: [
+            {
+              updateSheetProperties: {
+                properties: { sheetId, title: newTitle },
+                fields: 'title',
+              },
+            },
+          ],
+        },
+      });
+
+      console.log(`✅ 시트 ID ${sheetId} → '${newTitle}' 이름 변경 완료`);
+    } catch (error) {
+      console.error('❌ 시트 이름 변경 실패:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * 시트 복제 (템플릿 탭 복사용)
+   * @param {string} spreadsheetId - 스프레드시트 ID
+   * @param {number} sourceSheetId - 복제할 원본 시트 ID
+   * @param {string} newTitle - 새 시트 이름
+   * @param {number} insertIndex - 삽입 위치 (0 = 맨 앞)
+   * @returns {number} 새로 생성된 시트 ID
+   */
+  async duplicateSheet(spreadsheetId, sourceSheetId, newTitle, insertIndex = 0) {
+    try {
+      if (!this.sheets) {
+        await this.authenticate();
+      }
+
+      const response = await this.sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        resource: {
+          requests: [
+            {
+              duplicateSheet: {
+                sourceSheetId,
+                insertSheetIndex: insertIndex,
+                newSheetName: newTitle,
+              },
+            },
+          ],
+        },
+      });
+
+      const newSheetId = response.data.replies[0].duplicateSheet.properties.sheetId;
+      console.log(`✅ 시트 복제 완료: '${newTitle}' (ID: ${newSheetId})`);
+      return newSheetId;
+    } catch (error) {
+      console.error('❌ 시트 복제 실패:', error.message);
       throw error;
     }
   }

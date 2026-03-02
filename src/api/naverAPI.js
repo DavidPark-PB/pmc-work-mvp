@@ -130,6 +130,31 @@ class NaverAPI {
   }
 
   /**
+   * 카테고리 검색 (키워드 기반)
+   */
+  async searchCategories(query) {
+    try {
+      const token = await this.getToken();
+      // 네이버 커머스 카테고리 검색 API
+      const url = `${this.baseUrl}/v1/categories?query=${encodeURIComponent(query)}`;
+      const response = await axios.get(url, {
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        timeout: 10000,
+      });
+
+      const categories = (response.data || []).map(cat => ({
+        id: String(cat.id || cat.categoryId),
+        name: cat.wholeCategoryName || cat.name || '',
+      }));
+      return categories;
+    } catch (error) {
+      // 카테고리 검색 API가 없으면 빈 배열
+      console.error('네이버 카테고리 검색:', error.response?.status, error.response?.data?.message || error.message);
+      return [];
+    }
+  }
+
+  /**
    * 상품 등록
    */
   async createProduct({ productName, salePrice, stockQuantity, categoryId, detailContent, imageUrls }) {
@@ -186,16 +211,21 @@ class NaverAPI {
   }
 
   /**
-   * 주문 목록 조회
+   * 주문 목록 조회 (최근 변경 주문)
    */
-  async getOrders(status = 'PAYED', lastChangedFrom = null) {
+  async getOrders(lastChangedFrom = null) {
     const now = new Date();
-    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const from = lastChangedFrom || new Date(now.getTime() - 7 * 86400000).toISOString();
+    const qs = `?lastChangedFrom=${encodeURIComponent(from)}`;
+    return this.request('GET', `/v1/pay-order/seller/product-orders/last-changed-statuses${qs}`);
+  }
 
-    return this.request('GET', `/v1/pay-order/seller/product-orders/last-changed-statuses`, {
-      params: {
-        lastChangedFrom: lastChangedFrom || weekAgo.toISOString(),
-      },
+  /**
+   * 주문 상세 조회 (productOrderIds 기반)
+   */
+  async getOrderDetails(productOrderIds) {
+    return this.request('POST', `/v1/pay-order/seller/product-orders/query`, {
+      productOrderIds,
     });
   }
 
@@ -212,18 +242,60 @@ class NaverAPI {
   }
 
   /**
-   * 판매 통계
+   * 매출 요약 (주문 기반, 최근 N일)
    */
-  async getSalesStats(startDate, endDate) {
+  async getRevenueSummary(days = 30) {
     const now = new Date();
-    const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const from = new Date(now.getTime() - days * 86400000).toISOString();
 
-    return this.request('GET', `/v1/statistics/channel/sales`, {
-      params: {
-        startDate: startDate || monthAgo.toISOString().split('T')[0],
-        endDate: endDate || now.toISOString().split('T')[0],
-      },
-    });
+    try {
+      // 1. 변경된 주문 목록 가져오기
+      const result = await this.getOrders(from);
+      const statuses = result?.data?.lastChangeStatuses || [];
+      const orderIds = statuses.map(s => s.productOrderId).filter(Boolean);
+
+      if (orderIds.length === 0) {
+        return { totalRevenue: 0, orderCount: 0, currency: 'KRW', period: `${days}days`, dailySales: {} };
+      }
+
+      // 2. 주문 상세 조회 (최대 300개씩)
+      let allDetails = [];
+      for (let i = 0; i < orderIds.length; i += 300) {
+        const batch = orderIds.slice(i, i + 300);
+        try {
+          const details = await this.getOrderDetails(batch);
+          const items = details?.data || [];
+          allDetails.push(...(Array.isArray(items) ? items : []));
+        } catch (e) {
+          console.error('Naver 주문 상세 조회 실패:', e.message);
+        }
+      }
+
+      // 3. 매출 집계 (productOrder.totalPaymentAmount 기준)
+      let totalRevenue = 0;
+      const dailySales = {};
+      allDetails.forEach(item => {
+        const po = item.productOrder || {};
+        const amount = po.totalPaymentAmount || po.unitPrice || 0;
+        totalRevenue += amount;
+
+        const date = (po.placeOrderDate || item.order?.paymentDate || '').split('T')[0] || 'unknown';
+        if (!dailySales[date]) dailySales[date] = { revenue: 0, orders: 0 };
+        dailySales[date].revenue += amount;
+        dailySales[date].orders++;
+      });
+
+      return {
+        totalRevenue,
+        orderCount: allDetails.length,
+        currency: 'KRW',
+        period: `${days}days`,
+        dailySales,
+      };
+    } catch (e) {
+      console.error('Naver 매출 요약 실패:', e.message);
+      return { totalRevenue: 0, orderCount: 0, currency: 'KRW', period: `${days}days`, dailySales: {}, error: e.message };
+    }
   }
 }
 

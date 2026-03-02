@@ -18,11 +18,19 @@
   <div class="sidebar">
     <div class="menu-item active" data-page="dashboard">대시보드</div>
     <div class="menu-title">상품 관리</div>
+    <div class="menu-item" data-page="master-products">마스터 상품</div>
     <div class="menu-item" data-page="products">전체 상품</div>
     <div class="menu-item" data-page="register">상품 등록</div>
+    <div class="menu-item" data-page="remarker" style="color:#7c4dff;font-weight:600">AI 리메이커</div>
+    <div class="menu-item" data-page="reconstruct" style="color:#e94560;font-weight:600">상세페이지 재구성</div>
+    <div class="menu-title">배송</div>
+    <div class="menu-item" data-page="shipping" style="color:#0288d1;font-weight:600">배송 관리</div>
     <div class="menu-title">분석</div>
+    <div class="menu-item" data-page="battle" style="color:#e94560;font-weight:600">전투 상황판</div>
     <div class="menu-item" data-page="analysis">매출/마진 분석</div>
+    <div class="menu-item" data-page="ebay-trends">eBay 트렌드</div>
     <div class="menu-item" data-page="anomalies">이상 탐지</div>
+    <div class="menu-item" data-page="sku-scores">SKU 점수 관리</div>
     <div class="menu-item" data-page="top">효자상품 TOP</div>
     <div class="menu-title">플랫폼</div>
     <div class="menu-item" data-page="shopify">Shopify</div>
@@ -30,6 +38,8 @@
     <div class="menu-item" data-page="naver">네이버</div>
     <div class="menu-item" data-page="alibaba">Alibaba</div>
     <div class="menu-item" data-page="shopee">Shopee</div>
+    <div class="menu-title">B2B</div>
+    <div class="menu-item" data-page="b2b" style="color:#0288d1;font-weight:600">B2B 인보이스</div>
     <div class="menu-title">시스템</div>
     <div class="menu-item" data-page="sync">동기화</div>
   </div>
@@ -58,6 +68,25 @@
         <div class="card">
           <h3>마진 현황</h3>
           <div id="dashboardMarginSummary"></div>
+        </div>
+      </div>
+
+      <!-- 마스터 상품 요약 -->
+      <div class="card" id="dashboardMasterCard">
+        <div class="card-header">
+          <h3>마스터 상품 DB</h3>
+          <button class="refresh-btn" onclick="navigateTo('master-products')" style="font-size:12px">전체보기</button>
+        </div>
+        <div class="stats" id="masterStatsCards" style="margin-bottom:12px"></div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr><th>SKU</th><th>상품명</th><th>매입가</th><th>eBay</th><th>Shopify</th><th>Naver</th><th>마진</th></tr>
+            </thead>
+            <tbody id="dashboardMasterBody">
+              <tr><td colspan="7" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -109,22 +138,26 @@
       <div class="card">
         <div class="card-header">
           <h3>전체 상품 목록 <span class="count" id="allProductCount"></span></h3>
-          <select id="allPlatformFilter">
-            <option value="">전체 플랫폼</option>
-            <option value="shopify">Shopify</option>
-            <option value="ebay">eBay</option>
-            <option value="naver">Naver</option>
-            <option value="alibaba">Alibaba</option>
-            <option value="shopee">Shopee</option>
-          </select>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="allProductSearch" placeholder="SKU 또는 상품명 검색..."
+                   style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;width:250px">
+            <select id="allPlatformFilter">
+              <option value="">전체 플랫폼</option>
+              <option value="shopify">Shopify</option>
+              <option value="ebay">eBay</option>
+              <option value="naver">Naver</option>
+              <option value="alibaba">Alibaba</option>
+              <option value="shopee">Shopee</option>
+            </select>
+          </div>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>SKU</th><th>상품명</th><th>플랫폼</th><th>가격</th><th>재고</th><th></th></tr>
+              <tr><th>SKU</th><th>상품명</th><th>플랫폼</th><th>가격</th><th>배송비</th><th>재고</th><th></th></tr>
             </thead>
             <tbody id="allProductTable">
-              <tr><td colspan="6" class="empty">로딩 중...</td></tr>
+              <tr><td colspan="7" class="empty">로딩 중...</td></tr>
             </tbody>
           </table>
         </div>
@@ -134,34 +167,119 @@
     <!-- ===== 상품 등록 페이지 ===== -->
     <div id="page-register" class="page">
       <div class="card">
-        <h3>신규 상품 등록</h3>
-        <form id="registerForm" class="register-form">
+        <h3>신규 상품 등록 (멀티마켓 자동 최적화)</h3>
+        <form id="registerForm" class="register-form" style="max-width:900px">
+
+          <!-- 기본 정보 -->
+          <h4 class="form-section-title">기본 정보</h4>
           <div class="form-grid">
             <div class="form-group">
               <label>SKU <span class="required">*</span></label>
               <input type="text" name="sku" required placeholder="예: PMC-001">
             </div>
             <div class="form-group">
-              <label>상품명 <span class="required">*</span></label>
-              <input type="text" name="title" required placeholder="상품명 입력">
+              <label>상품명 (한국어) <span class="required">*</span></label>
+              <input type="text" name="title" required placeholder="네이버용 한국어 상품명">
             </div>
             <div class="form-group">
-              <label>매입가 (KRW)</label>
-              <input type="number" name="purchasePrice" placeholder="예: 5000">
+              <label>상품명 (영문) <span class="required">*</span></label>
+              <input type="text" name="titleEn" required placeholder="eBay/Shopify용 English Title">
+            </div>
+            <div class="form-group">
+              <label>상품 상태</label>
+              <select name="condition">
+                <option value="new">새상품 (New)</option>
+                <option value="used">중고 (Used)</option>
+                <option value="refurbished">리퍼 (Refurbished)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- 이미지 업로드 -->
+          <h4 class="form-section-title">상품 이미지 (최대 5장)</h4>
+          <div class="form-group">
+            <div class="image-upload-area" id="imageUploadArea">
+              <input type="file" id="imageFileInput" multiple accept="image/*" style="display:none">
+              <div class="upload-placeholder" id="uploadPlaceholder">
+                <span style="font-size:32px">+</span><br>
+                클릭 또는 드래그하여 이미지 업로드<br>
+                <small>JPG, PNG, WebP (최대 5MB)</small>
+              </div>
+              <div class="image-preview-list" id="imagePreviewList"></div>
+            </div>
+          </div>
+
+          <!-- 상세 설명 -->
+          <h4 class="form-section-title">상품 설명</h4>
+          <div class="form-group">
+            <label>상품 설명 (한국어) — 네이버 상세페이지용</label>
+            <textarea name="description" rows="4" placeholder="한국어 상품 상세 설명 (네이버 스마트스토어에 표시됩니다)"></textarea>
+          </div>
+          <div class="form-group">
+            <label>상품 설명 (영문) — eBay/Shopify 상세페이지용</label>
+            <textarea name="descriptionEn" rows="4" placeholder="English product description (shown on eBay & Shopify)"></textarea>
+          </div>
+          <div class="form-group">
+            <label>키워드/태그 (쉼표 구분)</label>
+            <input type="text" name="keywords" placeholder="예: 보드게임, board game, 가족게임, party game">
+          </div>
+
+          <!-- 카테고리 검색 -->
+          <h4 class="form-section-title">플랫폼별 카테고리</h4>
+          <div class="form-group">
+            <label>카테고리 검색</label>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="categorySearchInput" placeholder="상품 키워드로 검색 (예: 보드게임, electronics)" style="flex:1">
+              <button type="button" class="refresh-btn" id="categorySearchBtn">검색</button>
+            </div>
+          </div>
+          <div id="categoryResults" style="display:none">
+            <div class="form-group">
+              <label>eBay 카테고리</label>
+              <div id="ebayCategoryResults" class="category-results">
+                <span class="empty-cat">검색 결과 없음</span>
+              </div>
+              <input type="hidden" name="ebayCategoryId" id="ebayCategoryId">
+            </div>
+            <div class="form-group">
+              <label>Naver 카테고리</label>
+              <div id="naverCategoryResults" class="category-results">
+                <span class="empty-cat">검색 결과 없음</span>
+              </div>
+              <input type="hidden" name="naverCategoryId" id="naverCategoryId">
+            </div>
+            <div class="form-group">
+              <label>Shopify Product Type (직접 입력)</label>
+              <input type="text" name="shopifyProductType" placeholder="예: Board Games, Electronics">
+            </div>
+          </div>
+
+          <!-- 가격/재고 -->
+          <h4 class="form-section-title">가격 및 재고</h4>
+          <div class="form-grid">
+            <div class="form-group">
+              <label>매입가 (KRW) <span class="required">*</span></label>
+              <input type="number" name="purchasePrice" required placeholder="예: 5000">
             </div>
             <div class="form-group">
               <label>무게 (kg)</label>
               <input type="number" name="weight" step="0.01" placeholder="예: 0.5">
             </div>
             <div class="form-group">
-              <label>판매가 (USD)</label>
-              <input type="number" name="priceUSD" step="0.01" placeholder="예: 19.99">
+              <label>목표 마진율 (%)</label>
+              <input type="number" name="targetMargin" step="1" value="30" placeholder="30">
             </div>
             <div class="form-group">
-              <label>배송비 (USD)</label>
-              <input type="number" name="shippingUSD" step="0.01" value="3.9" placeholder="3.9">
+              <label>재고 수량</label>
+              <input type="number" name="quantity" value="10" min="1" placeholder="10">
+            </div>
+            <div class="form-group">
+              <label>직접 가격 지정 (USD, 선택)</label>
+              <input type="number" name="priceUSD" step="0.01" placeholder="미입력 시 자동 계산">
             </div>
           </div>
+
+          <!-- 등록 플랫폼 -->
           <div class="form-group">
             <label>등록 플랫폼</label>
             <div class="checkbox-group">
@@ -169,25 +287,627 @@
               <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="ebay"> eBay</label>
               <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="shopify"> Shopify</label>
               <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="naver"> Naver</label>
-              <label class="checkbox"><input type="checkbox" name="targetPlatforms" value="shopee"> Shopee</label>
             </div>
           </div>
+
+          <!-- 가격 미리보기 -->
           <div class="form-group" id="marginPreview" style="display:none">
-            <div class="preview-card">
-              <span class="preview-label">예상 마진</span>
-              <span class="preview-value" id="previewMargin">-</span>
-              <span class="preview-label">예상 순이익</span>
-              <span class="preview-value" id="previewProfit">-</span>
-            </div>
+            <h4 style="margin:0 0 10px 0">플랫폼별 자동 계산 가격</h4>
+            <div class="price-preview-grid" id="pricePreviewGrid"></div>
           </div>
-          <button type="submit" class="submit-btn">상품 등록</button>
+
+          <button type="submit" class="submit-btn">상품 등록 (전체 마켓)</button>
           <div id="registerResult" class="register-result"></div>
         </form>
       </div>
     </div>
 
+    <!-- ===== 마스터 상품 페이지 ===== -->
+    <div id="page-master-products" class="page">
+      <div class="card">
+        <h3>마스터 상품 DB</h3>
+        <div style="margin-bottom:15px;display:flex;gap:10px;align-items:center">
+          <input type="text" id="masterSearch" placeholder="SKU 또는 상품명 검색..." style="flex:1;padding:8px 12px;border:1px solid #ddd;border-radius:6px">
+          <button class="refresh-btn" id="masterRefreshBtn">새로고침</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" id="masterProductsTable">
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>상품명</th>
+                <th>매입가</th>
+                <th>마진</th>
+                <th>eBay</th>
+                <th>Shopify</th>
+                <th>Naver</th>
+                <th>등록일</th>
+              </tr>
+            </thead>
+            <tbody id="masterProductsBody"></tbody>
+          </table>
+        </div>
+        <div id="masterProductsPagination" style="margin-top:10px;text-align:center"></div>
+      </div>
+    </div>
+
+    <!-- ===== AI 리메이커 페이지 ===== -->
+    <div id="page-remarker" class="page">
+      <div class="card">
+        <h3 style="margin-bottom:4px">AI 리메이커 <span style="font-size:12px;color:#7c4dff;font-weight:400">경쟁사 저격 → AI 최적화 → 검토 → 등록</span></h3>
+        <p style="font-size:11px;color:#888;margin-bottom:16px">경쟁사 상품을 프리미엄 리스팅으로 탈바꿈시킵니다. 등록 전 반드시 검토하세요.</p>
+
+        <!-- Step 1: 경쟁사 상품 조회 -->
+        <div id="remarkerStep1" class="remarker-step">
+          <div class="remarker-step-header">
+            <span class="step-dot active">1</span>
+            <span style="font-weight:600;font-size:13px">경쟁사 상품 조회</span>
+          </div>
+          <!-- 모드 토글 -->
+          <div style="display:flex;gap:16px;margin-top:10px;margin-bottom:8px">
+            <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px">
+              <input type="radio" name="remarkerMode" value="single" checked onchange="toggleRemarkerMode()"> 단일
+            </label>
+            <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px">
+              <input type="radio" name="remarkerMode" value="batch" onchange="toggleRemarkerMode()"> 배치 (여러 상품)
+            </label>
+            <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:4px;color:#e94560;font-weight:600">
+              <input type="radio" name="remarkerMode" value="reconstruct" onchange="toggleRemarkerMode()"> 재구성 (파일 업로드)
+            </label>
+          </div>
+          <!-- 단일 모드 (기존) -->
+          <div id="remarkerSingleMode" style="display:flex;gap:8px;max-width:500px">
+            <input type="text" id="remarkerItemId" placeholder="eBay Item ID (예: 197310519789)"
+                   style="flex:1;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            <button id="remarkerFetchBtn"
+                    style="background:#7c4dff;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap">
+              조회
+            </button>
+          </div>
+          <!-- 배치 모드 -->
+          <div id="remarkerBatchMode" style="display:none;max-width:600px">
+            <textarea id="remarkerBatchIds" rows="5" placeholder="Item ID를 한 줄에 하나씩 입력&#10;197310519789&#10;296388441234&#10;305112998877"
+                      style="width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;font-family:monospace;resize:vertical"></textarea>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+              <span id="batchIdCount" style="font-size:11px;color:#888">0개 입력</span>
+              <button id="remarkerBatchStartBtn"
+                      style="background:#7c4dff;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+                배치 시작
+              </button>
+            </div>
+          </div>
+          <!-- 재구성 모드 (파일 업로드) -->
+          <div id="remarkerReconstructMode" style="display:none;max-width:700px">
+            <div style="margin-bottom:12px">
+              <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px">썸네일 이미지 (최대 10장)</label>
+              <div id="reconstructDropZone"
+                   style="border:2px dashed #7c4dff;border-radius:8px;padding:30px 20px;text-align:center;cursor:pointer;background:#f8f6ff;transition:all .2s"
+                   ondragover="event.preventDefault();this.style.background='#ede7f6';this.style.borderColor='#e94560'"
+                   ondragleave="this.style.background='#f8f6ff';this.style.borderColor='#7c4dff'"
+                   ondrop="handleReconstructDrop(event)"
+                   onclick="document.getElementById('reconstructImageInput').click()">
+                <div style="font-size:24px;margin-bottom:6px">📁</div>
+                <div style="font-size:12px;color:#666">이미지 파일을 드래그하거나 클릭하여 선택</div>
+                <div style="font-size:10px;color:#999;margin-top:4px">JPG, PNG, WEBP (최대 10장, 각 5MB)</div>
+              </div>
+              <input type="file" id="reconstructImageInput" multiple accept="image/*" style="display:none" onchange="handleReconstructFiles(this.files)">
+              <div id="reconstructImagePreview" style="display:none;margin-top:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px"></div>
+            </div>
+            <div style="margin-bottom:12px">
+              <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px">상세페이지 HTML</label>
+              <div style="display:flex;gap:8px;margin-bottom:6px">
+                <button type="button" id="reconstructHtmlPasteBtn" onclick="toggleReconstructInput('paste')"
+                        style="background:#7c4dff;color:#fff;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:11px">
+                  HTML 붙여넣기
+                </button>
+                <button type="button" id="reconstructHtmlFileBtn" onclick="toggleReconstructInput('file')"
+                        style="background:#f0f2f5;border:1px solid #ddd;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:11px">
+                  HTML 파일 업로드
+                </button>
+              </div>
+              <textarea id="reconstructHtmlText" rows="8" placeholder="경쟁사 상세페이지 HTML을 붙여넣으세요..."
+                        style="width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:11px;font-family:monospace;resize:vertical"></textarea>
+              <input type="file" id="reconstructHtmlFile" accept=".html,.htm,.txt" style="display:none" onchange="handleReconstructHtmlFile(this.files[0])">
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span id="reconstructFileCount" style="font-size:11px;color:#888">이미지 0장 선택</span>
+              <button type="button" id="reconstructStartBtn" onclick="reconstructUpload()"
+                      style="background:linear-gradient(135deg,#7c4dff,#e94560);color:#fff;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.5px">
+                AI 재구성 시작
+              </button>
+            </div>
+            <div id="reconstructProgress" style="display:none;margin-top:12px;padding:12px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0">
+              <div style="display:flex;align-items:center;gap:8px">
+                <div class="spinner" style="width:16px;height:16px;border:2px solid #e0e0e0;border-top:2px solid #7c4dff;border-radius:50%;animation:spin 1s linear infinite"></div>
+                <span id="reconstructProgressText" style="font-size:12px;color:#666">AI가 분석 중입니다...</span>
+              </div>
+            </div>
+          </div>
+          <!-- 배치 진행 상태바 -->
+          <div id="remarkerBatchProgress" style="display:none;margin-top:16px;background:#f8f9fa;border-radius:8px;padding:12px;border:1px solid #e0e0e0">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <span id="batchProgressText" style="font-size:13px;font-weight:600">0/0 처리 중</span>
+              <button id="batchStopBtn" onclick="stopBatch()"
+                      style="font-size:11px;background:none;border:1px solid #e94560;color:#e94560;padding:4px 12px;border-radius:4px;cursor:pointer">
+                중단
+              </button>
+            </div>
+            <div id="batchProgressDots" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+          </div>
+          <div id="remarkerFetchResult" style="margin-top:12px"></div>
+        </div>
+
+        <!-- Step 2: AI 리메이크 비교 -->
+        <div id="remarkerStep2" style="display:none" class="remarker-step">
+          <div class="remarker-step-header" style="margin-top:20px">
+            <span class="step-dot" id="step2Dot">2</span>
+            <span style="font-weight:600;font-size:13px">AI 리메이크 결과 비교</span>
+          </div>
+          <div class="remarker-comparison" id="remarkerComparison"></div>
+        </div>
+
+        <!-- Step 3: 검토 및 등록 -->
+        <div id="remarkerStep3" style="display:none" class="remarker-step">
+          <div class="remarker-step-header" style="margin-top:20px">
+            <span class="step-dot" id="step3Dot">3</span>
+            <span style="font-weight:600;font-size:13px">검토 및 등록</span>
+            <span style="font-size:11px;color:#e94560;margin-left:8px">모든 항목을 확인 후 등록하세요</span>
+          </div>
+          <form id="remarkerRegisterForm" style="margin-top:12px">
+            <div class="form-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+              <div class="form-group">
+                <label>SKU <span style="color:#e94560">*</span></label>
+                <input type="text" id="rmSku" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+              <div class="form-group">
+                <label>상태</label>
+                <select id="rmCondition" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+                  <option value="new">New</option>
+                  <option value="used">Used</option>
+                  <option value="refurbished">Refurbished</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>제목 (English, SEO 최적화) <span style="color:#e94560">*</span></label>
+              <input type="text" id="rmTitle" maxlength="80"
+                     style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-weight:500">
+              <div style="text-align:right;font-size:10px;color:#888" id="rmTitleCount">0/80</div>
+            </div>
+            <div class="form-group">
+              <label>상세 설명 (HTML)</label>
+              <textarea id="rmDescription" rows="12"
+                        style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:11px;font-family:monospace"></textarea>
+              <div style="margin-top:6px;display:flex;gap:6px">
+                <button type="button" id="rmPreviewBtn"
+                        style="background:#7c4dff;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">
+                  미리보기
+                </button>
+                <button type="button" id="rmPreviewFullBtn"
+                        style="background:#f0f2f5;border:1px solid #ddd;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:11px">
+                  전체화면 미리보기
+                </button>
+              </div>
+              <div id="rmDescPreview" style="display:none;margin-top:8px">
+                <iframe id="rmDescPreviewFrame" style="width:100%;height:400px;border:1px solid #e0e0e0;border-radius:6px;background:#fff" sandbox></iframe>
+              </div>
+            </div>
+            <div class="form-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px">
+              <div class="form-group">
+                <label>판매가 (USD) <span style="color:#e94560">*</span></label>
+                <input type="number" id="rmPrice" step="0.01" min="0.01"
+                       style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-weight:700;color:#c62828">
+              </div>
+              <div class="form-group">
+                <label>배송비 (USD)</label>
+                <input type="number" id="rmShipping" step="0.01" value="3.90"
+                       style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+              <div class="form-group">
+                <label>수량</label>
+                <input type="number" id="rmQuantity" value="10" min="1"
+                       style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+              <div class="form-group">
+                <label>카테고리 ID</label>
+                <input type="text" id="rmCategoryId"
+                       style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+            </div>
+            <div class="form-group">
+              <label>이미지 URL (줄바꿈 구분)</label>
+              <textarea id="rmImages" rows="3"
+                        style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:11px"></textarea>
+              <!-- 템플릿 선택 -->
+              <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <select id="rmTemplateSelect" onchange="toggleAutoTemplateOpts()"
+                        style="font-size:11px;padding:5px 8px;border:1px solid #ddd;border-radius:4px">
+                  <option value="">기본 (워터마크+바)</option>
+                  <option value="auto">자동 템플릿 (텍스트+로고)</option>
+                </select>
+                <button type="button" id="rmTemplateUploadBtn" onclick="document.getElementById('rmTemplateFile').click()"
+                        style="font-size:10px;background:#f0f2f5;border:1px solid #ddd;padding:4px 10px;border-radius:4px;cursor:pointer">
+                  PNG 업로드
+                </button>
+                <input type="file" id="rmTemplateFile" accept=".png,.jpg,.jpeg" style="display:none" onchange="uploadTemplate()">
+              </div>
+              <div id="rmAutoTemplateOpts" style="display:none;margin-top:6px;display:none;gap:8px;align-items:center;flex-wrap:wrap">
+                <input type="text" id="rmTopText" placeholder="상단 텍스트 (예: 30 Boxes SET)"
+                       style="padding:5px 8px;border:1px solid #ddd;border-radius:4px;font-size:11px;width:220px">
+                <label style="font-size:11px;display:flex;align-items:center;gap:4px">
+                  <input type="checkbox" id="rmShowLogos" checked> 배송 로고
+                </label>
+              </div>
+              <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+                <button type="button" id="rmBrandImagesBtn"
+                        style="background:#e94560;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">
+                  이미지 브랜딩 적용
+                </button>
+                <span id="rmBrandStatus" style="font-size:11px;color:#888"></span>
+              </div>
+              <div id="rmImagePreview" style="display:none;margin-top:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px"></div>
+            </div>
+            <div class="form-group">
+              <label>SEO 키워드</label>
+              <input type="text" id="rmKeywords" placeholder="keyword1, keyword2, ..."
+                     style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+            </div>
+            <div class="form-group" style="margin-top:6px">
+              <label>등록할 플랫폼</label>
+              <div style="display:flex;gap:16px;margin-top:4px">
+                <label style="font-size:12px;display:flex;align-items:center;gap:4px">
+                  <input type="checkbox" id="rmPlatSheets" checked disabled> Google Sheets
+                </label>
+                <label style="font-size:12px;display:flex;align-items:center;gap:4px">
+                  <input type="checkbox" id="rmPlatEbay"> eBay
+                </label>
+              </div>
+            </div>
+            <div style="margin-top:16px;display:flex;gap:10px">
+              <button type="submit"
+                      style="background:#7c4dff;color:#fff;border:none;padding:10px 28px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">
+                등록하기
+              </button>
+              <button type="button" id="rmSkipBtn" onclick="batchSkipCurrent()"
+                      style="display:none;background:#fff3e0;border:1px solid #ff9800;color:#e65100;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+                건너뛰기 → 다음
+              </button>
+              <button type="button" id="rmResetBtn"
+                      style="background:#f0f2f5;border:1px solid #ddd;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:12px">
+                초기화
+              </button>
+            </div>
+            <div id="remarkerResult" style="margin-top:12px"></div>
+          </form>
+        </div>
+
+        <!-- 배치 완료 요약 -->
+        <div id="remarkerBatchSummary" style="display:none" class="remarker-step">
+          <div class="remarker-step-header" style="margin-top:20px">
+            <span style="font-weight:600;font-size:14px">배치 완료 요약</span>
+          </div>
+          <div id="batchSummaryContent" style="margin-top:12px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 상세페이지 재구성 (독립) 페이지 ===== -->
+    <div id="page-reconstruct" class="page">
+      <div class="card">
+        <h3 style="margin-bottom:4px">상세페이지 재구성 <span style="font-size:12px;color:#e94560;font-weight:400">이미지 + HTML 업로드 → AI 추출 → 미리보기 → 다운로드</span></h3>
+        <p style="font-size:11px;color:#888;margin-bottom:16px">경쟁사 상세페이지를 PMC 프리미엄 스타일로 재구성합니다. 썸네일은 원본 누끼 그대로 사용됩니다.</p>
+
+        <!-- RC Step 1: 파일 업로드 + 언어 선택 -->
+        <div id="rcStep1">
+          <div class="remarker-step-header">
+            <span class="step-dot active">1</span>
+            <span style="font-weight:600;font-size:13px">파일 업로드</span>
+          </div>
+          <div style="max-width:700px;margin-top:10px">
+            <div style="margin-bottom:12px">
+              <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px">썸네일 이미지 (최대 10장, 원본 누끼 그대로 사용)</label>
+              <div id="rcDropZone"
+                   style="border:2px dashed #e94560;border-radius:8px;padding:30px 20px;text-align:center;cursor:pointer;background:#fff5f5;transition:all .2s"
+                   ondragover="event.preventDefault();this.style.background='#fce4ec';this.style.borderColor='#c62828'"
+                   ondragleave="this.style.background='#fff5f5';this.style.borderColor='#e94560'"
+                   ondrop="rcHandleDrop(event)"
+                   onclick="document.getElementById('rcImageInput').click()">
+                <div style="font-size:28px;margin-bottom:6px">+</div>
+                <div style="font-size:12px;color:#666">이미지 파일을 드래그하거나 클릭하여 선택</div>
+                <div style="font-size:10px;color:#999;margin-top:4px">JPG, PNG, WEBP (최대 10장, 각 5MB)</div>
+              </div>
+              <input type="file" id="rcImageInput" multiple accept="image/*" style="display:none" onchange="rcHandleFiles(this.files)">
+              <div id="rcImagePreview" style="margin-top:8px;display:none;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px"></div>
+            </div>
+            <div style="margin-bottom:12px">
+              <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px">상세페이지 HTML (선택)</label>
+              <div style="display:flex;gap:8px;margin-bottom:6px">
+                <button type="button" id="rcHtmlPasteBtn" onclick="rcToggleInput('paste')"
+                        style="background:#e94560;color:#fff;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:11px">
+                  HTML 붙여넣기
+                </button>
+                <button type="button" id="rcHtmlFileBtn" onclick="rcToggleInput('file')"
+                        style="background:#f0f2f5;border:1px solid #ddd;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:11px">
+                  HTML 파일 업로드
+                </button>
+              </div>
+              <textarea id="rcHtmlText" rows="6" placeholder="경쟁사 상세페이지 HTML을 붙여넣으세요... (없으면 이미지만으로 AI가 분석합니다)"
+                        style="width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:11px;font-family:monospace;resize:vertical"></textarea>
+              <input type="file" id="rcHtmlFile" accept=".html,.htm,.txt" style="display:none" onchange="rcHandleHtmlFile(this.files[0])">
+            </div>
+
+            <!-- 모드 선택 -->
+            <div style="margin-bottom:10px;padding:12px;background:#f0f2f5;border-radius:8px;border:1px solid #e0e0e0">
+              <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px">생성 모드</label>
+              <div style="display:flex;gap:12px;flex-wrap:wrap">
+                <label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;padding:8px 14px;border:1px solid #ddd;border-radius:6px;background:#fff">
+                  <input type="radio" name="rcMode" value="standard" checked> 표준 모드 <span style="color:#888;font-size:10px;margin-left:4px">상세 HTML, 30~60초</span>
+                </label>
+                <label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;padding:8px 14px;border:1px solid #7c4dff;border-radius:6px;background:#f3e5f5">
+                  <input type="radio" name="rcMode" value="fast"> 빠른 모드 <span style="color:#7c4dff;font-size:10px;margin-left:4px">텍스트, 5~15초</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- 언어 선택 -->
+            <div style="margin-bottom:14px;padding:12px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0">
+              <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px">생성 언어 선택</label>
+              <div style="display:flex;gap:16px;flex-wrap:wrap">
+                <label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;padding:6px 12px;border:1px solid #ddd;border-radius:6px;background:#fff">
+                  <input type="radio" name="rcLang" value="en" checked> English (eBay/Shopify)
+                </label>
+                <label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;padding:6px 12px;border:1px solid #ddd;border-radius:6px;background:#fff">
+                  <input type="radio" name="rcLang" value="ko"> 한글 (쿠팡/네이버/Qoo10)
+                </label>
+                <label style="font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer;padding:6px 12px;border:1px solid #ddd;border-radius:6px;background:#fff">
+                  <input type="radio" name="rcLang" value="both"> 둘 다
+                </label>
+              </div>
+            </div>
+
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span id="rcFileCount" style="font-size:11px;color:#888">이미지 0장 선택</span>
+              <button type="button" id="rcStartBtn" onclick="rcUpload()"
+                      style="background:linear-gradient(135deg,#e94560,#7c4dff);color:#fff;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:0.5px">
+                AI 재구성 시작
+              </button>
+            </div>
+            <div id="rcProgress" style="display:none;margin-top:12px;padding:12px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0">
+              <div style="display:flex;align-items:center;gap:8px">
+                <div class="spinner" style="width:16px;height:16px;border:2px solid #e0e0e0;border-top:2px solid #e94560;border-radius:50%;animation:spin 1s linear infinite"></div>
+                <span id="rcProgressText" style="font-size:12px;color:#666">AI가 분석 중입니다...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RC Step 2: 결과 미리보기 + 다운로드 -->
+        <div id="rcStep2" style="display:none">
+          <div class="remarker-step-header" style="margin-top:24px">
+            <span class="step-dot" id="rcStep2Dot">2</span>
+            <span style="font-weight:600;font-size:13px">결과 미리보기</span>
+          </div>
+
+          <!-- 언어 탭 (둘 다 선택 시만 표시) -->
+          <div id="rcLangTabs" style="display:none;margin-top:12px;margin-bottom:8px;display:flex;gap:0">
+            <button type="button" id="rcTabEn" onclick="rcSwitchTab('en')"
+                    style="padding:8px 20px;border:1px solid #e94560;border-right:none;border-radius:6px 0 0 6px;background:#e94560;color:#fff;font-size:12px;font-weight:600;cursor:pointer">
+              English
+            </button>
+            <button type="button" id="rcTabKo" onclick="rcSwitchTab('ko')"
+                    style="padding:8px 20px;border:1px solid #e94560;border-radius:0 6px 6px 0;background:#fff;color:#e94560;font-size:12px;font-weight:600;cursor:pointer">
+              한글
+            </button>
+          </div>
+
+          <div style="margin-top:12px">
+            <!-- AI 추출 정보 -->
+            <div id="rcExtractedInfo" style="margin-bottom:16px;padding:14px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0"></div>
+
+            <!-- 상세페이지 미리보기 / 편집 -->
+            <div style="margin-bottom:16px">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+                <label style="font-size:12px;font-weight:600">상세페이지</label>
+                <button type="button" id="rcViewModeBtn" onclick="rcToggleEditMode()"
+                        style="padding:4px 12px;border:1px solid #e94560;border-radius:4px;background:#fff;color:#e94560;font-size:11px;cursor:pointer;font-weight:600">
+                  편집 모드
+                </button>
+              </div>
+              <!-- 미리보기 -->
+              <div id="rcPreviewWrap" style="border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;background:#fff">
+                <iframe id="rcPreviewFrame" style="width:100%;height:650px;border:none" sandbox="allow-same-origin"></iframe>
+              </div>
+              <!-- 편집 textarea (숨김) -->
+              <div id="rcEditWrap" style="display:none">
+                <textarea id="rcEditArea" style="width:100%;height:650px;border:1px solid #e0e0e0;border-radius:8px;padding:12px;font-family:monospace;font-size:12px;line-height:1.5;resize:vertical;box-sizing:border-box"></textarea>
+              </div>
+            </div>
+
+            <!-- 썸네일 이미지 (원본 누끼) -->
+            <div style="margin-bottom:16px">
+              <label style="font-size:12px;font-weight:600;display:block;margin-bottom:8px">썸네일 이미지 (원본)</label>
+              <div id="rcThumbGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px"></div>
+            </div>
+          </div>
+
+          <!-- 액션 버튼 -->
+          <div style="margin-top:16px;padding:16px;background:#f0f2f5;border-radius:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <button type="button" onclick="rcDownload()"
+                    style="background:linear-gradient(135deg,#e94560,#7c4dff);color:#fff;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">
+              ZIP 다운로드 (이미지 + HTML)
+            </button>
+            <button type="button" onclick="rcCopyHtml()"
+                    style="background:#1a1a2e;color:#fff;border:none;padding:10px 18px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+              상세페이지 HTML 복사
+            </button>
+            <button type="button" onclick="rcCopyTitle()"
+                    style="background:#fff;color:#1a1a2e;border:1px solid #1a1a2e;padding:10px 18px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+              제목 복사
+            </button>
+            <button type="button" onclick="rcReset()"
+                    style="background:#f0f2f5;border:1px solid #ddd;padding:10px 18px;border-radius:6px;cursor:pointer;font-size:12px;margin-left:auto">
+              다시하기
+            </button>
+          </div>
+          <div id="rcActionMsg" style="margin-top:8px;font-size:11px;color:#4caf50"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 배송 관리 페이지 ===== -->
+    <div id="page-shipping" class="page">
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+          <div>
+            <h3 style="margin:0;font-size:18px;color:#0288d1">배송 관리</h3>
+            <p style="margin:4px 0 0;font-size:12px;color:#888">eBay + Shopify 주문을 자동 수집하여 Google Sheets에 기록합니다</p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="shippingSyncDays" style="padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              <option value="7">최근 7일</option>
+              <option value="14">최근 14일</option>
+              <option value="30">최근 30일</option>
+            </select>
+            <button type="button" onclick="shippingSyncOrders()" id="shippingSyncBtn"
+                    style="background:linear-gradient(135deg,#0288d1,#01579b);color:#fff;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">
+              주문 가져오기
+            </button>
+            <button type="button" onclick="shippingBackfillAddresses()" id="shippingBackfillBtn"
+                    style="background:linear-gradient(135deg,#ff9800,#f57c00);color:#fff;border:none;padding:10px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+              주소 보완
+            </button>
+            <a id="shippingSheetLink" href="#" target="_blank"
+               style="background:#fff;border:1px solid #0288d1;color:#0288d1;padding:10px 16px;border-radius:6px;font-size:12px;font-weight:600;text-decoration:none">
+              Google Sheets 열기
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- 동기화 결과 -->
+      <div id="shippingSyncResult" style="display:none;margin-bottom:16px" class="card">
+        <div id="shippingSyncMsg" style="font-size:13px"></div>
+      </div>
+
+      <!-- 최근 주문 테이블 -->
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <h4 style="margin:0;font-size:14px;color:#333">최근 주문</h4>
+          <button type="button" onclick="shippingLoadRecent()" style="background:#f0f2f5;border:1px solid #ddd;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:11px">
+            새로고침
+          </button>
+        </div>
+        <div id="shippingOrderTable" style="overflow-x:auto;font-size:12px">
+          <p style="color:#999;text-align:center;padding:30px">"주문 가져오기"를 눌러 주문을 수집하세요</p>
+        </div>
+        <div id="shippingOrderCount" style="margin-top:8px;font-size:11px;color:#888"></div>
+      </div>
+    </div>
+
+    <!-- ===== 전투 상황판 페이지 ===== -->
+    <div id="page-battle" class="page">
+      <!-- 요약 카드 -->
+      <div class="stats battle-stats" id="battleStats">
+        <div class="stat-card"><div class="label">로딩 중...</div></div>
+      </div>
+
+      <!-- 필터/컨트롤 바 -->
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <select id="battleFilter" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+            <option value="all">전체 상품</option>
+            <option value="losing">지고 있는 상품 (Target)</option>
+            <option value="winning">이기고 있는 상품</option>
+            <option value="no-comp">경쟁사 미등록</option>
+          </select>
+          <select id="battleSellerFilter" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+            <option value="">전체 셀러</option>
+          </select>
+          <input type="text" id="battleSearch" placeholder="SKU 또는 상품명 검색..."
+                 style="flex:1;padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;min-width:200px">
+          <button class="refresh-btn" id="battleRefreshBtn" style="background:#e53935;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+            실시간 새로고침
+          </button>
+        </div>
+      </div>
+
+      <!-- 전투 테이블 -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="font-size:15px;font-weight:600">가격 전투 현황 <span id="battleCount" style="color:#888;font-weight:400;font-size:12px"></span></h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="battleSort" style="padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px">
+              <option value="diff-desc">차이 큰 순</option>
+              <option value="diff-asc">차이 작은 순</option>
+              <option value="comp-price">경쟁사 가격순</option>
+              <option value="my-price">내 가격순</option>
+              <option value="comp-sold">경쟁사 판매량순</option>
+            </select>
+            <button class="kill-price-btn" id="battleKillAllBtn" style="display:none">일괄 킬프라이스</button>
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:50px"></th>
+                <th>상품</th>
+                <th style="text-align:center">내 가격<br><small style="color:#888">(+배송)</small></th>
+                <th style="text-align:center">경쟁사 가격<br><small style="color:#888">(+배송)</small></th>
+                <th style="text-align:center">차이</th>
+                <th style="text-align:center">경쟁사<br>판매량</th>
+                <th style="text-align:center">킬 프라이스</th>
+                <th>경쟁셀러</th>
+                <th style="width:100px;text-align:center">리스팅</th>
+              </tr>
+            </thead>
+            <tbody id="battleTable">
+              <tr><td colspan="9" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== 매출/마진 분석 페이지 ===== -->
     <div id="page-analysis" class="page">
+
+      <!-- 마진 계산기 -->
+      <div class="card" style="margin-bottom:16px;border-left:4px solid #7c4dff">
+        <div class="card-header" style="margin-bottom:12px">
+          <h3 style="font-size:15px;font-weight:700;color:#1a1a2e">마진 계산기 <span style="font-size:11px;color:#7c4dff;font-weight:400">매입가 → 전 플랫폼 판매가 자동 계산</span></h3>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px">
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">매입가 (KRW) *</label>
+            <input type="number" id="mcPurchasePrice" placeholder="10000"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">무게 (kg)</label>
+            <input type="number" id="mcWeight" step="0.01" placeholder="0.5"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">목표 마진 (%)</label>
+            <input type="number" id="mcTargetMargin" value="30" step="1"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 가격 (USD)</label>
+            <input type="number" id="mcCompPrice" step="0.01" placeholder="15.00"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 배송비 (USD)</label>
+            <input type="number" id="mcCompShipping" step="0.01" placeholder="3.90"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+        </div>
+        <!-- 결과 영역 -->
+        <div id="mcResult" style="display:none"></div>
+      </div>
+
       <!-- 매출 요약 카드 -->
       <div class="stats" id="analysisCards"></div>
 
@@ -200,6 +920,48 @@
         <div class="card">
           <h3>마진 분포</h3>
           <div id="marginDistribution"></div>
+        </div>
+      </div>
+
+      <!-- B2B 도매 매출 -->
+      <div class="card" style="margin-top:16px;border-left:4px solid #ff9800">
+        <div class="card-header" style="margin-bottom:12px">
+          <h3 style="font-size:15px;font-weight:700;color:#1a1a2e">B2B 도매 매출</h3>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px" id="b2bAnalysisCards">
+          <div style="text-align:center;padding:12px;background:#f8f9fa;border-radius:8px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">인보이스</div>
+            <div id="b2bAnTotalInvoices" style="font-size:20px;font-weight:700;color:#1a1a2e">-</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:#f8f9fa;border-radius:8px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">USD 매출</div>
+            <div id="b2bAnUsdRevenue" style="font-size:20px;font-weight:700;color:#27ae60">-</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:#f8f9fa;border-radius:8px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">KRW 매출</div>
+            <div id="b2bAnKrwRevenue" style="font-size:20px;font-weight:700;color:#0288d1">-</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:#f8f9fa;border-radius:8px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">바이어</div>
+            <div id="b2bAnTotalBuyers" style="font-size:20px;font-weight:700;color:#ff9800">-</div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" style="font-size:12px">
+            <thead>
+              <tr>
+                <th style="width:30px">#</th>
+                <th>바이어</th>
+                <th style="text-align:right">주문수</th>
+                <th style="text-align:right">총 매출</th>
+                <th style="text-align:right">평균 단가</th>
+                <th>최근 주문</th>
+              </tr>
+            </thead>
+            <tbody id="b2bAnRankingBody">
+              <tr><td colspan="6" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -279,6 +1041,110 @@
       </div>
     </div>
 
+    <!-- ===== SKU 점수 관리 페이지 ===== -->
+    <div id="page-sku-scores" class="page">
+      <!-- 요약 카드 -->
+      <div class="stats sku-score-stats" id="skuScoreStats"></div>
+
+      <!-- 점수 테이블 -->
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <h3>SKU 점수표 <span class="count" id="skuScoreCount"></span></h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="skuClassFilter" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              <option value="">전체 등급</option>
+              <option value="A">A (공격 확장)</option>
+              <option value="B">B (마진 관리)</option>
+              <option value="C">C (관찰)</option>
+              <option value="D">D (매입금지)</option>
+            </select>
+            <input type="text" id="skuScoreSearch" placeholder="SKU 검색..."
+                   style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;width:150px">
+            <button class="refresh-btn" id="skuRecalcBtn">재계산</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>상품명</th>
+                <th>총점</th>
+                <th>등급</th>
+                <th>마진<br>(30)</th>
+                <th>회전<br>(25)</th>
+                <th>경쟁<br>(15)</th>
+                <th>배송<br>(15)</th>
+                <th>가격안정<br>(15)</th>
+                <th>매입판단</th>
+                <th>상태</th>
+              </tr>
+            </thead>
+            <tbody id="skuScoreTable">
+              <tr><td colspan="11" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 하단 2열: 등급 분포 + 퇴출 관리 -->
+      <div class="content-grid">
+        <div class="card">
+          <h3>등급 분포</h3>
+          <div id="skuClassDistribution" style="padding:10px 0"></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3>자동 퇴출 대상 <span class="count anomaly-count red" id="retirementCount">0</span></h3>
+            <button class="refresh-btn" id="executeAllRetirementBtn" style="font-size:11px">일괄 실행</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr><th>SKU</th><th>조치</th><th>사유</th><th></th></tr>
+              </thead>
+              <tbody id="retirementTable">
+                <tr><td colspan="4" class="empty">퇴출 대상 없음</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SKU 점수 상세 모달 -->
+    <div class="modal-overlay" id="skuScoreModal" style="display:none">
+      <div class="modal" style="width:600px;max-height:80vh;overflow-y:auto">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h3 id="skuScoreModalTitle">SKU 점수 상세</h3>
+          <button onclick="closeSkuScoreModal()" style="background:none;border:none;font-size:20px;cursor:pointer">&times;</button>
+        </div>
+        <div id="skuScoreDetail"></div>
+        <h4 style="margin-top:16px;padding-bottom:6px;border-bottom:2px solid #e53935;font-size:13px">수동 입력</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px">
+          <div>
+            <label style="font-size:12px;color:#666">경쟁 셀러 수</label>
+            <input type="number" id="overrideCompetitorCount" min="0" placeholder="예: 8"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin-top:4px">
+          </div>
+          <div>
+            <label style="font-size:12px;color:#666">묶음 상품 수 (배송 효율)</label>
+            <input type="number" id="overrideBundleItemCount" min="0" placeholder="예: 7"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin-top:4px">
+          </div>
+        </div>
+        <div style="margin-top:10px">
+          <label style="font-size:12px;color:#666">메모</label>
+          <input type="text" id="overrideNotes" placeholder="예: Pokemon booster box"
+                 style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;margin-top:4px">
+        </div>
+        <div id="skuScoreOverrideResult" style="margin-top:10px"></div>
+        <div style="margin-top:16px;text-align:right">
+          <button class="submit-btn" id="saveOverrideBtn" style="padding:10px 24px">저장 및 재계산</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== 효자상품 TOP 페이지 ===== -->
     <div id="page-top" class="page">
       <div class="card">
@@ -295,6 +1161,51 @@
               <tr><td colspan="6" class="empty">로딩 중...</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== eBay 트렌드 페이지 ===== -->
+    <div id="page-ebay-trends" class="page">
+      <div class="stats" id="ebayTrendStats"></div>
+
+      <div class="content-grid">
+        <div class="card">
+          <h3>일별 매출 추이 (최근 30일)</h3>
+          <div id="ebayDailyChart" class="chart-area"></div>
+        </div>
+        <div class="card">
+          <h3>주간 비교</h3>
+          <div id="ebayWeeklyCompare"></div>
+        </div>
+      </div>
+
+      <div class="content-grid">
+        <div class="card">
+          <h3>인기 상품 TOP 20 (전체 기간)</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>#</th><th>상품명</th><th>SKU</th><th>판매수량</th><th>매출(USD)</th></tr>
+              </thead>
+              <tbody id="ebayTopItemsTable">
+                <tr><td colspan="5" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h3>최근 7일 트렌딩</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>#</th><th>상품명</th><th>판매수량</th><th>매출(USD)</th></tr>
+              </thead>
+              <tbody id="ebayTrendingTable">
+                <tr><td colspan="4" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -338,6 +1249,329 @@
         </div>
       </div>
     </div>
+
+    <!-- ===== B2B 인보이스 페이지 ===== -->
+    <div id="page-b2b" class="page">
+      <!-- 탭 네비게이션 -->
+      <div style="display:flex;gap:4px;margin-bottom:16px;background:#f0f2f5;border-radius:8px;padding:4px">
+        <button class="b2b-tab active" data-tab="b2b-create" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:#1a1a2e;box-shadow:0 1px 3px rgba(0,0,0,0.1)">인보이스 생성</button>
+        <button class="b2b-tab" data-tab="b2b-list" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">인보이스 목록</button>
+        <button class="b2b-tab" data-tab="b2b-buyers" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">구매자 관리</button>
+        <button class="b2b-tab" data-tab="b2b-revenue" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">매출 분석</button>
+      </div>
+
+      <!-- 탭 1: 인보이스 생성 -->
+      <div id="b2b-create" class="b2b-tab-content active">
+        <div class="card" style="border-left:4px solid #0288d1">
+          <h3 style="font-size:15px;font-weight:700;margin-bottom:14px">새 인보이스 생성</h3>
+
+          <!-- 구매자 선택 -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
+            <div>
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">구매자 *</label>
+              <select id="b2bBuyerSelect" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+                <option value="">구매자 선택...</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">통화</label>
+              <select id="b2bCurrency" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+                <option value="USD">USD</option>
+                <option value="KRW">KRW</option>
+                <option value="JPY">JPY</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">만기일</label>
+              <input type="date" id="b2bDueDate" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            </div>
+          </div>
+
+          <!-- 상품 추가 -->
+          <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <label style="font-size:12px;font-weight:600;color:#333">상품 목록</label>
+              <button id="b2bAddItemBtn" style="background:#0288d1;color:#fff;border:none;padding:5px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600">+ 상품 추가</button>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table" style="font-size:12px">
+                <thead>
+                  <tr>
+                    <th style="width:120px">SKU</th>
+                    <th>상품명</th>
+                    <th style="width:70px;text-align:right">수량</th>
+                    <th style="width:100px;text-align:right">단가</th>
+                    <th style="width:100px;text-align:right">소계</th>
+                    <th style="width:40px"></th>
+                  </tr>
+                </thead>
+                <tbody id="b2bItemsBody">
+                  <tr class="b2b-empty-row"><td colspan="6" class="empty">상품을 추가하세요</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 합계 -->
+          <div style="display:flex;justify-content:flex-end;margin-bottom:16px">
+            <div style="width:280px">
+              <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:#666">
+                <span>Subtotal</span><span id="b2bSubtotal">0.00</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:#666;align-items:center">
+                <span>Tax</span>
+                <input type="number" id="b2bTax" value="0" min="0" step="0.01" style="width:80px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;text-align:right">
+              </div>
+              <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;color:#666;align-items:center">
+                <span>Shipping</span>
+                <input type="number" id="b2bShipping" value="0" min="0" step="0.01" style="width:80px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;text-align:right">
+              </div>
+              <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:14px;font-weight:700;color:#1a1a2e;border-top:2px solid #333;margin-top:4px">
+                <span>TOTAL</span><span id="b2bTotal">0.00</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 비고 + 생성 버튼 -->
+          <div style="display:flex;gap:12px;align-items:flex-end">
+            <div style="flex:1">
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">비고 (Notes)</label>
+              <input type="text" id="b2bNotes" placeholder="추가 메모..." style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            </div>
+            <button id="b2bCreateBtn" style="background:#0288d1;color:#fff;border:none;padding:10px 24px;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap">인보이스 생성</button>
+          </div>
+          <div id="b2bCreateResult" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <!-- 탭 2: 인보이스 목록 -->
+      <div id="b2b-list" class="b2b-tab-content" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <h3 style="font-size:15px">인보이스 목록</h3>
+            <div style="display:flex;gap:8px;align-items:center">
+              <select id="b2bListFilterBuyer" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+                <option value="">전체 구매자</option>
+              </select>
+              <select id="b2bListFilterStatus" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+                <option value="">전체 상태</option>
+                <option value="CREATED">CREATED</option>
+                <option value="SENT">SENT</option>
+                <option value="PAID">PAID</option>
+              </select>
+              <button id="b2bListRefresh" class="refresh-btn" style="font-size:11px;padding:6px 12px">새로고침</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" style="font-size:12px">
+              <thead>
+                <tr>
+                  <th>인보이스#</th>
+                  <th>구매자</th>
+                  <th>발행일</th>
+                  <th>만기일</th>
+                  <th style="text-align:right">금액</th>
+                  <th>상태</th>
+                  <th style="width:160px">액션</th>
+                </tr>
+              </thead>
+              <tbody id="b2bInvoiceListBody">
+                <tr><td colspan="7" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 탭 3: 구매자 관리 -->
+      <div id="b2b-buyers" class="b2b-tab-content" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <h3 style="font-size:15px">구매자 관리</h3>
+            <button id="b2bAddBuyerBtn" style="background:#0288d1;color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">+ 구매자 추가</button>
+          </div>
+
+          <!-- 구매자 추가 폼 (숨김) -->
+          <div id="b2bBuyerForm" style="display:none;margin-bottom:16px;padding:14px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px">
+              <div>
+                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">이름 *</label>
+                <input type="text" id="b2bBuyerName" placeholder="바이어명" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">이메일</label>
+                <input type="email" id="b2bBuyerEmail" placeholder="email@example.com" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">WhatsApp</label>
+                <input type="text" id="b2bBuyerWhatsapp" placeholder="+1234567890" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">국가</label>
+                <input type="text" id="b2bBuyerCountry" placeholder="US" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+              <div>
+                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">주소</label>
+                <input type="text" id="b2bBuyerAddress" placeholder="주소" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+              <div>
+                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">통화</label>
+                <select id="b2bBuyerCurrency" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+                  <option value="USD">USD</option><option value="KRW">KRW</option><option value="JPY">JPY</option><option value="EUR">EUR</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">결제조건</label>
+                <select id="b2bBuyerTerms" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+                  <option value="Net 30">Net 30</option><option value="Net 15">Net 15</option><option value="Net 60">Net 60</option><option value="COD">COD</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">비고</label>
+                <input type="text" id="b2bBuyerNotes" placeholder="" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end">
+              <button id="b2bBuyerCancelBtn" style="background:#f0f2f5;border:1px solid #ddd;padding:6px 14px;border-radius:6px;font-size:11px;cursor:pointer">취소</button>
+              <button id="b2bBuyerSaveBtn" style="background:#0288d1;color:#fff;border:none;padding:6px 14px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">저장</button>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table" style="font-size:12px">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>이름</th>
+                  <th>이메일</th>
+                  <th>WhatsApp</th>
+                  <th>국가</th>
+                  <th>결제조건</th>
+                  <th style="text-align:right">총 주문</th>
+                  <th style="text-align:right">총 매출</th>
+                </tr>
+              </thead>
+              <tbody id="b2bBuyerListBody">
+                <tr><td colspan="8" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 탭 4: 매출 분석 -->
+      <div id="b2b-revenue" class="b2b-tab-content" style="display:none">
+        <!-- 요약 카드 -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:16px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">총 인보이스</div>
+            <div id="b2bRevTotalInvoices" style="font-size:22px;font-weight:700;color:#1a1a2e">-</div>
+          </div>
+          <div class="card" style="text-align:center;padding:16px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">총 매출</div>
+            <div id="b2bRevTotalRevenue" style="font-size:22px;font-weight:700;color:#27ae60">-</div>
+            <div id="b2bRevByCurrency" style="font-size:10px;color:#666;margin-top:4px"></div>
+          </div>
+          <div class="card" style="text-align:center;padding:16px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">미결제</div>
+            <div id="b2bRevOutstanding" style="font-size:22px;font-weight:700;color:#e94560">-</div>
+          </div>
+          <div class="card" style="text-align:center;padding:16px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">총 구매자</div>
+            <div id="b2bRevTotalBuyers" style="font-size:22px;font-weight:700;color:#0288d1">-</div>
+          </div>
+        </div>
+
+        <!-- 바이어 매출 순위 -->
+        <div class="card" style="margin-bottom:16px">
+          <h3 style="font-size:15px;margin-bottom:12px">바이어 매출 순위</h3>
+          <div class="table-wrap">
+            <table class="data-table" style="font-size:12px">
+              <thead>
+                <tr>
+                  <th style="width:30px">#</th>
+                  <th>바이어</th>
+                  <th style="text-align:right">주문수</th>
+                  <th style="text-align:right">총 매출</th>
+                  <th style="text-align:right">평균 단가</th>
+                  <th>최근 주문</th>
+                  <th style="width:60px"></th>
+                </tr>
+              </thead>
+              <tbody id="b2bRankingBody">
+                <tr><td colspan="7" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 상품 판매 순위 -->
+        <div class="card" style="margin-bottom:16px">
+          <h3 style="font-size:15px;margin-bottom:12px">상품 판매 순위 (Top 30)</h3>
+          <div class="table-wrap">
+            <table class="data-table" style="font-size:12px">
+              <thead>
+                <tr>
+                  <th style="width:30px">#</th>
+                  <th>상품명</th>
+                  <th style="text-align:right">판매량</th>
+                  <th style="text-align:right">총 매출</th>
+                  <th style="text-align:right">주문건</th>
+                  <th>주요 구매자</th>
+                </tr>
+              </thead>
+              <tbody id="b2bProductStatsBody">
+                <tr><td colspan="6" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 바이어별 구매 상품 (클릭 시 표시) -->
+        <div class="card" id="b2bBuyerProductsCard" style="margin-bottom:16px;display:none">
+          <h3 style="font-size:15px;margin-bottom:12px">
+            <span id="b2bBuyerProductsTitle">바이어 구매 상품</span>
+            <button onclick="document.getElementById('b2bBuyerProductsCard').style.display='none'" style="float:right;background:none;border:none;font-size:16px;cursor:pointer;color:#888">&times;</button>
+          </h3>
+          <div class="table-wrap">
+            <table class="data-table" style="font-size:12px">
+              <thead>
+                <tr>
+                  <th>상품명</th>
+                  <th style="text-align:right">구매 수량</th>
+                  <th style="text-align:right">구매 금액</th>
+                </tr>
+              </thead>
+              <tbody id="b2bBuyerProductsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 월별 매출 추이 -->
+        <div class="card">
+          <h3 style="font-size:15px;margin-bottom:12px">월별 매출 추이</h3>
+          <div class="table-wrap">
+            <table class="data-table" style="font-size:12px">
+              <thead>
+                <tr>
+                  <th>월</th>
+                  <th style="text-align:right">주문수</th>
+                  <th style="text-align:right">매출</th>
+                  <th style="text-align:right">성장률</th>
+                </tr>
+              </thead>
+              <tbody id="b2bRevByMonthBody">
+                <tr><td colspan="4" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- 가격/재고 수정 모달 -->
@@ -373,6 +1607,25 @@
     </div>
   </div>
 
+  <!-- 전체화면 미리보기 모달 -->
+  <div id="previewModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:9999;justify-content:center;align-items:center">
+    <div style="width:90%;max-width:900px;height:85vh;background:#fff;border-radius:12px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.3)">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 20px;border-bottom:1px solid #e0e0e0;background:#f8f9fa;flex-shrink:0">
+        <span style="font-weight:600;font-size:14px">상세페이지 미리보기</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button onclick="setPreviewWidth('390px')" style="background:#f0f2f5;border:1px solid #ddd;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">모바일</button>
+          <button onclick="setPreviewWidth('768px')" style="background:#f0f2f5;border:1px solid #ddd;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">태블릿</button>
+          <button onclick="setPreviewWidth('100%')" style="background:#f0f2f5;border:1px solid #ddd;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">데스크탑</button>
+          <button onclick="closePreviewModal()" style="background:#e94560;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">닫기</button>
+        </div>
+      </div>
+      <div style="flex:1;display:flex;justify-content:center;background:#e8e8e8;overflow:auto;padding:16px">
+        <iframe id="previewModalFrame" style="width:100%;height:100%;border:none;background:#fff;border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,0.1);transition:width 0.3s" sandbox></iframe>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="/js/dashboard.js"></script>
 </body>
 </html>

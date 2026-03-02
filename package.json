@@ -36,11 +36,14 @@
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.2.3",
     "ebay-api": "^9.4.0",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "google-auth-library": "^10.5.0",
     "google-spreadsheet": "^5.0.2",
     "googleapis": "^170.0.0",
+    "multer": "^2.0.2",
     "open": "^11.0.0",
+    "sharp": "^0.34.5",
     "xml2js": "^0.6.2"
   }
 }

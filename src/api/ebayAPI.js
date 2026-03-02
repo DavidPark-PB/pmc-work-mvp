@@ -10,18 +10,101 @@ class EbayAPI {
     this.certId = process.env.EBAY_CERT_ID;
     this.devId = process.env.EBAY_DEV_ID;
     this.userToken = process.env.EBAY_USER_TOKEN;
+    this.refreshToken = process.env.EBAY_REFRESH_TOKEN;
     this.environment = process.env.EBAY_ENVIRONMENT || 'PRODUCTION';
 
     this.apiUrl = this.environment === 'PRODUCTION'
       ? 'https://api.ebay.com/ws/api.dll'
       : 'https://api.sandbox.ebay.com/ws/api.dll';
 
+    this.oauthUrl = this.environment === 'PRODUCTION'
+      ? 'https://api.ebay.com/identity/v1/oauth2/token'
+      : 'https://api.sandbox.ebay.com/identity/v1/oauth2/token';
+
     this.siteId = '0'; // US
     this.version = '1355';
+    this._tokenRefreshed = false;
+    this._appToken = null; // Shopping API용 application token
+    this._appTokenExpiry = 0;
   }
 
   /**
-   * Trading API 호출 (OAuth 토큰 지원)
+   * Application Token 발급 (Shopping API용, client_credentials grant)
+   */
+  async getApplicationToken() {
+    // 캐시된 토큰이 아직 유효하면 재사용
+    if (this._appToken && Date.now() < this._appTokenExpiry) {
+      return this._appToken;
+    }
+
+    const credentials = Buffer.from(`${this.appId}:${this.certId}`).toString('base64');
+    const scope = 'https://api.ebay.com/oauth/api_scope';
+
+    try {
+      const response = await axios.post(this.oauthUrl,
+        `grant_type=client_credentials&scope=${encodeURIComponent(scope)}`,
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': `Basic ${credentials}`,
+          },
+        }
+      );
+
+      this._appToken = response.data.access_token;
+      this._appTokenExpiry = Date.now() + (response.data.expires_in - 60) * 1000;
+      console.log('eBay Application Token 발급 성공 (expires_in:', response.data.expires_in + 's)');
+      return this._appToken;
+    } catch (error) {
+      const errData = error.response?.data;
+      console.error('eBay Application Token 발급 실패:', errData?.error_description || error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * OAuth 토큰 자동 갱신 (refresh_token 사용)
+   */
+  async refreshAccessToken() {
+    if (!this.refreshToken || !this.appId || !this.certId) {
+      throw new Error('Refresh token 또는 App credentials 없음');
+    }
+
+    const credentials = Buffer.from(`${this.appId}:${this.certId}`).toString('base64');
+    const scopes = [
+      'https://api.ebay.com/oauth/api_scope',
+      'https://api.ebay.com/oauth/api_scope/sell.marketing.readonly',
+      'https://api.ebay.com/oauth/api_scope/sell.inventory.readonly',
+      'https://api.ebay.com/oauth/api_scope/sell.inventory',
+      'https://api.ebay.com/oauth/api_scope/sell.account.readonly',
+      'https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly',
+      'https://api.ebay.com/oauth/api_scope/sell.fulfillment',
+    ].join(' ');
+
+    try {
+      const response = await axios.post(this.oauthUrl,
+        `grant_type=refresh_token&refresh_token=${encodeURIComponent(this.refreshToken)}&scope=${encodeURIComponent(scopes)}`,
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': `Basic ${credentials}`,
+          },
+        }
+      );
+
+      this.userToken = response.data.access_token;
+      this._tokenRefreshed = true;
+      console.log('eBay OAuth 토큰 갱신 성공 (expires_in:', response.data.expires_in + 's)');
+      return this.userToken;
+    } catch (error) {
+      const errData = error.response?.data;
+      console.error('eBay 토큰 갱신 실패:', errData?.error_description || error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Trading API 호출 (OAuth 토큰 지원 + 자동 갱신)
    */
   async callTradingAPI(callName, requestBody = {}) {
     const headers = {
@@ -58,7 +141,18 @@ class EbayAPI {
 
     try {
       const response = await axios.post(this.apiUrl, xml, { headers });
-      return response.data;
+      const data = response.data;
+
+      // 토큰 만료 감지 → 자동 갱신 후 재시도 (1회)
+      if (!this._tokenRefreshed && typeof data === 'string' && (data.includes('token is hard expired') || data.includes('Expired IAF token')) && this.refreshToken) {
+        console.log('eBay 토큰 만료 감지, 자동 갱신 시도...');
+        await this.refreshAccessToken();
+        // 갱신된 토큰으로 재시도
+        return this.callTradingAPI(callName, requestBody);
+      }
+
+      this._tokenRefreshed = false; // 다음 호출을 위해 리셋
+      return data;
     } catch (error) {
       throw new Error(`eBay API Error: ${error.message}`);
     }
@@ -146,6 +240,7 @@ class EbayAPI {
         price: this.extractValue(itemXml, 'CurrentPrice'),
         quantity: this.extractValue(itemXml, 'Quantity'),
         quantitySold: this.extractValue(itemXml, 'QuantitySold'),
+        shippingCost: this.extractValue(itemXml, 'ShippingServiceCost'),
         listingType: this.extractValue(itemXml, 'ListingType'),
         viewUrl: this.extractValue(itemXml, 'ViewItemURL'),
         imageUrl: this.extractValue(itemXml, 'GalleryURL')
@@ -167,7 +262,7 @@ class EbayAPI {
   }
 
   /**
-   * 가격/수량 수정 (ReviseInventoryStatus)
+   * 가격/수량 수정 (ReviseInventoryStatus → 실패시 ReviseFixedPriceItem fallback)
    */
   async updateItem(itemId, { price, quantity }) {
     try {
@@ -183,12 +278,81 @@ class EbayAPI {
 
       if (ack === 'Success' || ack === 'Warning') {
         return { success: true };
+      }
+
+      // Multi-SKU 아이템인 경우 ReviseFixedPriceItem으로 재시도
+      const errMatch = response.match(/<ShortMessage>(.*?)<\/ShortMessage>/);
+      const errMsg = errMatch ? errMatch[1] : '';
+      if (errMsg.includes('Multi-SKU') || errMsg.includes('multi-SKU')) {
+        console.log(`Multi-SKU 감지 (${itemId}), ReviseFixedPriceItem으로 재시도...`);
+        return this.updateItemPrice(itemId, price);
+      }
+
+      return { success: false, error: errMsg || 'Unknown error' };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 가격 수정 (ReviseFixedPriceItem - Multi-SKU 호환)
+   */
+  async updateItemPrice(itemId, price) {
+    try {
+      const requestBody = `
+  <Item>
+    <ItemID>${itemId}</ItemID>
+    <StartPrice>${price}</StartPrice>
+  </Item>`;
+      const response = await this.callTradingAPI('ReviseFixedPriceItem', requestBody);
+
+      const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
+      const ack = ackMatch ? ackMatch[1] : 'Unknown';
+
+      if (ack === 'Success' || ack === 'Warning') {
+        return { success: true };
       } else {
         const errMatch = response.match(/<ShortMessage>(.*?)<\/ShortMessage>/);
         return { success: false, error: errMatch ? errMatch[1] : 'Unknown error' };
       }
     } catch (error) {
       return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * 카테고리 추천 검색 (GetSuggestedCategories)
+   */
+  async getSuggestedCategories(query) {
+    try {
+      const requestBody = `<Query>${this.escapeXml(query)}</Query>`;
+      const response = await this.callTradingAPI('GetSuggestedCategories', requestBody);
+
+      const categories = [];
+      const catRegex = /<SuggestedCategory>([\s\S]*?)<\/SuggestedCategory>/g;
+      let match;
+      while ((match = catRegex.exec(response)) !== null) {
+        const block = match[1];
+        const catId = this.extractValue(block, 'CategoryID');
+        const catName = this.extractValue(block, 'CategoryName');
+
+        // 카테고리 경로 추출
+        const parentNames = [];
+        const parentRegex = /<CategoryName>(.*?)<\/CategoryName>/g;
+        let pm;
+        while ((pm = parentRegex.exec(block)) !== null) {
+          parentNames.push(pm[1]);
+        }
+        const fullPath = parentNames.length > 0 ? parentNames.join(' > ') : catName;
+
+        if (catId) {
+          categories.push({ id: catId, name: fullPath || catName, percentFound: this.extractValue(block, 'PercentItemFound') });
+        }
+      }
+      return categories;
+    } catch (error) {
+      console.error('eBay 카테고리 검색 실패:', error.message);
+      return [];
     }
   }
 
@@ -286,10 +450,455 @@ class EbayAPI {
   }
 
   /**
+   * 판매 트랜잭션 조회 (GetSellerTransactions)
+   * 실제 판매된 주문/거래 데이터
+   * @param {number} days - 최근 N일 (최대 30일)
+   */
+  async getSellerTransactions(days = 30) {
+    try {
+      const now = new Date();
+      const from = new Date(now.getTime() - Math.min(days, 30) * 86400000);
+      const allTransactions = [];
+      let pageNumber = 1;
+      let apiError = null;
+
+      while (true) {
+        const requestBody = `
+  <ModTimeFrom>${from.toISOString()}</ModTimeFrom>
+  <ModTimeTo>${now.toISOString()}</ModTimeTo>
+  <Pagination>
+    <EntriesPerPage>200</EntriesPerPage>
+    <PageNumber>${pageNumber}</PageNumber>
+  </Pagination>
+  <IncludeContainingOrder>true</IncludeContainingOrder>`;
+
+        const response = await this.callTradingAPI('GetSellerTransactions', requestBody);
+
+        const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
+        if (!ackMatch || (ackMatch[1] !== 'Success' && ackMatch[1] !== 'Warning')) {
+          const errMsg = this.extractValue(response, 'ShortMessage') || this.extractValue(response, 'LongMessage');
+          if (errMsg) {
+            console.error('eBay GetSellerTransactions:', errMsg);
+            apiError = errMsg;
+          }
+          break;
+        }
+
+        // 트랜잭션 파싱
+        const txnRegex = /<Transaction>([\s\S]*?)<\/Transaction>/g;
+        let match;
+        while ((match = txnRegex.exec(response)) !== null) {
+          const txn = match[1];
+
+          // ContainingOrder에서 실제 eBay 주문번호 + 배송주소 추출
+          const orderMatch = txn.match(/<ContainingOrder>([\s\S]*?)<\/ContainingOrder>/);
+          const orderBlock = orderMatch ? orderMatch[1] : '';
+
+          // 배송 주소: ContainingOrder > ShippingAddress 우선, 없으면 Transaction 내 첫 ShippingAddress
+          const orderAddrMatch = orderBlock ? orderBlock.match(/<ShippingAddress>([\s\S]*?)<\/ShippingAddress>/) : null;
+          const txnAddrMatch = txn.match(/<ShippingAddress>([\s\S]*?)<\/ShippingAddress>/);
+          const addr = (orderAddrMatch ? orderAddrMatch[1] : '') || (txnAddrMatch ? txnAddrMatch[1] : '');
+
+          allTransactions.push({
+            transactionId: this.extractValue(txn, 'TransactionID'),
+            itemId: this.extractValue(txn, 'ItemID'),
+            ebayOrderId: this.extractValue(orderBlock, 'OrderID'), // 실제 eBay 주문번호 (19-XXXXX-XXXXX)
+            title: this.extractValue(txn, 'Title'),
+            sku: this.extractValue(txn, 'SKU'),
+            price: parseFloat(this.extractValue(txn, 'TransactionPrice')) || 0,
+            quantity: parseInt(this.extractValue(txn, 'QuantityPurchased')) || 1,
+            createdDate: this.extractValue(txn, 'CreatedDate'),
+            buyerUserId: this.extractValue(txn, 'UserID'),
+            orderStatus: this.extractValue(txn, 'OrderStatus') || this.extractValue(txn, 'CompleteStatus'),
+            shippingName: this.extractValue(addr, 'Name'),
+            shippingStreet: [this.extractValue(addr, 'Street1'), this.extractValue(addr, 'Street2')].filter(Boolean).join(' '),
+            shippingCity: this.extractValue(addr, 'CityName'),
+            shippingState: this.extractValue(addr, 'StateOrProvince'),
+            shippingZip: this.extractValue(addr, 'PostalCode'),
+            shippingCountry: this.extractValue(addr, 'Country'),
+            shippingPhone: this.extractValue(addr, 'Phone'),
+            buyerEmail: this.extractValue(txn, 'Email'),
+          });
+        }
+
+        const totalPagesMatch = response.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/);
+        const totalPages = totalPagesMatch ? parseInt(totalPagesMatch[1]) : 1;
+        if (pageNumber >= totalPages) break;
+        pageNumber++;
+        await this.sleep(500);
+      }
+
+      if (apiError) allTransactions._apiError = apiError;
+      return allTransactions;
+    } catch (error) {
+      console.error('eBay 트랜잭션 조회 실패:', error.message);
+      const arr = [];
+      arr._apiError = error.message;
+      return arr;
+    }
+  }
+
+  /**
+   * 매출 요약 (트랜잭션 기반)
+   * @param {number} days - 최근 N일
+   */
+  async getRevenueSummary(days = 30) {
+    const transactions = await this.getSellerTransactions(days);
+
+    // API 에러 체크 (토큰 만료 등)
+    if (transactions._apiError) {
+      const err = transactions._apiError;
+      return {
+        error: err.includes('expired') ? 'eBay 토큰 만료 - Developer Portal에서 재발급 필요' : err,
+        totalRevenue: 0, orderCount: 0, currency: 'USD', period: `${days}days`,
+        dailySales: {}, topItems: [], transactions: [],
+      };
+    }
+
+    let totalRevenue = 0;
+    let orderCount = 0;
+    const dailySales = {};
+    const itemSales = {};
+
+    transactions.forEach(txn => {
+      const amount = txn.price * txn.quantity;
+      totalRevenue += amount;
+      orderCount++;
+
+      // 일별 집계
+      const date = txn.createdDate ? txn.createdDate.split('T')[0] : 'unknown';
+      if (!dailySales[date]) dailySales[date] = { revenue: 0, orders: 0, items: 0 };
+      dailySales[date].revenue += amount;
+      dailySales[date].orders++;
+      dailySales[date].items += txn.quantity;
+
+      // 상품별 집계
+      const key = txn.itemId || txn.title;
+      if (!itemSales[key]) {
+        itemSales[key] = { itemId: txn.itemId, title: txn.title, sku: txn.sku, totalSold: 0, totalRevenue: 0 };
+      }
+      itemSales[key].totalSold += txn.quantity;
+      itemSales[key].totalRevenue += amount;
+    });
+
+    // 상품별 판매량순 정렬
+    const topItems = Object.values(itemSales).sort((a, b) => b.totalSold - a.totalSold);
+
+    return {
+      totalRevenue,
+      orderCount,
+      currency: 'USD',
+      period: `${days}days`,
+      dailySales,
+      topItems,
+      transactions,
+    };
+  }
+
+  /**
    * 대기 함수
    */
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Shopping API 공통 호출 (OAuth 토큰 + 자동 갱신)
+   * @param {string} callName - API 호출명 (GetSingleItem, GetMultipleItems)
+   * @param {Object} params - 추가 쿼리 파라미터
+   * @param {number} timeout - 타임아웃 (ms)
+   * @returns {Object} API 응답 JSON
+   */
+  async callShoppingAPI(callName, params = {}, timeout = 15000) {
+    let url = 'https://open.api.ebay.com/shopping'
+      + `?callname=${callName}`
+      + '&responseencoding=JSON'
+      + `&appid=${this.appId}`
+      + '&siteid=0'
+      + '&version=967';
+
+    // 추가 파라미터 URL에 붙이기
+    for (const [key, value] of Object.entries(params)) {
+      url += `&${key}=${encodeURIComponent(value)}`;
+    }
+
+    // Application Token 발급/캐시 후 헤더에 추가
+    const headers = {};
+    try {
+      const appToken = await this.getApplicationToken();
+      headers['X-EBAY-API-IAF-TOKEN'] = appToken;
+    } catch (e) {
+      console.warn('Application token 발급 실패, appid만으로 호출:', e.message);
+    }
+
+    try {
+      const response = await axios.get(url, { headers, timeout });
+      const data = response.data;
+
+      // Failure 에러 처리
+      if (data.Ack === 'Failure') {
+        const errors = Array.isArray(data.Errors) ? data.Errors : (data.Errors ? [data.Errors] : []);
+        const errMsgs = errors.map(e => e.LongMessage || e.ShortMessage || '').join(' ');
+        const errCodes = errors.map(e => String(e.ErrorCode || '')).join(',');
+
+        // 토큰 에러 시 캐시 무효화 후 재시도 (1회)
+        const isTokenError = errMsgs.includes('token') || errMsgs.includes('Token') || errMsgs.includes('IAF');
+        const isRateLimit = errCodes.includes('18') || errMsgs.includes('limited');
+
+        if (isTokenError && !isRateLimit && !this._tokenRefreshed) {
+          console.log('Shopping API 토큰 에러, Application Token 재발급...');
+          this._appToken = null;
+          this._appTokenExpiry = 0;
+          this._tokenRefreshed = true;
+          return this.callShoppingAPI(callName, params, timeout);
+        }
+
+        throw new Error(`Shopping API Error: ${errMsgs || 'Unknown'}`);
+      }
+
+      this._tokenRefreshed = false;
+      return data;
+    } catch (error) {
+      if (error.message.startsWith('Shopping API Error:')) throw error;
+      throw new Error(`Shopping API ${callName} 실패: ${error.message}`);
+    }
+  }
+
+  /**
+   * 경쟁사 상품 정보 조회 (eBay Shopping API - GetMultipleItems)
+   * @param {string[]} itemIds - eBay Item ID 배열 (최대 20개씩 배치)
+   * @returns {Array} 상품 정보 배열
+   */
+  async getCompetitorItems(itemIds) {
+    if (!itemIds || itemIds.length === 0) return [];
+
+    const results = [];
+    const chunks = [];
+    for (let i = 0; i < itemIds.length; i += 20) {
+      chunks.push(itemIds.slice(i, i + 20));
+    }
+
+    for (const chunk of chunks) {
+      try {
+        const data = await this.callShoppingAPI('GetMultipleItems', {
+          ItemID: chunk.join(','),
+          IncludeSelector: 'Details,ShippingCosts'
+        });
+
+        if (data.Ack === 'Success' || data.Ack === 'Warning') {
+          const items = Array.isArray(data.Item) ? data.Item : (data.Item ? [data.Item] : []);
+          items.forEach(item => {
+            results.push({
+              itemId: item.ItemID,
+              title: item.Title || '',
+              price: parseFloat(item.ConvertedCurrentPrice?.Value) || parseFloat(item.CurrentPrice?.Value) || 0,
+              currency: item.ConvertedCurrentPrice?.CurrencyID || item.CurrentPrice?.CurrencyID || 'USD',
+              shippingCost: parseFloat(item.ShippingCostSummary?.ShippingServiceCost?.Value) || 0,
+              quantitySold: parseInt(item.QuantitySold) || 0,
+              seller: item.Seller?.UserID || '',
+              sellerFeedbackScore: parseInt(item.Seller?.FeedbackScore) || 0,
+              listingStatus: item.ListingStatus || '',
+              viewItemURL: item.ViewItemURLForNaturalSearch || '',
+              galleryURL: item.GalleryURL || '',
+              quantityAvailable: (parseInt(item.Quantity) || 0) - (parseInt(item.QuantitySold) || 0),
+            });
+          });
+        }
+
+        if (chunks.indexOf(chunk) < chunks.length - 1) {
+          await this.sleep(300);
+        }
+      } catch (error) {
+        console.error('Shopping API GetMultipleItems 실패:', error.message);
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * 단일 경쟁사 상품 상세 조회 (eBay Shopping API - GetSingleItem)
+   * @param {string} itemId - eBay Item ID
+   * @returns {Object|null} 상품 정보
+   */
+  async getCompetitorItemDetail(itemId) {
+    try {
+      const data = await this.callShoppingAPI('GetSingleItem', {
+        ItemID: itemId,
+        IncludeSelector: 'Details,ShippingCosts,ItemSpecifics'
+      }, 10000);
+
+      if (data.Ack === 'Success' || data.Ack === 'Warning') {
+        const item = data.Item;
+        return {
+          itemId: item.ItemID,
+          title: item.Title || '',
+          price: parseFloat(item.ConvertedCurrentPrice?.Value) || 0,
+          currency: item.ConvertedCurrentPrice?.CurrencyID || 'USD',
+          shippingCost: parseFloat(item.ShippingCostSummary?.ShippingServiceCost?.Value) || 0,
+          quantitySold: parseInt(item.QuantitySold) || 0,
+          seller: item.Seller?.UserID || '',
+          sellerFeedbackScore: parseInt(item.Seller?.FeedbackScore) || 0,
+          listingStatus: item.ListingStatus || '',
+          viewItemURL: item.ViewItemURLForNaturalSearch || '',
+          galleryURL: item.GalleryURL || '',
+          quantityAvailable: (parseInt(item.Quantity) || 0) - (parseInt(item.QuantitySold) || 0),
+        };
+      }
+      return null;
+    } catch (error) {
+      console.error('Shopping API GetSingleItem 실패:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * 경쟁사 상품 전체 정보 조회 (Description + Images + ItemSpecifics 포함)
+   * AI 리메이커용 - Shopping API 우선, 실패 시 Browse API fallback
+   */
+  async getCompetitorItemFull(itemId) {
+    // 1차: Shopping API 시도
+    try {
+      const data = await this.callShoppingAPI('GetSingleItem', {
+        ItemID: itemId,
+        IncludeSelector: 'Details,Description,ShippingCosts,ItemSpecifics'
+      });
+
+      if (data.Ack === 'Success' || data.Ack === 'Warning') {
+        return this._parseShoppingItem(data.Item);
+      }
+    } catch (shoppingErr) {
+      console.warn('Shopping API 실패, Browse API fallback 시도:', shoppingErr.message);
+    }
+
+    // 2차: Browse API fallback
+    try {
+      return await this._fetchViaBrowseAPI(itemId);
+    } catch (browseErr) {
+      console.error('Browse API도 실패:', browseErr.message);
+      throw browseErr;
+    }
+  }
+
+  /**
+   * Shopping API 응답 파싱 (공통)
+   */
+  _parseShoppingItem(item) {
+    const specifics = {};
+    const nvList = item.ItemSpecifics?.NameValueList;
+    if (Array.isArray(nvList)) {
+      nvList.forEach(nv => {
+        specifics[nv.Name] = Array.isArray(nv.Value) ? nv.Value.join(', ') : nv.Value;
+      });
+    }
+
+    return {
+      itemId: item.ItemID,
+      title: item.Title || '',
+      description: item.Description || '',
+      price: parseFloat(item.ConvertedCurrentPrice?.Value) || 0,
+      currency: item.ConvertedCurrentPrice?.CurrencyID || 'USD',
+      shippingCost: parseFloat(item.ShippingCostSummary?.ShippingServiceCost?.Value) || 0,
+      quantitySold: parseInt(item.QuantitySold) || 0,
+      quantityAvailable: (parseInt(item.Quantity) || 0) - (parseInt(item.QuantitySold) || 0),
+      seller: item.Seller?.UserID || '',
+      sellerFeedbackScore: parseInt(item.Seller?.FeedbackScore) || 0,
+      listingStatus: item.ListingStatus || '',
+      viewItemURL: item.ViewItemURLForNaturalSearch || '',
+      galleryURL: item.GalleryURL || '',
+      pictureURLs: Array.isArray(item.PictureURL) ? item.PictureURL
+        : (item.PictureURL ? [item.PictureURL] : []),
+      categoryId: item.PrimaryCategoryID || '',
+      categoryName: item.PrimaryCategoryName || '',
+      conditionDisplayName: item.ConditionDisplayName || '',
+      conditionId: item.ConditionID || '',
+      itemSpecifics: specifics,
+    };
+  }
+
+  /**
+   * Browse API로 경쟁사 상품 조회 (Shopping API 실패 시 fallback)
+   * GET https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id
+   */
+  async _fetchViaBrowseAPI(itemId) {
+    const appToken = await this.getApplicationToken();
+    const url = `https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id=${itemId}`;
+
+    const headers = {
+      'Authorization': `Bearer ${appToken}`,
+      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+    };
+
+    let response;
+    try {
+      response = await axios.get(url, { headers, timeout: 15000 });
+    } catch (err) {
+      const errData = err.response?.data;
+      const errMsg = errData?.errors?.[0]?.longMessage || errData?.errors?.[0]?.message || '';
+
+      // Item Group (멀티 배리언트) → get_items_by_item_group으로 재시도
+      if (errMsg.includes('item_group') || errMsg.includes('item group')) {
+        console.log('Browse API: Item Group 감지, 그룹 조회 시도...');
+        try {
+          const groupUrl = `https://api.ebay.com/buy/browse/v1/item/get_items_by_item_group?item_group_id=${itemId}`;
+          const groupResp = await axios.get(groupUrl, { headers, timeout: 15000 });
+          // 첫 번째 item 사용
+          const items = groupResp.data?.items;
+          if (items && items.length > 0) {
+            response = { data: items[0] };
+          } else {
+            throw new Error('Item Group에서 상품을 찾을 수 없음');
+          }
+        } catch (groupErr) {
+          const gErrData = groupErr.response?.data;
+          console.error('Browse API Group 에러:', JSON.stringify(gErrData || groupErr.message));
+          throw new Error(gErrData?.errors?.[0]?.longMessage || groupErr.message);
+        }
+      } else {
+        console.error('Browse API 상세 에러:', JSON.stringify(errData || err.message));
+        throw new Error(errMsg || err.message);
+      }
+    }
+
+    const item = response.data;
+
+    // Browse API 응답 → 공통 포맷 변환
+    const specifics = {};
+    if (Array.isArray(item.localizedAspects)) {
+      item.localizedAspects.forEach(a => {
+        specifics[a.name] = a.value;
+      });
+    }
+
+    const images = [];
+    if (item.image?.imageUrl) images.push(item.image.imageUrl);
+    if (Array.isArray(item.additionalImages)) {
+      item.additionalImages.forEach(img => {
+        if (img.imageUrl) images.push(img.imageUrl);
+      });
+    }
+
+    return {
+      itemId: item.legacyItemId || itemId,
+      title: item.title || '',
+      description: item.description || item.shortDescription || '',
+      price: parseFloat(item.price?.value) || 0,
+      currency: item.price?.currency || 'USD',
+      shippingCost: parseFloat(item.shippingOptions?.[0]?.shippingCost?.value) || 0,
+      quantitySold: parseInt(item.estimatedAvailabilities?.[0]?.soldQuantity) || 0,
+      quantityAvailable: parseInt(item.estimatedAvailabilities?.[0]?.estimatedAvailableQuantity) || 0,
+      seller: item.seller?.username || '',
+      sellerFeedbackScore: parseInt(item.seller?.feedbackScore) || 0,
+      listingStatus: item.buyingOptions?.includes('FIXED_PRICE') ? 'Active' : 'Unknown',
+      viewItemURL: item.itemWebUrl || '',
+      galleryURL: item.image?.imageUrl || '',
+      pictureURLs: images,
+      categoryId: item.categoryId || '',
+      categoryName: item.categoryPath || '',
+      conditionDisplayName: item.condition || '',
+      conditionId: item.conditionId || '',
+      itemSpecifics: specifics,
+    };
   }
 }
 
