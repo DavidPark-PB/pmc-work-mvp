@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '../../config/.env' });
+require('../config');
 const ShopifyAPI = require('../api/shopifyAPI');
 const GoogleSheetsAPI = require('../api/googleSheetsAPI');
 
@@ -23,7 +23,7 @@ async function syncShopifyToSheets() {
     }
 
     // 2. Google Sheets API 초기화
-    const sheets = new GoogleSheetsAPI('../../config/credentials.json');
+    const sheets = new GoogleSheetsAPI();
     await sheets.authenticate();
 
     // 3. Shopify에서 모든 상품 가져오기

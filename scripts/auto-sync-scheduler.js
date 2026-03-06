@@ -1,4 +1,5 @@
-require('dotenv').config({ path: '../config/.env' });
+const path = require('path');
+const { PROJECT_ROOT, LOGS_DIR, DATA_DIR } = require('../src/config');
 const { exec } = require('child_process');
 const util = require('util');
 const fs = require('fs');
@@ -19,9 +20,6 @@ const execPromise = util.promisify(exec);
  *   node auto-sync-scheduler.js --ebay-only    # eBay 동기화만
  *   node auto-sync-scheduler.js --dry-run      # 테스트 모드
  *   node auto-sync-scheduler.js --limit=100    # 100개만 eBay 동기화
- *
- * Windows 작업 스케줄러 등록:
- *   schtasks /create /tn "PMC AutoSync" /tr "node C:\Users\tooni\PMC work MVP\auto-sync-scheduler.js" /sc daily /st 06:00
  */
 
 const args = process.argv.slice(2);
@@ -33,14 +31,13 @@ const options = {
 
 async function runAutoSync() {
   const timestamp = new Date().toISOString();
-  const logDir = 'C:\\Users\\tooni\\PMC work MVP\\data\\sync-logs';
 
   // 로그 디렉토리 생성
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
+  if (!fs.existsSync(LOGS_DIR)) {
+    fs.mkdirSync(LOGS_DIR, { recursive: true });
   }
 
-  const logFile = `${logDir}\\autosync-${timestamp.slice(0, 10)}.log`;
+  const logFile = path.join(LOGS_DIR, `autosync-${timestamp.slice(0, 10)}.log`);
 
   const log = (msg) => {
     const line = `[${new Date().toISOString()}] ${msg}`;
@@ -69,7 +66,7 @@ async function runAutoSync() {
       log('\n📥 Step 1: Shopify 상품 동기화 중...');
       try {
         const { stdout } = await execPromise('node src/sync/sync-shopify-to-sheets.js', {
-          cwd: 'C:\\Users\\tooni\\PMC work MVP',
+          cwd: PROJECT_ROOT,
           timeout: 300000  // 5분 타임아웃
         });
         log(stdout.split('\n').slice(-5).join('\n'));  // 마지막 5줄만
@@ -83,7 +80,7 @@ async function runAutoSync() {
       log('\n📐 Step 2: 30% 마진 수식 적용 중...');
       try {
         const { stdout } = await execPromise('node src/dashboard/fix-profit-formula.js', {
-          cwd: 'C:\\Users\\tooni\\PMC work MVP',
+          cwd: PROJECT_ROOT,
           timeout: 600000  // 10분 타임아웃
         });
         log(stdout.split('\n').slice(-10).join('\n'));  // 마지막 10줄만
@@ -102,7 +99,7 @@ async function runAutoSync() {
       if (options.limit > 0) cmd += ` --limit=${options.limit}`;
 
       const { stdout } = await execPromise(cmd, {
-        cwd: 'C:\\Users\\tooni\\PMC work MVP',
+        cwd: PROJECT_ROOT,
         timeout: 7200000  // 2시간 타임아웃 (2663개 × 0.5초 = 약 22분)
       });
 
@@ -161,7 +158,7 @@ async function runAutoSync() {
       note: options.dryRun ? 'DRY RUN' : `eBay: ${results.ebay.success}개 성공`
     };
 
-    const jsonLogFile = 'C:\\Users\\tooni\\PMC work MVP\\data\\sync-log.json';
+    const jsonLogFile = path.join(DATA_DIR, 'sync-log.json');
     let logs = [];
     if (fs.existsSync(jsonLogFile)) {
       logs = JSON.parse(fs.readFileSync(jsonLogFile, 'utf8'));
@@ -173,6 +170,9 @@ async function runAutoSync() {
       logs = logs.slice(-100);
     }
 
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
     fs.writeFileSync(jsonLogFile, JSON.stringify(logs, null, 2));
 
     log(`\n✅ 자동 동기화 완료: ${new Date().toISOString()}`);
@@ -188,12 +188,15 @@ async function runAutoSync() {
       error: error.message
     };
 
-    const jsonLogFile = 'C:\\Users\\tooni\\PMC work MVP\\data\\sync-log.json';
+    const jsonLogFile = path.join(DATA_DIR, 'sync-log.json');
     let logs = [];
     if (fs.existsSync(jsonLogFile)) {
       logs = JSON.parse(fs.readFileSync(jsonLogFile, 'utf8'));
     }
     logs.push(errorLog);
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
     fs.writeFileSync(jsonLogFile, JSON.stringify(logs, null, 2));
   }
 }
@@ -204,7 +207,7 @@ if (args.includes('--help')) {
 🤖 PMC 자동 동기화 스케줄러
 
 사용법:
-  node auto-sync-scheduler.js [옵션]
+  node scripts/auto-sync-scheduler.js [옵션]
 
 옵션:
   --ebay-only   eBay 가격/배송비 동기화만 실행
@@ -219,19 +222,10 @@ if (args.includes('--help')) {
   4. 이상 징후 감지
 
 예시:
-  node auto-sync-scheduler.js                 # 전체 동기화
-  node auto-sync-scheduler.js --ebay-only     # eBay만
-  node auto-sync-scheduler.js --dry-run       # 테스트
-  node auto-sync-scheduler.js --limit=100     # 100개만
-
-Windows 작업 스케줄러 등록 (매일 06:00):
-  schtasks /create /tn "PMC AutoSync" /tr "node C:\\Users\\tooni\\PMC work MVP\\auto-sync-scheduler.js" /sc daily /st 06:00
-
-삭제:
-  schtasks /delete /tn "PMC AutoSync" /f
-
-수동 실행 (관리자 권한):
-  schtasks /run /tn "PMC AutoSync"
+  node scripts/auto-sync-scheduler.js                 # 전체 동기화
+  node scripts/auto-sync-scheduler.js --ebay-only     # eBay만
+  node scripts/auto-sync-scheduler.js --dry-run       # 테스트
+  node scripts/auto-sync-scheduler.js --limit=100     # 100개만
 `);
   process.exit(0);
 }

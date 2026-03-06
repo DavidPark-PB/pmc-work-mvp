@@ -14,6 +14,8 @@
     "ebay-test": "node src/api/ebayAPI.js",
     "backup": "node src/utils/backup-to-json.js",
     "dashboard": "node src/dashboard/final-dashboard-update.js",
+    "crawl:search": "node scripts/test-crawler.js search",
+    "crawl:detail": "node scripts/test-crawler.js detail",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -30,11 +32,14 @@
     "axios": "^1.13.2",
     "dotenv": "^17.2.3",
     "ebay-api": "^9.4.0",
-    "express": "^5.2.1",
     "google-auth-library": "^10.5.0",
     "google-spreadsheet": "^5.0.2",
     "googleapis": "^170.0.0",
-    "open": "^11.0.0",
-    "xml2js": "^0.6.2"
+    "xml2js": "^0.6.2",
+    "playwright": "^1.57.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "cheerio": "^1.1.2",
+    "papaparse": "^5.5.3"
   }
 }

@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '../../config/.env' });
+const { CREDENTIALS_PATH } = require('../config');
 const axios = require('axios');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { JWT } = require('google-auth-library');
@@ -147,7 +147,7 @@ class eBayToSheetsSync {
     console.log('=== Google Sheets 업데이트 시작 ===\n');
 
     // credentials.json 파일 읽기
-    const credentials = JSON.parse(fs.readFileSync('../../config/credentials.json', 'utf8'));
+    const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
 
     // Google Sheets 인증
     const serviceAccountAuth = new JWT({

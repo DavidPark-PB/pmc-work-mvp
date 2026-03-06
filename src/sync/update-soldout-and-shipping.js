@@ -1,4 +1,5 @@
-require('dotenv').config({ path: '../../config/.env' });
+const path = require('path');
+const { CREDENTIALS_PATH, DATA_DIR } = require('../config');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { JWT } = require('google-auth-library');
 const fs = require('fs');
@@ -102,7 +103,7 @@ async function updateSoldoutAndShipping() {
   console.log();
 
   try {
-    const credentials = JSON.parse(fs.readFileSync('../../config/credentials.json', 'utf8'));
+    const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
     const serviceAccountAuth = new JWT({
       email: credentials.client_email,
       key: credentials.private_key,
@@ -221,7 +222,7 @@ async function updateSoldoutAndShipping() {
 
     // 5. 품절 상품 SKU를 파일로 저장 (API 업데이트용)
     if (soldoutSkus.length > 0) {
-      const soldoutFile = `C:\\Users\\tooni\\PMC work MVP\\soldout-skus-${new Date().toISOString().slice(0,10)}.json`;
+      const soldoutFile = path.join(DATA_DIR, `soldout-skus-${new Date().toISOString().slice(0,10)}.json`);
       fs.writeFileSync(soldoutFile, JSON.stringify(soldoutSkus, null, 2));
       console.log(`   📁 품절 SKU 목록 저장: ${soldoutFile}`);
       console.log();
