@@ -33,6 +33,9 @@ nul
 .vscode/
 .idea/
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # Archive (old versions)
 archive/
 
