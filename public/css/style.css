@@ -435,3 +435,45 @@ td { padding: 8px 6px; border-bottom: 1px solid #f5f5f5; max-width: 300px; overf
   .content-grid { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
 }
+
+/* Settings Page */
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+.setting-item { display: flex; flex-direction: column; gap: 4px; }
+.setting-item label { font-size: 12px; color: #666; font-weight: 500; }
+.setting-item input, .setting-item select { padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; }
+.setting-item input:focus, .setting-item select:focus { outline: none; border-color: #e94560; box-shadow: 0 0 0 2px rgba(233,69,96,0.1); }
+.settings-tab-content { display: none; }
+.settings-tab-content.active { display: block; }
+
+/* Platform Checkboxes */
+.platform-checkboxes { display: flex; gap: 8px; flex-wrap: wrap; }
+.platform-checkbox { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid #ddd; border-radius: 16px; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+.platform-checkbox:hover { border-color: #e94560; }
+.platform-checkbox.checked { background: #e94560; color: white; border-color: #e94560; }
+.platform-checkbox input { display: none; }
+
+/* Export Page */
+.export-tab-content { display: none; }
+.export-tab-content.active { display: block; }
+.progress-bar-container { height: 6px; background: #eee; border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
+.progress-bar { height: 100%; background: linear-gradient(90deg, #4caf50, #81c784); border-radius: 3px; transition: width 0.3s; }
+.export-log { max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 11px; color: #555; background: #f9f9f9; padding: 10px; border-radius: 6px; }
+.export-log .log-line { padding: 2px 0; border-bottom: 1px solid #f0f0f0; }
+.export-log .log-success { color: #2e7d32; }
+.export-log .log-error { color: #c62828; }
+
+/* Translate Editor */
+.translate-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.translate-col h4 { font-size: 14px; color: #1a1a2e; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 2px solid #e94560; }
+.translate-field { margin-bottom: 12px; }
+.translate-field label { font-size: 11px; color: #888; display: block; margin-bottom: 4px; }
+.translate-field textarea, .translate-field input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; resize: vertical; }
+.translate-field textarea:focus, .translate-field input:focus { outline: none; border-color: #7c4dff; box-shadow: 0 0 0 2px rgba(124,77,255,0.1); }
+.translate-field textarea[readonly] { background: #f9f9f9; color: #666; }
+
+/* Export Status Badges */
+.export-badge { padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+.export-badge.pending { background: #fff3e0; color: #ef6c00; }
+.export-badge.success { background: #e8f5e9; color: #2e7d32; }
+.export-badge.failed { background: #ffebee; color: #c62828; }
+.export-badge.exporting { background: #e3f2fd; color: #1565c0; }

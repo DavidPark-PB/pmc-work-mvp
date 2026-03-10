@@ -59,6 +59,8 @@ function navigateTo(page) {
     case 'remarker': setupRemarker(); break;
     case 'reconstruct': setupReconstructPage(); break;
     case 'shipping': setupShippingPage(); break;
+    case 'settings': loadSettingsPage(); break;
+    case 'export': loadExportPage(); break;
   }
 }
 
@@ -680,10 +682,427 @@ async function loadTopProducts() {
 
 async function loadSyncPage() {
   try {
-    const res = await fetch(`${API}/sync/history`);
-    const history = await res.json();
+    // Load platform cards dynamically from registry
+    const [historyRes, registryRes] = await Promise.all([
+      fetch(`${API}/sync/history`),
+      fetch(`${API}/platform-registry`).catch(() => null)
+    ]);
+    const history = await historyRes.json();
     renderSyncHistory(history, 'syncHistoryFull');
+
+    // Render platform sync cards from registry
+    const container = document.getElementById('syncPlatformCards');
+    if (registryRes && registryRes.ok) {
+      const registry = await registryRes.json();
+      const platforms = registry.platforms || [];
+      container.innerHTML = platforms.map(p => `
+        <div class="sync-platform-card">
+          <h4 style="color:${p.color || '#666'}">${p.display_name || p.name}</h4>
+          <p>${p.name} → Supabase 동기화</p>
+          <button class="sync-btn" data-platform="${p.key}">동기화 실행</button>
+        </div>
+      `).join('');
+    } else {
+      // Fallback to static platforms
+      const fallback = ['eBay', 'Shopify', 'Naver', 'Alibaba', 'Shopee'];
+      container.innerHTML = fallback.map(name => `
+        <div class="sync-platform-card">
+          <h4>${name}</h4>
+          <p>${name} → Supabase 동기화</p>
+          <button class="sync-btn" data-platform="${name.toLowerCase()}">동기화 실행</button>
+        </div>
+      `).join('');
+    }
+
+    // Re-bind sync buttons
+    container.querySelectorAll('.sync-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const platform = btn.dataset.platform;
+        btn.disabled = true;
+        btn.textContent = '동기화 중...';
+        try {
+          await fetch(`${API}/sync/trigger/${platform}`, { method: 'POST' });
+          btn.textContent = '완료!';
+          setTimeout(() => { btn.textContent = '동기화 실행'; btn.disabled = false; }, 2000);
+        } catch (e) {
+          btn.textContent = '실패';
+          setTimeout(() => { btn.textContent = '동기화 실행'; btn.disabled = false; }, 2000);
+        }
+      });
+    });
+  } catch (e) {
+    console.error('loadSyncPage error:', e);
+  }
+}
+
+// ===== 설정 페이지 =====
+
+let settingsData = null;
+
+async function loadSettingsPage() {
+  // Tab switching
+  document.querySelectorAll('.settings-tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.settings-tab').forEach(t => { t.style.background = 'transparent'; t.style.color = '#666'; t.style.boxShadow = 'none'; });
+      tab.style.background = '#fff'; tab.style.color = '#1a1a2e'; tab.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+      document.querySelectorAll('.settings-tab-content').forEach(c => { c.style.display = 'none'; c.classList.remove('active'); });
+      const target = document.getElementById(tab.dataset.tab);
+      if (target) { target.style.display = 'block'; target.classList.add('active'); }
+    };
+  });
+
+  try {
+    const res = await fetch(`${API}/platform-registry`);
+    if (!res.ok) throw new Error('Failed to load registry');
+    settingsData = await res.json();
+
+    // Fill margin settings
+    if (settingsData.settings) {
+      for (const [key, val] of Object.entries(settingsData.settings)) {
+        const input = document.getElementById(`setting-${key}`);
+        if (input) input.value = val;
+      }
+    }
+
+    // Fill platform list
+    renderPlatformList(settingsData.platforms || []);
+  } catch (e) {
+    console.error('loadSettingsPage error:', e);
+  }
+
+  // Save button
+  document.getElementById('saveMarginSettingsBtn').onclick = saveMarginSettings;
+
+  // Simulation button
+  document.getElementById('runSimulationBtn').onclick = runPriceSimulation;
+}
+
+function renderPlatformList(platforms) {
+  const body = document.getElementById('platformListBody');
+  document.getElementById('platformCount').textContent = platforms.length + '개';
+  body.innerHTML = platforms.map(p => `
+    <tr>
+      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color || '#666'};margin-right:6px"></span>${p.display_name || p.name}</td>
+      <td>${p.market_type === 'domestic' ? '국내' : '글로벌'}</td>
+      <td>${((p.fee_rate || 0) * 100).toFixed(1)}%</td>
+      <td>${p.currency || 'USD'}</td>
+      <td><span class="status ${p.is_active ? 'connected' : 'disconnected'}">${p.is_active ? '활성' : '비활성'}</span></td>
+      <td>${p.sort_order || 0}</td>
+    </tr>
+  `).join('');
+}
+
+async function saveMarginSettings() {
+  const settingKeys = [
+    'exchange_rate_usd', 'exchange_rate_jpy', 'exchange_rate_shopee_local',
+    'default_margin_pct', 'tax_rate', 'default_shipping_usd', 'domestic_shipping_krw'
+  ];
+
+  const btn = document.getElementById('saveMarginSettingsBtn');
+  btn.disabled = true;
+  btn.textContent = '저장 중...';
+
+  let success = 0;
+  for (const key of settingKeys) {
+    const input = document.getElementById(`setting-${key}`);
+    if (!input) continue;
+    try {
+      const res = await fetch(`${API}/platform-registry/settings/${key}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: parseFloat(input.value) })
+      });
+      if (res.ok) success++;
+    } catch (e) {}
+  }
+
+  btn.textContent = `${success}개 저장 완료!`;
+  btn.style.background = '#4caf50';
+  setTimeout(() => { btn.textContent = '설정 저장'; btn.disabled = false; }, 2000);
+}
+
+async function runPriceSimulation() {
+  const purchasePrice = parseFloat(document.getElementById('simPurchasePrice').value) || 0;
+  const weight = parseFloat(document.getElementById('simWeight').value) || 0;
+
+  if (purchasePrice <= 0) { alert('매입가를 입력하세요'); return; }
+
+  try {
+    const res = await fetch(`${API}/margin/calculate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ purchasePrice, weight, targetMargin: parseFloat(document.getElementById('setting-default_margin_pct').value) || 30 })
+    });
+    const data = await res.json();
+    const prices = data.prices || {};
+
+    document.getElementById('simulationResult').style.display = 'block';
+    const body = document.getElementById('simResultBody');
+    body.innerHTML = Object.entries(prices).map(([key, p]) => {
+      if (p.error) return `<tr><td>${key}</td><td colspan="5" style="color:#c62828">${p.error}</td></tr>`;
+      return `<tr>
+        <td><strong>${key}</strong></td>
+        <td>${p.price?.toLocaleString()}</td>
+        <td>${p.currency}</td>
+        <td>${p.fee?.toLocaleString()} KRW</td>
+        <td>${p.estimatedProfit?.toLocaleString()} KRW</td>
+        <td>${p.margin}%</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    alert('시뮬레이션 실패: ' + e.message);
+  }
+}
+
+// ===== 상품 내보내기 페이지 =====
+
+async function loadExportPage() {
+  // Tab switching
+  document.querySelectorAll('.export-tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.export-tab').forEach(t => { t.style.background = 'transparent'; t.style.color = '#666'; t.style.boxShadow = 'none'; });
+      tab.style.background = '#fff'; tab.style.color = '#1a1a2e'; tab.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+      document.querySelectorAll('.export-tab-content').forEach(c => { c.style.display = 'none'; c.classList.remove('active'); });
+      const target = document.getElementById(tab.dataset.tab);
+      if (target) { target.style.display = 'block'; target.classList.add('active'); }
+    };
+  });
+
+  // Load platform checkboxes
+  try {
+    const res = await fetch(`${API}/platform-registry`);
+    if (res.ok) {
+      const data = await res.json();
+      const container = document.getElementById('exportPlatformCheckboxes');
+      container.innerHTML = (data.platforms || []).map(p => `
+        <label class="platform-checkbox" data-key="${p.key}" style="border-color:${p.color || '#ddd'}">
+          <input type="checkbox" value="${p.key}">
+          <span style="width:6px;height:6px;border-radius:50%;background:${p.color || '#666'}"></span>
+          ${p.display_name || p.name}
+        </label>
+      `).join('');
+
+      container.querySelectorAll('.platform-checkbox').forEach(label => {
+        label.onclick = (e) => {
+          if (e.target.tagName === 'INPUT') return;
+          const cb = label.querySelector('input');
+          cb.checked = !cb.checked;
+          label.classList.toggle('checked', cb.checked);
+        };
+      });
+    }
   } catch (e) {}
+
+  // Export button
+  document.getElementById('runExportBtn').onclick = runExport;
+
+  // Export status
+  document.getElementById('refreshExportStatus').onclick = loadExportStatus;
+
+  // Translation search
+  document.getElementById('translateSearchBtn').onclick = searchTranslation;
+  document.getElementById('translateSkuSearch').onkeydown = (e) => { if (e.key === 'Enter') searchTranslation(); };
+  document.getElementById('autoTranslateBtn').onclick = runAutoTranslate;
+  document.getElementById('saveTranslateBtn').onclick = saveTranslation;
+}
+
+async function runExport() {
+  const sku = document.getElementById('exportSku').value.trim();
+  if (!sku) { alert('SKU를 입력하세요'); return; }
+
+  const checked = document.querySelectorAll('#exportPlatformCheckboxes input:checked');
+  const platforms = Array.from(checked).map(cb => cb.value);
+  if (platforms.length === 0) { alert('플랫폼을 선택하세요'); return; }
+
+  const progressDiv = document.getElementById('exportProgress');
+  const logDiv = document.getElementById('exportLog');
+  const bar = document.getElementById('exportProgressBar');
+  const resultDiv = document.getElementById('exportResult');
+
+  progressDiv.style.display = 'block';
+  resultDiv.style.display = 'none';
+  logDiv.innerHTML = '';
+  bar.style.width = '10%';
+
+  addExportLog(logDiv, `${sku} 상품을 ${platforms.join(', ')} 플랫폼에 내보내기 시작...`);
+  bar.style.width = '30%';
+
+  try {
+    const res = await fetch(`${API}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku, platforms })
+    });
+    const data = await res.json();
+    bar.style.width = '100%';
+
+    if (data.error) {
+      addExportLog(logDiv, data.error, 'error');
+    } else {
+      const results = data.results || {};
+      for (const [pf, r] of Object.entries(results)) {
+        if (r.success) {
+          addExportLog(logDiv, `${pf}: 등록 성공 (가격: ${r.price || '-'})`, 'success');
+        } else {
+          addExportLog(logDiv, `${pf}: 실패 - ${r.error || 'unknown'}`, 'error');
+        }
+      }
+      resultDiv.style.display = 'block';
+      const successCount = Object.values(results).filter(r => r.success).length;
+      resultDiv.innerHTML = `<div class="card" style="background:#e8f5e9;border:1px solid #81c784">
+        <strong>${successCount}/${platforms.length}</strong> 플랫폼 등록 완료
+      </div>`;
+    }
+  } catch (e) {
+    bar.style.width = '100%';
+    bar.style.background = '#e53935';
+    addExportLog(logDiv, '내보내기 오류: ' + e.message, 'error');
+  }
+}
+
+function addExportLog(container, msg, type = '') {
+  const line = document.createElement('div');
+  line.className = `log-line ${type ? 'log-' + type : ''}`;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  container.appendChild(line);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function loadExportStatus() {
+  const body = document.getElementById('exportStatusBody');
+  try {
+    const filter = document.getElementById('exportStatusFilterSelect').value;
+    const res = await fetch(`${API}/products/export-status?filter=${filter}`);
+    if (!res.ok) { body.innerHTML = '<tr><td colspan="7">데이터 로드 실패</td></tr>'; return; }
+    const data = await res.json();
+    const items = data.items || [];
+    body.innerHTML = items.length === 0
+      ? '<tr><td colspan="7" style="text-align:center;color:#888">내보내기 이력 없음</td></tr>'
+      : items.map(item => `<tr>
+          <td>${item.sku || '-'}</td>
+          <td>${item.title || '-'}</td>
+          <td>${item.platform || '-'}</td>
+          <td><span class="export-badge ${item.status}">${item.status}</span></td>
+          <td>${item.price || '-'}</td>
+          <td>${item.exported_at ? new Date(item.exported_at).toLocaleString() : '-'}</td>
+          <td>${item.status === 'failed' ? `<button class="refresh-btn" style="font-size:10px;padding:2px 8px" onclick="retryExport('${item.sku}','${item.platform}')">재시도</button>` : ''}</td>
+        </tr>`).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="7">오류 발생</td></tr>';
+  }
+}
+
+async function retryExport(sku, platform) {
+  try {
+    await fetch(`${API}/export/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku, platform })
+    });
+    loadExportStatus();
+  } catch (e) {}
+}
+
+// ===== 번역 관리 =====
+
+let currentTranslateProductId = null;
+
+async function searchTranslation() {
+  const sku = document.getElementById('translateSkuSearch').value.trim();
+  if (!sku) return;
+  const lang = document.getElementById('translateTargetLang').value;
+  document.getElementById('transLangLabel').textContent = lang.toUpperCase();
+
+  try {
+    // Find product by SKU
+    const productRes = await fetch(`${API}/master-products?sku=${encodeURIComponent(sku)}`);
+    if (!productRes.ok) throw new Error('상품을 찾을 수 없습니다');
+    const products = await productRes.json();
+    const product = Array.isArray(products) ? products[0] : products;
+    if (!product) throw new Error('상품을 찾을 수 없습니다');
+
+    currentTranslateProductId = product.id;
+    document.getElementById('transOrigTitle').value = product.title || product.productName || '';
+    document.getElementById('transOrigDesc').value = product.description || '';
+
+    // Try to load existing translation
+    try {
+      const transRes = await fetch(`${API}/translate/${product.id}?lang=${lang}`);
+      if (transRes.ok) {
+        const trans = await transRes.json();
+        if (trans.translation) {
+          document.getElementById('transTitle').value = trans.translation.title || '';
+          document.getElementById('transDesc').value = trans.translation.description || '';
+          document.getElementById('transKeywords').value = (trans.translation.keywords || []).join(', ');
+        } else {
+          document.getElementById('transTitle').value = '';
+          document.getElementById('transDesc').value = '';
+          document.getElementById('transKeywords').value = '';
+        }
+      }
+    } catch (e) {
+      document.getElementById('transTitle').value = '';
+      document.getElementById('transDesc').value = '';
+      document.getElementById('transKeywords').value = '';
+    }
+
+    document.getElementById('translateEditor').style.display = 'block';
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function runAutoTranslate() {
+  if (!currentTranslateProductId) return;
+  const lang = document.getElementById('translateTargetLang').value;
+  const btn = document.getElementById('autoTranslateBtn');
+  btn.disabled = true;
+  btn.textContent = 'AI 번역 중...';
+
+  try {
+    const res = await fetch(`${API}/translate/${currentTranslateProductId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetLang: lang })
+    });
+    const data = await res.json();
+    if (data.translation) {
+      document.getElementById('transTitle').value = data.translation.title || '';
+      document.getElementById('transDesc').value = data.translation.description || '';
+      document.getElementById('transKeywords').value = (data.translation.keywords || []).join(', ');
+    }
+    btn.textContent = '번역 완료!';
+    btn.style.background = '#4caf50';
+    setTimeout(() => { btn.textContent = 'AI 번역'; btn.style.background = '#7c4dff'; btn.disabled = false; }, 2000);
+  } catch (e) {
+    btn.textContent = '번역 실패';
+    setTimeout(() => { btn.textContent = 'AI 번역'; btn.style.background = '#7c4dff'; btn.disabled = false; }, 2000);
+  }
+}
+
+async function saveTranslation() {
+  if (!currentTranslateProductId) return;
+  const lang = document.getElementById('translateTargetLang').value;
+  const btn = document.getElementById('saveTranslateBtn');
+
+  try {
+    const res = await fetch(`${API}/translate/${currentTranslateProductId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetLang: lang,
+        title: document.getElementById('transTitle').value,
+        description: document.getElementById('transDesc').value,
+        keywords: document.getElementById('transKeywords').value.split(',').map(k => k.trim()).filter(Boolean)
+      })
+    });
+    if (res.ok) {
+      btn.textContent = '저장 완료!';
+      setTimeout(() => { btn.textContent = '저장'; }, 2000);
+    }
+  } catch (e) {
+    alert('저장 실패: ' + e.message);
+  }
 }
 
 // ===== 상품 등록 (멀티마켓 자동 최적화) =====
@@ -2161,6 +2580,7 @@ async function loadBattle() {
 
     if (!battleEventsInit) {
       setupBattleEvents();
+      setupRepricingEvents();
       battleEventsInit = true;
     }
   } catch (err) {
@@ -2169,6 +2589,87 @@ async function loadBattle() {
       '<div class="stat-card"><div class="label">데이터 로드 실패</div></div>';
   } finally {
     showLoading(false);
+  }
+}
+
+function setupRepricingEvents() {
+  const evalBtn = document.getElementById('repricingEvalBtn');
+  const execBtn = document.getElementById('repricingExecBtn');
+
+  if (evalBtn) evalBtn.onclick = async () => {
+    evalBtn.disabled = true;
+    evalBtn.textContent = '평가 중...';
+    try {
+      // Evaluate repricing for all items with competitors
+      const items = (battleData?.items || []).filter(i => i.compPrice);
+      const results = [];
+      for (const item of items.slice(0, 20)) { // limit 20
+        try {
+          const res = await fetch(`${API}/repricing/evaluate/${encodeURIComponent(item.sku)}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.recommendation) results.push({ ...data.recommendation, sku: item.sku, title: item.productName || item.sku });
+          }
+        } catch (e) {}
+      }
+
+      const body = document.getElementById('repricingBody');
+      const container = document.getElementById('repricingResult');
+      container.style.display = 'block';
+
+      if (results.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#888">리프라이싱 대상 없음</td></tr>';
+      } else {
+        body.innerHTML = results.map(r => `<tr>
+          <td title="${r.title}">${r.sku}</td>
+          <td>$${(r.currentPrice || 0).toFixed(2)}</td>
+          <td>$${(r.competitorPrice || 0).toFixed(2)}</td>
+          <td style="font-weight:700;color:${r.newPrice < r.currentPrice ? '#c62828' : '#2e7d32'}">$${(r.newPrice || 0).toFixed(2)}</td>
+          <td>${r.strategy || '-'}</td>
+          <td>${r.estimatedMargin || '-'}%</td>
+          <td><button class="refresh-btn" style="font-size:10px;padding:2px 8px;background:#e53935" onclick="executeRepricing('${r.sku}')">실행</button></td>
+        </tr>`).join('');
+      }
+    } catch (e) {
+      console.error('Repricing eval error:', e);
+    } finally {
+      evalBtn.textContent = '가격 평가';
+      evalBtn.disabled = false;
+    }
+  };
+
+  if (execBtn) execBtn.onclick = async () => {
+    if (!confirm('모든 추천 가격을 일괄 적용하시겠습니까?')) return;
+    execBtn.disabled = true;
+    execBtn.textContent = '실행 중...';
+
+    const rows = document.querySelectorAll('#repricingBody tr');
+    let done = 0;
+    for (const row of rows) {
+      const sku = row.querySelector('td')?.textContent;
+      if (sku) {
+        try {
+          await fetch(`${API}/repricing/execute/${encodeURIComponent(sku)}`, { method: 'POST' });
+          done++;
+        } catch (e) {}
+      }
+    }
+
+    execBtn.textContent = `${done}건 완료!`;
+    setTimeout(() => { execBtn.textContent = '일괄 실행'; execBtn.disabled = false; }, 3000);
+    loadBattle(); // Refresh
+  };
+}
+
+async function executeRepricing(sku) {
+  try {
+    const res = await fetch(`${API}/repricing/execute/${encodeURIComponent(sku)}`, { method: 'POST' });
+    if (res.ok) {
+      alert(`${sku} 리프라이싱 실행 완료`);
+      loadBattle();
+    }
+  } catch (e) {
+    alert('실행 실패: ' + e.message);
   }
 }
 

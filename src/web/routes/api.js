@@ -2401,4 +2401,78 @@ router.post('/translate/:productId', async (req, res) => {
   }
 });
 
+// GET /api/translate/:productId — get existing translation
+router.get('/translate/:productId', async (req, res) => {
+  try {
+    const TranslationService = require('../../services/translationService');
+    const svc = new TranslationService();
+    const lang = req.query.lang || 'en';
+    const translation = await svc.getTranslation(req.params.productId, lang);
+    res.json({ translation });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/translate/:productId — save manual translation edits
+router.put('/translate/:productId', async (req, res) => {
+  try {
+    const dataSource = require('../../services/dataSource');
+    const platformRepo = dataSource.getPlatformRepo();
+    const { targetLang, title, description, keywords } = req.body;
+    const result = await platformRepo.db
+      .from('translations')
+      .upsert({
+        product_id: req.params.productId,
+        target_lang: targetLang || 'en',
+        title: title || '',
+        description: description || '',
+        keywords: keywords || [],
+        translated_by: 'manual',
+        is_reviewed: true,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'product_id,target_lang' });
+    if (result.error) throw result.error;
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/products/export-status — list export status for all products
+router.get('/products/export-status', async (req, res) => {
+  try {
+    const dataSource = require('../../services/dataSource');
+    const platformRepo = dataSource.getPlatformRepo();
+    const filter = req.query.filter || 'all';
+
+    let query = platformRepo.db
+      .from('platform_export_status')
+      .select('*, products(sku, title), platforms(key, name, display_name)')
+      .order('updated_at', { ascending: false })
+      .limit(100);
+
+    if (filter !== 'all') {
+      query = query.eq('export_status', filter);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const items = (data || []).map(row => ({
+      sku: row.products?.sku || '-',
+      title: row.products?.title || '-',
+      platform: row.platforms?.display_name || row.platforms?.name || '-',
+      status: row.export_status,
+      price: row.exported_price,
+      exported_at: row.exported_at,
+      error: row.last_error
+    }));
+
+    res.json({ items });
+  } catch (error) {
+    res.status(500).json({ error: error.message, items: [] });
+  }
+});
+
 module.exports = router;
