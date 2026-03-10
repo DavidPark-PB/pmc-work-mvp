@@ -10,14 +10,14 @@ echo ====================================
 echo.
 
 REM 작업 디렉토리로 이동
-cd "C:\Users\tooni\PMC work MVP"
+cd /d "%~dp0.."
 
 REM 현재 시각 기록
 echo 실행 시각: %date% %time%
 echo.
 
 REM Node.js 스크립트 실행
-node auto-sync-all.js
+node scripts/auto-sync-scheduler.js
 
 REM 종료 코드 확인
 if %errorlevel% neq 0 (

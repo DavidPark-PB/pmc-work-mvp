@@ -8,16 +8,10 @@
     "server": "node server.js",
     "dev": "node server.js",
     "sync": "node scripts/auto-sync-scheduler.js",
-    "sync-shopify": "node src/sync/sync-shopify-to-sheets.js",
-    "sync-ebay": "node src/sync/sync-ebay-to-sheets.js",
-    "sync-naver": "node src/sync/sync-naver-to-sheets.js",
-    "sync-alibaba": "node src/sync/sync-alibaba-to-sheets.js",
-    "sync-all": "node src/sync/auto-sync-all.js",
     "detect": "node src/utils/detect-anomalies.js",
-    "cleanup": "node src/utils/cleanup-old-sheets.js",
     "ebay-test": "node src/api/ebayAPI.js",
-    "backup": "node src/utils/backup-to-json.js",
-    "dashboard": "node src/dashboard/final-dashboard-update.js",
+    "crawl:search": "node scripts/test-crawler.js search",
+    "crawl:detail": "node scripts/test-crawler.js detail",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
@@ -35,6 +29,7 @@
     "@supabase/supabase-js": "^2.99.0",
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
+    "cheerio": "^1.1.2",
     "dotenv": "^17.2.3",
     "ebay-api": "^9.4.0",
     "exceljs": "^4.4.0",
@@ -44,7 +39,11 @@
     "googleapis": "^170.0.0",
     "multer": "^2.0.2",
     "open": "^11.0.0",
+    "papaparse": "^5.5.3",
     "pg": "^8.20.0",
+    "playwright": "^1.57.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "sharp": "^0.34.5",
     "xml2js": "^0.6.2"
   }

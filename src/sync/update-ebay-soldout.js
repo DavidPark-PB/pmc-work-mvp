@@ -1,4 +1,5 @@
-require('dotenv').config({ path: '../../config/.env' });
+const path = require('path');
+const { CREDENTIALS_PATH, DATA_DIR } = require('../config');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { JWT } = require('google-auth-library');
 const axios = require('axios');
@@ -75,7 +76,7 @@ async function updateEbaySoldout() {
   console.log();
 
   try {
-    const credentials = JSON.parse(fs.readFileSync('../../config/credentials.json', 'utf8'));
+    const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
     const serviceAccountAuth = new JWT({
       email: credentials.client_email,
       key: credentials.private_key,
@@ -195,7 +196,7 @@ async function updateEbaySoldout() {
       }
 
       // 오류 목록 파일로 저장
-      const errorFile = `C:\\Users\\tooni\\PMC work MVP\\ebay-errors-${new Date().toISOString().slice(0,10)}.json`;
+      const errorFile = path.join(DATA_DIR, `ebay-errors-${new Date().toISOString().slice(0,10)}.json`);
       fs.writeFileSync(errorFile, JSON.stringify(errors, null, 2));
       console.log(`\n   📁 오류 목록 저장: ${errorFile}`);
     }
