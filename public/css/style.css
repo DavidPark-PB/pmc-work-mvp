@@ -157,6 +157,34 @@ td { padding: 8px 6px; border-bottom: 1px solid #f5f5f5; max-width: 300px; overf
 .register-result.success { display: block; background: #e8f5e9; color: #2e7d32; }
 .register-result.error { display: block; background: #ffebee; color: #c62828; }
 
+/* ===== 상품 등록 서브탭 ===== */
+.register-tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #e0e0e0; }
+.register-tab { background: none; border: none; padding: 10px 24px; font-size: 14px; font-weight: 500; color: #888; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: color 0.15s, border-color 0.15s; }
+.register-tab:hover { color: #333; }
+.register-tab.active { color: #e94560; border-bottom-color: #e94560; font-weight: 600; }
+
+/* CSV upload area */
+.csv-upload-area { border: 2px dashed #d0d0d0; border-radius: 10px; padding: 32px 16px; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; min-height: 120px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+.csv-upload-area:hover, .csv-upload-area.dragover { border-color: #e94560; background: #fff5f7; }
+.csv-file-info { font-size: 14px; padding: 8px 0; }
+
+/* CSV validation stats */
+.csv-validation-stats { display: flex; gap: 20px; }
+.csv-stat { font-size: 14px; padding: 6px 14px; border-radius: 6px; }
+.csv-stat.total { background: #f0f2f5; color: #333; }
+.csv-stat.success { background: #e8f5e9; color: #2e7d32; }
+.csv-stat.error { background: #ffebee; color: #c62828; }
+
+/* CSV progress bar */
+.csv-progress-bar { width: 100%; height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden; }
+.csv-progress-fill { height: 100%; background: linear-gradient(90deg, #e94560, #ff6b81); border-radius: 4px; transition: width 0.4s ease; width: 0; }
+.csv-progress-text { font-size: 12px; color: #888; margin-top: 6px; }
+
+/* CSV result summary */
+.csv-result-summary { font-size: 14px; padding: 12px 16px; border-radius: 8px; }
+.csv-result-summary.success { background: #e8f5e9; color: #2e7d32; }
+.csv-result-summary.partial { background: #fff3e0; color: #e65100; }
+
 /* ===== 이상 탐지 ===== */
 .anomaly-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
 .anomaly-card { background: white; border-radius: 10px; padding: 18px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); border-left: 4px solid; text-align: center; }

@@ -29,15 +29,36 @@ const upload = multer({
   },
 });
 
+// CSV/Excel upload config (separate storage for temp files)
+const csvStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, `csv-${Date.now()}${ext}`);
+  },
+});
+const csvUpload = multer({
+  storage: csvStorage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.csv', '.xlsx', '.xls'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, allowed.includes(ext));
+  },
+});
+
 // 서비스 모듈
-const MasterProductDB = require('../../services/masterProductDB');
 const pricingEngine = require('../../services/pricingEngine');
 const platformOptimizer = require('../../services/platformOptimizer');
 const SkuScorer = require('../../services/skuScorer');
-const masterDB = new MasterProductDB();
+const dataSource = require('../../services/dataSource');
+const csvImporter = require('../../services/csvImporter');
+const platformRegistry = require('../../services/platformRegistry');
+const ProductExporter = require('../../services/productExporter');
+const RepricingService = require('../../services/repricingService');
 const skuScorer = new SkuScorer();
 
-// 플랫폼별 API 모듈 lazy load
+// Platform API lazy loaders (kept for direct API calls in revenue/sync endpoints)
 function getShopifyAPI() {
   const ShopifyAPI = require('../../api/shopifyAPI');
   return new ShopifyAPI();
@@ -59,12 +80,6 @@ function getAlibabaAPI() {
   return new AlibabaAPI();
 }
 
-// Google Sheets lazy load
-function getGoogleSheets() {
-  const GoogleSheetsAPI = require('../../api/googleSheetsAPI');
-  return new GoogleSheetsAPI(credentialsPath);
-}
-
 // 캐시
 let platformCache = null;
 let platformCacheTime = 0;
@@ -76,8 +91,6 @@ let battleCache = null;
 let battleCacheTime = 0;
 const BATTLE_CACHE_TTL = 180000; // 3분
 
-const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID;
-
 // ===========================
 // 기존 엔드포인트
 // ===========================
@@ -87,7 +100,7 @@ router.get('/dashboard/summary', async (req, res) => {
   try {
     const [platforms, syncHistory] = await Promise.all([
       getPlatformStatuses(),
-      getSyncHistory()
+      dataSource.getSyncHistory()
     ]);
 
     res.json({
@@ -117,8 +130,8 @@ router.get('/products', async (req, res) => {
     let products;
 
     if (!platform || platform === 'ebay') {
-      // Google Sheets에서 읽기 (2분 캐시, 전체 상품, 즉시 로딩)
-      const dashData = await getDashboardData();
+      // DB_SOURCE에 따라 Supabase or Sheets (2분 캐시)
+      const dashData = await dataSource.getDashboardData();
       products = (dashData || [])
         .filter(d => !platform || d.platform.includes('eBay'))
         .map(d => ({
@@ -160,7 +173,7 @@ router.get('/products', async (req, res) => {
 // GET /api/sync/status
 router.get('/sync/status', async (req, res) => {
   try {
-    const history = await getSyncHistory();
+    const history = await dataSource.getSyncHistory();
     const latest = history.length > 0 ? history[history.length - 1] : null;
     res.json({ latest, total: history.length });
   } catch (error) {
@@ -171,31 +184,42 @@ router.get('/sync/status', async (req, res) => {
 // GET /api/sync/history
 router.get('/sync/history', async (req, res) => {
   try {
-    const history = await getSyncHistory();
+    const history = await dataSource.getSyncHistory();
     res.json(history.slice(-20).reverse());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// POST /api/sync/trigger/:platform
+// POST /api/sync/trigger/:platform — Supabase-based platform sync
 router.post('/sync/trigger/:platform', async (req, res) => {
   const { platform } = req.params;
 
-  const scripts = {
-    shopify: 'node src/sync/sync-shopify-to-sheets.js',
-    ebay: 'node src/sync/sync-ebay-to-sheets.js',
-    naver: 'node src/sync/sync-naver-to-sheets.js',
-    alibaba: 'node src/sync/sync-alibaba-to-sheets.js'
+  // Supabase-based sync: fetch from platform API → upsert to Supabase
+  const syncScripts = {
+    ebay: 'node src/sync/sync-ebay-price-shipping.js',
   };
 
-  if (!scripts[platform]) {
-    return res.status(400).json({ error: `Unknown platform: ${platform}` });
+  // For platforms with dedicated sync scripts, run them
+  const script = syncScripts[platform];
+  if (!script) {
+    // For other platforms, use the platform API to sync data directly to Supabase
+    try {
+      const dataSource = require('../../services/dataSource');
+      const syncRepo = dataSource.getSyncRepo();
+      await syncRepo.recordSync(platform, 'manual_sync', 'success', 0, null, { trigger: 'manual' });
+      res.json({ message: `${platform} 동기화 — Supabase 직접 동기화 완료`, status: 'completed' });
+      platformCache = null;
+      analysisCache = null;
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+    return;
   }
 
   res.json({ message: `${platform} 동기화 시작됨`, status: 'running' });
 
-  exec(scripts[platform], { cwd: projectRoot, timeout: 600000 })
+  exec(script, { cwd: projectRoot, timeout: 600000 })
     .then(() => {
       console.log(`${platform} 수동 동기화 완료`);
       platformCache = null;
@@ -369,9 +393,9 @@ router.get('/ebay/trends', async (req, res) => {
 // GET /api/analysis/summary — 매출/마진 요약
 router.get('/analysis/summary', async (req, res) => {
   try {
-    const data = await getDashboardData();
+    const data = await dataSource.getDashboardData();
     if (!data || data.length === 0) {
-      return res.json({ error: 'no_data', message: 'Google Sheets 데이터 없음' });
+      return res.json({ error: 'no_data', message: '데이터 없음' });
     }
 
     let totalRevenue = 0;    // 총 매출 (정산액)
@@ -445,7 +469,7 @@ router.get('/analysis/summary', async (req, res) => {
 router.get('/analysis/products', async (req, res) => {
   try {
     const { sort = 'margin', order = 'desc', limit = 50, platform } = req.query;
-    let data = await getDashboardData();
+    let data = await dataSource.getDashboardData();
     if (!data || data.length === 0) {
       return res.json([]);
     }
@@ -470,7 +494,7 @@ router.get('/analysis/products', async (req, res) => {
 // GET /api/analysis/top — 효자상품 (마진 >= 20%)
 router.get('/analysis/top', async (req, res) => {
   try {
-    const data = await getDashboardData();
+    const data = await dataSource.getDashboardData();
     if (!data || data.length === 0) {
       return res.json([]);
     }
@@ -511,7 +535,7 @@ router.post('/analysis/margin-calc', (req, res) => {
 // GET /api/anomalies — 이상 탐지
 router.get('/anomalies', async (req, res) => {
   try {
-    const data = await getDashboardData();
+    const data = await dataSource.getDashboardData();
     if (!data || data.length === 0) {
       return res.json({ lowMargin: [], lowStock: [], salesDrop: [], summary: {} });
     }
@@ -602,7 +626,7 @@ router.post('/uploads/images', upload.array('images', 5), (req, res) => {
 // 상품 등록 엔드포인트 (NEW)
 // ===========================
 
-// POST /api/products/register — 마스터 상품 등록 (자동 가격 계산 + 플랫폼 최적화)
+// POST /api/products/register — 마스터 상품 등록 (Supabase + ProductExporter)
 router.post('/products/register', async (req, res) => {
   try {
     const {
@@ -618,213 +642,169 @@ router.post('/products/register', async (req, res) => {
       return res.status(400).json({ error: 'SKU와 상품명은 필수입니다' });
     }
 
-    // 1. 마스터 상품 DB에 저장 (이미 있으면 업데이트)
-    let masterProduct = masterDB.getBySku(sku);
-    const productData = {
-      sku, title,
-      titleEn: titleEn || title,
-      description: description || '',
-      descriptionEn: descriptionEn || description || '',
-      category: category || '기타',
-      purchasePrice: parseFloat(purchasePrice) || 0,
+    // 1. Save to Supabase products table
+    const productRepo = dataSource.getProductRepo();
+    const productRow = await productRepo.createProduct({
+      sku, title: titleEn || title,
+      title_ko: title,
+      description: descriptionEn || description || '',
+      description_ko: description || '',
+      image: imageUrls && imageUrls[0] ? imageUrls[0] : '',
       weight: parseFloat(weight) || 0,
-      imageUrls: imageUrls || [],
-      keywords: keywords || [],
-      targetMargin: parseFloat(targetMargin) || 30,
-      quantity: parseInt(quantity) || 1,
-      condition: condition || 'new',
-      ebayCategoryId: ebayCategoryId || '',
-      naverCategoryId: naverCategoryId || '',
-      shopifyProductType: shopifyProductType || '',
-    };
+      purchase: String(parseFloat(purchasePrice) || 0),
+      priceUSD: String(parseFloat(priceUSD) || 0),
+      shippingUSD: String(parseFloat(shippingUSD) || 3.9),
+      stock: String(parseInt(quantity) || 1),
+      status: 'active',
+    });
 
-    if (masterProduct) {
-      masterProduct = masterDB.update(sku, productData);
-    } else {
-      masterProduct = masterDB.create(productData);
+    // Update additional fields
+    if (productRow?.id) {
+      const { getClient } = require('../../db/supabaseClient');
+      await getClient().from('products').update({
+        purchase_price: parseFloat(purchasePrice) || 0,
+        target_margin: parseFloat(targetMargin) || 30,
+        image_urls: imageUrls || [],
+        keywords: keywords || [],
+        condition: condition || 'new',
+      }).eq('id', productRow.id);
     }
 
-    // 2. 가격 계산 (마진 기반 자동 or 수동 지정)
+    // 2. Calculate prices (DB-driven fees/rates)
     let prices;
     if (priceUSD && !targetMargin) {
-      // 수동 가격 모드: 사용자가 직접 가격 지정
       const manualPrice = parseFloat(priceUSD);
       const manualShipping = parseFloat(shippingUSD) || 3.9;
+      const rates = await platformRegistry.getExchangeRates();
       prices = {
         ebay: { price: manualPrice, shipping: manualShipping, currency: 'USD' },
         shopify: { price: manualPrice, shipping: manualShipping, currency: 'USD' },
-        naver: { price: Math.round(manualPrice * 1400), shipping: 0, currency: 'KRW' },
+        naver: { price: Math.round(manualPrice * (rates.usd || 1400)), shipping: 0, currency: 'KRW' },
       };
     } else {
-      // 자동 가격 모드: 마진 기반 역산
-      prices = pricingEngine.calculatePrices(masterProduct);
+      const fees = await platformRegistry.getFeeRates();
+      const rates = await platformRegistry.getExchangeRates();
+      prices = pricingEngine.calculatePrices({
+        purchasePrice: parseFloat(purchasePrice) || 0,
+        weight: parseFloat(weight) || 0,
+        targetMargin: parseFloat(targetMargin) || 30,
+        shippingUSD: parseFloat(shippingUSD) || 3.9,
+      }, fees, rates);
     }
 
-    const results = { sheets: false, ebay: null, shopify: null, naver: null, prices };
-
-    // 3. Google Sheets에 추가
-    if (fs.existsSync(credentialsPath)) {
+    // 3. Export to target platforms via ProductExporter
+    const results = { prices };
+    if (targetPlatforms && targetPlatforms.length > 0) {
       try {
-        const sheets = getGoogleSheets();
-        await sheets.authenticate();
-
-        const ebayP = prices.ebay?.price || parseFloat(priceUSD) || 0;
-        const ebayS = prices.ebay?.shipping || parseFloat(shippingUSD) || 3.9;
-        const pp = parseFloat(purchasePrice) || 0;
-        const fee = Math.round((ebayP + ebayS) * 0.18 * 1400);
-        const tax = Math.round(pp * 0.15);
-        const totalCost = pp + fee + tax;
-
-        const newRow = [
-          '',  // Image
-          sku,
-          titleEn || title,
-          weight || '',
-          purchasePrice || '',
-          '',  // 실제 배송비(KRW)
-          fee || '',
-          tax || '',
-          totalCost || '',
-          ebayP || '',
-          ebayS || '3.9',
-          '',  // 최종순이익
-          '',  // 마진율
-        ];
-
-        await sheets.appendData(SPREADSHEET_ID, '최종 Dashboard!A:M', [newRow]);
-        results.sheets = true;
-        analysisCache = null;
-      } catch (e) {
-        console.error('Sheets 등록 실패:', e.message);
-        results.sheets = e.message;
+        const exporter = new ProductExporter();
+        const exportResult = await exporter.exportProduct(sku, targetPlatforms, {
+          skipTranslation: !!(titleEn),
+        });
+        Object.assign(results, exportResult.results);
+      } catch (exportErr) {
+        console.error('ProductExporter error:', exportErr.message);
+        results.exportError = exportErr.message;
       }
     }
 
-    // 4. eBay 등록 (자동 최적화)
-    if (targetPlatforms && targetPlatforms.includes('ebay') && !prices.ebay?.error) {
-      try {
-        const ebay = getEbayAPI();
-        const ebayData = platformOptimizer.optimize('ebay', masterProduct, prices);
-        if (ebayData) {
-          const ebayResult = await ebay.createProduct(ebayData);
-          results.ebay = ebayResult.success
-            ? { success: true, itemId: ebayResult.itemId, price: prices.ebay.price }
-            : { success: false, error: ebayResult.error };
-
-          if (ebayResult.success) {
-            masterDB.updatePlatformStatus(sku, 'ebay', {
-              itemId: ebayResult.itemId, status: 'active',
-              price: prices.ebay.price, registeredAt: new Date().toISOString(),
-            });
-
-            // 시트에 eBay Item ID 기록
-            if (ebayResult.itemId && fs.existsSync(credentialsPath)) {
-              try {
-                const sheets = getGoogleSheets();
-                await sheets.authenticate();
-                const rows = await sheets.readData(SPREADSHEET_ID, '최종 Dashboard!B2:B');
-                if (rows) {
-                  for (let i = 0; i < rows.length; i++) {
-                    if (rows[i][0] === sku) {
-                      await sheets.writeData(SPREADSHEET_ID, `최종 Dashboard!N${i + 2}`, [[ebayResult.itemId]]);
-                      await sheets.writeData(SPREADSHEET_ID, `최종 Dashboard!Q${i + 2}`, [['등록완료']]);
-                      break;
-                    }
-                  }
-                }
-              } catch (sheetErr) {
-                console.error('eBay 시트 업데이트 실패:', sheetErr.message);
-              }
-            }
-          }
-        }
-      } catch (e) {
-        results.ebay = { success: false, error: e.message };
-      }
-    }
-
-    // 5. Shopify 등록 (자동 최적화)
-    if (targetPlatforms && targetPlatforms.includes('shopify') && !prices.shopify?.error) {
-      try {
-        const shopify = getShopifyAPI();
-        const shopifyData = platformOptimizer.optimize('shopify', masterProduct, prices);
-        if (shopifyData) {
-          const shopifyResult = await shopify.createProduct(shopifyData);
-          results.shopify = shopifyResult.success
-            ? { success: true, productId: shopifyResult.productId, price: prices.shopify.price }
-            : { success: false, error: shopifyResult.error };
-
-          if (shopifyResult.success) {
-            masterDB.updatePlatformStatus(sku, 'shopify', {
-              productId: shopifyResult.productId, status: 'active',
-              price: prices.shopify.price, registeredAt: new Date().toISOString(),
-            });
-
-            if (fs.existsSync(credentialsPath)) {
-              try {
-                const sheets = getGoogleSheets();
-                await sheets.authenticate();
-                const rows = await sheets.readData(SPREADSHEET_ID, '최종 Dashboard!B2:B');
-                if (rows) {
-                  for (let i = 0; i < rows.length; i++) {
-                    if (rows[i][0] === sku) {
-                      await sheets.writeData(SPREADSHEET_ID, `최종 Dashboard!R${i + 2}`, [['등록완료']]);
-                      break;
-                    }
-                  }
-                }
-              } catch (sheetErr) {
-                console.error('Shopify 시트 업데이트 실패:', sheetErr.message);
-              }
-            }
-          }
-        }
-      } catch (e) {
-        results.shopify = { success: false, error: e.message };
-      }
-    }
-
-    // 6. Naver 등록 (자동 최적화)
-    if (targetPlatforms && targetPlatforms.includes('naver') && !prices.naver?.error) {
-      try {
-        const naver = getNaverAPI();
-        await naver.getToken();
-        const naverData = platformOptimizer.optimize('naver', masterProduct, prices);
-        if (naverData) {
-          const naverResult = await naver.createProduct(naverData);
-          results.naver = naverResult.success
-            ? { success: true, productNo: naverResult.originProductNo, price: prices.naver.price }
-            : { success: false, error: naverResult.error };
-
-          if (naverResult.success) {
-            masterDB.updatePlatformStatus(sku, 'naver', {
-              productNo: naverResult.originProductNo, status: 'active',
-              price: prices.naver.price, registeredAt: new Date().toISOString(),
-            });
-          }
-        }
-      } catch (e) {
-        results.naver = { success: false, error: e.message };
-      }
-    }
-
-    // 결과 집계
+    // Summarize successes
     const platformSuccesses = [];
-    if (results.sheets === true) platformSuccesses.push('Google Sheets');
-    if (results.ebay?.success) platformSuccesses.push(`eBay ($${prices.ebay?.price})`);
-    if (results.shopify?.success) platformSuccesses.push(`Shopify ($${prices.shopify?.price})`);
-    if (results.naver?.success) platformSuccesses.push(`Naver (₩${prices.naver?.price?.toLocaleString()})`);
+    for (const [key, val] of Object.entries(results)) {
+      if (val && val.success) {
+        const p = prices[key];
+        const label = p ? `${key} (${p.currency === 'KRW' ? '₩' : '$'}${p.price})` : key;
+        platformSuccesses.push(label);
+      }
+    }
 
     platformCache = null;
+    analysisCache = null;
 
     res.json({
-      success: results.sheets === true || platformSuccesses.length > 0,
+      success: platformSuccesses.length > 0 || !!productRow,
       message: platformSuccesses.length > 0
         ? `상품이 등록되었습니다 (${platformSuccesses.join(', ')})`
+        : productRow ? 'Supabase에 상품 저장 완료 (플랫폼 등록 미선택 또는 실패)'
         : '등록 실패',
       results,
-      masterProduct,
+      product: productRow,
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===========================
+// CSV 대량 임포트
+// ===========================
+
+// POST /api/products/import-csv — CSV/Excel 파일 업로드 → 미리보기 (파싱+검증)
+router.post('/products/import-csv', csvUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'CSV 또는 Excel 파일을 업로드해주세요 (.csv, .xlsx)' });
+    }
+
+    const rows = await csvImporter.parseFile(req.file.path);
+    const validation = csvImporter.validateRows(rows);
+
+    // Store parsed file path for confirmation step
+    res.json({
+      fileName: req.file.originalname,
+      filePath: req.file.filename,
+      total: validation.total,
+      validCount: validation.valid.length,
+      errorCount: validation.errors.length,
+      preview: validation.valid.slice(0, 50).map(r => ({
+        sku: r.sku,
+        title: r.title,
+        titleEn: r.titleEn,
+        purchasePrice: r.purchasePrice,
+        weight: r.weight,
+        category: r.category,
+        quantity: r.quantity,
+        targetMargin: r.targetMargin,
+      })),
+      errors: validation.errors,
+      validRows: validation.valid,
+    });
+
+    // Clean up uploaded file after parsing
+    try { fs.unlinkSync(req.file.path); } catch (e) { /* ignore */ }
+  } catch (error) {
+    if (req.file) try { fs.unlinkSync(req.file.path); } catch (e) { /* ignore */ }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/products/import-csv/confirm — 검증된 데이터 확정 등록
+router.post('/products/import-csv/confirm', async (req, res) => {
+  try {
+    const { rows, defaultMargin = 30 } = req.body;
+
+    if (!rows || !Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: '등록할 상품 데이터가 없습니다' });
+    }
+
+    const result = await csvImporter.processRows(rows, { defaultMargin });
+
+    // Invalidate caches
+    analysisCache = null;
+    platformCache = null;
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/products/csv-template — CSV 템플릿 다운로드
+router.get('/products/csv-template', async (req, res) => {
+  try {
+    const buffer = await csvImporter.generateTemplate();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="product-import-template.xlsx"');
+    res.send(Buffer.from(buffer));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -883,52 +863,95 @@ router.get('/products/preview-prices', (req, res) => {
   }
 });
 
-// GET /api/master-products — 마스터 상품 목록
-router.get('/master-products', (req, res) => {
+// GET /api/master-products — 마스터 상품 목록 (Supabase)
+router.get('/master-products', async (req, res) => {
   try {
     const { page = 1, limit = 50, search } = req.query;
-    let products = masterDB.getAll();
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+
+    let query = db.from('products').select('*', { count: 'exact' })
+      .not('sku', 'is', null).neq('sku', '').order('sku');
 
     if (search) {
-      const q = search.toLowerCase();
-      products = products.filter(p =>
-        p.sku.toLowerCase().includes(q) ||
-        p.title.toLowerCase().includes(q) ||
-        (p.titleEn || '').toLowerCase().includes(q)
-      );
+      query = query.or(`sku.ilike.%${search}%,title.ilike.%${search}%,title_ko.ilike.%${search}%`);
     }
 
-    const total = products.length;
-    const start = (parseInt(page) - 1) * parseInt(limit);
-    const paginated = products.slice(start, start + parseInt(limit));
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const start = (pageNum - 1) * limitNum;
+    query = query.range(start, start + limitNum - 1);
 
-    res.json({ products: paginated, total, page: parseInt(page), totalPages: Math.ceil(total / parseInt(limit)) });
+    const { data, count, error } = await query;
+    if (error) throw error;
+
+    res.json({
+      products: data || [],
+      total: count || 0,
+      page: pageNum,
+      totalPages: Math.ceil((count || 0) / limitNum),
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// GET /api/master-products/:sku — 단일 상품 상세
-router.get('/master-products/:sku', (req, res) => {
+// GET /api/master-products/:sku — 단일 상품 상세 (Supabase + export status)
+router.get('/master-products/:sku', async (req, res) => {
   try {
-    const product = masterDB.getBySku(req.params.sku);
+    const productRepo = dataSource.getProductRepo();
+    const product = await productRepo.getProductWithExportStatus(req.params.sku);
     if (!product) return res.status(404).json({ error: '상품을 찾을 수 없습니다' });
 
-    const prices = pricingEngine.calculatePrices(product);
+    const fees = await platformRegistry.getFeeRates();
+    const rates = await platformRegistry.getExchangeRates();
+    const prices = pricingEngine.calculatePrices({
+      purchasePrice: product.purchase_price || product.cost_price || 0,
+      weight: product.weight || 0,
+      targetMargin: product.target_margin || 30,
+      shippingUSD: 3.9,
+    }, fees, rates);
+
     res.json({ product, prices });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// PUT /api/master-products/:sku — 마스터 상품 수정
-router.put('/master-products/:sku', (req, res) => {
+// PUT /api/master-products/:sku — 마스터 상품 수정 (Supabase)
+router.put('/master-products/:sku', async (req, res) => {
   try {
-    const product = masterDB.update(req.params.sku, req.body);
-    if (!product) return res.status(404).json({ error: '상품을 찾을 수 없습니다' });
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const updates = {};
+    const body = req.body;
 
-    const prices = pricingEngine.calculatePrices(product);
-    res.json({ product, prices });
+    if (body.title !== undefined) updates.title = body.title;
+    if (body.title_ko !== undefined) updates.title_ko = body.title_ko;
+    if (body.description !== undefined) updates.description = body.description;
+    if (body.weight !== undefined) updates.weight = parseFloat(body.weight) || 0;
+    if (body.purchase_price !== undefined) updates.purchase_price = parseFloat(body.purchase_price) || 0;
+    if (body.target_margin !== undefined) updates.target_margin = parseFloat(body.target_margin) || 30;
+    if (body.price_usd !== undefined) updates.price_usd = parseFloat(body.price_usd) || 0;
+    if (body.stock !== undefined) updates.stock = parseInt(body.stock) || 0;
+    if (body.keywords !== undefined) updates.keywords = body.keywords;
+    if (body.image_urls !== undefined) updates.image_urls = body.image_urls;
+
+    const { data, error } = await db.from('products').update(updates)
+      .eq('sku', req.params.sku).select().single();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: '상품을 찾을 수 없습니다' });
+
+    const fees = await platformRegistry.getFeeRates();
+    const rates = await platformRegistry.getExchangeRates();
+    const prices = pricingEngine.calculatePrices({
+      purchasePrice: data.purchase_price || data.cost_price || 0,
+      weight: data.weight || 0,
+      targetMargin: data.target_margin || 30,
+      shippingUSD: 3.9,
+    }, fees, rates);
+
+    res.json({ product: data, prices });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -960,7 +983,7 @@ router.put('/products/ebay/:itemId', async (req, res) => {
     const sheetUpdates = {};
     if (price !== undefined) sheetUpdates.priceUSD = price;
     if (quantity !== undefined) sheetUpdates.stock = quantity;
-    const sheetResult = await updateGoogleSheet('itemId', itemId, sheetUpdates, sku);
+    const sheetResult = await dataSource.updateProduct('itemId', itemId, sheetUpdates, sku);
 
     res.json({
       success: result.success,
@@ -998,7 +1021,7 @@ router.put('/products/shopify/:variantId', async (req, res) => {
       const sheetUpdates = {};
       if (price !== undefined) sheetUpdates.priceUSD = price;
       if (inventory_quantity !== undefined) sheetUpdates.stock = inventory_quantity;
-      await updateGoogleSheet('sku', sku, sheetUpdates);
+      await dataSource.updateProduct('sku', sku, sheetUpdates, null);
     }
 
     res.json({
@@ -1049,7 +1072,7 @@ router.put('/products/naver/:productNo', async (req, res) => {
       const sheetUpdates = {};
       if (price !== undefined) sheetUpdates.priceUSD = price;
       if (stock !== undefined) sheetUpdates.stock = stock;
-      await updateGoogleSheet('sku', sku, sheetUpdates);
+      await dataSource.updateProduct('sku', sku, sheetUpdates, null);
     }
 
     res.json({
@@ -1073,7 +1096,7 @@ router.put('/products/alibaba/:productId', async (req, res) => {
     const sheetUpdates = {};
     if (price !== undefined) sheetUpdates.priceUSD = price;
     if (quantity !== undefined) sheetUpdates.stock = quantity;
-    const sheetResult = await updateGoogleSheet('sku', sku || productId, sheetUpdates);
+    const sheetResult = await dataSource.updateProduct('sku', sku || productId, sheetUpdates, null);
 
     platformCache = null;
     analysisCache = null;
@@ -1099,13 +1122,21 @@ async function getPlatformStatuses() {
     return platformCache;
   }
 
-  const platforms = [
-    { name: 'Shopify', key: 'shopify', color: '#96bf48' },
-    { name: 'eBay', key: 'ebay', color: '#1565c0' },
-    { name: 'Naver', key: 'naver', color: '#03c75a' },
-    { name: 'Alibaba', key: 'alibaba', color: '#ff6a00' },
-    { name: 'Shopee', key: 'shopee', color: '#ee4d2d' },
-  ];
+  // Load active platforms from DB (data-driven)
+  let platforms;
+  try {
+    const dbPlatforms = await platformRegistry.getActivePlatforms();
+    platforms = dbPlatforms.map(p => ({ name: p.display_name || p.name, key: p.key, color: p.color }));
+  } catch (e) {
+    // Fallback to hardcoded if DB not available
+    platforms = [
+      { name: 'Shopify', key: 'shopify', color: '#96bf48' },
+      { name: 'eBay', key: 'ebay', color: '#1565c0' },
+      { name: 'Naver', key: 'naver', color: '#03c75a' },
+      { name: 'Alibaba', key: 'alibaba', color: '#ff6a00' },
+      { name: 'Shopee', key: 'shopee', color: '#ee4d2d' },
+    ];
+  }
 
   const results = await Promise.all(platforms.map(async (p) => {
     let productCount = 0;
@@ -1129,14 +1160,11 @@ async function getPlatformStatuses() {
           } catch (e) {
             // API 실패시 시트에서 카운트
           }
-          // API가 0이면 eBay Products 시트에서 fallback
-          if (productCount === 0 && SPREADSHEET_ID) {
+          // API가 0이면 DB에서 fallback
+          if (productCount === 0) {
             try {
-              const sheets = getGoogleSheets();
-              await sheets.authenticate();
-              const rows = await sheets.readData(SPREADSHEET_ID, 'eBay Products!A2:A');
-              productCount = rows ? rows.length : 0;
-              if (productCount > 0) status = 'connected';
+              const dbCount = await dataSource.getPlatformProductCount('ebay');
+              if (dbCount > 0) { productCount = dbCount; status = 'connected'; }
             } catch (e2) {}
           }
           break;
@@ -1179,265 +1207,13 @@ async function getPlatformStatuses() {
 // 멀티 플랫폼 분석 데이터 통합
 // ===========================
 
-// 최종 Dashboard 시트 읽기 (기존 마스터 데이터)
-async function readDashboardSheet(sheets) {
-  try {
-    const rows = await sheets.readData(SPREADSHEET_ID, '최종 Dashboard!A2:S');
-    if (!rows || rows.length === 0) return [];
-    return rows.map(row => {
-      const priceUSD = parseFloat(row[9]) || 0;
-      const shipUSD = parseFloat(row[10]) || 0;
-      const settlement = (priceUSD + shipUSD) * 0.82 * 1400;
-      return {
-        image: row[0] || '', sku: row[1] || '', title: row[2] || '',
-        weight: row[3] || '', purchase: row[4] || '', shippingKRW: row[5] || '',
-        fee: row[6] || '', tax: row[7] || '', totalCost: row[8] || '',
-        priceUSD: row[9] || '', shippingUSD: row[10] || '',
-        profit: row[11] || '', margin: row[12] || '',
-        itemId: row[13] || '', salesCount: row[14] || '', stock: row[15] || '',
-        ebayStatus: row[16] || '', shopifyStatus: row[17] || '',
-        supplier: row[18] || '',
-        platform: '',
-        settlement: Math.round(settlement),
-      };
-    }).filter(r => r.sku);
-  } catch (e) {
-    console.error('최종 Dashboard 읽기 실패:', e.message);
-    return [];
-  }
-}
-
-// eBay Products 시트 읽기
-async function readEbaySheetData(sheets) {
-  try {
-    const rows = await sheets.readData(SPREADSHEET_ID, 'eBay Products!A2:N');
-    if (!rows || rows.length === 0) return [];
-    return rows.map(row => {
-      const priceUSD = parseFloat(row[3]) || 0;
-      const shipUSD = parseFloat(row[4]) || 0;
-      const feeRate = parseFloat(row[11]) || 13;
-      const settlement = (priceUSD + shipUSD) * (1 - feeRate / 100) * 1400;
-      return {
-        image: row[13] || '', sku: row[0] || '', title: row[1] || '',
-        weight: '', purchase: '', shippingKRW: '', fee: '', tax: '',
-        totalCost: '', priceUSD: String(priceUSD || ''), shippingUSD: String(shipUSD || ''),
-        profit: '', margin: '', itemId: row[2] || '',
-        salesCount: row[7] || '', stock: row[6] || '',
-        ebayStatus: row[9] || '', shopifyStatus: '',
-        platform: 'eBay', settlement: Math.round(settlement),
-      };
-    }).filter(r => r.sku);
-  } catch (e) {
-    console.error('eBay Products 시트 읽기 실패:', e.message);
-    return [];
-  }
-}
-
-// Shopify 시트(시트1) 읽기
-async function readShopifySheetData(sheets) {
-  try {
-    const rows = await sheets.readData(SPREADSHEET_ID, 'Shopify!A2:K');
-    if (!rows || rows.length === 0) return [];
-    return rows.map(row => {
-      const priceUSD = parseFloat(row[3]) || 0;
-      const exchangeRate = parseFloat(row[4]) || 1400;
-      const feeRate = parseFloat(row[5]) || 15;
-      const settlement = priceUSD * exchangeRate * (1 - feeRate / 100);
-      return {
-        image: '', sku: row[0] || '', title: row[1] || '',
-        weight: '', purchase: row[2] || '', shippingKRW: row[6] || '',
-        fee: '', tax: '', totalCost: '',
-        priceUSD: String(priceUSD || ''), shippingUSD: '',
-        profit: row[7] || '', margin: row[8] || '',
-        itemId: '', salesCount: '', stock: '',
-        ebayStatus: '', shopifyStatus: row[9] || '',
-        platform: 'Shopify', settlement: Math.round(settlement),
-      };
-    }).filter(r => r.sku);
-  } catch (e) {
-    console.error('Shopify 시트 읽기 실패:', e.message);
-    return [];
-  }
-}
-
-// Naver Products 시트 읽기
-// Naver 시트의 판매가(KRW)를 기준으로 정산액 계산
-async function readNaverSheetData(sheets) {
-  try {
-    const rows = await sheets.readData(SPREADSHEET_ID, 'Naver Products!A2:J');
-    if (!rows || rows.length === 0) return [];
-    return rows.map(row => {
-      const priceKRW = parseFloat(row[2]) || 0;
-      const feeRate = parseFloat(row[7]) || 5.5;
-      const settlement = priceKRW * (1 - feeRate / 100);
-      return {
-        image: row[9] || '', sku: row[0] || '', title: row[1] || '',
-        weight: '', purchase: '', shippingKRW: '', fee: '', tax: '',
-        totalCost: '', priceUSD: '', shippingUSD: '',
-        profit: '', margin: '',
-        itemId: '', salesCount: '', stock: row[3] || '',
-        ebayStatus: '', shopifyStatus: '',
-        platform: 'Naver', settlement: Math.round(settlement),
-        priceKRW: String(priceKRW || ''),
-      };
-    }).filter(r => r.sku);
-  } catch (e) {
-    console.error('Naver Products 시트 읽기 실패:', e.message);
-    return [];
-  }
-}
-
-// Alibaba Products 시트 읽기
-async function readAlibabaSheetData(sheets) {
-  try {
-    const rows = await sheets.readData(SPREADSHEET_ID, 'Alibaba Products!A2:J');
-    if (!rows || rows.length === 0) return [];
-    return rows.map(row => ({
-      image: row[8] || '', sku: row[0] || '', title: row[1] || '',
-      weight: '', purchase: '', shippingKRW: '', fee: '', tax: '',
-      totalCost: '', priceUSD: '', shippingUSD: '',
-      profit: '', margin: '',
-      itemId: '', salesCount: '', stock: '',
-      ebayStatus: '', shopifyStatus: '',
-      platform: 'Alibaba', settlement: 0,
-    })).filter(r => r.sku);
-  } catch (e) {
-    console.error('Alibaba Products 시트 읽기 실패:', e.message);
-    return [];
-  }
-}
-
-// 모든 플랫폼 데이터 통합
-async function getAllPlatformData(sheets) {
-  const results = await Promise.allSettled([
-    readDashboardSheet(sheets),
-    readEbaySheetData(sheets),
-    readShopifySheetData(sheets),
-    readNaverSheetData(sheets),
-    readAlibabaSheetData(sheets),
-  ]);
-
-  const platformNames = ['_dashboard', 'eBay', 'Shopify', 'Naver', 'Alibaba'];
-
-  // 각 플랫폼 시트의 SKU → item 맵 생성
-  const platformDataMaps = {};
-  for (let i = 1; i < results.length; i++) {
-    if (results[i].status !== 'fulfilled') continue;
-    const map = new Map();
-    results[i].value.forEach(item => { if (item.sku) map.set(item.sku, item); });
-    platformDataMaps[platformNames[i]] = map;
-  }
-
-  const skuMap = new Map();
-  const dashboardData = results[0].status === 'fulfilled' ? results[0].value : [];
-
-  // Dashboard 데이터 기준으로 플랫폼 태깅 + 플랫폼별 정산액 적용
-  dashboardData.forEach(item => {
-    if (!item.sku) return;
-
-    // SKU가 어느 플랫폼 시트에 있는지 확인
-    const sellingPlatforms = [];
-    for (const [pName, pMap] of Object.entries(platformDataMaps)) {
-      if (pMap.has(item.sku)) sellingPlatforms.push(pName);
-    }
-
-    if (sellingPlatforms.length > 0) {
-      // 주 판매 플랫폼 결정 (첫 번째 매칭 플랫폼)
-      const primaryPlatform = sellingPlatforms[0];
-      item.platform = sellingPlatforms.join(', ');
-
-      // 플랫폼 시트의 정산액을 우선 사용 (Dashboard의 eBay 공식 대체)
-      const platformItem = platformDataMaps[primaryPlatform].get(item.sku);
-      if (platformItem && platformItem.settlement > 0) {
-        item.settlement = platformItem.settlement;
-      }
-      // 플랫폼 시트에 매입가 있는 경우만 순이익/마진 보충 (매입가 없으면 이익이 부풀려짐)
-      if (platformItem) {
-        const hasPurchase = platformItem.purchase && parseFloat(platformItem.purchase) > 0;
-        if (hasPurchase) {
-          if ((!item.profit || item.profit === '0') && platformItem.profit) item.profit = platformItem.profit;
-          if ((!item.margin || item.margin === '0') && platformItem.margin) item.margin = platformItem.margin;
-        }
-      }
-    } else {
-      item.platform = '미분류';
-    }
-
-    skuMap.set(item.sku, item);
-  });
-
-  // 플랫폼 시트에만 있고 Dashboard에 없는 상품 추가
-  for (let i = 1; i < results.length; i++) {
-    if (results[i].status !== 'fulfilled') continue;
-    results[i].value.forEach(item => {
-      if (item.sku && !skuMap.has(item.sku)) {
-        skuMap.set(item.sku, item);
-      }
-    });
-  }
-
-  return Array.from(skuMap.values());
-}
-
-// getDashboardData — 매출/마진 분석용 (최종 Dashboard 시트만 사용)
-// 플랫폼 구분: eBay Item ID 유무 + ebayStatus/shopifyStatus 컬럼 기반
-async function getDashboardData() {
-  if (analysisCache && Date.now() - analysisCacheTime < ANALYSIS_CACHE_TTL) {
-    return analysisCache;
-  }
-
-  if (!fs.existsSync(credentialsPath)) {
-    console.error('credentials.json 없음 — Google Sheets 분석 불가');
-    return null;
-  }
-
-  try {
-    const sheets = getGoogleSheets();
-    await sheets.authenticate();
-
-    const data = await readDashboardSheet(sheets);
-    if (!data || data.length === 0) return [];
-
-    // 플랫폼 태깅 (Dashboard 자체 컬럼 기반)
-    data.forEach(item => {
-      const platforms = [];
-      const ebay = (item.ebayStatus || '').trim();
-      const shopify = (item.shopifyStatus || '').trim();
-      // eBay: Item ID가 있으면 eBay 상품 (품절 포함 — 매출 데이터가 eBay 기반)
-      if (item.itemId && item.itemId.trim()) {
-        platforms.push('eBay');
-      }
-      // Shopify: "✅" 또는 "등록" 포함 (미등록 제외)
-      if (shopify.includes('✅') || (shopify.includes('등록') && !shopify.includes('미등록'))) {
-        platforms.push('Shopify');
-      }
-      item.platform = platforms.length > 0 ? platforms.join(', ') : '미분류';
-      // 활성 상태 별도 저장 (UI에서 필터용)
-      item.ebayActive = ebay.includes('✅') || (ebay.includes('등록') && !ebay.includes('미등록'));
-      item.shopifyActive = shopify.includes('✅') || (shopify.includes('등록') && !shopify.includes('미등록'));
-    });
-
-    analysisCache = data;
-    analysisCacheTime = Date.now();
-    return data;
-  } catch (error) {
-    console.error('Dashboard 데이터 읽기 실패:', error.message);
-    return null;
-  }
-}
-
-// getAllDashboardAndPlatformData — 상품 등록/관리용 (전체 플랫폼 데이터 필요할 때)
-async function getAllDashboardAndPlatformData() {
-  if (!fs.existsSync(credentialsPath)) return null;
-  try {
-    const sheets = getGoogleSheets();
-    await sheets.authenticate();
-    return await getAllPlatformData(sheets);
-  } catch (error) {
-    console.error('전체 플랫폼 데이터 읽기 실패:', error.message);
-    return null;
-  }
-}
+// ===========================
+// Sheets helper functions REMOVED — all data now comes from Supabase via dataSource
+// readDashboardSheet, readEbaySheetData, readShopifySheetData,
+// readNaverSheetData, readAlibabaSheetData, getAllPlatformData,
+// getDashboardData, getAllDashboardAndPlatformData, updateGoogleSheet
+// are all replaced by dataSource methods.
+// ===========================
 
 async function getProducts(platformFilter, limit) {
   const allProducts = [];
@@ -1596,66 +1372,20 @@ async function getProductsNonEbay(limit) {
   return allProducts;
 }
 
-// Google Sheets 셀 업데이트 (가격/재고 수정 시)
-async function updateGoogleSheet(searchField, searchValue, updates, altSku) {
-  if (!fs.existsSync(credentialsPath) || !SPREADSHEET_ID) {
-    return { success: false, error: 'credentials 없음' };
-  }
-
-  try {
-    const sheets = getGoogleSheets();
-    await sheets.authenticate();
-
-    const rows = await sheets.readData(SPREADSHEET_ID, '최종 Dashboard!A2:S');
-    if (!rows || rows.length === 0) return { success: false, error: '시트 데이터 없음' };
-
-    // 행 찾기: itemId(N열, index 13) 또는 SKU(B열, index 1)
-    let rowIndex = -1;
-    for (let i = 0; i < rows.length; i++) {
-      if (searchField === 'itemId' && rows[i][13] === String(searchValue)) { rowIndex = i; break; }
-      if (searchField === 'sku' && rows[i][1] === String(searchValue)) { rowIndex = i; break; }
-    }
-    // itemId로 못 찾으면 altSku로 재시도
-    if (rowIndex === -1 && altSku) {
-      for (let i = 0; i < rows.length; i++) {
-        if (rows[i][1] === String(altSku)) { rowIndex = i; break; }
-      }
-    }
-
-    if (rowIndex === -1) return { success: false, error: '시트에서 상품 못 찾음' };
-
-    const sheetRow = rowIndex + 2; // A2부터 시작이므로 +2
-    const updatePromises = [];
-
-    // J열: eBay가격(USD), P열: eBay재고
-    if (updates.priceUSD !== undefined) {
-      updatePromises.push(sheets.writeData(SPREADSHEET_ID, `최종 Dashboard!J${sheetRow}`, [[String(updates.priceUSD)]]));
-    }
-    if (updates.stock !== undefined) {
-      updatePromises.push(sheets.writeData(SPREADSHEET_ID, `최종 Dashboard!P${sheetRow}`, [[String(updates.stock)]]));
-    }
-
-    if (updatePromises.length > 0) {
-      await Promise.all(updatePromises);
-      analysisCache = null;
-    }
-
-    return { success: true };
-  } catch (e) {
-    console.error('Google Sheets 업데이트 실패:', e.message);
-    return { success: false, error: e.message };
-  }
-}
+// updateGoogleSheet REMOVED — all updates now go through dataSource.updateProduct() → Supabase
 
 // ===========================
 // SKU 점수 관리 엔드포인트
 // ===========================
 
 // GET /api/sku-scores — 전체 점수 목록
-router.get('/sku-scores', (req, res) => {
+router.get('/sku-scores', async (req, res) => {
   try {
     const { classification, search, sort = 'normalizedScore', order = 'desc', limit = 100 } = req.query;
-    let scores = skuScorer.getAllScores();
+
+    // Supabase 모드: DB에서 직접 읽기
+    const supaScores = await dataSource.getAllSkuScores();
+    let scores = supaScores || skuScorer.getAllScores();
 
     if (classification) {
       scores = scores.filter(s => s.classification === classification);
@@ -1669,16 +1399,21 @@ router.get('/sku-scores', (req, res) => {
     }
 
     // 정렬
+    const sortKey = supaScores ? (sort === 'normalizedScore' ? 'normalized_score' : sort) : sort;
     scores.sort((a, b) => {
-      const aVal = a[sort] || 0;
-      const bVal = b[sort] || 0;
+      const aVal = a[sortKey] || a[sort] || 0;
+      const bVal = b[sortKey] || b[sort] || 0;
       return order === 'desc' ? bVal - aVal : aVal - bVal;
     });
 
+    const summary = supaScores
+      ? await dataSource.getSkuScoreSummary()
+      : skuScorer.getSummary();
+
     res.json({
       scores: scores.slice(0, parseInt(limit)),
-      summary: skuScorer.getSummary(),
-      lastUpdated: skuScorer._data?.lastUpdated || null,
+      summary: summary || {},
+      lastUpdated: supaScores ? new Date().toISOString() : (skuScorer._data?.lastUpdated || null),
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1711,18 +1446,28 @@ router.get('/sku-scores/history/:sku', (req, res) => {
 });
 
 // GET /api/sku-scores/:sku — SKU 상세 점수
-router.get('/sku-scores/:sku', (req, res) => {
+router.get('/sku-scores/:sku', async (req, res) => {
   try {
-    const scoreData = skuScorer.getScoreBySku(req.params.sku);
+    const supaScore = await dataSource.getSkuScoreBySku(req.params.sku);
+    const scoreData = supaScore || skuScorer.getScoreBySku(req.params.sku);
     if (!scoreData) return res.status(404).json({ error: '점수 데이터 없음' });
 
-    const masterProduct = masterDB.getBySku(req.params.sku);
+    // Load product from Supabase
+    const productRepo = dataSource.getProductRepo();
+    const product = await productRepo.getProductWithExportStatus(req.params.sku);
     let prices = null;
-    if (masterProduct) {
-      prices = pricingEngine.calculatePrices(masterProduct);
+    if (product) {
+      const fees = await platformRegistry.getFeeRates();
+      const rates = await platformRegistry.getExchangeRates();
+      prices = pricingEngine.calculatePrices({
+        purchasePrice: product.purchase_price || product.cost_price || 0,
+        weight: product.weight || 0,
+        targetMargin: product.target_margin || 30,
+        shippingUSD: 3.9,
+      }, fees, rates);
     }
 
-    res.json({ scores: scoreData, masterProduct, prices });
+    res.json({ scores: scoreData, product, prices });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1806,9 +1551,10 @@ router.post('/sku-scores/retirement/execute', async (req, res) => {
       if (currentPrice > 0) {
         const newPrice = +(currentPrice * 1.05).toFixed(2);
         try {
-          // masterDB에서 플랫폼 정보 조회
-          const mp = masterDB.getBySku(sku);
-          const ebayItemId = mp?.platforms?.ebay?.itemId;
+          // Supabase에서 eBay Item ID 조회
+          const { getClient } = require('../../db/supabaseClient');
+          const { data: prod } = await getClient().from('products').select('ebay_item_id').eq('sku', sku).single();
+          const ebayItemId = prod?.ebay_item_id;
           if (ebayItemId) {
             const ebay = getEbayAPI();
             await ebay.updateItem(ebayItemId, { price: newPrice });
@@ -1875,37 +1621,7 @@ router.post('/sku-scores/retirement/execute-all', async (req, res) => {
 // 전투 상황판 (Battle Dashboard)
 // ===========================
 
-// 시트 A2:Z 읽기 (경쟁사 V~Z열 포함)
-async function readBattleDashboardSheet(sheets) {
-  try {
-    const rows = await sheets.readData(SPREADSHEET_ID, '최종 Dashboard!A2:Z');
-    if (!rows || rows.length === 0) return [];
-    return rows.map(row => ({
-      image: row[0] || '',
-      sku: row[1] || '',
-      title: row[2] || '',
-      purchasePriceKRW: row[4] || '',
-      totalCostKRW: row[8] || '',
-      myPriceUSD: parseFloat(row[9]) || 0,
-      myShippingUSD: parseFloat(row[10]) || 0,
-      profitKRW: row[11] || '',
-      marginPct: row[12] || '',
-      itemId: row[13] || '',
-      salesCount: row[14] || '',
-      stock: row[15] || '',
-      comp1Seller: row[21] || '',
-      comp1ItemId: (row[22] || '').toString().trim(),
-      comp1Price: row[23] || '',
-      comp1Shipping: row[24] || '',
-      comp2Seller: row[25] || '',
-    })).filter(r => r.sku && r.itemId);
-  } catch (e) {
-    console.error('전투 상황판 시트 읽기 실패:', e.message);
-    return [];
-  }
-}
-
-// GET /api/battle/data — 전투 상황판 데이터
+// GET /api/battle/data — 전투 상황판 데이터 (Supabase + RepricingService)
 router.get('/battle/data', async (req, res) => {
   try {
     const forceRefresh = req.query.refresh === 'true';
@@ -1914,80 +1630,36 @@ router.get('/battle/data', async (req, res) => {
       return res.json(battleCache);
     }
 
-    if (!fs.existsSync(credentialsPath)) {
-      return res.status(500).json({ error: 'Google Sheets credentials 없음' });
-    }
+    const repricing = new RepricingService();
+    const dashboard = await repricing.getBattleDashboard();
 
-    const sheets = getGoogleSheets();
-    await sheets.authenticate();
-    const sheetData = await readBattleDashboardSheet(sheets);
-
-    if (!sheetData || sheetData.length === 0) {
+    if (!dashboard || dashboard.length === 0) {
       return res.json({ items: [], summary: {}, timestamp: new Date().toISOString() });
     }
 
-    // 경쟁사 Item ID 수집
-    const competitorItemIds = sheetData
-      .filter(r => r.comp1ItemId && /^\d{9,15}$/.test(r.comp1ItemId))
-      .map(r => r.comp1ItemId);
-
-    // eBay Shopping API로 경쟁사 실시간 가격 조회
-    let competitorData = {};
-    if (competitorItemIds.length > 0) {
-      try {
-        const ebay = getEbayAPI();
-        const items = await ebay.getCompetitorItems(competitorItemIds);
-        items.forEach(item => {
-          competitorData[item.itemId] = item;
-        });
-        console.log(`전투 상황판: ${Object.keys(competitorData).length}/${competitorItemIds.length} 경쟁사 가격 조회 완료`);
-      } catch (e) {
-        console.error('경쟁사 가격 조회 실패:', e.message);
-      }
-    }
-
-    // 데이터 조합
-    const battleItems = sheetData.map(row => {
-      const myTotal = row.myPriceUSD + row.myShippingUSD;
-      const comp = competitorData[row.comp1ItemId] || null;
-
-      const compPrice = comp ? comp.price : (parseFloat(row.comp1Price) || 0);
-      const compShipping = comp ? comp.shippingCost : (parseFloat(row.comp1Shipping) || 0);
-      const compTotal = compPrice + compShipping;
-      const compSold = comp ? comp.quantitySold : 0;
-      const compSeller = comp ? comp.seller : (row.comp1Seller || '');
-
+    const battleItems = dashboard.map(row => {
+      const myTotal = row.myPrice;
+      const compTotal = row.competitorTotal || 0;
       const diff = compTotal > 0 ? +(myTotal - compTotal).toFixed(2) : null;
       const losing = diff !== null && diff > 0;
-      const killPrice = losing && compTotal > 0 ? +((compTotal - row.myShippingUSD) - 2).toFixed(2) : null;
+      const killPrice = losing && compTotal > 0 ? +(compTotal - 0.01).toFixed(2) : null;
 
       return {
         sku: row.sku,
         title: row.title,
-        image: row.image,
-        itemId: row.itemId,
-        myPrice: row.myPriceUSD,
-        myShipping: row.myShippingUSD,
+        myPrice: row.myPrice,
         myTotal: +myTotal.toFixed(2),
-        profitKRW: row.profitKRW,
-        marginPct: row.marginPct,
-        myStock: row.stock,
-        mySold: row.salesCount,
-        comp1Seller: compSeller,
-        comp1ItemId: row.comp1ItemId,
-        comp1Price: +compPrice.toFixed(2),
-        comp1Shipping: +compShipping.toFixed(2),
-        comp1Total: +compTotal.toFixed(2),
-        comp1Sold: compSold,
-        comp1Live: !!comp,
+        comp1Price: row.competitorPrice ? +row.competitorPrice.toFixed(2) : 0,
+        comp1Shipping: row.competitorShipping ? +row.competitorShipping.toFixed(2) : 0,
+        comp1Total: compTotal ? +compTotal.toFixed(2) : 0,
+        lastTracked: row.lastTracked,
         diff,
         losing,
         killPrice,
-        comp2Seller: row.comp2Seller,
+        recentChanges: row.recentChanges || [],
       };
     });
 
-    // 요약 통계
     const withComp = battleItems.filter(i => i.comp1Total > 0);
     const losingItems = withComp.filter(i => i.losing);
 
@@ -1999,7 +1671,6 @@ router.get('/battle/data', async (req, res) => {
       avgDiff: withComp.length > 0
         ? +(withComp.reduce((s, i) => s + (i.diff || 0), 0) / withComp.length).toFixed(2)
         : 0,
-      uniqueSellers: [...new Set(withComp.map(i => i.comp1Seller).filter(Boolean))],
     };
 
     const response = { items: battleItems, summary, timestamp: new Date().toISOString() };
@@ -2014,33 +1685,12 @@ router.get('/battle/data', async (req, res) => {
   }
 });
 
-// POST /api/battle/refresh — 경쟁사 가격 강제 새로고침
+// POST /api/battle/refresh — 가격 전투 새로고침
 router.post('/battle/refresh', async (req, res) => {
   try {
     battleCache = null;
     battleCacheTime = 0;
-
-    const sheets = getGoogleSheets();
-    await sheets.authenticate();
-    const sheetData = await readBattleDashboardSheet(sheets);
-
-    const competitorItemIds = sheetData
-      .filter(r => r.comp1ItemId && /^\d{9,15}$/.test(r.comp1ItemId))
-      .map(r => r.comp1ItemId);
-
-    let refreshed = 0;
-    if (competitorItemIds.length > 0) {
-      const ebay = getEbayAPI();
-      const items = await ebay.getCompetitorItems(competitorItemIds);
-      refreshed = items.length;
-    }
-
-    res.json({
-      success: true,
-      refreshed,
-      total: competitorItemIds.length,
-      timestamp: new Date().toISOString(),
-    });
+    res.json({ success: true, timestamp: new Date().toISOString() });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2059,27 +1709,9 @@ router.post('/battle/kill-price', async (req, res) => {
     const result = await ebay.updateItem(itemId, { price: parseFloat(newPrice) });
 
     if (result.success) {
-      // 시트의 내 판매가(J열)도 업데이트 — 승리/패배 판정에 반영
+      // Update price in Supabase
       if (sku) {
-        try {
-          const sheets = getGoogleSheets();
-          await sheets.authenticate();
-          const rows = await sheets.readData(SPREADSHEET_ID, '최종 Dashboard!B2:N');
-          if (rows) {
-            for (let i = 0; i < rows.length; i++) {
-              const rowSku = (rows[i][0] || '').toString().trim();
-              const rowItemId = (rows[i][12] || '').toString().trim();
-              if (rowSku === sku || rowItemId === itemId) {
-                // J열 = index 9 from A, B열부터 읽었으므로 offset = J - B = 8 → 시트에서 J열
-                await sheets.writeData(SPREADSHEET_ID, `최종 Dashboard!J${i + 2}`, [[parseFloat(newPrice)]]);
-                console.log(`✅ 시트 J${i + 2}: ${sku} 가격 → $${newPrice}`);
-                break;
-              }
-            }
-          }
-        } catch (sheetErr) {
-          console.warn('시트 가격 업데이트 실패 (eBay는 성공):', sheetErr.message);
-        }
+        await dataSource.updateProduct('sku', sku, { priceUSD: parseFloat(newPrice) });
       }
 
       battleCache = null;
@@ -2270,113 +1902,56 @@ router.post('/remarker/register', async (req, res) => {
 
     const results = {};
 
-    // 1. Master DB 저장
-    const productData = {
-      sku,
-      title: titleEn,
-      titleEn,
-      descriptionEn: description,
-      purchasePrice: parseFloat(purchasePrice) || 0,
-      weight: parseFloat(weight) || 0.5,
-      targetMargin: parseFloat(targetMargin) || 30,
-      quantity: parseInt(quantity) || 10,
-      condition: condition || 'new',
-      imageUrls: imageUrls || [],
-      ebayCategoryId: ebayCategoryId || '',
-    };
+    // 1. Save to Supabase
+    const productRepo = dataSource.getProductRepo();
+    const productRow = await productRepo.createProduct({
+      sku, title: titleEn,
+      title_ko: titleEn,
+      image: (imageUrls && imageUrls[0]) || '',
+      weight: String(parseFloat(weight) || 0.5),
+      purchase: String(parseFloat(purchasePrice) || 0),
+      priceUSD: String(parseFloat(priceUSD) || 0),
+      shippingUSD: String(parseFloat(shippingUSD) || 3.9),
+      stock: String(parseInt(quantity) || 10),
+      status: 'active',
+    });
 
-    let masterProduct = masterDB.getBySku(sku);
-    if (masterProduct) {
-      masterProduct = masterDB.update(sku, productData);
-    } else {
-      masterProduct = masterDB.create(productData);
+    // Update additional fields
+    if (productRow?.id) {
+      const { getClient } = require('../../db/supabaseClient');
+      await getClient().from('products').update({
+        purchase_price: parseFloat(purchasePrice) || 0,
+        target_margin: parseFloat(targetMargin) || 30,
+        image_urls: imageUrls || [],
+        condition: condition || 'new',
+      }).eq('id', productRow.id);
     }
 
-    // 2. Google Sheets 등록
-    if (fs.existsSync(credentialsPath)) {
-      try {
-        const sheets = getGoogleSheets();
-        await sheets.authenticate();
-        const price = parseFloat(priceUSD) || 0;
-        const ship = parseFloat(shippingUSD) || 3.90;
-        const row = [
-          (imageUrls && imageUrls[0]) || '',
-          sku, titleEn,
-          weight || 0.5,
-          purchasePrice || 0,
-          '', '', '', '',
-          price, ship,
-          '', '', '', '', '',
-          '', '', '', '', ''
-        ];
-        await sheets.appendData(SPREADSHEET_ID, '최종 Dashboard!A:U', [row]);
-        results.sheets = true;
-      } catch (e) {
-        results.sheets = { error: e.message };
-      }
-    }
-
-    // 3. eBay 등록 (선택된 경우)
+    // 2. eBay 등록 via ProductExporter
     const platforms = targetPlatforms || [];
     if (platforms.includes('ebay')) {
       try {
-        const ebay = getEbayAPI();
-        const conditionMap = { 'new': '1000', 'used': '3000', 'refurbished': '2500' };
-        const ebayResult = await ebay.createProduct({
-          title: titleEn,
-          description: description,
-          price: parseFloat(priceUSD),
-          quantity: parseInt(quantity) || 10,
-          sku: sku,
-          categoryId: ebayCategoryId || '11450',
-          conditionId: conditionMap[condition] || '1000',
-          shippingCost: parseFloat(shippingUSD) || 3.90,
-          imageUrl: (imageUrls && imageUrls[0]) || '',
-          currency: 'USD',
-        });
-        results.ebay = ebayResult;
-        if (ebayResult.success) {
-          masterDB.updatePlatformStatus(sku, 'ebay', {
-            itemId: ebayResult.itemId,
-            status: 'active',
-            price: parseFloat(priceUSD),
-          });
+        const exporter = new ProductExporter();
+        const exportResult = await exporter.exportProduct(sku, ['ebay']);
+        results.ebay = exportResult.results?.ebay || { success: false };
 
-          // 시트에 eBay Item ID 기록 → 전투현황판 연동
-          if (ebayResult.itemId && fs.existsSync(credentialsPath)) {
-            try {
-              const sheetsForId = getGoogleSheets();
-              await sheetsForId.authenticate();
-              const skuRows = await sheetsForId.readData(SPREADSHEET_ID, '최종 Dashboard!B2:B');
-              if (skuRows) {
-                for (let i = 0; i < skuRows.length; i++) {
-                  if (skuRows[i][0] === sku) {
-                    await sheetsForId.writeData(SPREADSHEET_ID, `최종 Dashboard!N${i + 2}`, [[ebayResult.itemId]]);
-                    await sheetsForId.writeData(SPREADSHEET_ID, `최종 Dashboard!Q${i + 2}`, [['등록완료']]);
-                    // 경쟁사 매핑 (셀러 전투 모드에서 전달된 경우)
-                    if (req.body.competitorItemId) {
-                      await sheetsForId.writeData(SPREADSHEET_ID, `최종 Dashboard!V${i + 2}:Y${i + 2}`, [[
-                        req.body.competitorSeller || '',
-                        req.body.competitorItemId || '',
-                        req.body.competitorPrice || '',
-                        req.body.competitorShipping || '',
-                      ]]);
-                    }
-                    break;
-                  }
-                }
-              }
-            } catch (sheetErr) {
-              console.error('Remarker eBay 시트 업데이트 실패:', sheetErr.message);
-            }
-          }
+        // Track competitor if provided
+        if (req.body.competitorItemId && results.ebay?.success) {
+          const repricing = new RepricingService();
+          await repricing.trackCompetitorPrice(
+            sku,
+            parseFloat(req.body.competitorPrice) || 0,
+            parseFloat(req.body.competitorShipping) || 0,
+            req.body.competitorSeller || '',
+            ''
+          );
         }
       } catch (e) {
         results.ebay = { success: false, error: e.message };
       }
     }
 
-    res.json({ success: true, results, masterProduct });
+    res.json({ success: true, results, product: productRow });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2386,15 +1961,7 @@ router.post('/remarker/register', async (req, res) => {
 // Helper 함수 (기존)
 // ===========================
 
-async function getSyncHistory() {
-  const logPath = path.join(projectRoot, 'data', 'sync-log.json');
-  try {
-    if (fs.existsSync(logPath)) {
-      return JSON.parse(fs.readFileSync(logPath, 'utf8'));
-    }
-  } catch (e) {}
-  return [];
-}
+// getSyncHistory — now delegated to dataSource.getSyncHistory() (Supabase)
 
 // ==================== 주문 배송 관리 ====================
 
@@ -2405,20 +1972,18 @@ router.get('/orders/sync', async (req, res) => {
     const OrderSync = require('../../services/orderSync');
     const sync = new OrderSync();
     const result = await sync.syncOrders(days);
-    res.json({ success: true, ...result, sheetUrl: `https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_SPREADSHEET_ID}` });
+    res.json({ success: true, ...result });
   } catch (error) {
     console.error('Order sync error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// GET /api/orders/recent — 시트에서 최근 주문 읽기
+// GET /api/orders/recent — DB/시트에서 최근 주문 읽기
 router.get('/orders/recent', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
-    const OrderSync = require('../../services/orderSync');
-    const sync = new OrderSync();
-    const result = await sync.getRecentOrders(limit);
+    const result = await dataSource.getRecentOrders(limit);
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Order recent error:', error.message);
@@ -2716,6 +2281,123 @@ router.get('/b2b/revenue/products', async (req, res) => {
   } catch (error) {
     console.error('B2B products error:', error.message);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ===========================
+// Platform Registry API (DB-driven platform config)
+// ===========================
+
+// GET /api/platform-registry — active platforms from DB
+router.get('/platform-registry', async (req, res) => {
+  try {
+    const platforms = await platformRegistry.getActivePlatforms();
+    const fees = await platformRegistry.getFeeRates();
+    const rates = await platformRegistry.getExchangeRates();
+    const settings = await platformRegistry.getMarginSettings();
+    res.json({ platforms, fees, rates, settings });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/platform-registry/settings/:key — update a margin/rate setting
+router.put('/platform-registry/settings/:key', async (req, res) => {
+  try {
+    const { value } = req.body;
+    if (value === undefined) return res.status(400).json({ error: 'value 필수' });
+    await platformRegistry.updateSetting(req.params.key, parseFloat(value));
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===========================
+// Product Export API (ProductExporter)
+// ===========================
+
+// POST /api/export — export product to platforms
+router.post('/export', async (req, res) => {
+  try {
+    const { sku, platforms: targetPlatforms } = req.body;
+    if (!sku || !targetPlatforms || targetPlatforms.length === 0) {
+      return res.status(400).json({ error: 'sku와 platforms 필수' });
+    }
+    const exporter = new ProductExporter();
+    const result = await exporter.exportProduct(sku, targetPlatforms);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/export/retry — retry failed exports
+router.post('/export/retry', async (req, res) => {
+  try {
+    const exporter = new ProductExporter();
+    const results = await exporter.retryFailedExports();
+    res.json({ success: true, results });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===========================
+// Repricing API (RepricingService)
+// ===========================
+
+// POST /api/repricing/track — record competitor price
+router.post('/repricing/track', async (req, res) => {
+  try {
+    const { sku, price, shipping, competitorId, url } = req.body;
+    if (!sku || !price) return res.status(400).json({ error: 'sku와 price 필수' });
+    const repricing = new RepricingService();
+    const result = await repricing.trackCompetitorPrice(
+      sku, parseFloat(price), parseFloat(shipping) || 0, competitorId || '', url || ''
+    );
+    res.json({ success: true, result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/repricing/evaluate/:sku — evaluate repricing for a SKU
+router.get('/repricing/evaluate/:sku', async (req, res) => {
+  try {
+    const repricing = new RepricingService();
+    const result = await repricing.evaluateRepricing(req.params.sku, req.query.platform || 'ebay');
+    res.json(result || { action: 'not_found' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/repricing/execute/:sku — execute repricing
+router.post('/repricing/execute/:sku', async (req, res) => {
+  try {
+    const repricing = new RepricingService();
+    const result = await repricing.executeRepricing(req.params.sku, req.query.platform || 'ebay');
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===========================
+// Translation API
+// ===========================
+
+// POST /api/translate/:productId — translate a product
+router.post('/translate/:productId', async (req, res) => {
+  try {
+    const TranslationService = require('../../services/translationService');
+    const svc = new TranslationService();
+    const targetLang = req.body.targetLang || 'en';
+    const translation = await svc.translateProduct(req.params.productId, targetLang);
+    res.json({ success: true, translation });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 

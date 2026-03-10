@@ -1,9 +1,13 @@
 /**
  * 플랫폼별 상품 데이터 자동 최적화
  * 마스터 상품 → 플랫폼별 최적화된 등록 데이터 변환
+ *
+ * DB-driven: optimize(platform, product, prices, options) 형태로
+ * platform_mapping.platform_category_id, platforms.config 값을 외부에서 전달 가능.
+ * 미전달 시 CATEGORY_MAP 폴백 사용 (하위호환).
  */
 
-const CATEGORY_MAP = {
+const DEFAULT_CATEGORY_MAP = {
   '전자기기': { ebay: '11450', naver: '50000803', shopify: 'Electronics' },
   '생활용품': { ebay: '11700', naver: '50000006', shopify: 'Home & Garden' },
   '의류':     { ebay: '11450', naver: '50000000', shopify: 'Clothing' },
@@ -11,27 +15,34 @@ const CATEGORY_MAP = {
   '기타':     { ebay: '11450', naver: '50000803', shopify: 'Other' },
 };
 
+// Backward-compatible alias
+const CATEGORY_MAP = DEFAULT_CATEGORY_MAP;
+
 function getCategoryIds(category) {
-  return CATEGORY_MAP[category] || CATEGORY_MAP['기타'];
+  return DEFAULT_CATEGORY_MAP[category] || DEFAULT_CATEGORY_MAP['기타'];
 }
 
 /**
  * eBay용 최적화 데이터 생성
+ * @param {object} [options] - { categoryId, customFields, platformConfig }
  */
-function optimizeForEbay(product, prices) {
+function optimizeForEbay(product, prices, options = {}) {
   const priceData = prices.ebay;
-  if (priceData.error) return null;
+  if (!priceData || priceData.error) return null;
 
-  // 카테고리: 사용자 선택 > CATEGORY_MAP fallback
-  const categoryId = product.ebayCategoryId || getCategoryIds(product.category).ebay;
+  const cfg = options.platformConfig || {};
+  const titleMaxLen = cfg.title_max_length || 80;
 
-  let title = (product.titleEn || product.title || '').substring(0, 80);
+  // Category: options.categoryId (from DB) > product field > CATEGORY_MAP fallback
+  const categoryId = options.categoryId || product.ebayCategoryId || getCategoryIds(product.category).ebay;
+
+  let title = (product.titleEn || product.title || '').substring(0, titleMaxLen);
   if (product.keywords && product.keywords.length > 0) {
-    const remaining = 80 - title.length;
+    const remaining = titleMaxLen - title.length;
     if (remaining > 5) {
       const kw = product.keywords.filter(k => !title.toLowerCase().includes(k.toLowerCase()));
       for (const k of kw) {
-        if (title.length + k.length + 1 <= 80) {
+        if (title.length + k.length + 1 <= titleMaxLen) {
           title += ' ' + k;
         }
       }
@@ -40,8 +51,8 @@ function optimizeForEbay(product, prices) {
 
   const description = buildEbayDescription(product);
 
-  // condition 매핑: new → 1000, used → 3000, refurbished → 2500
-  const conditionMap = { 'new': '1000', 'used': '3000', 'refurbished': '2500' };
+  // Condition map from DB config or default
+  const conditionMap = cfg.condition_map || { 'new': '1000', 'used': '3000', 'refurbished': '2500' };
   const conditionId = conditionMap[product.condition] || '1000';
 
   return {
@@ -55,18 +66,22 @@ function optimizeForEbay(product, prices) {
     shippingCost: priceData.shipping,
     imageUrl: product.imageUrls && product.imageUrls[0],
     currency: 'USD',
+    ...(options.customFields || {}),
   };
 }
 
 /**
  * Shopify용 최적화 데이터 생성
  */
-function optimizeForShopify(product, prices) {
+function optimizeForShopify(product, prices, options = {}) {
   const priceData = prices.shopify;
-  if (priceData.error) return null;
+  if (!priceData || priceData.error) return null;
 
-  // 카테고리: 사용자 입력 > CATEGORY_MAP fallback
-  const productType = product.shopifyProductType || getCategoryIds(product.category).shopify;
+  const cfg = options.platformConfig || {};
+  const vendor = cfg.vendor || 'PMC';
+
+  // Category: options.categoryId (from DB) > product field > CATEGORY_MAP fallback
+  const productType = options.categoryId || product.shopifyProductType || getCategoryIds(product.category).shopify;
 
   const title = product.titleEn || product.title || '';
   const bodyHtml = buildShopifyDescription(product);
@@ -77,29 +92,33 @@ function optimizeForShopify(product, prices) {
     sku: product.sku,
     price: String(priceData.price),
     bodyHtml,
-    vendor: 'PMC',
+    vendor,
     productType,
     tags,
     quantity: parseInt(product.quantity) || 1,
     imageUrl: product.imageUrls && product.imageUrls[0],
+    ...(options.customFields || {}),
   };
 }
 
 /**
  * Naver용 최적화 데이터 생성
  */
-function optimizeForNaver(product, prices) {
+function optimizeForNaver(product, prices, options = {}) {
   const priceData = prices.naver;
-  if (priceData.error) return null;
+  if (!priceData || priceData.error) return null;
 
-  // 카테고리: 사용자 선택 > CATEGORY_MAP fallback
-  const categoryId = product.naverCategoryId || getCategoryIds(product.category).naver;
+  const cfg = options.platformConfig || {};
+  const titleMaxLen = cfg.title_max_length || 100;
+
+  // Category: options.categoryId (from DB) > product field > CATEGORY_MAP fallback
+  const categoryId = options.categoryId || product.naverCategoryId || getCategoryIds(product.category).naver;
 
   let productName = product.title || product.titleEn || '';
   if (product.keywords && product.keywords.length > 0) {
     const kw = product.keywords.filter(k => !productName.includes(k));
     for (const k of kw) {
-      if (productName.length + k.length + 1 <= 100) {
+      if (productName.length + k.length + 1 <= titleMaxLen) {
         productName += ' ' + k;
       }
     }
@@ -114,17 +133,120 @@ function optimizeForNaver(product, prices) {
     categoryId,
     detailContent,
     imageUrls: product.imageUrls || [],
+    ...(options.customFields || {}),
+  };
+}
+
+/**
+ * Qoo10용 최적화 데이터 생성
+ */
+function optimizeForQoo10(product, prices, options = {}) {
+  const priceData = prices.qoo10;
+  if (!priceData || priceData.error) return null;
+
+  const title = (product.titleEn || product.title || '').substring(0, 100);
+
+  return {
+    itemTitle: title,
+    sellingPrice: priceData.price,
+    qty: parseInt(product.quantity) || 1,
+    sku: product.sku,
+    itemDetail: buildEbayDescription(product),
+    imageUrl: product.imageUrls && product.imageUrls[0],
+    currency: 'JPY',
+    ...(options.customFields || {}),
+  };
+}
+
+/**
+ * Shopee용 최적화 데이터 생성
+ */
+function optimizeForShopee(product, prices, options = {}) {
+  const priceData = prices.shopee;
+  if (!priceData || priceData.error) return null;
+
+  const title = (product.titleEn || product.title || '').substring(0, 120);
+  const description = product.descriptionEn || product.description || '';
+
+  return {
+    name: title,
+    description,
+    price: priceData.price,
+    stock: parseInt(product.quantity) || 1,
+    sku: product.sku,
+    images: (product.imageUrls || []).map(url => ({ url })),
+    currency: 'LOCAL',
+    ...(options.customFields || {}),
+  };
+}
+
+/**
+ * Coupang용 최적화 데이터 생성
+ */
+function optimizeForCoupang(product, prices, options = {}) {
+  const priceData = prices.coupang;
+  if (!priceData || priceData.error) return null;
+
+  const title = (product.title || product.titleEn || '').substring(0, 100);
+  const description = product.description || product.descriptionEn || '';
+
+  return {
+    displayProductName: title,
+    salePrice: priceData.price,
+    maximumBuyCount: 100,
+    maximumBuyForPerson: 0,
+    outboundShippingTimeDay: 2,
+    returnCenterCode: '',
+    deliveryChargeType: 'FREE',
+    deliveryCharge: 0,
+    content: description,
+    images: (product.imageUrls || []).map((url, i) => ({
+      imageOrder: i, imageType: i === 0 ? 'REPRESENTATIVE' : 'DETAIL', cdnPath: url,
+    })),
+    sku: product.sku,
+    currency: 'KRW',
+    ...(options.customFields || {}),
+  };
+}
+
+/**
+ * Alibaba용 최적화 데이터 생성
+ */
+function optimizeForAlibaba(product, prices, options = {}) {
+  const priceData = prices.alibaba;
+  if (!priceData || priceData.error) return null;
+
+  const title = (product.titleEn || product.title || '').substring(0, 128);
+  const description = product.descriptionEn || product.description || '';
+
+  return {
+    subject: title,
+    description,
+    price: priceData.price,
+    quantity: parseInt(product.quantity) || 1,
+    sku: product.sku,
+    imageUrls: product.imageUrls || [],
+    currency: 'USD',
+    ...(options.customFields || {}),
   };
 }
 
 /**
  * 플랫폼별 최적화 통합 함수
+ * @param {string} platform - Platform key ('ebay', 'shopify', 'naver', 'qoo10', 'shopee', 'coupang', 'alibaba')
+ * @param {object} product - Enriched product data
+ * @param {object} prices - Price calculation results from pricingEngine
+ * @param {object} [options] - { categoryId, customFields, platformConfig }
  */
-function optimize(platform, product, prices) {
+function optimize(platform, product, prices, options = {}) {
   switch (platform) {
-    case 'ebay': return optimizeForEbay(product, prices);
-    case 'shopify': return optimizeForShopify(product, prices);
-    case 'naver': return optimizeForNaver(product, prices);
+    case 'ebay': return optimizeForEbay(product, prices, options);
+    case 'shopify': return optimizeForShopify(product, prices, options);
+    case 'naver': return optimizeForNaver(product, prices, options);
+    case 'qoo10': return optimizeForQoo10(product, prices, options);
+    case 'shopee': return optimizeForShopee(product, prices, options);
+    case 'coupang': return optimizeForCoupang(product, prices, options);
+    case 'alibaba': return optimizeForAlibaba(product, prices, options);
     default: return null;
   }
 }
@@ -183,4 +305,9 @@ function escapeHtml(str) {
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-module.exports = { optimize, optimizeForEbay, optimizeForShopify, optimizeForNaver, CATEGORY_MAP };
+module.exports = {
+  optimize,
+  optimizeForEbay, optimizeForShopify, optimizeForNaver,
+  optimizeForQoo10, optimizeForShopee, optimizeForCoupang, optimizeForAlibaba,
+  CATEGORY_MAP,
+};

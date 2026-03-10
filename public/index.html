@@ -167,7 +167,118 @@
     <!-- ===== 상품 등록 페이지 ===== -->
     <div id="page-register" class="page">
       <div class="card">
-        <h3>신규 상품 등록 (멀티마켓 자동 최적화)</h3>
+        <h3>상품 등록</h3>
+
+        <!-- 서브탭 전환 -->
+        <div class="register-tabs">
+          <button class="register-tab active" data-tab="single">단건 등록</button>
+          <button class="register-tab" data-tab="csv">CSV 대량 등록</button>
+        </div>
+
+        <!-- ===== CSV 대량 등록 영역 ===== -->
+        <div id="csvImportSection" class="register-tab-content" style="display:none;max-width:1000px">
+
+          <!-- 파일 업로드 영역 -->
+          <div class="csv-upload-area" id="csvUploadArea">
+            <input type="file" id="csvFileInput" accept=".csv,.xlsx,.xls" style="display:none">
+            <div class="upload-placeholder" id="csvUploadPlaceholder">
+              <span style="font-size:36px">&#128196;</span><br>
+              CSV 또는 Excel 파일을 드래그하거나 클릭하여 업로드<br>
+              <small>.csv, .xlsx (최대 20MB)</small>
+            </div>
+            <div id="csvFileName" style="display:none" class="csv-file-info"></div>
+          </div>
+
+          <!-- 옵션 설정 -->
+          <div id="csvOptions" style="display:none;margin-top:16px">
+            <h4 class="form-section-title">등록 옵션</h4>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>기본 목표마진 (%)</label>
+                <input type="number" id="csvDefaultMargin" value="30" step="1" min="1" max="80">
+                <small style="color:#888">CSV에 마진 미지정 시 적용</small>
+              </div>
+              <div class="form-group" style="display:flex;align-items:flex-end;gap:8px">
+                <button type="button" class="refresh-btn" id="csvTemplateBtn" style="white-space:nowrap">
+                  템플릿 다운로드
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 검증 요약 -->
+          <div id="csvValidationSummary" style="display:none;margin-top:16px">
+            <h4 class="form-section-title">검증 결과</h4>
+            <div class="csv-validation-stats">
+              <span class="csv-stat total">전체: <strong id="csvStatTotal">0</strong></span>
+              <span class="csv-stat success">정상: <strong id="csvStatValid">0</strong></span>
+              <span class="csv-stat error">오류: <strong id="csvStatError">0</strong></span>
+            </div>
+          </div>
+
+          <!-- 오류 목록 -->
+          <div id="csvErrorList" style="display:none;margin-top:12px">
+            <details>
+              <summary style="cursor:pointer;font-size:13px;color:#c62828;font-weight:600">오류 행 상세보기</summary>
+              <div class="table-wrap" style="max-height:200px;overflow-y:auto;margin-top:8px">
+                <table class="data-table" id="csvErrorTable">
+                  <thead><tr><th>행</th><th>SKU</th><th>오류</th></tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+
+          <!-- 미리보기 테이블 -->
+          <div id="csvPreviewSection" style="display:none;margin-top:16px">
+            <h4 class="form-section-title">미리보기 (정상 데이터)</h4>
+            <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+              <table class="data-table" id="csvPreviewTable">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>상품명</th>
+                    <th>매입가</th>
+                    <th>무게</th>
+                    <th>카테고리</th>
+                    <th>수량</th>
+                    <th>마진(%)</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 등록 버튼 + 진행바 -->
+          <div id="csvActionArea" style="display:none;margin-top:20px">
+            <button type="button" class="submit-btn" id="csvConfirmBtn">
+              대량 등록 실행
+            </button>
+            <div id="csvProgressArea" style="display:none;margin-top:12px">
+              <div class="csv-progress-bar">
+                <div class="csv-progress-fill" id="csvProgressFill"></div>
+              </div>
+              <div class="csv-progress-text" id="csvProgressText">등록 중...</div>
+            </div>
+          </div>
+
+          <!-- 결과 요약 -->
+          <div id="csvResultArea" style="display:none;margin-top:16px">
+            <h4 class="form-section-title">등록 결과</h4>
+            <div id="csvResultSummary" class="csv-result-summary"></div>
+            <div class="table-wrap" style="max-height:300px;overflow-y:auto;margin-top:8px">
+              <table class="data-table" id="csvResultTable">
+                <thead>
+                  <tr><th>SKU</th><th>상품명</th><th>상태</th><th>eBay</th><th>Shopify</th><th>Naver</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== 단건 등록 (기존 폼) ===== -->
         <form id="registerForm" class="register-form" style="max-width:900px">
 
           <!-- 기본 정보 -->

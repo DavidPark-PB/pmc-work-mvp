@@ -696,6 +696,9 @@ function setupRegisterForm() {
   if (form.dataset.initialized) return;
   form.dataset.initialized = 'true';
 
+  // CSV 대량 등록 설정
+  setupCsvImport();
+
   // 이미지 업로드 설정
   setupImageUpload();
 
@@ -855,6 +858,229 @@ function renderImagePreviews() {
 function removeImage(idx) {
   uploadedImageUrls.splice(idx, 1);
   renderImagePreviews();
+}
+
+// ===== CSV 대량 등록 =====
+
+let csvParsedRows = [];
+
+function setupCsvImport() {
+  // Register tab switching
+  document.querySelectorAll('.register-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.register-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+
+      const isCSV = tab.dataset.tab === 'csv';
+      document.getElementById('csvImportSection').style.display = isCSV ? '' : 'none';
+      document.getElementById('registerForm').style.display = isCSV ? 'none' : '';
+    });
+  });
+
+  // CSV file upload area
+  const area = document.getElementById('csvUploadArea');
+  const fileInput = document.getElementById('csvFileInput');
+  if (!area || !fileInput) return;
+
+  area.addEventListener('click', () => fileInput.click());
+  area.addEventListener('dragover', (e) => { e.preventDefault(); area.classList.add('dragover'); });
+  area.addEventListener('dragleave', () => area.classList.remove('dragover'));
+  area.addEventListener('drop', (e) => {
+    e.preventDefault();
+    area.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) handleCsvFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length > 0) handleCsvFile(fileInput.files[0]);
+  });
+
+  // Template download
+  const templateBtn = document.getElementById('csvTemplateBtn');
+  if (templateBtn) {
+    templateBtn.addEventListener('click', () => {
+      window.location.href = `${API}/products/csv-template`;
+    });
+  }
+
+  // Confirm button
+  const confirmBtn = document.getElementById('csvConfirmBtn');
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', () => executeCsvImport());
+  }
+}
+
+async function handleCsvFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['csv', 'xlsx', 'xls'].includes(ext)) {
+    alert('CSV 또는 Excel 파일만 업로드 가능합니다 (.csv, .xlsx)');
+    return;
+  }
+
+  // Show file name
+  const placeholder = document.getElementById('csvUploadPlaceholder');
+  const fileInfo = document.getElementById('csvFileName');
+  placeholder.style.display = 'none';
+  fileInfo.style.display = '';
+  fileInfo.innerHTML = `<strong>${esc(file.name)}</strong> (${(file.size / 1024).toFixed(1)} KB) <button type="button" class="refresh-btn" style="font-size:11px;padding:3px 10px" onclick="resetCsvUpload()">다른 파일</button>`;
+
+  // Upload and parse
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    fileInfo.innerHTML += ' <span style="color:#888">파싱 중...</span>';
+    const res = await fetch(`${API}/products/import-csv`, { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      alert(data.error || '파일 파싱 실패');
+      resetCsvUpload();
+      return;
+    }
+
+    csvParsedRows = data.validRows || [];
+    renderCsvValidation(data);
+  } catch (err) {
+    alert('파일 업로드 오류: ' + err.message);
+    resetCsvUpload();
+  }
+}
+
+function renderCsvValidation(data) {
+  // Show options
+  document.getElementById('csvOptions').style.display = '';
+
+  // Validation summary
+  const summaryEl = document.getElementById('csvValidationSummary');
+  summaryEl.style.display = '';
+  document.getElementById('csvStatTotal').textContent = data.total;
+  document.getElementById('csvStatValid').textContent = data.validCount;
+  document.getElementById('csvStatError').textContent = data.errorCount;
+
+  // Error list
+  if (data.errors && data.errors.length > 0) {
+    const errorEl = document.getElementById('csvErrorList');
+    errorEl.style.display = '';
+    const tbody = document.querySelector('#csvErrorTable tbody');
+    tbody.innerHTML = data.errors.map(e =>
+      `<tr><td>${e.row}</td><td>${esc(e.sku)}</td><td style="color:#c62828">${e.errors.join(', ')}</td></tr>`
+    ).join('');
+  }
+
+  // Preview table
+  if (data.preview && data.preview.length > 0) {
+    const previewEl = document.getElementById('csvPreviewSection');
+    previewEl.style.display = '';
+    const tbody = document.querySelector('#csvPreviewTable tbody');
+    tbody.innerHTML = data.preview.map(r => `
+      <tr>
+        <td><strong>${esc(r.sku)}</strong></td>
+        <td>${esc(r.title)}</td>
+        <td style="text-align:right">${(r.purchasePrice || 0).toLocaleString()}원</td>
+        <td style="text-align:right">${r.weight || '-'}</td>
+        <td>${esc(r.category || '-')}</td>
+        <td style="text-align:right">${r.quantity || '-'}</td>
+        <td style="text-align:right">${r.targetMargin !== null ? r.targetMargin + '%' : '-'}</td>
+      </tr>
+    `).join('');
+  }
+
+  // Show confirm button if there are valid rows
+  if (data.validCount > 0) {
+    document.getElementById('csvActionArea').style.display = '';
+    document.getElementById('csvConfirmBtn').textContent = `대량 등록 실행 (${data.validCount}건)`;
+  }
+}
+
+async function executeCsvImport() {
+  if (csvParsedRows.length === 0) {
+    alert('등록할 데이터가 없습니다.');
+    return;
+  }
+
+  const confirmBtn = document.getElementById('csvConfirmBtn');
+  const progressArea = document.getElementById('csvProgressArea');
+  const progressFill = document.getElementById('csvProgressFill');
+  const progressText = document.getElementById('csvProgressText');
+
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = '등록 중...';
+  progressArea.style.display = '';
+  progressFill.style.width = '10%';
+  progressText.textContent = `${csvParsedRows.length}건 등록 요청 중...`;
+
+  const defaultMargin = parseFloat(document.getElementById('csvDefaultMargin').value) || 30;
+
+  try {
+    progressFill.style.width = '40%';
+    const res = await fetch(`${API}/products/import-csv/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows: csvParsedRows, defaultMargin }),
+    });
+    const data = await res.json();
+
+    progressFill.style.width = '100%';
+
+    if (!res.ok) {
+      progressText.textContent = '오류: ' + (data.error || '등록 실패');
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = '다시 시도';
+      return;
+    }
+
+    progressText.textContent = '완료!';
+    renderCsvResults(data);
+  } catch (err) {
+    progressText.textContent = '서버 오류: ' + err.message;
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = '다시 시도';
+  }
+}
+
+function renderCsvResults(data) {
+  const resultArea = document.getElementById('csvResultArea');
+  resultArea.style.display = '';
+
+  const summaryEl = document.getElementById('csvResultSummary');
+  const isAllSuccess = data.failed === 0;
+  summaryEl.className = 'csv-result-summary ' + (isAllSuccess ? 'success' : 'partial');
+  summaryEl.innerHTML = `
+    전체 <strong>${data.total}</strong>건 |
+    성공 <strong style="color:#2e7d32">${data.success}</strong>건 |
+    실패 <strong style="color:#c62828">${data.failed}</strong>건
+  `;
+
+  const tbody = document.querySelector('#csvResultTable tbody');
+  tbody.innerHTML = (data.results || []).map(r => {
+    const statusClass = r.status === 'success' ? 'color:#2e7d32' : 'color:#c62828';
+    const statusText = r.status === 'success' ? '성공' : '실패';
+    return `<tr>
+      <td><strong>${esc(r.sku)}</strong></td>
+      <td>${esc(r.title || '-')}</td>
+      <td style="${statusClass};font-weight:600">${statusText}${r.error ? ': ' + esc(r.error) : ''}</td>
+      <td>${r.prices?.ebay || '-'}</td>
+      <td>${r.prices?.shopify || '-'}</td>
+      <td>${r.prices?.naver || '-'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function resetCsvUpload() {
+  csvParsedRows = [];
+  document.getElementById('csvUploadPlaceholder').style.display = '';
+  document.getElementById('csvFileName').style.display = 'none';
+  document.getElementById('csvFileName').innerHTML = '';
+  document.getElementById('csvFileInput').value = '';
+  document.getElementById('csvOptions').style.display = 'none';
+  document.getElementById('csvValidationSummary').style.display = 'none';
+  document.getElementById('csvErrorList').style.display = 'none';
+  document.getElementById('csvPreviewSection').style.display = 'none';
+  document.getElementById('csvActionArea').style.display = 'none';
+  document.getElementById('csvProgressArea').style.display = 'none';
+  document.getElementById('csvResultArea').style.display = 'none';
+  const confirmBtn = document.getElementById('csvConfirmBtn');
+  if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '대량 등록 실행'; }
 }
 
 // ===== 카테고리 검색 =====

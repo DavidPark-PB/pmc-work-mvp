@@ -1,33 +1,46 @@
 /**
  * 마진 기반 가격 자동 계산 엔진
  * 매입가 + 목표 마진율 → 플랫폼별 최적 판매가 역산
+ *
+ * DB-driven: calculatePrices(product, fees?, rates?) 형태로
+ * platformRegistry에서 로드한 값을 외부에서 전달 가능.
+ * fees/rates 미전달 시 하드코딩 기본값 사용 (하위호환).
  */
 
-const EXCHANGE_RATE = 1400;
-const EXCHANGE_RATE_JPY = 1000;   // KRW → JPY
-const EXCHANGE_RATE_SHOPEE = 1000; // KRW → 현지통화 (VND 등)
-const TAX_RATE = 0.15;
+const DEFAULT_EXCHANGE_RATE = 1400;
+const DEFAULT_EXCHANGE_RATE_JPY = 1000;
+const DEFAULT_EXCHANGE_RATE_SHOPEE = 1000;
+const DEFAULT_TAX_RATE = 0.15;
 const DEFAULT_SHIPPING_USD = 3.9;
 const DEFAULT_DOMESTIC_SHIPPING_KRW = 3000;
 
-const PLATFORM_FEES = {
+const DEFAULT_PLATFORM_FEES = {
   ebay: 0.18,
   shopify: 0.033,
   naver: 0.055,
   qoo10: 0.12,
   shopee: 0.15,
+  coupang: 0.108,
+  alibaba: 0.08,
 };
+
+// Backward-compatible aliases
+const EXCHANGE_RATE = DEFAULT_EXCHANGE_RATE;
+const EXCHANGE_RATE_JPY = DEFAULT_EXCHANGE_RATE_JPY;
+const EXCHANGE_RATE_SHOPEE = DEFAULT_EXCHANGE_RATE_SHOPEE;
+const PLATFORM_FEES = DEFAULT_PLATFORM_FEES;
 
 /**
  * 무게 기반 국제 배송비 추정 (KRW)
  * calculate-shipping.js의 간소화 버전 (YunExpress 기준)
  */
-function estimateShippingKRW(weightKg) {
-  if (!weightKg || weightKg <= 0) return DEFAULT_SHIPPING_USD * EXCHANGE_RATE;
+function estimateShippingKRW(weightKg, exchangeRate) {
+  const exRate = exchangeRate || DEFAULT_EXCHANGE_RATE;
+  if (!weightKg || weightKg <= 0) return DEFAULT_SHIPPING_USD * exRate;
   const weightG = weightKg * 1000;
 
   // YunExpress 경제 요율 (간소화)
-  const rates = [
+  const shippingRates = [
     { g: 100, krw: 3500 },
     { g: 200, krw: 4200 },
     { g: 500, krw: 5800 },
@@ -35,16 +48,16 @@ function estimateShippingKRW(weightKg) {
     { g: 2000, krw: 14000 },
   ];
 
-  if (weightG <= rates[0].g) return rates[0].krw;
-  if (weightG >= rates[rates.length - 1].g) return rates[rates.length - 1].krw;
+  if (weightG <= shippingRates[0].g) return shippingRates[0].krw;
+  if (weightG >= shippingRates[shippingRates.length - 1].g) return shippingRates[shippingRates.length - 1].krw;
 
-  for (let i = 0; i < rates.length - 1; i++) {
-    if (weightG > rates[i].g && weightG <= rates[i + 1].g) {
-      const ratio = (weightG - rates[i].g) / (rates[i + 1].g - rates[i].g);
-      return Math.round(rates[i].krw + ratio * (rates[i + 1].krw - rates[i].krw));
+  for (let i = 0; i < shippingRates.length - 1; i++) {
+    if (weightG > shippingRates[i].g && weightG <= shippingRates[i + 1].g) {
+      const ratio = (weightG - shippingRates[i].g) / (shippingRates[i + 1].g - shippingRates[i].g);
+      return Math.round(shippingRates[i].krw + ratio * (shippingRates[i + 1].krw - shippingRates[i].krw));
     }
   }
-  return DEFAULT_SHIPPING_USD * EXCHANGE_RATE;
+  return DEFAULT_SHIPPING_USD * exRate;
 }
 
 /**
@@ -63,142 +76,135 @@ function estimateShippingKRW(weightKg) {
  * Naver (KRW):
  *   price = revenue (직접)
  */
-function calculatePrices(product) {
+/**
+ * @param {object} product - { purchasePrice, weight, targetMargin, shippingUSD }
+ * @param {object} [fees] - Platform fee rates from DB, e.g. { ebay: 0.18, shopify: 0.033 }
+ * @param {object} [rates] - Exchange rates from DB, e.g. { usd: 1400, jpy: 1000 }
+ */
+function calculatePrices(product, fees, rates) {
   const purchasePrice = parseFloat(product.purchasePrice) || 0;
   const weight = parseFloat(product.weight) || 0;
   const targetMargin = product.targetMargin !== undefined && product.targetMargin !== '' ? parseFloat(product.targetMargin) : 30;
   const shippingUSD = parseFloat(product.shippingUSD) || DEFAULT_SHIPPING_USD;
 
-  const shippingKRW = estimateShippingKRW(weight);
-  const tax = Math.round(purchasePrice * TAX_RATE);
+  // Use DB values if provided, otherwise fall back to hardcoded defaults
+  const f = fees || DEFAULT_PLATFORM_FEES;
+  const exUSD = (rates && rates.usd) || DEFAULT_EXCHANGE_RATE;
+  const exJPY = (rates && rates.jpy) || DEFAULT_EXCHANGE_RATE_JPY;
+  const exLOCAL = (rates && rates.local) || DEFAULT_EXCHANGE_RATE_SHOPEE;
+  const taxRate = (rates && rates.tax_rate) || DEFAULT_TAX_RATE;
+  const domesticShipping = (rates && rates.domestic_shipping_krw) || DEFAULT_DOMESTIC_SHIPPING_KRW;
+
+  const shippingKRW = estimateShippingKRW(weight, exUSD);
+  const tax = Math.round(purchasePrice * taxRate);
   const totalCostKRW = purchasePrice + shippingKRW + tax;
 
   const result = {};
 
-  // eBay (USD, 수수료 18%)
-  const ebayFee = PLATFORM_FEES.ebay;
-  const ebayDivisor = 1 - ebayFee - targetMargin / 100;
-  if (ebayDivisor > 0) {
-    const ebayRevenueKRW = totalCostKRW / ebayDivisor;
-    const ebayTotalUSD = ebayRevenueKRW / EXCHANGE_RATE;
-    let ebayPrice = ebayTotalUSD - shippingUSD;
-    ebayPrice = toPsychologicalPrice(ebayPrice, 'usd');
-    const actualRevenue = (ebayPrice + shippingUSD) * EXCHANGE_RATE;
-    const actualFee = actualRevenue * ebayFee;
+  // Helper: calculate price for a global (USD) platform
+  function calcGlobalUSD(key, feeRate, currency) {
+    const divisor = 1 - feeRate - targetMargin / 100;
+    if (divisor <= 0) {
+      return { error: '목표 마진율이 너무 높습니다 (최대 ' + Math.floor((1 - feeRate) * 100) + '%)' };
+    }
+    const revenueKRW = totalCostKRW / divisor;
+    const totalUSD = revenueKRW / exUSD;
+    let price = totalUSD - shippingUSD;
+    price = toPsychologicalPrice(price, 'usd');
+    const actualRevenue = (price + shippingUSD) * exUSD;
+    const actualFee = actualRevenue * feeRate;
     const actualProfit = actualRevenue - actualFee - totalCostKRW;
     const actualMargin = actualRevenue > 0 ? (actualProfit / actualRevenue * 100) : 0;
-
-    result.ebay = {
-      price: ebayPrice,
-      shipping: shippingUSD,
-      currency: 'USD',
-      estimatedProfit: Math.round(actualProfit),
-      margin: +actualMargin.toFixed(1),
-      fee: Math.round(actualFee),
-      totalCost: totalCostKRW,
+    return {
+      price, shipping: shippingUSD, currency: currency || 'USD',
+      estimatedProfit: Math.round(actualProfit), margin: +actualMargin.toFixed(1),
+      fee: Math.round(actualFee), totalCost: totalCostKRW,
     };
-  } else {
-    result.ebay = { error: '목표 마진율이 너무 높습니다 (최대 ' + Math.floor((1 - ebayFee) * 100) + '%)' };
   }
 
-  // Shopify (USD, 수수료 3.3%)
-  const shopifyFee = PLATFORM_FEES.shopify;
-  const shopifyDivisor = 1 - shopifyFee - targetMargin / 100;
-  if (shopifyDivisor > 0) {
-    const shopifyRevenueKRW = totalCostKRW / shopifyDivisor;
-    const shopifyTotalUSD = shopifyRevenueKRW / EXCHANGE_RATE;
-    let shopifyPrice = shopifyTotalUSD - shippingUSD;
-    shopifyPrice = toPsychologicalPrice(shopifyPrice, 'usd');
-    const actualRevenue = (shopifyPrice + shippingUSD) * EXCHANGE_RATE;
-    const actualFee = actualRevenue * shopifyFee;
+  // Helper: calculate price for a domestic (KRW) platform
+  function calcDomesticKRW(key, feeRate) {
+    const domesticCost = purchasePrice + domesticShipping + tax;
+    const divisor = 1 - feeRate - targetMargin / 100;
+    if (divisor <= 0) {
+      return { error: '목표 마진율이 너무 높습니다 (최대 ' + Math.floor((1 - feeRate) * 100) + '%)' };
+    }
+    let price = domesticCost / divisor;
+    price = toPsychologicalPrice(price, 'krw');
+    const actualFee = price * feeRate;
+    const actualProfit = price - actualFee - domesticCost;
+    const actualMargin = price > 0 ? (actualProfit / price * 100) : 0;
+    return {
+      price, shipping: 0, currency: 'KRW',
+      estimatedProfit: Math.round(actualProfit), margin: +actualMargin.toFixed(1),
+      fee: Math.round(actualFee), totalCost: domesticCost,
+    };
+  }
+
+  // Helper: calculate price for JPY platform
+  function calcJPY(key, feeRate) {
+    const divisor = 1 - feeRate - targetMargin / 100;
+    if (divisor <= 0) {
+      return { error: '목표 마진율이 너무 높습니다 (최대 ' + Math.floor((1 - feeRate) * 100) + '%)' };
+    }
+    const revenueKRW = totalCostKRW / divisor;
+    let price = Math.round(revenueKRW / exJPY);
+    price = toPsychologicalPrice(price, 'jpy');
+    const actualRevenue = price * exJPY;
+    const actualFee = actualRevenue * feeRate;
     const actualProfit = actualRevenue - actualFee - totalCostKRW;
     const actualMargin = actualRevenue > 0 ? (actualProfit / actualRevenue * 100) : 0;
-
-    result.shopify = {
-      price: shopifyPrice,
-      shipping: shippingUSD,
-      currency: 'USD',
-      estimatedProfit: Math.round(actualProfit),
-      margin: +actualMargin.toFixed(1),
-      fee: Math.round(actualFee),
-      totalCost: totalCostKRW,
+    return {
+      price, shipping: 0, currency: 'JPY',
+      estimatedProfit: Math.round(actualProfit), margin: +actualMargin.toFixed(1),
+      fee: Math.round(actualFee), totalCost: totalCostKRW,
     };
-  } else {
-    result.shopify = { error: '목표 마진율이 너무 높습니다 (최대 ' + Math.floor((1 - shopifyFee) * 100) + '%)' };
   }
 
-  // Naver (KRW, 수수료 5.5%)
-  const naverFee = PLATFORM_FEES.naver;
-  const naverCost = purchasePrice + DEFAULT_DOMESTIC_SHIPPING_KRW + tax;
-  const naverDivisor = 1 - naverFee - targetMargin / 100;
-  if (naverDivisor > 0) {
-    let naverPrice = naverCost / naverDivisor;
-    naverPrice = toPsychologicalPrice(naverPrice, 'krw');
-    const actualFee = naverPrice * naverFee;
-    const actualProfit = naverPrice - actualFee - naverCost;
-    const actualMargin = naverPrice > 0 ? (actualProfit / naverPrice * 100) : 0;
-
-    result.naver = {
-      price: naverPrice,
-      shipping: 0,
-      currency: 'KRW',
-      estimatedProfit: Math.round(actualProfit),
-      margin: +actualMargin.toFixed(1),
-      fee: Math.round(actualFee),
-      totalCost: naverCost,
-    };
-  } else {
-    result.naver = { error: '목표 마진율이 너무 높습니다 (최대 ' + Math.floor((1 - naverFee) * 100) + '%)' };
-  }
-
-  // Qoo10 (JPY, 수수료 12%)
-  const qoo10Fee = PLATFORM_FEES.qoo10;
-  const qoo10Divisor = 1 - qoo10Fee - targetMargin / 100;
-  if (qoo10Divisor > 0) {
-    const qoo10RevenueKRW = totalCostKRW / qoo10Divisor;
-    let qoo10Price = Math.round(qoo10RevenueKRW / EXCHANGE_RATE_JPY);
-    qoo10Price = toPsychologicalPrice(qoo10Price, 'jpy');
-    const actualRevenue = qoo10Price * EXCHANGE_RATE_JPY;
-    const actualFee = actualRevenue * qoo10Fee;
+  // Helper: calculate price for LOCAL currency platform
+  function calcLocal(key, feeRate) {
+    const divisor = 1 - feeRate - targetMargin / 100;
+    if (divisor <= 0) {
+      return { error: '목표 마진율이 너무 높습니다 (최대 ' + Math.floor((1 - feeRate) * 100) + '%)' };
+    }
+    const revenueKRW = totalCostKRW / divisor;
+    let price = Math.round(revenueKRW / exLOCAL);
+    price = Math.ceil(price);
+    const actualRevenue = price * exLOCAL;
+    const actualFee = actualRevenue * feeRate;
     const actualProfit = actualRevenue - actualFee - totalCostKRW;
     const actualMargin = actualRevenue > 0 ? (actualProfit / actualRevenue * 100) : 0;
-
-    result.qoo10 = {
-      price: qoo10Price,
-      shipping: 0,
-      currency: 'JPY',
-      estimatedProfit: Math.round(actualProfit),
-      margin: +actualMargin.toFixed(1),
-      fee: Math.round(actualFee),
-      totalCost: totalCostKRW,
+    return {
+      price, shipping: 0, currency: 'LOCAL',
+      estimatedProfit: Math.round(actualProfit), margin: +actualMargin.toFixed(1),
+      fee: Math.round(actualFee), totalCost: totalCostKRW,
     };
-  } else {
-    result.qoo10 = { error: '목표 마진율이 너무 높습니다 (최대 ' + Math.floor((1 - qoo10Fee) * 100) + '%)' };
   }
 
-  // Shopee (현지통화, 수수료 15%)
-  const shopeeFee = PLATFORM_FEES.shopee;
-  const shopeeDivisor = 1 - shopeeFee - targetMargin / 100;
-  if (shopeeDivisor > 0) {
-    const shopeeRevenueKRW = totalCostKRW / shopeeDivisor;
-    let shopeePrice = Math.round(shopeeRevenueKRW / EXCHANGE_RATE_SHOPEE);
-    shopeePrice = Math.ceil(shopeePrice); // 1단위 올림
-    const actualRevenue = shopeePrice * EXCHANGE_RATE_SHOPEE;
-    const actualFee = actualRevenue * shopeeFee;
-    const actualProfit = actualRevenue - actualFee - totalCostKRW;
-    const actualMargin = actualRevenue > 0 ? (actualProfit / actualRevenue * 100) : 0;
+  // Currency routing per platform
+  const currencyMap = {
+    ebay: 'USD', shopify: 'USD', alibaba: 'USD',
+    naver: 'KRW', coupang: 'KRW',
+    qoo10: 'JPY',
+    shopee: 'LOCAL',
+  };
 
-    result.shopee = {
-      price: shopeePrice,
-      shipping: 0,
-      currency: 'LOCAL',
-      estimatedProfit: Math.round(actualProfit),
-      margin: +actualMargin.toFixed(1),
-      fee: Math.round(actualFee),
-      totalCost: totalCostKRW,
-    };
-  } else {
-    result.shopee = { error: '목표 마진율이 너무 높습니다 (최대 ' + Math.floor((1 - shopeeFee) * 100) + '%)' };
+  // Calculate for all platforms that have fee rates
+  for (const [key, feeRate] of Object.entries(f)) {
+    const currency = currencyMap[key] || 'USD';
+    switch (currency) {
+      case 'KRW':
+        result[key] = calcDomesticKRW(key, feeRate);
+        break;
+      case 'JPY':
+        result[key] = calcJPY(key, feeRate);
+        break;
+      case 'LOCAL':
+        result[key] = calcLocal(key, feeRate);
+        break;
+      default: // USD
+        result[key] = calcGlobalUSD(key, feeRate, currency);
+    }
   }
 
   return result;
@@ -207,12 +213,21 @@ function calculatePrices(product) {
 /**
  * 마진 계산기 — 매입가 기반 전 플랫폼 가격 + 경쟁셀러 비교
  */
-function calculateMargins(input) {
+/**
+ * @param {object} input - { purchasePrice, weight, targetMargin, competitorPrice, competitorShipping }
+ * @param {object} [fees] - Platform fee rates from DB
+ * @param {object} [rates] - Exchange rates from DB
+ */
+function calculateMargins(input, fees, rates) {
   const purchasePrice = parseFloat(input.purchasePrice) || 0;
   const weight = parseFloat(input.weight) || 0;
   const targetMargin = input.targetMargin !== undefined && input.targetMargin !== '' ? parseFloat(input.targetMargin) : 30;
   const competitorPrice = parseFloat(input.competitorPrice) || 0;
   const competitorShipping = parseFloat(input.competitorShipping) || 0;
+
+  const f = fees || DEFAULT_PLATFORM_FEES;
+  const exUSD = (rates && rates.usd) || DEFAULT_EXCHANGE_RATE;
+  const taxRate = (rates && rates.tax_rate) || DEFAULT_TAX_RATE;
 
   // 전 플랫폼 가격 계산
   const prices = calculatePrices({
@@ -220,18 +235,19 @@ function calculateMargins(input) {
     weight,
     targetMargin,
     shippingUSD: DEFAULT_SHIPPING_USD,
-  });
+  }, fees, rates);
 
   // 경쟁셀러 마진 분석 (eBay 기준)
   let competitorAnalysis = null;
   if (competitorPrice > 0) {
-    const shippingKRW = estimateShippingKRW(weight);
-    const tax = Math.round(purchasePrice * TAX_RATE);
+    const shippingKRW = estimateShippingKRW(weight, exUSD);
+    const tax = Math.round(purchasePrice * taxRate);
     const totalCostKRW = purchasePrice + shippingKRW + tax;
 
     const compTotalUSD = competitorPrice + competitorShipping;
-    const compRevenueKRW = compTotalUSD * EXCHANGE_RATE;
-    const compFee = compRevenueKRW * PLATFORM_FEES.ebay;
+    const compRevenueKRW = compTotalUSD * exUSD;
+    const ebayFee = f.ebay || DEFAULT_PLATFORM_FEES.ebay;
+    const compFee = compRevenueKRW * ebayFee;
     const compProfit = compRevenueKRW - compFee - totalCostKRW;
     const compMargin = compRevenueKRW > 0 ? (compProfit / compRevenueKRW * 100) : 0;
 
