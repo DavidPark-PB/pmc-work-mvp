@@ -272,7 +272,8 @@ router.get('/revenue/summary', async (req, res) => {
       })(),
     ]);
 
-    const exchangeRate = 1400; // USD → KRW
+    const rates = await platformRegistry.getExchangeRates();
+    const exchangeRate = rates.usd || 1400; // USD → KRW from DB
     const platforms = {};
     const platformNames = ['Shopify', 'eBay', 'Naver'];
 
@@ -408,6 +409,15 @@ router.get('/analysis/summary', async (req, res) => {
     let highMarginCount = 0; // 효자상품 (마진 >= 20%)
     const byPlatform = {};
 
+    // Load valid platform names from DB (data-driven)
+    let validPlatforms;
+    try {
+      const dbPlatforms = await platformRegistry.getActivePlatforms();
+      validPlatforms = dbPlatforms.map(p => p.name);
+    } catch (e) {
+      validPlatforms = ['eBay', 'Shopify', 'Naver', 'Alibaba', 'Shopee'];
+    }
+
     data.forEach(row => {
       const settlement = parseFloat(row.settlement) || 0;
       const profit = parseFloat(row.profit) || 0;
@@ -429,7 +439,6 @@ router.get('/analysis/summary', async (req, res) => {
       }
 
       // 판매 플랫폼만 집계 (소싱처 제외)
-      const validPlatforms = ['eBay', 'Shopify', 'Naver', 'Alibaba', 'Shopee'];
       // platform이 "eBay, Shopify" 같이 콤마로 여러 개일 수 있음
       const platforms = platform.split(',').map(p => p.trim()).filter(p => validPlatforms.includes(p));
       // 매출/이익은 주 플랫폼(첫 번째)에만 집계 (이중집계 방지)
@@ -961,7 +970,7 @@ router.put('/master-products/:sku', async (req, res) => {
 // 가격/재고 수정 엔드포인트 (NEW)
 // ===========================
 
-// PUT /api/products/ebay/:itemId — eBay 가격/수량 수정 + Google Sheets 연동
+// PUT /api/products/ebay/:itemId — eBay 가격/수량 수정 + Supabase 동기화
 router.put('/products/ebay/:itemId', async (req, res) => {
   try {
     const { itemId } = req.params;
@@ -979,18 +988,18 @@ router.put('/products/ebay/:itemId', async (req, res) => {
     const result = await api.updateItem(itemId, updates);
     platformCache = null;
 
-    // Google Sheets 연동
-    const sheetUpdates = {};
-    if (price !== undefined) sheetUpdates.priceUSD = price;
-    if (quantity !== undefined) sheetUpdates.stock = quantity;
-    const sheetResult = await dataSource.updateProduct('itemId', itemId, sheetUpdates, sku);
+    // Sync to Supabase
+    const dbUpdates = {};
+    if (price !== undefined) dbUpdates.priceUSD = price;
+    if (quantity !== undefined) dbUpdates.stock = quantity;
+    const dbResult = await dataSource.updateProduct('itemId', itemId, dbUpdates, sku);
 
     res.json({
       success: result.success,
       platform: 'eBay',
       itemId,
       updates,
-      sheetSync: sheetResult.success,
+      dbSync: dbResult.success,
       error: result.error
     });
   } catch (error) {
@@ -998,7 +1007,7 @@ router.put('/products/ebay/:itemId', async (req, res) => {
   }
 });
 
-// PUT /api/products/shopify/:variantId — Shopify 가격 수정 + Google Sheets 연동
+// PUT /api/products/shopify/:variantId — Shopify 가격 수정 + Supabase 동기화
 router.put('/products/shopify/:variantId', async (req, res) => {
   try {
     const { variantId } = req.params;
@@ -1016,12 +1025,12 @@ router.put('/products/shopify/:variantId', async (req, res) => {
     const result = await api.updateVariant(variantId, updates);
     platformCache = null;
 
-    // Google Sheets 연동 (SKU로 검색)
+    // Sync to Supabase
     if (sku) {
-      const sheetUpdates = {};
-      if (price !== undefined) sheetUpdates.priceUSD = price;
-      if (inventory_quantity !== undefined) sheetUpdates.stock = inventory_quantity;
-      await dataSource.updateProduct('sku', sku, sheetUpdates, null);
+      const dbUpdates = {};
+      if (price !== undefined) dbUpdates.priceUSD = price;
+      if (inventory_quantity !== undefined) dbUpdates.stock = inventory_quantity;
+      await dataSource.updateProduct('sku', sku, dbUpdates, null);
     }
 
     res.json({
@@ -1036,7 +1045,7 @@ router.put('/products/shopify/:variantId', async (req, res) => {
   }
 });
 
-// PUT /api/products/naver/:productNo — 네이버 가격/재고 수정 + Google Sheets 연동
+// PUT /api/products/naver/:productNo — 네이버 가격/재고 수정 + Supabase 동기화
 router.put('/products/naver/:productNo', async (req, res) => {
   try {
     const { productNo } = req.params;
@@ -1067,12 +1076,12 @@ router.put('/products/naver/:productNo', async (req, res) => {
 
     platformCache = null;
 
-    // Google Sheets 연동
+    // Sync to Supabase
     if (sku) {
-      const sheetUpdates = {};
-      if (price !== undefined) sheetUpdates.priceUSD = price;
-      if (stock !== undefined) sheetUpdates.stock = stock;
-      await dataSource.updateProduct('sku', sku, sheetUpdates, null);
+      const dbUpdates = {};
+      if (price !== undefined) dbUpdates.priceUSD = price;
+      if (stock !== undefined) dbUpdates.stock = stock;
+      await dataSource.updateProduct('sku', sku, dbUpdates, null);
     }
 
     res.json({
@@ -1086,27 +1095,27 @@ router.put('/products/naver/:productNo', async (req, res) => {
   }
 });
 
-// PUT /api/products/alibaba/:productId — Alibaba Google Sheets 연동
+// PUT /api/products/alibaba/:productId — Alibaba price/stock update (Supabase)
 router.put('/products/alibaba/:productId', async (req, res) => {
   try {
     const { productId } = req.params;
     const { price, quantity, sku } = req.body;
 
-    // Alibaba ICBU API에는 상품 수정 API가 제한적이므로 Google Sheets에만 반영
-    const sheetUpdates = {};
-    if (price !== undefined) sheetUpdates.priceUSD = price;
-    if (quantity !== undefined) sheetUpdates.stock = quantity;
-    const sheetResult = await dataSource.updateProduct('sku', sku || productId, sheetUpdates, null);
+    // Alibaba ICBU API has limited update support — sync to Supabase only
+    const dbUpdates = {};
+    if (price !== undefined) dbUpdates.priceUSD = price;
+    if (quantity !== undefined) dbUpdates.stock = quantity;
+    const dbResult = await dataSource.updateProduct('sku', sku || productId, dbUpdates, null);
 
     platformCache = null;
     analysisCache = null;
 
     res.json({
-      success: sheetResult.success,
+      success: dbResult.success,
       platform: 'Alibaba',
       productId,
-      note: 'Google Sheets에 반영됨 (Alibaba 플랫폼은 Seller Center에서 직접 수정)',
-      error: sheetResult.error
+      note: 'Supabase에 반영됨 (Alibaba는 Seller Center에서 직접 수정)',
+      error: dbResult.error
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1128,14 +1137,8 @@ async function getPlatformStatuses() {
     const dbPlatforms = await platformRegistry.getActivePlatforms();
     platforms = dbPlatforms.map(p => ({ name: p.display_name || p.name, key: p.key, color: p.color }));
   } catch (e) {
-    // Fallback to hardcoded if DB not available
-    platforms = [
-      { name: 'Shopify', key: 'shopify', color: '#96bf48' },
-      { name: 'eBay', key: 'ebay', color: '#1565c0' },
-      { name: 'Naver', key: 'naver', color: '#03c75a' },
-      { name: 'Alibaba', key: 'alibaba', color: '#ff6a00' },
-      { name: 'Shopee', key: 'shopee', color: '#ee4d2d' },
-    ];
+    console.error('Failed to load platforms from DB:', e.message);
+    platforms = [];
   }
 
   const results = await Promise.all(platforms.map(async (p) => {
@@ -1323,7 +1326,7 @@ async function getProducts(platformFilter, limit) {
   return allProducts.slice(0, limit);
 }
 
-// eBay 제외 플랫폼만 조회 (전체 상품 페이지에서 eBay는 Google Sheets로 대체)
+// eBay 제외 플랫폼만 조회 (전체 상품 페이지에서 eBay는 Supabase 대시보드 데이터 사용)
 async function getProductsNonEbay(limit) {
   const allProducts = [];
   const fetchTasks = [];
