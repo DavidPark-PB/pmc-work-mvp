@@ -63,7 +63,7 @@ ON CONFLICT (setting_key) DO NOTHING;
 -- ===== 3. translations (translation cache) =====
 CREATE TABLE IF NOT EXISTS translations (
   id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  product_id      UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  product_id      INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   source_lang     TEXT DEFAULT 'ko',
   target_lang     TEXT NOT NULL,
   title           TEXT DEFAULT '',
@@ -88,7 +88,7 @@ END $$;
 -- ===== 4. product_images (image variants: original/domestic/global) =====
 CREATE TABLE IF NOT EXISTS product_images (
   id                  UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  product_id          UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  product_id          INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   image_type          TEXT NOT NULL,
   image_url           TEXT NOT NULL,
   sort_order          INTEGER DEFAULT 0,
@@ -103,7 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_pi_type ON product_images(product_id, image_type)
 -- ===== 5. platform_mapping (per-product per-platform config) =====
 CREATE TABLE IF NOT EXISTS platform_mapping (
   id                   UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  product_id           UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  product_id           INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   platform_id          UUID NOT NULL REFERENCES platforms(id) ON DELETE CASCADE,
   platform_title       TEXT DEFAULT '',
   platform_description TEXT DEFAULT '',
@@ -130,7 +130,7 @@ END $$;
 -- ===== 6. platform_export_status (export tracking) =====
 CREATE TABLE IF NOT EXISTS platform_export_status (
   id                UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  product_id        UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  product_id        INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   platform_id       UUID NOT NULL REFERENCES platforms(id) ON DELETE CASCADE,
   export_status     TEXT DEFAULT 'pending',
   platform_item_id  TEXT DEFAULT '',
@@ -218,15 +218,19 @@ ALTER TABLE price_change_log ENABLE ROW LEVEL SECURITY;
 DO $$
 DECLARE
   tbl TEXT;
+  pol_name TEXT;
 BEGIN
   FOREACH tbl IN ARRAY ARRAY[
     'platforms', 'margin_settings', 'translations', 'product_images',
     'platform_mapping', 'platform_export_status',
     'competitor_prices', 'repricing_rules', 'price_change_log'
   ] LOOP
-    EXECUTE format(
-      'CREATE POLICY IF NOT EXISTS service_all_%s ON %I FOR ALL TO service_role USING (true) WITH CHECK (true)',
-      tbl, tbl
-    );
+    pol_name := 'service_all_' || tbl;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = pol_name AND tablename = tbl) THEN
+      EXECUTE format(
+        'CREATE POLICY %I ON %I FOR ALL TO service_role USING (true) WITH CHECK (true)',
+        pol_name, tbl
+      );
+    END IF;
   END LOOP;
 END $$;
