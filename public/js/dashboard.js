@@ -794,7 +794,7 @@ function renderPlatformList(platforms) {
 
 async function saveMarginSettings() {
   const settingKeys = [
-    'exchange_rate_usd', 'exchange_rate_jpy', 'exchange_rate_shopee_local',
+    'exchange_rate_usd', 'exchange_rate_jpy', 'exchange_rate_local',
     'default_margin_pct', 'tax_rate', 'default_shipping_usd', 'domestic_shipping_krw'
   ];
 
@@ -828,7 +828,7 @@ async function runPriceSimulation() {
   if (purchasePrice <= 0) { alert('매입가를 입력하세요'); return; }
 
   try {
-    const res = await fetch(`${API}/margin/calculate`, {
+    const res = await fetch(`${API}/analysis/margin-calc`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ purchasePrice, weight, targetMargin: parseFloat(document.getElementById('setting-default_margin_pct').value) || 30 })
