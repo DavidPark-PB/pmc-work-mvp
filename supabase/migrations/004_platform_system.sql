@@ -85,17 +85,17 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- ===== 4. product_images (image variants: original/domestic/global) =====
-CREATE TABLE IF NOT EXISTS product_images (
-  id                  UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  product_id          INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-  image_type          TEXT NOT NULL,
-  image_url           TEXT NOT NULL,
-  sort_order          INTEGER DEFAULT 0,
-  processing_status   TEXT DEFAULT 'pending',
-  metadata            JSONB DEFAULT '{}'::jsonb,
-  created_at          TIMESTAMPTZ DEFAULT now()
-);
+-- ===== 4. product_images (extend existing table with new columns) =====
+-- Table already exists with: id, product_id, url, position, created_at
+-- Add missing columns needed for image processing pipeline
+ALTER TABLE product_images ADD COLUMN IF NOT EXISTS image_type TEXT DEFAULT 'original';
+ALTER TABLE product_images ADD COLUMN IF NOT EXISTS image_url TEXT DEFAULT '';
+ALTER TABLE product_images ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0;
+ALTER TABLE product_images ADD COLUMN IF NOT EXISTS processing_status TEXT DEFAULT 'pending';
+ALTER TABLE product_images ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+
+-- Backfill image_url from existing url column
+UPDATE product_images SET image_url = url WHERE image_url = '' AND url IS NOT NULL AND url != '';
 
 CREATE INDEX IF NOT EXISTS idx_pi_product ON product_images(product_id);
 CREATE INDEX IF NOT EXISTS idx_pi_type ON product_images(product_id, image_type);
