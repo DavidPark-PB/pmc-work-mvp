@@ -1,0 +1,254 @@
+<% if (!it.authed) { %>
+<!-- 패스워드 입력 화면 -->
+<div class="settings-auth-container">
+  <div class="settings-auth-card">
+    <div class="settings-auth-icon">
+      <i class="ti ti-lock"></i>
+    </div>
+    <h2>설정 접근</h2>
+    <p class="text-muted">패스워드를 입력하세요</p>
+    <form id="auth-form" onsubmit="return handleAuth(event)">
+      <div class="form-group">
+        <input type="password" id="settings-password" class="form-input" placeholder="패스워드" autofocus>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" id="auth-btn">확인</button>
+      <p id="auth-error" class="text-error" style="display:none; margin-top: 0.75rem;"></p>
+    </form>
+  </div>
+</div>
+
+<script>
+async function handleAuth(e) {
+  e.preventDefault();
+  const pw = document.getElementById('settings-password').value;
+  const errEl = document.getElementById('auth-error');
+  const btn = document.getElementById('auth-btn');
+
+  btn.disabled = true;
+  btn.textContent = '확인 중...';
+  errEl.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/settings/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw }),
+    });
+
+    if (res.ok) {
+      window.location.reload();
+    } else {
+      errEl.textContent = '패스워드가 올바르지 않습니다.';
+      errEl.style.display = 'block';
+    }
+  } catch {
+    errEl.textContent = '서버 연결 오류';
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '확인';
+  }
+
+  return false;
+}
+</script>
+
+<% } else { %>
+<!-- 설정 페이지 -->
+<div class="page-header">
+  <h1><i class="ti ti-settings"></i> 가격 설정</h1>
+  <p class="text-muted">플랫폼별 마진율, 환율, 수수료율, 배송비를 설정합니다.</p>
+</div>
+
+<div class="settings-grid">
+  <% const platforms = [
+    { key: 'ebay', name: 'eBay', icon: 'brand-ebay', color: '#e53238' },
+    { key: 'shopify', name: 'Shopify', icon: 'brand-shopify', color: '#96bf48' },
+    { key: 'alibaba', name: 'Alibaba', icon: 'building-factory', color: '#ff6a00' },
+    { key: 'shopee', name: 'Shopee', icon: 'brand-shopee', color: '#ee4d2d' },
+  ]; %>
+
+  <% for (const p of platforms) { %>
+  <% const s = it.settings[p.key] || { marginRate: 0.30, exchangeRate: 1400, platformFeeRate: 0.13, defaultShippingKrw: 5500 }; %>
+  <div class="settings-card">
+    <div class="settings-card-header" style="border-left: 4px solid <%= p.color %>;">
+      <i class="ti ti-<%= p.icon %>"></i>
+      <span><%= p.name %></span>
+    </div>
+    <div class="settings-card-body">
+      <div class="form-group">
+        <label>마진율 (%)</label>
+        <input type="number" class="form-input setting-input" data-platform="<%= p.key %>" data-field="marginRate"
+          value="<%= (s.marginRate * 100).toFixed(1) %>" step="0.1" min="0" max="100">
+      </div>
+      <div class="form-group">
+        <label>환율 (KRW/USD)</label>
+        <input type="number" class="form-input setting-input" data-platform="<%= p.key %>" data-field="exchangeRate"
+          value="<%= s.exchangeRate.toFixed(0) %>" step="1" min="1">
+        <div class="form-hint live-rate-hint" id="live-rate-<%= p.key %>">
+          <i class="ti ti-loader ti-spin"></i> 실시간 환율 조회 중...
+        </div>
+      </div>
+      <div class="form-group">
+        <label>수수료율 (%)</label>
+        <input type="number" class="form-input setting-input" data-platform="<%= p.key %>" data-field="platformFeeRate"
+          value="<%= (s.platformFeeRate * 100).toFixed(1) %>" step="0.1" min="0" max="100">
+      </div>
+      <div class="form-group">
+        <label>기본 배송비 (원)</label>
+        <input type="number" class="form-input setting-input" data-platform="<%= p.key %>" data-field="defaultShippingKrw"
+          value="<%= s.defaultShippingKrw.toFixed(0) %>" step="100" min="0">
+      </div>
+    </div>
+  </div>
+  <% } %>
+</div>
+
+<div class="settings-actions">
+  <button class="btn btn-primary btn-lg" onclick="saveSettings()">
+    <i class="ti ti-device-floppy"></i> 저장
+  </button>
+</div>
+
+<!-- 가격 미리보기 -->
+<div class="settings-preview">
+  <h3><i class="ti ti-calculator"></i> 가격 미리보기</h3>
+  <div id="preview-live-rate" class="text-muted" style="margin-bottom: var(--space-3); font-size: var(--text-sm);">
+    <i class="ti ti-loader ti-spin"></i> 실시간 환율 조회 중...
+  </div>
+  <div class="preview-input-row">
+    <label>원가 (KRW)</label>
+    <input type="number" id="preview-cost" class="form-input" value="10000" step="1000" min="0" oninput="updatePreview()">
+  </div>
+  <div class="preview-results" id="preview-results"></div>
+</div>
+
+<script>
+function getSettingsFromForm() {
+  const data = {};
+  document.querySelectorAll('.setting-input').forEach(input => {
+    const platform = input.dataset.platform;
+    const field = input.dataset.field;
+    if (!data[platform]) data[platform] = {};
+
+    let val = parseFloat(input.value) || 0;
+    // %로 표시된 값은 소수로 변환
+    if (field === 'marginRate' || field === 'platformFeeRate') {
+      val = val / 100;
+    }
+    data[platform][field] = val;
+  });
+  return data;
+}
+
+async function saveSettings() {
+  const data = getSettingsFromForm();
+  try {
+    const res = await fetch('/api/settings/pricing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    if (res.ok) {
+      const result = await res.json();
+      showToast(result.updated.join(', ') + ' 설정이 저장되었습니다.', 'success');
+      updatePreview();
+    } else if (res.status === 401) {
+      window.location.reload();
+    } else {
+      showToast('저장 실패', 'error');
+    }
+  } catch {
+    showToast('서버 연결 오류', 'error');
+  }
+}
+
+function updatePreview() {
+  const costKRW = parseFloat(document.getElementById('preview-cost').value) || 0;
+  const settings = getSettingsFromForm();
+  const container = document.getElementById('preview-results');
+
+  let html = '<table class="preview-table"><thead><tr><th>플랫폼</th><th>상품가 (USD)</th><th>배송비 (USD)</th><th>합계 (USD)</th></tr></thead><tbody>';
+
+  for (const [platform, s] of Object.entries(settings)) {
+    const costUsd = costKRW / s.exchangeRate;
+    const shippingUsd = s.defaultShippingKrw / s.exchangeRate;
+    const targetRevenue = (costUsd + shippingUsd) * (1 + s.marginRate);
+    const totalPrice = targetRevenue / (1 - s.platformFeeRate);
+    const salePrice = Math.max(Math.ceil((totalPrice - shippingUsd) * 100) / 100, 0.99);
+    const shippingCost = Math.ceil(shippingUsd * 100) / 100;
+    const total = (salePrice + shippingCost).toFixed(2);
+
+    const nameMap = { ebay: 'eBay', shopify: 'Shopify', alibaba: 'Alibaba', shopee: 'Shopee' };
+    const name = nameMap[platform] || platform;
+    html += '<tr>';
+    html += '<td><span class="badge badge-' + platform + '">' + name + '</span></td>';
+    html += '<td>$' + salePrice.toFixed(2) + '</td>';
+    html += '<td>$' + shippingCost.toFixed(2) + '</td>';
+    html += '<td><strong>$' + total + '</strong></td>';
+    html += '</tr>';
+  }
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// 실시간 환율 조회
+async function fetchLiveRate() {
+  try {
+    const res = await fetch('https://open.er-api.com/v6/latest/USD');
+    if (!res.ok) throw new Error('API error');
+    const data = await res.json();
+    const krwRate = data.rates?.KRW;
+    if (!krwRate) throw new Error('KRW not found');
+
+    const rounded = Math.round(krwRate);
+    const updated = data.time_last_update_utc ? new Date(data.time_last_update_utc).toLocaleDateString('ko-KR') : '';
+
+    document.querySelectorAll('[id^="live-rate-"]').forEach(el => {
+      const platform = el.id.replace('live-rate-', '');
+      const input = document.querySelector('[data-platform="' + platform + '"][data-field="exchangeRate"]');
+      const diff = input ? (parseFloat(input.value) - rounded) : 0;
+      const diffText = diff > 0 ? ' (' + diff + '원 높게 설정됨)' : diff < 0 ? ' (' + Math.abs(diff) + '원 낮게 설정됨)' : ' (동일)';
+      el.innerHTML = '<i class="ti ti-world"></i> 현재 환율: <strong>1 USD = ' + rounded.toLocaleString() + ' KRW</strong>' + diffText +
+        (updated ? ' <span class="text-muted">(' + updated + ' 기준)</span>' : '') +
+        ' <button type="button" class="btn-link" onclick="applyLiveRate(\'' + platform + '\', ' + rounded + ')">적용</button>';
+    });
+
+    // 가격 미리보기에도 현재 환율 표시
+    const previewEl = document.getElementById('preview-live-rate');
+    if (previewEl) {
+      previewEl.innerHTML = '<i class="ti ti-world"></i> 현재 환율: <strong>1 USD = ' + rounded.toLocaleString() + ' KRW</strong>' +
+        (updated ? ' <span class="text-muted">(' + updated + ' 기준)</span>' : '');
+    }
+  } catch {
+    document.querySelectorAll('[id^="live-rate-"]').forEach(el => {
+      el.innerHTML = '<i class="ti ti-alert-circle"></i> 실시간 환율 조회 실패';
+    });
+    const previewEl = document.getElementById('preview-live-rate');
+    if (previewEl) {
+      previewEl.innerHTML = '<i class="ti ti-alert-circle"></i> 실시간 환율 조회 실패';
+    }
+  }
+}
+
+function applyLiveRate(platform, rate) {
+  const input = document.querySelector('[data-platform="' + platform + '"][data-field="exchangeRate"]');
+  if (input) {
+    input.value = rate;
+    input.dispatchEvent(new Event('input'));
+  }
+}
+
+fetchLiveRate();
+
+// 초기 미리보기
+updatePreview();
+
+// 입력값 변경 시 미리보기 갱신
+document.querySelectorAll('.setting-input').forEach(input => {
+  input.addEventListener('input', updatePreview);
+});
+</script>
+<% } %>

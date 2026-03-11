@@ -1,0 +1,108 @@
+<div class="page-header">
+  <h1 class="page-title">업로드 결과</h1>
+  <div class="flex gap-8 align-center">
+    <span class="text-muted"><%= it.job.platforms.join(' + ').toUpperCase() %></span>
+    <% if (it.job.dryRun) { %>
+      <span class="badge badge-draft"><i class="ti ti-test-pipe"></i> 테스트</span>
+    <% } else { %>
+      <span class="badge badge-success"><i class="ti ti-check"></i> 실제</span>
+    <% } %>
+  </div>
+</div>
+
+<div class="card">
+  <div class="summary">
+    <div class="summary-item summary-total">
+      <div class="number"><%= it.job.total %></div>
+      <div class="label">전체</div>
+    </div>
+    <div class="summary-item summary-success">
+      <div class="number"><%= it.job.completed %></div>
+      <div class="label">성공</div>
+    </div>
+    <div class="summary-item summary-fail">
+      <div class="number"><%= it.job.failed %></div>
+      <div class="label">실패</div>
+    </div>
+  </div>
+
+  <div class="flex gap-16 flex-wrap text-muted" style="margin-bottom: var(--space-2);">
+    <div>
+      <i class="ti ti-clock"></i>
+      <strong>시작:</strong>
+      <%= new Date(it.job.createdAt).toLocaleString('ko-KR') %>
+    </div>
+    <% if (it.job.finishedAt) { %>
+    <div>
+      <i class="ti ti-clock-check"></i>
+      <strong>완료:</strong>
+      <%= new Date(it.job.finishedAt).toLocaleString('ko-KR') %>
+    </div>
+    <div>
+      <i class="ti ti-hourglass"></i>
+      <strong>소요:</strong>
+      <%
+        const elapsed = Math.round((new Date(it.job.finishedAt).getTime() - new Date(it.job.createdAt).getTime()) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+      %>
+      <% if (mins > 0) { %><%= mins %>분 <% } %><%= secs %>초
+    </div>
+    <% } %>
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-list-details"></i> 상세 결과</h2>
+  </div>
+
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>상품명</th>
+          <th>플랫폼</th>
+          <th>상태</th>
+          <th>플랫폼 ID</th>
+          <th>링크</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.job.results.forEach((r, i) => { %>
+        <tr>
+          <td class="text-muted"><%= i + 1 %></td>
+          <td class="truncate"><%= r.title %></td>
+          <td><span class="badge badge-<%= r.platform || 'ebay' %>"><%= (r.platform || '').toUpperCase() %></span></td>
+          <td>
+            <% if (r.success) { %>
+              <span class="badge badge-success"><i class="ti ti-check"></i> 성공</span>
+            <% } else { %>
+              <span class="badge badge-error"><i class="ti ti-x"></i> 실패</span>
+            <% } %>
+          </td>
+          <td class="font-mono"><%= r.platformItemId || '-' %></td>
+          <td>
+            <% if (r.listingUrl) { %>
+              <a href="<%= r.listingUrl %>" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">
+                <i class="ti ti-external-link"></i> 보기
+              </a>
+            <% } else if (r.error) { %>
+              <span class="text-muted" title="<%= r.error %>"><%= r.error.substring(0, 50) %></span>
+            <% } else { %>
+              -
+            <% } %>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="flex gap-8 mt-16">
+  <a href="/" class="btn btn-primary btn-lg"><i class="ti ti-home"></i> 홈으로</a>
+  <a href="/select" class="btn btn-secondary"><i class="ti ti-shopping-cart"></i> 쇼핑몰 선택</a>
+  <a href="/history" class="btn btn-secondary"><i class="ti ti-history"></i> 히스토리</a>
+</div>

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.mcp.json
+config/credentials.json
+*.log
+*.txt
+.DS_Store
+Thumbs.db
+data/
+debug-*.html
+
+# Next.js
+web/.next/
+web/node_modules/

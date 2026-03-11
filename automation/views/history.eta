@@ -1,0 +1,203 @@
+<div class="page-header">
+  <h1 class="page-title">히스토리</h1>
+</div>
+
+<% if (it.jobs.length > 0) { %>
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-clock-play"></i> 현재 세션 잡</h2>
+    <span class="badge badge-draft"><%= it.jobs.length %>건</span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>시간</th>
+        <th>플랫폼</th>
+        <th>모드</th>
+        <th class="text-center">전체</th>
+        <th class="text-center">성공</th>
+        <th class="text-center">실패</th>
+        <th>상태</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <% it.jobs.forEach((job) => { %>
+      <tr>
+        <td class="tabular-nums nowrap"><%= new Date(job.createdAt).toLocaleString('ko-KR') %></td>
+        <td><strong><%= job.platforms ? job.platforms.join(' + ') : (job.platform || '-') %></strong></td>
+        <td>
+          <% if (job.dryRun) { %>
+            <span class="badge badge-draft"><i class="ti ti-test-pipe"></i> 테스트</span>
+          <% } else { %>
+            <span class="badge badge-success"><i class="ti ti-check"></i> 실제</span>
+          <% } %>
+        </td>
+        <td class="text-center tabular-nums"><%= job.total %></td>
+        <td class="text-center tabular-nums text-green"><%= job.completed %></td>
+        <td class="text-center tabular-nums text-red"><%= job.failed %></td>
+        <td>
+          <% if (job.status === 'done') { %>
+            <span class="badge badge-success"><i class="ti ti-check"></i> 완료</span>
+          <% } else if (job.status === 'running') { %>
+            <span class="badge badge-pending"><i class="ti ti-loader"></i> 진행중</span>
+          <% } else { %>
+            <span class="badge badge-error"><i class="ti ti-alert-circle"></i> 오류</span>
+          <% } %>
+        </td>
+        <td>
+          <% if (job.status === 'running') { %>
+            <a href="/upload?jobId=<%= job.id %>" class="btn btn-primary btn-sm"><i class="ti ti-eye"></i> 진행 보기</a>
+          <% } else { %>
+            <a href="/results?jobId=<%= job.id %>" class="btn btn-secondary btn-sm"><i class="ti ti-chart-bar"></i> 결과 보기</a>
+          <% } %>
+        </td>
+      </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>
+<% } %>
+
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-database"></i> 리스팅 기록</h2>
+    <span class="text-muted">총 <strong><%= it.pagination.total %></strong>건</span>
+  </div>
+
+  <% if (it.listings.length === 0) { %>
+    <div class="empty-state">
+      <i class="ti ti-database-off"></i>
+      <p>아직 리스팅 기록이 없습니다.</p>
+    </div>
+  <% } else { %>
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>SKU</th>
+          <th>상품명</th>
+          <th>플랫폼</th>
+          <th class="text-right">가격</th>
+          <th>상태</th>
+          <th>플랫폼 ID</th>
+          <th>생성일</th>
+          <th>링크</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.listings.forEach((l) => { %>
+        <tr>
+          <td class="text-muted" style="font-size: var(--text-xs);"><%= l.id %></td>
+          <td class="font-mono"><%= l.productSku || '-' %></td>
+          <td class="truncate"><% if (l.listingUrl) { %><a href="<%= l.listingUrl %>" target="_blank" rel="noopener"><%= l.productTitleKo || l.title || '-' %></a><% } else { %><%= l.productTitleKo || l.title || '-' %><% } %></td>
+          <td><strong><%= l.platform %></strong></td>
+          <td class="text-right tabular-nums">$<%= Number(l.price).toFixed(2) %></td>
+          <td>
+            <% if (l.status === 'active') { %>
+              <span class="badge badge-success"><i class="ti ti-check"></i> 판매중</span>
+            <% } else if (l.status === 'draft') { %>
+              <span class="badge badge-draft">대기</span>
+            <% } else if (l.status === 'pending') { %>
+              <span class="badge badge-pending">검수중</span>
+            <% } else if (l.status === 'error') { %>
+              <span class="badge badge-error">실패</span>
+            <% } else if (l.status === 'ended') { %>
+              <span class="badge badge-draft">종료</span>
+            <% } else { %>
+              <span class="badge badge-draft"><%= l.status %></span>
+            <% } %>
+          </td>
+          <td class="font-mono"><%= l.platformItemId || '-' %></td>
+          <td class="tabular-nums nowrap"><%= new Date(l.createdAt).toLocaleDateString('ko-KR') %></td>
+          <td>
+            <% if (l.listingUrl) { %>
+              <a href="<%= l.listingUrl %>" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> 보기</a>
+            <% } else { %>
+              -
+            <% } %>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+
+  <% if (it.pagination.totalPages > 1) { %>
+  <div class="pagination">
+    <a href="/history?page=<%= Math.max(1, it.pagination.page - 1) %>"
+       class="page-btn <%= it.pagination.page <= 1 ? 'disabled' : '' %>">
+      <i class="ti ti-chevron-left"></i>
+    </a>
+    <% for (let p = 1; p <= it.pagination.totalPages; p++) { %>
+      <% if (p === 1 || p === it.pagination.totalPages || Math.abs(p - it.pagination.page) <= 2) { %>
+        <a href="/history?page=<%= p %>" class="page-btn <%= p === it.pagination.page ? 'active' : '' %>"><%= p %></a>
+      <% } else if (Math.abs(p - it.pagination.page) === 3) { %>
+        <span class="page-info">...</span>
+      <% } %>
+    <% } %>
+    <a href="/history?page=<%= Math.min(it.pagination.totalPages, it.pagination.page + 1) %>"
+       class="page-btn <%= it.pagination.page >= it.pagination.totalPages ? 'disabled' : '' %>">
+      <i class="ti ti-chevron-right"></i>
+    </a>
+  </div>
+  <% } %>
+  <% } %>
+</div>
+
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-file-upload"></i> CSV 업로드 이력</h2>
+    <span class="text-muted">총 <strong><%= it.uploads.length %></strong>건</span>
+  </div>
+
+  <% if (it.uploads.length === 0) { %>
+    <div class="empty-state">
+      <i class="ti ti-file-off"></i>
+      <p>아직 업로드 이력이 없습니다.</p>
+    </div>
+  <% } else { %>
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>업로드 시간</th>
+          <th>파일명</th>
+          <th class="text-center">행 수</th>
+          <th class="text-center">등록 수</th>
+          <th>상태</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.uploads.forEach((u) => { %>
+        <tr>
+          <td class="tabular-nums nowrap"><%= new Date(u.createdAt).toLocaleString('ko-KR') %></td>
+          <td class="font-mono truncate" style="max-width: 300px;" title="<%= u.filename %>"><%= u.filename %></td>
+          <td class="text-center tabular-nums"><%= u.rowCount %></td>
+          <td class="text-center tabular-nums"><%= u.importedCount || 0 %></td>
+          <td>
+            <% if (u.status === 'imported') { %>
+              <span class="badge badge-success">등록완료</span>
+            <% } else { %>
+              <span class="badge badge-pending">업로드됨</span>
+            <% } %>
+          </td>
+          <td>
+            <% if (u.status !== 'imported') { %>
+              <a href="/import?uploadId=<%= u.uploadId %>" class="btn btn-secondary btn-sm"><i class="ti ti-database-import"></i> 등록</a>
+            <% } %>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <% } %>
+</div>
+
+<div class="mt-16">
+  <a href="/upload-csv" class="btn btn-primary"><i class="ti ti-file-upload"></i> 새 업로드</a>
+</div>

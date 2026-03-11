@@ -43,3 +43,11 @@ archive/
 pmc-nextjs/.next/
 pmc-nextjs/node_modules/
 webapp/__pycache__/
+
+# Automation server (ccorea-auto)
+automation/node_modules/
+automation/.env
+automation/.env 2
+automation/.env.sample
+automation/.DS_Store
+automation/data/

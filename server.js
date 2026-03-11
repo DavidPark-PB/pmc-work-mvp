@@ -2,9 +2,11 @@ require('dotenv').config({ path: './config/.env' });
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const AUTO_PORT = process.env.AUTO_PORT || 3001;
 
 // uploads 디렉토리 생성
 const uploadsDir = path.join(__dirname, 'public', 'uploads');
@@ -12,6 +14,30 @@ if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
+
+// ccorea-auto automation server proxy (:3001)
+app.use('/api/auto', createProxyMiddleware({
+  target: `http://localhost:${AUTO_PORT}/api`,
+  pathRewrite: { '^/api/auto': '' },
+  changeOrigin: true,
+  onProxyRes: (proxyRes) => {
+    // SSE streaming support
+    proxyRes.headers['X-Accel-Buffering'] = 'no';
+  },
+  onError: (err, req, res) => {
+    res.status(502).json({ error: 'Automation server unavailable', detail: err.message });
+  }
+}));
+
+// Proxy page routes for automation UI (non-API)
+app.use('/auto', createProxyMiddleware({
+  target: `http://localhost:${AUTO_PORT}`,
+  pathRewrite: { '^/auto': '' },
+  changeOrigin: true,
+  onError: (err, req, res) => {
+    res.status(502).json({ error: 'Automation server unavailable', detail: err.message });
+  }
+}));
 
 const apiRoutes = require('./src/web/routes/api');
 app.use('/api', apiRoutes);

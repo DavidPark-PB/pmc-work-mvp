@@ -1,0 +1,100 @@
+<div class="page-header">
+  <h1 class="page-title">데이터 미리보기</h1>
+  <span class="badge badge-draft"><i class="ti ti-database-off"></i> 미등록</span>
+</div>
+
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-table"></i> 발견된 상품</h2>
+    <span class="text-muted">총 <strong><%= it.rowCount %></strong>개</span>
+  </div>
+
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>이미지</th>
+          <th>상품명</th>
+          <th class="text-right">가격 (원)</th>
+          <th>URL</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.rows.slice(0, 20).forEach((row, i) => { %>
+        <tr>
+          <td class="text-muted"><%= i + 1 %></td>
+          <td>
+            <% if (row.image) { %>
+              <img src="<%= row.image %>" class="thumb" alt="" onerror="this.style.display='none'">
+            <% } else { %>
+              <div class="thumb" style="display:flex;align-items:center;justify-content:center;"><i class="ti ti-photo-off" style="font-size:14px;color:var(--text-muted);"></i></div>
+            <% } %>
+          </td>
+          <td class="truncate"><%= row.name %></td>
+          <td class="text-right tabular-nums"><%= row.price.toLocaleString() %></td>
+          <td><a href="<%= row.url %>" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> 링크</a></td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+
+  <% if (it.rowCount > 20) { %>
+    <p class="text-muted mt-4" style="text-align: center;">... 외 <%= it.rowCount - 20 %>개 더</p>
+  <% } %>
+
+  <div class="flex justify-between align-center mt-24">
+    <a href="/upload-csv" class="btn btn-secondary"><i class="ti ti-arrow-left"></i> 뒤로</a>
+    <button id="import-btn" class="btn btn-primary btn-lg" onclick="importData()">
+      <i class="ti ti-database-plus"></i> DB에 등록하기 (<%= it.rowCount %>개)
+    </button>
+  </div>
+</div>
+
+<div id="import-result" class="card hidden">
+  <div class="section-header">
+    <h2><i class="ti ti-circle-check" style="color: var(--green);"></i> 등록 완료</h2>
+  </div>
+  <div id="result-content"></div>
+  <div class="mt-16">
+    <a id="next-link" href="/select" class="btn btn-success btn-lg">
+      <i class="ti ti-arrow-right"></i> 다음: 쇼핑몰 선택
+    </a>
+  </div>
+</div>
+
+<script>
+async function importData() {
+  const btn = document.getElementById('import-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> 등록 중...';
+
+  try {
+    const res = await fetch('/api/import/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uploadId: '<%= it.uploadId %>' }),
+    });
+    const data = await res.json();
+
+    document.getElementById('result-content').innerHTML =
+      '<div class="summary">' +
+      '<div class="summary-item summary-success"><div class="number">' + data.imported + '</div><div class="label">신규 등록</div></div>' +
+      '<div class="summary-item summary-total"><div class="number">' + data.updated + '</div><div class="label">업데이트</div></div>' +
+      '<div class="summary-item summary-fail"><div class="number">' + data.errors + '</div><div class="label">오류</div></div>' +
+      '</div>';
+
+    document.getElementById('import-result').classList.remove('hidden');
+
+    if (data.crawlResultIds && data.crawlResultIds.length) {
+      document.getElementById('next-link').href = '/select?ids=' + data.crawlResultIds.join(',');
+    }
+
+    if (typeof showToast === 'function') showToast(data.imported + '개 상품이 등록되었습니다.', 'success');
+  } catch (e) {
+    btn.innerHTML = '<i class="ti ti-alert-circle"></i> 오류: ' + e.message;
+    if (typeof showToast === 'function') showToast('등록 실패: ' + e.message, 'error');
+  }
+}
+</script>
