@@ -4,7 +4,7 @@
   "description": "PMC Product Management & Cost Analysis System with Multi-Platform Integration",
   "main": "scripts/auto-sync-scheduler.js",
   "scripts": {
-    "start": "node scripts/auto-sync-scheduler.js",
+    "start": "node server.js",
     "server": "node server.js",
     "dev": "node server.js",
     "sync": "node scripts/auto-sync-scheduler.js",
