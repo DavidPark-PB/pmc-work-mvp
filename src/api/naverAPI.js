@@ -246,56 +246,68 @@ class NaverAPI {
    */
   async getRevenueSummary(days = 30) {
     const now = new Date();
-    const from = new Date(now.getTime() - days * 86400000).toISOString();
+    const WINDOW_DAYS = 1; // 1-day windows to capture today/yesterday without API page truncation
+    const seenOrderIds = new Set();
+    const allOrderIds = [];
 
-    try {
-      // 1. 변경된 주문 목록 가져오기
-      const result = await this.getOrders(from);
-      const statuses = result?.data?.lastChangeStatuses || [];
-      const orderIds = statuses.map(s => s.productOrderId).filter(Boolean);
-
-      if (orderIds.length === 0) {
-        return { totalRevenue: 0, orderCount: 0, currency: 'KRW', period: `${days}days`, dailySales: {} };
-      }
-
-      // 2. 주문 상세 조회 (최대 300개씩)
-      let allDetails = [];
-      for (let i = 0; i < orderIds.length; i += 300) {
-        const batch = orderIds.slice(i, i + 300);
-        try {
-          const details = await this.getOrderDetails(batch);
-          const items = details?.data || [];
-          allDetails.push(...(Array.isArray(items) ? items : []));
-        } catch (e) {
-          console.error('Naver 주문 상세 조회 실패:', e.message);
+    // Collect productOrderIds across all windows
+    for (let offset = 0; offset < days; offset += WINDOW_DAYS) {
+      const windowStart = new Date(now.getTime() - Math.min(offset + WINDOW_DAYS, days) * 86400000);
+      try {
+        const result = await this.getOrders(windowStart.toISOString());
+        const statuses = result?.data?.lastChangeStatuses || [];
+        for (const s of statuses) {
+          if (s.productOrderId && !seenOrderIds.has(s.productOrderId)) {
+            seenOrderIds.add(s.productOrderId);
+            allOrderIds.push(s.productOrderId);
+          }
         }
+      } catch (e) {
+        if (e.response?.status === 429) break; // stop on rate limit
+        console.warn(`Naver window ${offset}d error:`, e.message);
       }
-
-      // 3. 매출 집계 (productOrder.totalPaymentAmount 기준)
-      let totalRevenue = 0;
-      const dailySales = {};
-      allDetails.forEach(item => {
-        const po = item.productOrder || {};
-        const amount = po.totalPaymentAmount || po.unitPrice || 0;
-        totalRevenue += amount;
-
-        const date = (po.placeOrderDate || item.order?.paymentDate || '').split('T')[0] || 'unknown';
-        if (!dailySales[date]) dailySales[date] = { revenue: 0, orders: 0 };
-        dailySales[date].revenue += amount;
-        dailySales[date].orders++;
-      });
-
-      return {
-        totalRevenue,
-        orderCount: allDetails.length,
-        currency: 'KRW',
-        period: `${days}days`,
-        dailySales,
-      };
-    } catch (e) {
-      console.error('Naver 매출 요약 실패:', e.message);
-      return { totalRevenue: 0, orderCount: 0, currency: 'KRW', period: `${days}days`, dailySales: {}, error: e.message };
+      // Small delay to avoid rate limiting
+      await new Promise(r => setTimeout(r, 300));
     }
+
+    if (allOrderIds.length === 0) {
+      return { totalRevenue: 0, orderCount: 0, currency: 'KRW', period: `${days}days`, dailySales: {} };
+    }
+
+    // Fetch order details in batches of 300
+    let allDetails = [];
+    for (let i = 0; i < allOrderIds.length; i += 300) {
+      const batch = allOrderIds.slice(i, i + 300);
+      try {
+        const details = await this.getOrderDetails(batch);
+        const items = details?.data || [];
+        allDetails.push(...(Array.isArray(items) ? items : []));
+      } catch (e) {
+        console.error('Naver 주문 상세 조회 실패:', e.message);
+      }
+    }
+
+    // Aggregate revenue by day
+    let totalRevenue = 0;
+    const dailySales = {};
+    allDetails.forEach(item => {
+      const po = item.productOrder || {};
+      const amount = po.totalPaymentAmount || po.unitPrice || 0;
+      totalRevenue += amount;
+
+      const date = (po.placeOrderDate || item.order?.paymentDate || '').split('T')[0] || 'unknown';
+      if (!dailySales[date]) dailySales[date] = { revenue: 0, orders: 0 };
+      dailySales[date].revenue += amount;
+      dailySales[date].orders++;
+    });
+
+    return {
+      totalRevenue,
+      orderCount: allDetails.length,
+      currency: 'KRW',
+      period: `${days}days`,
+      dailySales,
+    };
   }
 }
 

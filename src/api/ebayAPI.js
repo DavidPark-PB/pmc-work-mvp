@@ -143,10 +143,18 @@ class EbayAPI {
       const response = await axios.post(this.apiUrl, xml, { headers });
       const data = response.data;
 
-      // 토큰 만료 감지 → 자동 갱신 후 재시도 (1회)
-      if (!this._tokenRefreshed && typeof data === 'string' && (data.includes('token is hard expired') || data.includes('Expired IAF token')) && this.refreshToken) {
-        console.log('eBay 토큰 만료 감지, 자동 갱신 시도...');
-        await this.refreshAccessToken();
+      // 토큰 만료/무효 감지 → 자동 갱신 후 재시도 (1회)
+      const isTokenInvalid = typeof data === 'string' && (
+        data.includes('token is hard expired') ||
+        data.includes('Expired IAF token') ||
+        data.includes('Auth token is invalid') ||
+        data.includes('<ErrorCode>931</ErrorCode>')
+      );
+      if (!this._tokenRefreshed && isTokenInvalid && this.refreshToken) {
+        console.log('eBay 토큰 무효/만료 감지, 자동 갱신 시도...');
+        const newToken = await this.refreshAccessToken();
+        process.env.EBAY_USER_TOKEN = newToken;
+        this.userToken = newToken;
         // 갱신된 토큰으로 재시도
         return this.callTradingAPI(callName, requestBody);
       }
@@ -368,8 +376,21 @@ class EbayAPI {
   /**
    * 상품 등록 (AddFixedPriceItem)
    */
-  async createProduct({ title, description, price, quantity, sku, categoryId, conditionId, shippingCost, imageUrl, currency }) {
+  async createProduct({ title, description, price, quantity, sku, categoryId, conditionId, imageUrls, imageUrl, currency, itemSpecifics }) {
     try {
+      // Build PictureDetails with multiple images
+      const allImages = imageUrls || (imageUrl ? [imageUrl] : []);
+      const pictureXml = allImages.length > 0
+        ? `<PictureDetails>${allImages.map(u => `<PictureURL>${this.escapeXml(u)}</PictureURL>`).join('')}</PictureDetails>`
+        : '';
+
+      // Build ItemSpecifics XML
+      const specs = itemSpecifics || {};
+      const specsEntries = Object.entries(specs);
+      const specsXml = specsEntries.length > 0
+        ? `<ItemSpecifics>${specsEntries.map(([k, v]) => `<NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(String(v))}</Value></NameValueList>`).join('')}</ItemSpecifics>`
+        : '';
+
       const requestBody = `
   <Item>
     <Title>${this.escapeXml(title)}</Title>
@@ -380,41 +401,45 @@ class EbayAPI {
     <StartPrice currencyID="${currency || 'USD'}">${price}</StartPrice>
     <ConditionID>${conditionId || '1000'}</ConditionID>
     <CategoryMappingAllowed>true</CategoryMappingAllowed>
-    <Country>US</Country>
+    <Country>KR</Country>
+    <Location>Seoul, Korea</Location>
+    <PostalCode>06164</PostalCode>
     <Currency>${currency || 'USD'}</Currency>
     <DispatchTimeMax>3</DispatchTimeMax>
     <ListingDuration>GTC</ListingDuration>
     <ListingType>FixedPriceItem</ListingType>
     <Quantity>${quantity || 1}</Quantity>
     ${sku ? `<SKU>${this.escapeXml(sku)}</SKU>` : ''}
-    <ShippingDetails>
-      <ShippingType>Flat</ShippingType>
-      <ShippingServiceOptions>
-        <ShippingServiceCost>${shippingCost || 0}</ShippingServiceCost>
-        <ShippingService>USPSMedia</ShippingService>
-        <ShippingServicePriority>1</ShippingServicePriority>
-      </ShippingServiceOptions>
-    </ShippingDetails>
-    <ReturnPolicy>
-      <ReturnsAcceptedOption>ReturnsAccepted</ReturnsAcceptedOption>
-      <RefundOption>MoneyBack</RefundOption>
-      <ReturnsWithinOption>Days_30</ReturnsWithinOption>
-      <ShippingCostPaidByOption>Buyer</ShippingCostPaidByOption>
-    </ReturnPolicy>
-    ${imageUrl ? `<PictureDetails><PictureURL>${imageUrl}</PictureURL></PictureDetails>` : ''}
+    <SellerProfiles>
+      <SellerShippingProfile>
+        <ShippingProfileID>${process.env.EBAY_SHIPPING_PROFILE_ID || '281980037014'}</ShippingProfileID>
+      </SellerShippingProfile>
+      <SellerReturnProfile>
+        <ReturnProfileID>${process.env.EBAY_RETURN_PROFILE_ID || '266278678014'}</ReturnProfileID>
+      </SellerReturnProfile>
+      <SellerPaymentProfile>
+        <PaymentProfileID>${process.env.EBAY_PAYMENT_PROFILE_ID || '266278202014'}</PaymentProfileID>
+      </SellerPaymentProfile>
+    </SellerProfiles>
+    ${specsXml}
+    ${pictureXml}
   </Item>`;
 
       const response = await this.callTradingAPI('AddFixedPriceItem', requestBody);
+      console.log('[eBay createProduct] response:', response.substring(0, 3000));
       const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
       const ack = ackMatch ? ackMatch[1] : 'Unknown';
       const itemIdMatch = response.match(/<ItemID>(.*?)<\/ItemID>/);
 
       if (ack === 'Success' || ack === 'Warning') {
+        console.log('[eBay createProduct] SUCCESS itemId:', itemIdMatch ? itemIdMatch[1] : 'NONE');
         return { success: true, itemId: itemIdMatch ? itemIdMatch[1] : null };
       } else {
         const longMatch = response.match(/<LongMessage>(.*?)<\/LongMessage>/);
         const errMatch = response.match(/<ShortMessage>(.*?)<\/ShortMessage>/);
-        return { success: false, error: longMatch ? longMatch[1] : (errMatch ? errMatch[1] : 'Unknown error') };
+        const errMsg = longMatch ? longMatch[1] : (errMatch ? errMatch[1] : 'Unknown error');
+        console.log('[eBay createProduct] FAILED:', errMsg);
+        return { success: false, error: errMsg };
       }
     } catch (error) {
       return { success: false, error: error.message };
@@ -447,6 +472,84 @@ class EbayAPI {
       console.error('❌ 전체 리스팅 조회 실패:', error.message);
       return [];
     }
+  }
+
+  /**
+   * GetOrders with OrderStatus=Active — 배송 대기 주문 전체 (시간 제한 없음)
+   * GetSellerTransactions은 최근 N일만 조회하지만, 이 API는 현재 미배송 주문을 전부 가져옴
+   */
+  async getAwaitingShipmentOrders() {
+    const allOrders = [];
+    let pageNumber = 1;
+
+    // eBay GetOrders requires a date filter (max 30 days for ModTime).
+    // AwaitingShipment orders are always recent — 30 days covers all practical cases.
+    const modTimeFrom = new Date(Date.now() - 30 * 86400000).toISOString();
+    const modTimeTo = new Date().toISOString();
+
+    try {
+      while (true) {
+        const requestBody = `
+<ModTimeFrom>${modTimeFrom}</ModTimeFrom>
+<ModTimeTo>${modTimeTo}</ModTimeTo>
+<OrderStatus>AwaitingShipment</OrderStatus>
+<DetailLevel>ReturnAll</DetailLevel>
+<Pagination>
+  <EntriesPerPage>100</EntriesPerPage>
+  <PageNumber>${pageNumber}</PageNumber>
+</Pagination>`;
+
+        const response = await this.callTradingAPI('GetOrders', requestBody);
+
+        const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
+        if (!ackMatch || (ackMatch[1] !== 'Success' && ackMatch[1] !== 'Warning')) {
+          const errMsg = this.extractValue(response, 'ShortMessage') || this.extractValue(response, 'LongMessage');
+          if (errMsg) console.warn('GetOrders:', errMsg);
+          break;
+        }
+
+        const orderRegex = /<Order>([\s\S]*?)<\/Order>/g;
+        let match;
+        while ((match = orderRegex.exec(response)) !== null) {
+          const order = match[1];
+          const addrMatch = order.match(/<ShippingAddress>([\s\S]*?)<\/ShippingAddress>/);
+          const addr = addrMatch ? addrMatch[1] : '';
+
+          // TransactionArray에서 첫 번째 Transaction의 Item 정보 추출
+          const txnMatch = order.match(/<Transaction>([\s\S]*?)<\/Transaction>/);
+          const txn = txnMatch ? txnMatch[1] : '';
+          const itemMatch = txn.match(/<Item>([\s\S]*?)<\/Item>/);
+          const item = itemMatch ? itemMatch[1] : '';
+
+          allOrders.push({
+            ebayOrderId: this.extractValue(order, 'OrderID'),
+            createdDate: this.extractValue(order, 'CreatedTime'),
+            buyerUserId: this.extractValue(order, 'BuyerUserID') || '',
+            buyerEmail: this.extractValue(order, 'BuyerEmail') || '',
+            price: parseFloat(this.extractValue(order, 'Total') || '0'),
+            quantity: parseInt(this.extractValue(txn, 'QuantityPurchased') || '1'),
+            title: this.extractValue(item, 'Title') || '',
+            sku: this.extractValue(txn, 'SKU') || this.extractValue(item, 'SKU') || '',
+            itemId: this.extractValue(item, 'ItemID') || '',
+            shippingName: this.extractValue(addr, 'Name'),
+            shippingStreet: [this.extractValue(addr, 'Street1'), this.extractValue(addr, 'Street2')].filter(Boolean).join(' '),
+            shippingCity: this.extractValue(addr, 'CityName'),
+            shippingState: this.extractValue(addr, 'StateOrProvince'),
+            shippingZip: this.extractValue(addr, 'PostalCode'),
+            shippingCountry: this.extractValue(addr, 'Country'),
+            shippingPhone: this.extractValue(addr, 'Phone'),
+          });
+        }
+
+        const totalPages = parseInt(response.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/)?.[1] || '1');
+        if (pageNumber >= totalPages) break;
+        pageNumber++;
+      }
+    } catch (err) {
+      throw new Error(`getAwaitingShipmentOrders 실패: ${err.message}`);
+    }
+
+    return allOrders;
   }
 
   /**

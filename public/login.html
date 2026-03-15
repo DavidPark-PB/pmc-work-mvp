@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PMC 로그인</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0a0a1a;
+    color: #e0e0e0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+  .login-box {
+    background: #1a1a2e;
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+    padding: 40px;
+    width: 360px;
+    text-align: center;
+  }
+  .login-box h1 {
+    font-size: 22px;
+    margin-bottom: 8px;
+    color: #fff;
+  }
+  .login-box p {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 24px;
+  }
+  .input-group {
+    position: relative;
+    margin-bottom: 16px;
+  }
+  .input-group input {
+    width: 100%;
+    padding: 12px 16px;
+    background: #0f0f23;
+    border: 1px solid #333;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .input-group input:focus {
+    border-color: #7c4dff;
+  }
+  .btn-login {
+    width: 100%;
+    padding: 12px;
+    background: #7c4dff;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .btn-login:hover { background: #651fff; }
+  .btn-login:disabled { background: #555; cursor: not-allowed; }
+  .error-msg {
+    color: #ff5252;
+    font-size: 13px;
+    margin-top: 12px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+<div class="login-box">
+  <h1>PMC Dashboard</h1>
+  <p>접근하려면 비밀번호를 입력하세요</p>
+  <form id="loginForm">
+    <div class="input-group">
+      <input type="password" id="password" placeholder="비밀번호" autocomplete="current-password" autofocus>
+    </div>
+    <button type="submit" class="btn-login" id="btnLogin">로그인</button>
+  </form>
+  <div class="error-msg" id="errorMsg"></div>
+</div>
+<script>
+document.getElementById('loginForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var btn = document.getElementById('btnLogin');
+  var errEl = document.getElementById('errorMsg');
+  var pw = document.getElementById('password').value;
+  if (!pw) return;
+
+  btn.disabled = true;
+  btn.textContent = '확인 중...';
+  errEl.style.display = 'none';
+
+  try {
+    var res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw }),
+    });
+    var data = await res.json();
+    if (res.ok && data.success) {
+      window.location.href = '/';
+    } else {
+      errEl.textContent = data.error || '비밀번호가 올바르지 않습니다';
+      errEl.style.display = 'block';
+    }
+  } catch (err) {
+    errEl.textContent = '서버 연결 실패';
+    errEl.style.display = 'block';
+  }
+  btn.disabled = false;
+  btn.textContent = '로그인';
+});
+</script>
+</body>
+</html>

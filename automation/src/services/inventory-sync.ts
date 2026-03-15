@@ -5,7 +5,7 @@
  * eBay: GetMyeBaySelling → Quantity - QuantitySold
  * Shopify: GET /products/{id}.json → variants[0].inventory_quantity
  */
-import { eq, and } from 'drizzle-orm';
+import { eq, and, like } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { platformListings, products } from '../db/schema.js';
 import { EbayClient } from '../platforms/ebay/EbayClient.js';
@@ -34,7 +34,8 @@ export async function syncAllInventory(): Promise<SyncResult[]> {
   })
     .from(platformListings)
     .leftJoin(products, eq(platformListings.productId, products.id))
-    .where(eq(platformListings.status, 'active'));
+    // automation이 생성한 상품(PMC- SKU)만 동기화 — main server 상품은 건드리지 않음
+    .where(and(eq(platformListings.status, 'active'), like(products.sku, 'PMC-%')));
 
   if (activeListings.length === 0) {
     console.log('[인벤토리] 동기화할 활성 리스팅 없음');

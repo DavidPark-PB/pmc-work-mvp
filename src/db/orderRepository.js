@@ -50,13 +50,15 @@ class OrderRepository {
     return new Set((data || []).map(r => r.order_no));
   }
 
-  // Recent orders
-  async getRecent(limit = 50) {
-    const { data, error } = await this.db
+  // Recent orders (status: 'NEW' for awaiting shipment, null for all)
+  async getRecent(limit = 50, status = null) {
+    let query = this.db
       .from('orders')
       .select('*')
       .order('order_date', { ascending: false })
       .limit(limit);
+    if (status) query = query.eq('status', status);
+    const { data, error } = await query;
     if (error) throw error;
     return data || [];
   }

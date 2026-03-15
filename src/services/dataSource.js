@@ -169,8 +169,8 @@ async function getPlatformProductCount(platform) {
 }
 
 // ─── Orders ───
-async function getRecentOrders(limit = 50) {
-  const data = await getOrderRepo().getRecent(limit);
+async function getRecentOrders(limit = 50, status = null) {
+  const data = await getOrderRepo().getRecent(limit, status);
   return {
     orders: data.map(o => ({
       rowIndex: o.id,

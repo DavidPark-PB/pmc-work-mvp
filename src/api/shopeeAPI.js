@@ -11,74 +11,167 @@ class ShopeeAPI {
   constructor() {
     this.partnerId = parseInt(process.env.SHOPEE_PARTNER_ID);
     this.partnerKey = process.env.SHOPEE_PARTNER_KEY;
-    this.shopId = parseInt(process.env.SHOPEE_SHOP_ID);
     this.merchantId = parseInt(process.env.SHOPEE_MERCHANT_ID);
+
+    // Merchant-level token (정보 API)
     this.accessToken = process.env.SHOPEE_ACCESS_TOKEN;
     this.refreshToken = process.env.SHOPEE_REFRESH_TOKEN;
+
+    // Shop-level token (상품/주문 API)
+    this.shopAccessToken = process.env.SHOPEE_SHOP_ACCESS_TOKEN || process.env.SHOPEE_ACCESS_TOKEN;
+    this.shopRefreshToken = process.env.SHOPEE_SHOP_REFRESH_TOKEN || process.env.SHOPEE_REFRESH_TOKEN;
+    this.shopIds = (process.env.SHOPEE_SHOP_IDS || '')
+      .split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+
+    // Per-shop tokens: SHOPEE_SHOP_{shopId}_ACCESS_TOKEN
+    this.shopTokens = {};
+    for (const shopId of this.shopIds) {
+      const at = process.env[`SHOPEE_SHOP_${shopId}_ACCESS_TOKEN`];
+      const rt = process.env[`SHOPEE_SHOP_${shopId}_REFRESH_TOKEN`];
+      if (at) this.shopTokens[shopId] = { accessToken: at, refreshToken: rt };
+    }
+    // Fallback: if no per-shop tokens, use global shop token for first shop
+    if (Object.keys(this.shopTokens).length === 0 && this.shopAccessToken && this.shopIds[0]) {
+      this.shopTokens[this.shopIds[0]] = {
+        accessToken: this.shopAccessToken,
+        refreshToken: this.shopRefreshToken,
+      };
+    }
 
     this.baseUrl = process.env.SHOPEE_ENV === 'test'
       ? 'https://openplatform.sandbox.test-stable.shopee.sg'
       : 'https://partner.shopeemobile.com';
   }
 
-  /**
-   * API 서명 생성 (HMAC-SHA256)
-   * merchant 레벨: partner_id + path + timestamp + access_token + merchant_id
-   * shop 레벨: partner_id + path + timestamp + access_token + shop_id
-   */
+  _signMerchant(path, timestamp) {
+    return crypto.createHmac('sha256', this.partnerKey)
+      .update(`${this.partnerId}${path}${timestamp}${this.accessToken}${this.merchantId}`)
+      .digest('hex');
+  }
+
+  _signShop(path, timestamp, shopId) {
+    return crypto.createHmac('sha256', this.partnerKey)
+      .update(`${this.partnerId}${path}${timestamp}${this.shopAccessToken}${shopId}`)
+      .digest('hex');
+  }
+
+  _signPublic(path, timestamp) {
+    return crypto.createHmac('sha256', this.partnerKey)
+      .update(`${this.partnerId}${path}${timestamp}`)
+      .digest('hex');
+  }
+
+  // 하위 호환성 유지
   generateSignature(path, timestamp, useShopId = false) {
-    const id = useShopId ? this.shopId : this.merchantId;
-    const baseString = `${this.partnerId}${path}${timestamp}${this.accessToken}${id}`;
-    return crypto.createHmac('sha256', this.partnerKey).update(baseString).digest('hex');
+    return useShopId
+      ? this._signShop(path, timestamp, this.shopIds[0])
+      : this._signMerchant(path, timestamp);
   }
 
-  /**
-   * API 요청 실행 (merchant 레벨)
-   */
   async request(method, path, data = null) {
-    return this._doRequest(method, path, data, false);
+    return this._merchantRequest(method, path, data);
   }
 
-  /**
-   * API 요청 실행 (shop 레벨)
-   */
-  async shopRequest(method, path, data = null) {
-    return this._doRequest(method, path, data, true);
+  async shopRequest(method, path, data = null, shopId = null) {
+    return this._shopRequest(method, path, data, shopId || this.shopIds[0]);
   }
 
-  async _doRequest(method, path, data, useShopId) {
+  async _merchantRequest(method, path, data) {
     const timestamp = Math.floor(Date.now() / 1000);
-    const sign = this.generateSignature(path, timestamp, useShopId);
-
+    const sign = this._signMerchant(path, timestamp);
     const url = `${this.baseUrl}${path}`;
-    const params = {
-      partner_id: this.partnerId,
-      timestamp: timestamp,
-      sign: sign,
-      access_token: this.accessToken,
-    };
-    if (useShopId) params.shop_id = this.shopId;
-    else params.merchant_id = this.merchantId;
+    const params = { partner_id: this.partnerId, timestamp, sign, access_token: this.accessToken, merchant_id: this.merchantId };
 
+    return this._exec(method, url, params, data);
+  }
+
+  async _shopRequest(method, path, data, shopId) {
+    const token = this.shopTokens[shopId]?.accessToken || this.shopAccessToken;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const sign = crypto.createHmac('sha256', this.partnerKey)
+      .update(`${this.partnerId}${path}${timestamp}${token}${shopId}`)
+      .digest('hex');
+    const url = `${this.baseUrl}${path}`;
+    const params = { partner_id: this.partnerId, timestamp, sign, access_token: token, shop_id: shopId };
+    return this._exec(method, url, params, data);
+  }
+
+  async _refreshTokens() {
+    const { saveToken } = require('../services/tokenStore');
+    const refreshPath = '/api/v2/auth/access_token/get';
+    const timestamp = Math.floor(Date.now() / 1000);
+
+    // Refresh merchant token
     try {
-      const config = {
-        method,
-        url,
-        params,
-        timeout: 15000,
-      };
+      const sign = this._signPublic(refreshPath, timestamp);
+      const r = await axios.post(`${this.baseUrl}${refreshPath}`, {
+        refresh_token: this.refreshToken,
+        merchant_id: this.merchantId,
+        partner_id: this.partnerId,
+      }, { params: { partner_id: this.partnerId, timestamp, sign } });
+      this.accessToken = r.data.access_token;
+      this.refreshToken = r.data.refresh_token;
+      process.env.SHOPEE_ACCESS_TOKEN = this.accessToken;
+      process.env.SHOPEE_REFRESH_TOKEN = this.refreshToken;
 
+      await saveToken('shopee', {
+        accessToken: this.accessToken,
+        refreshToken: this.refreshToken,
+        expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+      });
+    } catch (e) {
+      console.error('Shopee merchant token refresh failed:', e.response?.data || e.message);
+    }
+
+    // Refresh shop token
+    if (this.shopRefreshToken && this.shopIds[0]) {
+      try {
+        const ts2 = Math.floor(Date.now() / 1000);
+        const sign2 = this._signPublic(refreshPath, ts2);
+        const r2 = await axios.post(`${this.baseUrl}${refreshPath}`, {
+          refresh_token: this.shopRefreshToken,
+          shop_id: this.shopIds[0],
+          partner_id: this.partnerId,
+        }, { params: { partner_id: this.partnerId, timestamp: ts2, sign: sign2 } });
+        this.shopAccessToken = r2.data.access_token;
+        this.shopRefreshToken = r2.data.refresh_token;
+        process.env.SHOPEE_SHOP_ACCESS_TOKEN = this.shopAccessToken;
+        process.env.SHOPEE_SHOP_REFRESH_TOKEN = this.shopRefreshToken;
+
+        await saveToken('shopee_shop', {
+          accessToken: this.shopAccessToken,
+          refreshToken: this.shopRefreshToken,
+          expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+        });
+      } catch (e) {
+        console.error('Shopee shop token refresh failed:', e.response?.data || e.message);
+      }
+    }
+    console.log('✅ Shopee tokens auto-refreshed');
+  }
+
+  async _exec(method, url, params, data, _retried = false) {
+    try {
+      const config = { method, url, params, timeout: 15000 };
       if (data && method === 'GET') {
         Object.assign(config.params, data);
       } else if (data) {
         config.data = data;
         config.headers = { 'Content-Type': 'application/json' };
       }
-
       const response = await axios(config);
+      // Auto-refresh on invalid_access_token
+      if (response.data?.error === 'invalid_acceess_token' || response.data?.error === 'invalid_access_token') {
+        if (_retried) throw new Error('Shopee token refresh failed — still invalid after refresh');
+        await this._refreshTokens();
+        // Rebuild params with new token
+        if (params.merchant_id) params.access_token = this.accessToken;
+        else if (params.shop_id) params.access_token = this.shopAccessToken;
+        return this._exec(method, url, params, data, true);
+      }
       return response.data;
     } catch (error) {
-      console.error(`Shopee API 오류 [${path}]:`, error.response?.data || error.message);
+      console.error(`Shopee API 오류 [${url}]:`, error.response?.data || error.message);
       throw error;
     }
   }
@@ -149,16 +242,177 @@ class ShopeeAPI {
   }
 
   /**
-   * 주문 목록 조회
+   * 특정 shop 상품 목록 (item_id 목록만)
    */
-  async getOrders(timeFrom, timeTo, status = 'READY_TO_SHIP') {
-    return this.shopRequest('GET', '/api/v2/order/get_order_list', {
+  async getProducts(offset = 0, pageSize = 50, status = 'NORMAL', shopId = null) {
+    const sid = shopId || this.shopIds[0];
+    return this._shopRequest('GET', '/api/v2/product/get_item_list', {
+      offset, page_size: pageSize, item_status: status,
+    }, sid);
+  }
+
+  /**
+   * 상품 목록 + 상세 정보 배치 조회
+   */
+  async getProductsWithDetails(offset = 0, pageSize = 50, status = 'NORMAL', shopId = null) {
+    const sid = shopId || this.shopIds[0];
+    const listData = await this.getProducts(offset, pageSize, status, sid);
+    const items = listData.response?.item || [];
+    if (items.length === 0) return [];
+
+    const itemIds = items.map(i => i.item_id).join(',');
+    const detailData = await this._shopRequest('GET', '/api/v2/product/get_item_base_info', {
+      item_id_list: itemIds,
+    }, sid);
+    const result = detailData.response?.item_list || [];
+    return result;
+  }
+
+  /**
+   * 모든 shop 상품 수 조회 (총 상품 수 확인용)
+   */
+  async getAllShopsTotalCount() {
+    const results = [];
+    for (const shopId of this.shopIds) {
+      try {
+        const data = await this._shopRequest('GET', '/api/v2/product/get_item_list', {
+          offset: 0, page_size: 1, item_status: 'NORMAL',
+        }, shopId);
+        results.push({ shopId, total: data.response?.total_count || 0 });
+      } catch (e) {
+        results.push({ shopId, total: 0 });
+      }
+    }
+    return results;
+  }
+
+  /**
+   * 상품 상세 조회 (shop-level)
+   */
+  async getProductDetail(itemId, shopId = null) {
+    const sid = shopId || this.shopIds[0];
+    return this._shopRequest('GET', '/api/v2/product/get_item_base_info', {
+      item_id_list: itemId,
+    }, sid);
+  }
+
+  /**
+   * 가격 업데이트 (shop-level)
+   */
+  async updatePrice(itemId, price, modelId = null, shopId = null) {
+    const sid = shopId || this.shopIds[0];
+    const body = { item_id: itemId, price_list: [{ model_id: modelId || 0, current_price: price }] };
+    return this._shopRequest('POST', '/api/v2/product/update_price', body, sid);
+  }
+
+  /**
+   * 재고 업데이트 (shop-level)
+   */
+  async updateStock(itemId, stock, modelId = null, shopId = null) {
+    const sid = shopId || this.shopIds[0];
+    const body = {
+      item_id: itemId,
+      stock_list: [{ model_id: modelId || 0, seller_stock: [{ stock }] }],
+    };
+    return this._shopRequest('POST', '/api/v2/product/update_stock', body, sid);
+  }
+
+  /**
+   * 주문 목록 조회 (shop-level)
+   */
+  async getOrders(timeFrom, timeTo, status = 'READY_TO_SHIP', shopId = null) {
+    const sid = shopId || this.shopIds[0];
+    return this._shopRequest('GET', '/api/v2/order/get_order_list', {
       time_range_field: 'create_time',
       time_from: timeFrom || Math.floor(Date.now() / 1000) - 7 * 24 * 3600,
       time_to: timeTo || Math.floor(Date.now() / 1000),
       page_size: 100,
       order_status: status,
-    });
+    }, sid);
+  }
+
+  /**
+   * 매출 요약 (모든 shop 합산, days 기간)
+   * Revenue summary across all shops
+   */
+  async getRevenueSummary(days = 30) {
+    // Shopee order API max time range = 15 days
+    const MAX_WINDOW = 15 * 86400;
+    const now = Math.floor(Date.now() / 1000);
+    let totalRevenue = 0;
+    let totalOrders = 0;
+    const dailySales = {};
+
+    // Only use shops that have tokens
+    const authorizedShops = this.shopIds.filter(id => this.shopTokens[id]);
+    if (authorizedShops.length === 0) {
+      console.warn('Shopee: no authorized shops found');
+      return { platform: 'Shopee', revenue: 0, orders: 0, currency: 'USD', days, dailySales: {} };
+    }
+
+    for (const shopId of authorizedShops) {
+      // Split time range into 15-day windows
+      let windowEnd = now;
+      const rangeStart = now - days * 86400;
+      while (windowEnd > rangeStart) {
+        const windowStart = Math.max(windowEnd - MAX_WINDOW, rangeStart);
+        try {
+          const listData = await this._shopRequest('GET', '/api/v2/order/get_order_list', {
+            time_range_field: 'create_time',
+            time_from: windowStart,
+            time_to: windowEnd,
+            page_size: 100,
+          }, shopId);
+
+          if (listData?.error && listData.error !== '') {
+            console.warn(`Shopee shop ${shopId} order list error: ${listData.error} - ${listData.message}`);
+            break;
+          }
+
+          const orderList = listData?.response?.order_list || [];
+          const orderSns = orderList.map(o => o.order_sn);
+          // Build a map of order_sn → create_time for daily grouping
+          const createTimeMap = {};
+          orderList.forEach(o => { createTimeMap[o.order_sn] = o.create_time; });
+
+          // Shopee max 50 order SNs per get_order_detail call
+          for (let i = 0; i < orderSns.length; i += 50) {
+            const batch = orderSns.slice(i, i + 50);
+            const detailData = await this._shopRequest('GET', '/api/v2/order/get_order_detail', {
+              order_sn_list: batch.join(','),
+              response_optional_fields: 'total_amount,currency',
+            }, shopId);
+            const orders = detailData?.response?.order_list || [];
+            for (const o of orders) {
+              const amount = parseFloat(o.total_amount || 0);
+              totalRevenue += amount;
+              totalOrders++;
+              // Daily grouping using create_time unix timestamp
+              const ts = createTimeMap[o.order_sn] || o.create_time;
+              const date = ts
+                ? new Date(ts * 1000).toISOString().slice(0, 10)
+                : new Date().toISOString().slice(0, 10);
+              if (!dailySales[date]) dailySales[date] = { revenue: 0, orders: 0 };
+              dailySales[date].revenue += amount;
+              dailySales[date].orders++;
+            }
+          }
+        } catch (e) {
+          console.warn(`Shopee shop ${shopId} window error:`, e.message);
+          break;
+        }
+        windowEnd = windowStart;
+      }
+    }
+
+    return {
+      platform: 'Shopee',
+      revenue: totalRevenue,
+      orders: totalOrders,
+      currency: 'USD',
+      days,
+      dailySales,
+    };
   }
 }
 

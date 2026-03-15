@@ -12,6 +12,7 @@
     <div class="header-right">
       <span class="last-updated" id="lastUpdated">로딩 중...</span>
       <button class="refresh-btn" id="refreshBtn">새로고침</button>
+      <button class="refresh-btn" id="logoutBtn" style="background:#e94560;margin-left:8px" onclick="fetch('/api/auth/logout',{method:'POST'}).then(()=>location.href='/login.html')">로그아웃</button>
     </div>
   </div>
 
@@ -43,6 +44,12 @@
     <div class="menu-title">자동화</div>
     <div class="menu-item" data-page="automation" style="color:#ff5722;font-weight:600">리스팅 자동화</div>
     <div class="menu-item" data-page="crawl-results">크롤링 결과</div>
+    <div class="menu-title" style="color:#64b5f6;margin-top:8px">── 운영 관리 ──</div>
+    <div class="menu-item ops-menu" data-page="ops-products" style="color:#81d4fa;font-weight:600">상품 검색/관리</div>
+    <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">재고 관리</div>
+    <div class="menu-item ops-menu" data-page="ops-pricing" style="color:#81d4fa;font-weight:600">가격 관리</div>
+    <div class="menu-item ops-menu" data-page="ops-profit" style="color:#81d4fa;font-weight:600">수익 분석</div>
+    <div class="menu-item ops-menu" data-page="ops-logs" style="color:#81d4fa;font-weight:600">자동화 로그</div>
     <div class="menu-title">시스템</div>
     <div class="menu-item" data-page="sync">동기화</div>
     <div class="menu-item" data-page="settings" style="color:#ff9800;font-weight:600">설정</div>
@@ -474,8 +481,9 @@
           <!-- 단일 모드 (기존) -->
           <div id="remarkerSingleMode" style="display:flex;gap:8px;max-width:500px">
             <input type="text" id="remarkerItemId" placeholder="eBay Item ID (예: 197310519789)"
-                   style="flex:1;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-            <button id="remarkerFetchBtn"
+                   style="flex:1;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px"
+                   onkeypress="if(event.key==='Enter')remarkerFetch()">
+            <button id="remarkerFetchBtn" onclick="remarkerFetch()"
                     style="background:#7c4dff;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap">
               조회
             </button>
@@ -734,6 +742,24 @@
               </div>
               <input type="file" id="rcImageInput" multiple accept="image/*" style="display:none" onchange="rcHandleFiles(this.files)">
               <div id="rcImagePreview" style="margin-top:8px;display:none;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px"></div>
+              <!-- Image URL / Product Page URL input + CDN upload -->
+              <div style="margin-top:10px">
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+                  <label style="font-size:11px;font-weight:600;color:#666">또는 이미지 URL / 상품 페이지 URL</label>
+                  <button type="button" id="rcExtractBtn" onclick="rcExtractAndUpload()"
+                          style="background:linear-gradient(135deg,#e94560,#7c4dff);color:#fff;border:none;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:600">
+                    이미지 추출 + CDN 업로드
+                  </button>
+                  <button type="button" id="rcCdnUploadBtn" onclick="rcUploadToCDN()"
+                          style="background:#96bf48;color:#fff;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:600">
+                    CDN만 업로드
+                  </button>
+                  <span id="rcCdnStatus" style="font-size:10px;color:#888"></span>
+                </div>
+                <textarea id="rcImageUrls" rows="3" placeholder="상품 페이지 URL (쿠팡, 11번가 등) 또는 이미지 URL을 붙여넣기&#10;https://www.coupang.com/vp/products/12345...&#10;https://example.com/image.jpg"
+                          style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:11px;font-family:monospace;resize:vertical;background:#fafafa"></textarea>
+                <div id="rcCdnPreview" style="margin-top:6px;display:none;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:6px"></div>
+              </div>
             </div>
             <div style="margin-bottom:12px">
               <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px">상세페이지 HTML (선택)</label>
@@ -879,14 +905,15 @@
             <p style="margin:4px 0 0;font-size:12px;color:#888">eBay + Shopify 주문을 자동 수집하여 Google Sheets에 기록합니다</p>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
-            <select id="shippingSyncDays" style="padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+            <select id="shippingSyncDays" style="padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;color:#333">
               <option value="7">최근 7일</option>
               <option value="14">최근 14일</option>
-              <option value="30">최근 30일</option>
+              <option value="30" selected>최근 30일</option>
+              <option value="60">최근 60일</option>
             </select>
             <button type="button" onclick="shippingSyncOrders()" id="shippingSyncBtn"
                     style="background:linear-gradient(135deg,#0288d1,#01579b);color:#fff;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">
-              주문 가져오기
+              배송 대기 주문 가져오기
             </button>
             <button type="button" onclick="shippingBackfillAddresses()" id="shippingBackfillBtn"
                     style="background:linear-gradient(135deg,#ff9800,#f57c00);color:#fff;border:none;padding:10px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
@@ -922,7 +949,46 @@
 
     <!-- ===== 전투 상황판 페이지 ===== -->
     <div id="page-battle" class="page">
-      <!-- 요약 카드 -->
+      <!-- 플랫폼별 매출 카드 -->
+      <div class="stats" id="battleSalesStats" style="margin-bottom:12px">
+        <div class="stat-card"><div class="label">매출 로딩 중...</div></div>
+      </div>
+      <!-- 마진 계산기 -->
+      <div class="card" style="margin-bottom:16px;border-left:4px solid #7c4dff">
+        <div class="card-header" style="margin-bottom:12px">
+          <h3 style="font-size:15px;font-weight:700;color:#1a1a2e">마진 계산기 <span style="font-size:11px;color:#7c4dff;font-weight:400">매입가 → 전 플랫폼 판매가 자동 계산</span></h3>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px">
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">매입가 (KRW) *</label>
+            <input type="number" id="mcPurchasePrice" placeholder="10000" oninput="calculateMargins()"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">무게 (kg)</label>
+            <input type="number" id="mcWeight" step="0.01" placeholder="0.5" oninput="calculateMargins()"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">목표 마진 (%)</label>
+            <input type="number" id="mcTargetMargin" value="30" step="1" oninput="calculateMargins()"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 가격 (USD)</label>
+            <input type="number" id="mcCompPrice" step="0.01" placeholder="15.00" oninput="calculateMargins()"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 배송비 (USD)</label>
+            <input type="number" id="mcCompShipping" step="0.01" placeholder="3.90" oninput="calculateMargins()"
+                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+          </div>
+        </div>
+        <div id="mcResult" style="display:none"></div>
+      </div>
+
+      <!-- 경쟁 요약 카드 -->
       <div class="stats battle-stats" id="battleStats">
         <div class="stat-card"><div class="label">로딩 중...</div></div>
       </div>
@@ -943,6 +1009,10 @@
                  style="flex:1;padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;min-width:200px">
           <button class="refresh-btn" id="battleRefreshBtn" style="background:#e53935;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
             실시간 새로고침
+          </button>
+          <button onclick="battleImportCompetitors(this)"
+                  style="background:#1565c0;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+            📥 경쟁사 가져오기
           </button>
         </div>
       </div>
@@ -986,60 +1056,23 @@
                 <th style="width:50px"></th>
                 <th>상품</th>
                 <th style="text-align:center">내 가격<br><small style="color:#888">(+배송)</small></th>
-                <th style="text-align:center">경쟁사 가격<br><small style="color:#888">(+배송)</small></th>
-                <th style="text-align:center">차이</th>
-                <th style="text-align:center">경쟁사<br>판매량</th>
+                <th style="text-align:center">경쟁사 가격 (최대 3명)<br><small style="color:#888">▼패배 ▲승리 🔗링크</small></th>
+                <th style="text-align:center">차이<br><small style="color:#888">(최저가)</small></th>
                 <th style="text-align:center">킬 프라이스</th>
-                <th>경쟁셀러</th>
-                <th style="width:100px;text-align:center">리스팅</th>
               </tr>
             </thead>
             <tbody id="battleTable">
-              <tr><td colspan="9" class="empty">로딩 중...</td></tr>
+              <tr><td colspan="6" class="empty">로딩 중...</td></tr>
             </tbody>
           </table>
+          <div id="battlePagination"></div>
         </div>
       </div>
+
     </div>
 
     <!-- ===== 매출/마진 분석 페이지 ===== -->
     <div id="page-analysis" class="page">
-
-      <!-- 마진 계산기 -->
-      <div class="card" style="margin-bottom:16px;border-left:4px solid #7c4dff">
-        <div class="card-header" style="margin-bottom:12px">
-          <h3 style="font-size:15px;font-weight:700;color:#1a1a2e">마진 계산기 <span style="font-size:11px;color:#7c4dff;font-weight:400">매입가 → 전 플랫폼 판매가 자동 계산</span></h3>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px">
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">매입가 (KRW) *</label>
-            <input type="number" id="mcPurchasePrice" placeholder="10000"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">무게 (kg)</label>
-            <input type="number" id="mcWeight" step="0.01" placeholder="0.5"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">목표 마진 (%)</label>
-            <input type="number" id="mcTargetMargin" value="30" step="1"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 가격 (USD)</label>
-            <input type="number" id="mcCompPrice" step="0.01" placeholder="15.00"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 배송비 (USD)</label>
-            <input type="number" id="mcCompShipping" step="0.01" placeholder="3.90"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-        </div>
-        <!-- 결과 영역 -->
-        <div id="mcResult" style="display:none"></div>
-      </div>
 
       <!-- 매출 요약 카드 -->
       <div class="stats" id="analysisCards"></div>
@@ -2074,7 +2107,285 @@
       </div>
     </div>
 
+
+  <!-- ===== 운영 관리 페이지들 ===== -->
+
+  <!-- ops-products: 상품 검색/관리 -->
+  <div id="page-ops-products" class="page">
+    <div class="card">
+      <div class="card-header" style="flex-wrap:wrap;gap:8px">
+        <h3>상품 검색/관리</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input id="opsProductSearch" type="text" placeholder="SKU / 상품명 / eBay ID 검색..."
+            style="padding:6px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:220px">
+          <select id="opsProductStatus" style="padding:6px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px">
+            <option value="">전체 상태</option>
+            <option value="draft">Draft</option>
+            <option value="ready">Ready</option>
+            <option value="listed">Listed</option>
+            <option value="soldout">Soldout</option>
+            <option value="archived">Archived</option>
+          </select>
+          <select id="opsProductPlatform" style="padding:6px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px">
+            <option value="">전체 플랫폼</option>
+            <option value="ebay">eBay</option>
+            <option value="shopify">Shopify</option>
+            <option value="naver">Naver</option>
+            <option value="coupang">Coupang</option>
+            <option value="qoo10">Qoo10</option>
+            <option value="shopee">Shopee</option>
+          </select>
+          <button class="refresh-btn" onclick="opsProducts.search()">검색</button>
+          <button class="refresh-btn" style="background:#37474f" onclick="opsProducts.resetFilters()">초기화</button>
+        </div>
+      </div>
+
+      <!-- 벌크 액션 툴바 -->
+      <div id="opsBulkToolbar" style="display:none;padding:8px 0;border-bottom:1px solid #333;margin-bottom:8px;gap:8px;align-items:center;flex-wrap:wrap">
+        <span id="opsBulkCount" style="color:#81d4fa;font-size:13px"></span>
+        <select id="opsBulkStatusValue" style="padding:5px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px">
+          <option value="draft">Draft</option>
+          <option value="ready">Ready</option>
+          <option value="listed">Listed</option>
+          <option value="soldout">Soldout</option>
+          <option value="archived">Archived</option>
+        </select>
+        <button class="refresh-btn" style="background:#1565c0" onclick="opsProducts.bulkSetStatus()">상태 변경</button>
+        <input id="opsBulkPriceValue" type="number" step="0.01" min="0" placeholder="가격 (USD)"
+          style="padding:5px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:110px">
+        <button class="refresh-btn" style="background:#2e7d32" onclick="opsProducts.bulkSetPrice()">가격 변경</button>
+        <button class="refresh-btn" style="background:#37474f" onclick="opsProducts.clearSelection()">선택 해제</button>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th style="width:32px"><input type="checkbox" id="opsProductSelectAll" onchange="opsProducts.toggleAll(this)"></th>
+              <th onclick="opsProducts.sort('sku')" style="cursor:pointer">SKU ⇅</th>
+              <th onclick="opsProducts.sort('title')" style="cursor:pointer">상품명 ⇅</th>
+              <th onclick="opsProducts.sort('cost_price')" style="cursor:pointer">매입가 ⇅</th>
+              <th>재고</th>
+              <th onclick="opsProducts.sort('workflow_status')" style="cursor:pointer">상태 ⇅</th>
+              <th>플랫폼</th>
+              <th onclick="opsProducts.sort('created_at')" style="cursor:pointer">등록일 ⇅</th>
+              <th>액션</th>
+            </tr>
+          </thead>
+          <tbody id="opsProductsBody">
+            <tr><td colspan="9" class="empty">검색하세요</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="opsProductsPagination" class="ops-pagination"></div>
+    </div>
   </div>
+
+  <!-- ops-inventory: 재고 관리 -->
+  <div id="page-ops-inventory" class="page">
+    <div class="card">
+      <div class="card-header" style="flex-wrap:wrap;gap:8px">
+        <h3>재고 관리</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="opsInvSearch" type="text" placeholder="SKU / 상품명 검색..."
+            style="padding:6px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:220px">
+          <button class="refresh-btn" onclick="opsInventory.search()">검색</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>SKU</th><th>상품명</th><th>재고 수량</th><th>예약</th><th>위치</th><th>최종 수정</th><th>수정</th></tr>
+          </thead>
+          <tbody id="opsInventoryBody">
+            <tr><td colspan="7" class="empty">로딩 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="opsInventoryPagination" class="ops-pagination"></div>
+    </div>
+  </div>
+
+  <!-- ops-pricing: 가격 관리 -->
+  <div id="page-ops-pricing" class="page">
+    <div class="card">
+      <div class="card-header" style="flex-wrap:wrap;gap:8px">
+        <h3>가격 관리</h3>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="opsPricingSearch" type="text" placeholder="SKU / 상품명 검색..."
+            style="padding:6px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:220px">
+          <button class="refresh-btn" onclick="opsPricing.search()">검색</button>
+          <button class="refresh-btn" style="background:#2e7d32" id="opsPricingSaveAll" onclick="opsPricing.saveAll()" disabled>
+            일괄 저장
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="opsPricingSelectAll" onchange="opsPricing.toggleAll(this)"></th>
+              <th>SKU</th><th>상품명</th><th>매입가(KRW)</th>
+              <th>판매가(USD)</th><th>마진(%)</th><th>수정</th>
+            </tr>
+          </thead>
+          <tbody id="opsPricingBody">
+            <tr><td colspan="7" class="empty">검색하세요</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="opsPricingPagination" class="ops-pagination"></div>
+    </div>
+  </div>
+
+  <!-- ops-profit: 수익 분석 -->
+  <div id="page-ops-profit" class="page">
+    <div class="card">
+      <div class="card-header" style="flex-wrap:wrap;gap:8px">
+        <h3>수익 분석</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="opsProfitSearch" type="text" placeholder="SKU / 상품명 검색..."
+            style="padding:6px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:220px">
+          <select id="opsProfitPlatform" style="padding:6px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px">
+            <option value="">전체 플랫폼</option>
+            <option value="ebay">eBay</option>
+            <option value="shopify">Shopify</option>
+          </select>
+          <button class="refresh-btn" onclick="opsProfit.search()">검색</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>SKU</th><th>상품명</th><th>판매가</th><th>매입가(USD)</th>
+              <th>플랫폼 수수료</th><th>배송비</th>
+              <th style="color:#4caf50">순이익</th><th>마진율</th><th>플랫폼</th>
+            </tr>
+          </thead>
+          <tbody id="opsProfitBody">
+            <tr><td colspan="9" class="empty">검색하세요</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="opsProfitPagination" class="ops-pagination"></div>
+    </div>
+  </div>
+
+  <!-- ops-competitor: 경쟁사 모니터 -->
+  <div id="page-ops-competitor" class="page">
+    <div class="card">
+      <div class="card-header" style="flex-wrap:wrap;gap:8px">
+        <h3>경쟁사 가격 모니터</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="opsCompSearch" type="text" placeholder="SKU 검색..."
+            style="padding:6px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:180px">
+          <select id="opsCompPlatform" style="padding:6px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px">
+            <option value="ebay">eBay</option>
+            <option value="shopify">Shopify</option>
+          </select>
+          <button class="refresh-btn" onclick="opsCompetitor.search()">검색</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>SKU</th><th>상품명</th><th>우리 가격</th>
+              <th>경쟁사</th><th>경쟁사 가격</th><th>배송비</th>
+              <th>합계</th><th style="color:#ff5722">차이</th><th>수집일</th>
+            </tr>
+          </thead>
+          <tbody id="opsCompBody">
+            <tr><td colspan="9" class="empty">검색하세요</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="opsCompPagination" class="ops-pagination"></div>
+    </div>
+  </div>
+
+  <!-- ops-logs: 자동화 로그 -->
+  <div id="page-ops-logs" class="page">
+    <div class="card">
+      <div class="card-header" style="flex-wrap:wrap;gap:8px">
+        <h3>자동화 로그</h3>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="opsLogJobType" style="padding:6px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px">
+            <option value="">전체 작업</option>
+            <option value="create_listing">create_listing</option>
+            <option value="price_update">price_update</option>
+            <option value="inventory_sync">inventory_sync</option>
+          </select>
+          <select id="opsLogStatus" style="padding:6px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px">
+            <option value="">전체 상태</option>
+            <option value="success">성공</option>
+            <option value="failed">실패</option>
+            <option value="running">실행 중</option>
+          </select>
+          <input id="opsLogSku" type="text" placeholder="SKU 검색..."
+            style="padding:6px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:150px">
+          <button class="refresh-btn" onclick="opsLogs.search()">검색</button>
+          <button class="refresh-btn" style="background:#37474f" onclick="opsLogs.search()">새로고침</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>작업 유형</th><th>SKU</th><th>상태</th><th>메시지</th><th>시각</th></tr>
+          </thead>
+          <tbody id="opsLogsBody">
+            <tr><td colspan="5" class="empty">로딩 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="opsLogsPagination" class="ops-pagination"></div>
+    </div>
+  </div>
+
+
+  </div>
+
+  <!-- 알림 패널 -->
+  <div id="opsNotifPanel" style="
+    position:fixed;right:16px;top:60px;width:320px;max-height:480px;
+    background:#1a1a2e;border:1px solid #333;border-radius:8px;
+    box-shadow:0 4px 24px rgba(0,0,0,0.4);z-index:999;
+    display:none;flex-direction:column;overflow:hidden">
+    <div style="padding:10px 14px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-weight:700;color:#81d4fa">알림</span>
+      <button onclick="opsNotif.close()" style="background:none;border:none;color:#999;cursor:pointer;font-size:16px">✕</button>
+    </div>
+    <div id="opsNotifList" style="overflow-y:auto;flex:1;padding:8px"></div>
+  </div>
+
+  <!-- 알림 버튼 (헤더에 삽입) -->
+  <style>
+    .ops-pagination { display:flex;gap:6px;padding:10px 0;align-items:center;flex-wrap:wrap }
+    .ops-pagination button { padding:4px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;cursor:pointer;font-size:12px }
+    .ops-pagination button.active { background:#1565c0;border-color:#1565c0 }
+    .ops-pagination button:disabled { opacity:0.4;cursor:not-allowed }
+    .ops-pagination .page-info { color:#999;font-size:12px;margin:0 8px }
+    .status-badge { padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600 }
+    .status-draft    { background:#37474f;color:#90a4ae }
+    .status-ready    { background:#1a3a4a;color:#64b5f6 }
+    .status-listed   { background:#1b5e20;color:#69f0ae }
+    .status-soldout  { background:#4a1a1a;color:#ef9a9a }
+    .status-archived { background:#2a2a2a;color:#757575 }
+    .listing-yes { color:#69f0ae;font-size:16px }
+    .listing-no  { color:#444;font-size:16px }
+    .notif-badge { position:absolute;top:2px;right:2px;background:#e94560;color:#fff;border-radius:10px;font-size:10px;padding:1px 5px;min-width:16px;text-align:center }
+    .ops-menu { border-left:2px solid #1565c0!important }
+    .profit-pos { color:#69f0ae }
+    .profit-neg { color:#ef9a9a }
+  </style>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="/js/dashboard.js?v=20260316c"></script>
+  <script src="/js/operations.js?v=20260315e"></script>
+
+
+
 
   <!-- 가격/재고 수정 모달 -->
   <div class="modal-overlay" id="editModal">
@@ -2126,8 +2437,5 @@
       </div>
     </div>
   </div>
-
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js"></script>
 </body>
 </html>

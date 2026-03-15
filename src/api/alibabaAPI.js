@@ -89,12 +89,54 @@ class AlibabaAPI {
   }
 
   /**
-   * 토큰 갱신
+   * 토큰 갱신 (access_token 없이 refresh_token만으로 호출)
    */
   async refreshToken() {
-    return this.request('/auth/token/refresh', {
-      refresh_token: process.env.ALIBABA_REFRESH_TOKEN,
+    const { saveToken } = require('../services/tokenStore');
+    const refreshToken = process.env.ALIBABA_REFRESH_TOKEN;
+    if (!refreshToken) throw new Error('ALIBABA_REFRESH_TOKEN not set');
+
+    const timestamp = Date.now().toString();
+    const params = {
+      app_key: this.appKey,
+      timestamp,
+      sign_method: 'sha256',
+      refresh_token: refreshToken,
+    };
+    params.sign = this.generateSign('/auth/token/refresh', params);
+
+    const r = await axios.post(this.gateway + '/auth/token/refresh', null, { params, timeout: 15000 });
+    const data = r.data;
+
+    if (!data.access_token) {
+      throw new Error('Alibaba token refresh failed: ' + JSON.stringify(data));
+    }
+
+    this.accessToken = data.access_token;
+    process.env.ALIBABA_ACCESS_TOKEN = data.access_token;
+    if (data.refresh_token) process.env.ALIBABA_REFRESH_TOKEN = data.refresh_token;
+
+    // Save to DB instead of .env
+    await saveToken('alibaba', {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token || refreshToken,
+      expiresAt: data.expires_in ? new Date(Date.now() + data.expires_in * 1000) : null,
     });
+    console.log('[Alibaba] Token refreshed. expires_in:', data.expires_in);
+    return data;
+  }
+
+  /**
+   * API 호출 (토큰 만료 시 자동 갱신)
+   */
+  async requestWithRetry(apiPath, bizParams = {}, method = 'GET') {
+    const data = await this.request(apiPath, bizParams, method);
+    if (data?.code === 'IllegalAccessToken') {
+      console.log('[Alibaba] Token expired, refreshing...');
+      await this.refreshToken();
+      return this.request(apiPath, bizParams, method);
+    }
+    return data;
   }
 }
 

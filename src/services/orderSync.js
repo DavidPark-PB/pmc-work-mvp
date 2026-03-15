@@ -8,6 +8,7 @@ const path = require('path');
 const GoogleSheetsAPI = require('../api/googleSheetsAPI');
 const EbayAPI = require('../api/ebayAPI');
 const ShopifyAPI = require('../api/shopifyAPI');
+const { getClient: getSupabase } = require('../db/supabaseClient');
 
 const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID;
 const SHEET_NAME = '주문 배송';
@@ -41,13 +42,13 @@ class OrderSync {
     // 1. 시트 준비
     await this.ensureSheet();
 
-    // 2. 플랫폼별 주문 수집 (병렬)
+    // 2. 플랫폼별 주문 수집 (병렬) — awaiting shipment / unfulfilled 주문만
     const [ebayOrders, shopifyOrders] = await Promise.all([
-      this.fetchEbayOrders(days).catch(err => {
+      this.fetchEbayOrders().catch(err => {
         errors.push(`eBay: ${err.message}`);
         return [];
       }),
-      this.fetchShopifyOrders(days).catch(err => {
+      this.fetchShopifyOrders().catch(err => {
         errors.push(`Shopify: ${err.message}`);
         return [];
       }),
@@ -60,7 +61,77 @@ class OrderSync {
       return { synced: 0, newOrders: 0, duplicates: 0, errors };
     }
 
-    // 3. 중복 체크 (old format + new format 양방향 호환)
+    // 3-A. Supabase upsert: awaiting-shipment(NEW) orders always update, others insert-only
+    let supabaseUpserted = 0;
+    try {
+      const db = getSupabase();
+      const allOrderNos = allOrders.map(o => o.orderId);
+
+      // Find which order_nos are already in DB and still status='NEW' (not shipped)
+      const { data: existingNew } = await db.from('orders')
+        .select('order_no')
+        .in('order_no', allOrderNos)
+        .in('status', ['NEW', 'new']);
+      const awaitingSet = new Set((existingNew || []).map(r => r.order_no));
+
+      const supabaseRows = allOrders.map(o => ({
+        order_date: o.orderDate || null,
+        platform: o.platform || '',
+        order_no: o.orderId || '',
+        sku: o.sku || '',
+        title: o.title || '',
+        quantity: parseInt(o.quantity) || 1,
+        payment_amount: parseFloat(o.amount) || 0,
+        currency: o.currency || 'USD',
+        buyer_name: o.buyerName || '',
+        country: o.country || '',
+        carrier: '',
+        tracking_no: '',
+        status: 'NEW',
+        street: o.street || '',
+        city: o.city || '',
+        province: o.province || '',
+        zip_code: o.zipCode || '',
+        phone: o.phone || '',
+        country_code: o.countryCode || '',
+        email: o.email || '',
+      }));
+
+      // Awaiting-shipment orders: upsert (refresh data from eBay, preserve carrier/status via separate update)
+      const awaitingRows = supabaseRows.filter(r => awaitingSet.has(r.order_no));
+      const newRows = supabaseRows.filter(r => !awaitingSet.has(r.order_no));
+
+      if (awaitingRows.length > 0) {
+        // Update only order-data fields, NOT carrier/tracking_no/status
+        for (const row of awaitingRows) {
+          await db.from('orders').update({
+            order_date: row.order_date,
+            title: row.title,
+            buyer_name: row.buyer_name,
+            country: row.country,
+            street: row.street,
+            city: row.city,
+            province: row.province,
+            zip_code: row.zip_code,
+            phone: row.phone,
+            country_code: row.country_code,
+            email: row.email,
+          }).eq('order_no', row.order_no);
+        }
+        supabaseUpserted += awaitingRows.length;
+      }
+
+      if (newRows.length > 0) {
+        // Insert new, skip existing (ignoreDuplicates preserves manually-set carrier/status)
+        await db.from('orders').upsert(newRows, { onConflict: 'order_no', ignoreDuplicates: true });
+        supabaseUpserted += newRows.length;
+      }
+    } catch (dbErr) {
+      console.error('⚠️ Supabase order upsert 실패 (시트 저장은 계속):', dbErr.message);
+      errors.push(`Supabase: ${dbErr.message}`);
+    }
+
+    // 3-B. Google Sheets 중복 체크 (시트에 중복 행 방지)
     const existingIds = await this.getExistingOrderIds();
     const newOrders = allOrders.filter(o => {
       if (existingIds.has(o.orderId)) return false;
@@ -70,7 +141,7 @@ class OrderSync {
     const duplicates = allOrders.length - newOrders.length;
 
     if (newOrders.length === 0) {
-      return { synced: allOrders.length, newOrders: 0, duplicates, errors };
+      return { synced: allOrders.length, newOrders: 0, duplicates, supabaseUpserted, errors };
     }
 
     // 4. 날짜순 정렬 (최신이 아래로)
@@ -152,49 +223,54 @@ class OrderSync {
       synced: allOrders.length,
       newOrders: newOrders.length,
       duplicates,
+      supabaseUpserted,
       euAssigned,
       errors,
     };
   }
 
   /**
-   * eBay 주문 가져오기 → 통일 포맷 (배송 주소 포함)
+   * eBay 주문 가져오기 — AwaitingShipment(결제완료+미배송) 주문만 수집
+   * 날짜 기반 조회(getSellerTransactions)를 제거하고 배송 대기 주문만 가져옴
    */
-  async fetchEbayOrders(days = 7) {
-    const transactions = await this.ebay.getSellerTransactions(days);
-    if (transactions._apiError) {
-      throw new Error(transactions._apiError);
+  async fetchEbayOrders() {
+    const awaitingOrders = await this.ebay.getAwaitingShipmentOrders();
+
+    const seen = new Set();
+    const result = [];
+
+    for (const o of awaitingOrders) {
+      if (!o.ebayOrderId || seen.has(o.ebayOrderId)) continue;
+      seen.add(o.ebayOrderId);
+      result.push({
+        orderDate: o.createdDate ? o.createdDate.split('T')[0] : '',
+        platform: 'eBay',
+        orderId: o.ebayOrderId,
+        sku: o.sku || '',
+        title: o.title || '',
+        quantity: o.quantity || 1,
+        amount: o.price || 0,
+        currency: 'USD',
+        buyerName: o.shippingName || o.buyerUserId || '',
+        country: o.shippingCountry || '',
+        street: o.shippingStreet || '',
+        city: o.shippingCity || '',
+        province: o.shippingState || '',
+        zipCode: o.shippingZip || '',
+        phone: this.cleanPhone(o.shippingPhone),
+        countryCode: o.shippingCountry || '',
+        email: o.buyerEmail || '',
+      });
     }
 
-    return transactions.map(txn => ({
-      orderDate: txn.createdDate ? txn.createdDate.split('T')[0] : '',
-      platform: 'eBay',
-      orderId: txn.ebayOrderId || `${txn.itemId}-${txn.transactionId}`,
-      _legacyId: `${txn.itemId}-${txn.transactionId}`, // 기존 format (중복 체크용)
-      sku: txn.sku || '',
-      title: txn.title || '',
-      quantity: txn.quantity || 1,
-      amount: txn.price || 0,
-      currency: 'USD',
-      buyerName: txn.shippingName || txn.buyerUserId || '',
-      country: txn.shippingCountry || '',
-      // 배송 주소
-      street: txn.shippingStreet || '',
-      city: txn.shippingCity || '',
-      province: txn.shippingState || '',
-      zipCode: txn.shippingZip || '',
-      phone: this.cleanPhone(txn.shippingPhone),
-      countryCode: txn.shippingCountry || '',
-      email: txn.buyerEmail || '',
-    }));
+    return result;
   }
 
   /**
-   * Shopify 주문 가져오기 → 통일 포맷 (배송 주소 포함)
+   * Shopify 주문 가져오기 — unfulfilled(미배송) 주문만 수집
    */
-  async fetchShopifyOrders(days = 7) {
-    const since = new Date(Date.now() - days * 86400000).toISOString();
-    const orders = await this.shopify.getOrders({ created_at_min: since });
+  async fetchShopifyOrders() {
+    const orders = await this.shopify.getOrders({ fulfillment_status: 'unfulfilled', status: 'open' });
 
     const result = [];
     for (const order of orders) {
@@ -285,6 +361,18 @@ class OrderSync {
       // 시트가 비어있거나 에러 → 빈 Set
     }
     return ids;
+  }
+
+  /**
+   * C열에서 주문번호로 시트 행 번호 찾기 (1-based)
+   */
+  async findOrderRow(orderNo) {
+    const rows = await this.sheets.readData(SPREADSHEET_ID, `${SHEET_NAME}!C:C`);
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i] && rows[i][0] === orderNo) return i + 1; // 1-based
+    }
+    console.warn(`⚠️ findOrderRow: 주문번호 "${orderNo}" 시트에서 찾지 못함`);
+    return null;
   }
 
   /**

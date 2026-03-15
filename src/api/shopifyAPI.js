@@ -322,6 +322,37 @@ class ShopifyAPI {
   }
 
   /**
+   * Upload images to Shopify CDN via temporary product
+   * @param {string[]} imageUrls - array of external image URLs
+   * @returns {string[]} array of Shopify CDN URLs
+   */
+  async uploadImagesToCDN(imageUrls) {
+    if (!imageUrls || imageUrls.length === 0) return [];
+
+    try {
+      // Create temporary product with images
+      const images = imageUrls.map(url => ({ src: url }));
+      const res = await axios.post(`${this.baseUrl}/products.json`, {
+        product: {
+          title: `_cdn_upload_${Date.now()}`,
+          status: 'draft',
+          images,
+        }
+      }, { headers: this.getHeaders() });
+
+      const product = res.data.product;
+      const cdnUrls = (product.images || []).map(img => img.src);
+
+      // Keep product as draft (deleting removes CDN images)
+      console.log(`[Shopify CDN] Uploaded ${cdnUrls.length} images (draft product ${product.id} kept for CDN)`);
+      return cdnUrls;
+    } catch (err) {
+      console.error('[Shopify CDN] Upload failed:', err.response?.data || err.message);
+      throw new Error('Shopify CDN 업로드 실패: ' + (err.response?.data?.errors || err.message));
+    }
+  }
+
+  /**
    * Sleep 함수 (Rate limiting 방지)
    */
   sleep(ms) {

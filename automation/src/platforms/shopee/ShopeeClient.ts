@@ -1,10 +1,8 @@
 /**
- * Shopee Open Platform v2 클라이언트
+ * Shopee Open Platform v2 클라이언트 — CBSC Merchant + Shop Level
  *
- * HMAC-SHA256 서명, 4시간 토큰 자동갱신 포함.
- *
+ * CBSC 구조: Merchant Level (정보) + Shop Level (상품/주문, 5개 shop)
  * Production: https://partner.shopeemobile.com
- * Sandbox:    https://partner.test-stable.shopeemobile.com
  */
 import crypto from 'crypto';
 import axios from 'axios';
@@ -18,21 +16,36 @@ export class ShopeeClient implements PlatformAdapter {
 
   private partnerId: number;
   private partnerKey: string;
-  private shopId: number;
-  private accessToken: string;
-  private refreshToken: string;
-  private tokenExpiresAt = 0;
-  private initialized = false;
+  private merchantId: number;
   private baseUrl: string;
   private defaultCategoryId: number;
+
+  // Merchant-level tokens
+  private merchantAccessToken: string;
+  private merchantRefreshToken: string;
+  private merchantTokenExpiresAt = 0;
+
+  // Shop-level tokens (shared across all 5 shops)
+  private shopAccessToken: string;
+  private shopRefreshToken: string;
+  private shopTokenExpiresAt = 0;
+  private shopIds: number[];
+
+  private initialized = false;
 
   constructor() {
     this.partnerId = env.SHOPEE_PARTNER_ID || 0;
     this.partnerKey = env.SHOPEE_PARTNER_KEY || '';
-    this.shopId = env.SHOPEE_SHOP_ID || 0;
-    this.accessToken = env.SHOPEE_ACCESS_TOKEN || '';
-    this.refreshToken = env.SHOPEE_REFRESH_TOKEN || '';
+    this.merchantId = env.SHOPEE_MERCHANT_ID || 0;
     this.defaultCategoryId = env.SHOPEE_DEFAULT_CATEGORY_ID || 0;
+
+    this.merchantAccessToken = env.SHOPEE_ACCESS_TOKEN || '';
+    this.merchantRefreshToken = env.SHOPEE_REFRESH_TOKEN || '';
+
+    this.shopAccessToken = env.SHOPEE_SHOP_ACCESS_TOKEN || '';
+    this.shopRefreshToken = env.SHOPEE_SHOP_REFRESH_TOKEN || '';
+    this.shopIds = (env.SHOPEE_SHOP_IDS || '')
+      .split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
 
     const isTest = (env.SHOPEE_ENV || 'test') === 'test';
     this.baseUrl = isTest
@@ -40,87 +53,92 @@ export class ShopeeClient implements PlatformAdapter {
       : 'https://partner.shopeemobile.com';
   }
 
-  // ─── HMAC-SHA256 서명 생성 ──────────────────────────
+  // ─── 서명 ───────────────────────────────────────
 
-  /** Public API (인증): partner_id + path + timestamp */
-  private signPublic(path: string, timestamp: number): string {
-    const baseString = `${this.partnerId}${path}${timestamp}`;
+  private signPublic(path: string, ts: number): string {
+    return crypto.createHmac('sha256', this.partnerKey).update(`${this.partnerId}${path}${ts}`).digest('hex');
+  }
+
+  private signMerchant(path: string, ts: number): string {
     return crypto.createHmac('sha256', this.partnerKey)
-      .update(baseString)
+      .update(`${this.partnerId}${path}${ts}${this.merchantAccessToken}${this.merchantId}`)
       .digest('hex');
   }
 
-  /** Shop Level API: partner_id + path + timestamp + access_token + shop_id */
-  private signShop(path: string, timestamp: number): string {
-    const baseString = `${this.partnerId}${path}${timestamp}${this.accessToken}${this.shopId}`;
+  private signShop(path: string, ts: number, shopId: number): string {
     return crypto.createHmac('sha256', this.partnerKey)
-      .update(baseString)
+      .update(`${this.partnerId}${path}${ts}${this.shopAccessToken}${shopId}`)
       .digest('hex');
   }
 
-  // ─── URL 생성 헬퍼 ────────────────────────────────
+  // ─── URL 생성 ────────────────────────────────────
 
-  private buildShopUrl(path: string): string {
-    const timestamp = Math.floor(Date.now() / 1000);
-    const sign = this.signShop(path, timestamp);
-    return `${this.baseUrl}${path}?partner_id=${this.partnerId}&timestamp=${timestamp}&sign=${sign}&access_token=${this.accessToken}&shop_id=${this.shopId}`;
+  private buildMerchantUrl(path: string): string {
+    const ts = Math.floor(Date.now() / 1000);
+    const sign = this.signMerchant(path, ts);
+    return `${this.baseUrl}${path}?partner_id=${this.partnerId}&timestamp=${ts}&sign=${sign}&access_token=${this.merchantAccessToken}&merchant_id=${this.merchantId}`;
   }
 
-  /** Public Level URL (media_space 등 partner 서명만 필요한 API) */
-  private buildPublicUrl(path: string): string {
-    const timestamp = Math.floor(Date.now() / 1000);
-    const sign = this.signPublic(path, timestamp);
-    return `${this.baseUrl}${path}?partner_id=${this.partnerId}&timestamp=${timestamp}&sign=${sign}`;
+  private buildShopUrl(path: string, shopId: number): string {
+    const ts = Math.floor(Date.now() / 1000);
+    const sign = this.signShop(path, ts, shopId);
+    return `${this.baseUrl}${path}?partner_id=${this.partnerId}&timestamp=${ts}&sign=${sign}&access_token=${this.shopAccessToken}&shop_id=${shopId}`;
   }
 
-  // ─── OAuth 토큰 자동갱신 (4시간 만료) ──────────────
+  // ─── 토큰 갱신 ───────────────────────────────────
 
-  private isTokenExpired(): boolean {
-    if (!this.tokenExpiresAt) return false;
-    return Date.now() >= this.tokenExpiresAt - 5 * 60 * 1000;
+  private isExpired(expiresAt: number): boolean {
+    if (!expiresAt) return false;
+    return Date.now() >= expiresAt - 5 * 60 * 1000;
   }
 
-  private async refreshAccessToken(): Promise<void> {
-    if (!this.refreshToken) {
-      throw new Error('Shopee: SHOPEE_REFRESH_TOKEN 미설정 — 토큰 갱신 불가');
-    }
-
+  private async refreshMerchantToken(): Promise<void> {
     const path = '/api/v2/auth/access_token/get';
-    const timestamp = Math.floor(Date.now() / 1000);
-    const sign = this.signPublic(path, timestamp);
+    const ts = Math.floor(Date.now() / 1000);
+    const sign = this.signPublic(path, ts);
+    const url = `${this.baseUrl}${path}?partner_id=${this.partnerId}&timestamp=${ts}&sign=${sign}`;
 
-    const url = `${this.baseUrl}${path}?partner_id=${this.partnerId}&timestamp=${timestamp}&sign=${sign}`;
+    const res = await axios.post(url, {
+      refresh_token: this.merchantRefreshToken,
+      partner_id: this.partnerId,
+      merchant_id: this.merchantId,
+    }, { timeout: 15000 });
 
-    let response;
-    try {
-      response = await axios.post(url, {
-        refresh_token: this.refreshToken,
-        partner_id: this.partnerId,
-        shop_id: this.shopId,
-      }, { timeout: 15000 });
-    } catch (e) {
-      if (axios.isAxiosError(e) && e.response) {
-        throw new Error(`Shopee 토큰 갱신 HTTP ${e.response.status}: ${JSON.stringify(e.response.data)}`);
-      }
-      throw e;
-    }
+    const data = res.data;
+    if (data.error) throw new Error(`Shopee merchant 토큰 갱신 실패: ${data.error} - ${data.message}`);
 
-    const data = response.data;
-    if (data.error) {
-      throw new Error(`Shopee 토큰 갱신 실패: ${data.error} - ${data.message}`);
-    }
+    this.merchantAccessToken = data.access_token;
+    this.merchantRefreshToken = data.refresh_token;
+    this.merchantTokenExpiresAt = Date.now() + (data.expire_in || 14400) * 1000;
+    console.log('Shopee: merchant 토큰 갱신 완료');
 
-    this.accessToken = data.access_token;
-    this.refreshToken = data.refresh_token;
-    this.tokenExpiresAt = Date.now() + (data.expire_in || 14400) * 1000;
-    console.log(`Shopee: 토큰 갱신 완료 (만료: ${new Date(this.tokenExpiresAt).toLocaleTimeString()})`);
-
-    // DB에 갱신된 토큰 저장 (Shopee는 refresh_token도 매번 바뀜)
     await saveToken('shopee', {
-      accessToken: this.accessToken,
-      refreshToken: this.refreshToken,
-      expiresAt: new Date(this.tokenExpiresAt),
+      accessToken: this.merchantAccessToken,
+      refreshToken: this.merchantRefreshToken,
+      expiresAt: new Date(this.merchantTokenExpiresAt),
+      metadata: { merchantId: this.merchantId },
     });
+  }
+
+  private async refreshShopToken(): Promise<void> {
+    const path = '/api/v2/auth/access_token/get';
+    const ts = Math.floor(Date.now() / 1000);
+    const sign = this.signPublic(path, ts);
+    const url = `${this.baseUrl}${path}?partner_id=${this.partnerId}&timestamp=${ts}&sign=${sign}`;
+
+    const res = await axios.post(url, {
+      refresh_token: this.shopRefreshToken,
+      partner_id: this.partnerId,
+      shop_id: this.shopIds[0],
+    }, { timeout: 15000 });
+
+    const data = res.data;
+    if (data.error) throw new Error(`Shopee shop 토큰 갱신 실패: ${data.error} - ${data.message}`);
+
+    this.shopAccessToken = data.access_token;
+    this.shopRefreshToken = data.refresh_token;
+    this.shopTokenExpiresAt = Date.now() + (data.expire_in || 14400) * 1000;
+    console.log('Shopee: shop 토큰 갱신 완료');
   }
 
   private async ensureInitialized(): Promise<void> {
@@ -128,141 +146,79 @@ export class ShopeeClient implements PlatformAdapter {
     this.initialized = true;
     const saved = await loadToken('shopee');
     if (saved) {
-      this.accessToken = saved.accessToken;
-      if (saved.refreshToken) this.refreshToken = saved.refreshToken;
-      this.tokenExpiresAt = saved.expiresAt?.getTime() || 0;
-      console.log('Shopee: DB에서 토큰 로드 완료');
+      this.merchantAccessToken = saved.accessToken;
+      if (saved.refreshToken) this.merchantRefreshToken = saved.refreshToken;
+      this.merchantTokenExpiresAt = saved.expiresAt?.getTime() || 0;
     }
   }
 
-  private async ensureValidToken(): Promise<void> {
+  private async ensureValidMerchantToken(): Promise<void> {
     await this.ensureInitialized();
-    if (this.isTokenExpired()) {
-      await this.refreshAccessToken();
-    }
+    if (this.isExpired(this.merchantTokenExpiresAt)) await this.refreshMerchantToken();
   }
 
-  // ─── Shop Level API 호출 ───────────────────────────
+  private async ensureValidShopToken(): Promise<void> {
+    if (!this.shopAccessToken) throw new Error('Shopee: SHOPEE_SHOP_ACCESS_TOKEN 미설정');
+    if (this.isExpired(this.shopTokenExpiresAt)) await this.refreshShopToken();
+  }
 
-  private async callApi(
-    method: 'GET' | 'POST',
-    path: string,
-    body?: Record<string, any>,
-  ): Promise<any> {
-    await this.ensureValidToken();
+  // ─── API 호출 ─────────────────────────────────────
 
-    const url = this.buildShopUrl(path);
+  private async callMerchantApi(method: 'GET' | 'POST', path: string, body?: Record<string, any>, extraParams?: string): Promise<any> {
+    await this.ensureValidMerchantToken();
+    let url = this.buildMerchantUrl(path);
+    if (extraParams) url += extraParams;
 
-    let response;
+    const res = method === 'GET'
+      ? await axios.get(url, { timeout: 30000 })
+      : await axios.post(url, body, { timeout: 30000 });
+
+    const data = res.data;
+    if (data.error && data.error !== '') throw new Error(`Shopee merchant API [${path}]: ${data.error} - ${data.message}`);
+    return data;
+  }
+
+  private async callShopApi(method: 'GET' | 'POST', path: string, shopId: number, body?: Record<string, any>, extraParams?: string): Promise<any> {
+    await this.ensureValidShopToken();
+    let url = this.buildShopUrl(path, shopId);
+    if (extraParams) url += extraParams;
+
+    let res;
     try {
-      response = method === 'GET'
+      res = method === 'GET'
         ? await axios.get(url, { timeout: 30000 })
         : await axios.post(url, body, { timeout: 30000 });
     } catch (e) {
-      if (axios.isAxiosError(e) && e.response) {
-        const status = e.response.status;
-        const errorData = e.response.data;
-        console.error(`Shopee HTTP ${status} [${path}]:`, JSON.stringify(errorData));
-
-        // 403/401은 토큰 문제일 가능성 → 갱신 후 1회 재시도
-        if (status === 403 || status === 401) {
-          console.log(`Shopee: HTTP ${status} 감지, 토큰 갱신 후 재시도...`);
-          await this.refreshAccessToken();
-          const retryUrl = this.buildShopUrl(path);
-          try {
-            response = method === 'GET'
-              ? await axios.get(retryUrl, { timeout: 30000 })
-              : await axios.post(retryUrl, body, { timeout: 30000 });
-          } catch (retryErr) {
-            if (axios.isAxiosError(retryErr) && retryErr.response) {
-              throw new Error(`Shopee API HTTP ${retryErr.response.status} [${path}] (재시도): ${JSON.stringify(retryErr.response.data)}`);
-            }
-            throw retryErr;
-          }
-        } else {
-          throw new Error(`Shopee API HTTP ${status} [${path}]: ${JSON.stringify(errorData)}`);
-        }
+      if (axios.isAxiosError(e) && e.response && (e.response.status === 401 || e.response.status === 403)) {
+        await this.refreshShopToken();
+        const retryUrl = this.buildShopUrl(path, shopId) + (extraParams || '');
+        res = method === 'GET'
+          ? await axios.get(retryUrl, { timeout: 30000 })
+          : await axios.post(retryUrl, body, { timeout: 30000 });
       } else {
         throw e;
       }
     }
 
-    const data = response.data;
-
-    // 토큰 만료 에러 감지 (Shopee는 200으로 응답하면서 error 필드에 넣는 경우도 있음)
-    if (data.error === 'error_auth' || (data.error === 'error_param' && data.message?.includes('token'))) {
-      console.log('Shopee: 토큰 만료 감지 (응답 body), 갱신 후 재시도...');
-      await this.refreshAccessToken();
-      const retryUrl = this.buildShopUrl(path);
-      const retry = method === 'GET'
-        ? await axios.get(retryUrl, { timeout: 30000 })
-        : await axios.post(retryUrl, body, { timeout: 30000 });
-      return retry.data;
-    }
-
-    if (data.error && data.error !== '') {
-      throw new Error(`Shopee API 오류 [${path}]: ${data.error} - ${data.message}${data.request_id ? ` (request_id: ${data.request_id})` : ''}`);
-    }
-
+    const data = res.data;
+    if (data.error && data.error !== '') throw new Error(`Shopee shop API [${path}] shop ${shopId}: ${data.error} - ${data.message}`);
     return data;
   }
 
-  // ─── 이미지 업로드 ───────────────────────────────
-
-  /** 이미지 URL을 다운로드하여 Shopee에 업로드, image_id 반환 */
-  private async uploadImage(imageUrl: string): Promise<string> {
-    // 1. 이미지 다운로드
-    const imgResponse = await axios.get(imageUrl, {
-      responseType: 'arraybuffer',
-      timeout: 30000,
-    });
-    const buffer = Buffer.from(imgResponse.data);
-
-    // 2. Shopee media_space에 업로드 (Shop Level 서명)
-    await this.ensureValidToken();
-    const path = '/api/v2/media_space/upload_image';
-    const url = this.buildShopUrl(path);
-
-    const form = new FormData();
-    form.append('image', buffer, { filename: 'image.jpg', contentType: 'image/jpeg' });
-
-    let response;
-    try {
-      response = await axios.post(url, form, {
-        headers: form.getHeaders(),
-        timeout: 60000,
-      });
-    } catch (e) {
-      if (axios.isAxiosError(e) && e.response) {
-        throw new Error(`Shopee 이미지 업로드 HTTP ${e.response.status}: ${JSON.stringify(e.response.data)}`);
-      }
-      throw e;
-    }
-
-    const data = response.data;
-    if (data.error && data.error !== '') {
-      throw new Error(`Shopee 이미지 업로드 오류: ${data.error} - ${data.message}`);
-    }
-
-    const imageId = data.response?.image_info?.image_id;
-    if (!imageId) {
-      throw new Error(`Shopee 이미지 업로드: image_id 없음 (응답: ${JSON.stringify(data)})`);
-    }
-
-    return imageId;
-  }
-
-  // ─── PlatformAdapter 구현 ─────────────────────────
+  // ─── Public API ───────────────────────────────────
 
   async testConnection(): Promise<boolean> {
     try {
-      if (!this.accessToken || !this.partnerId) {
-        console.log('Shopee: 필수 설정 미입력 (PARTNER_ID, ACCESS_TOKEN)');
+      if (!this.merchantAccessToken || !this.partnerId || !this.merchantId) {
+        console.log('Shopee: 필수 설정 미입력');
         return false;
       }
-      const data = await this.callApi('GET', '/api/v2/shop/get_shop_info');
-      const shopName = data.response?.shop_name || 'unknown';
-      console.log(`Shopee 연결 성공: ${shopName}`);
+      const data = await this.callMerchantApi('GET', '/api/v2/merchant/get_merchant_info');
+      console.log(`Shopee merchant 연결 성공: ${data.merchant_name} (merchant_id: ${this.merchantId})`);
+
+      if (this.shopAccessToken && this.shopIds.length > 0) {
+        console.log(`Shopee shop 토큰 준비: ${this.shopIds.length}개 shop`);
+      }
       return true;
     } catch (e) {
       console.error('Shopee 연결 실패:', (e as Error).message);
@@ -270,93 +226,84 @@ export class ShopeeClient implements PlatformAdapter {
     }
   }
 
-  async createListing(input: ListingInput): Promise<ListingResult> {
-    if (!this.defaultCategoryId) {
-      console.warn('Shopee: SHOPEE_DEFAULT_CATEGORY_ID 미설정 — API 호출이 실패할 수 있습니다');
-    }
+  /** 특정 shop 상품 목록 */
+  async getProducts(shopId?: number, offset = 0, limit = 50): Promise<any[]> {
+    const sid = shopId || this.shopIds[0];
+    if (!sid) throw new Error('Shopee: shop_id 없음');
+    const data = await this.callShopApi('GET', '/api/v2/product/get_item_list', sid,
+      undefined, `&offset=${offset}&page_size=${limit}&item_status=NORMAL`);
+    return data.response?.item || [];
+  }
 
-    // 이미지 사전 업로드 (Shopee는 image_id 필요)
-    const imageIds: string[] = [];
-    for (const url of input.imageUrls) {
+  /** 모든 shop 상품 목록 */
+  async getAllShopsProducts(offset = 0, limit = 50): Promise<{ shopId: number; items: any[] }[]> {
+    const results = [];
+    for (const shopId of this.shopIds) {
       try {
-        const imageId = await this.uploadImage(url);
-        imageIds.push(imageId);
-        console.log(`Shopee: 이미지 업로드 성공 (${imageIds.length}/${input.imageUrls.length})`);
+        const items = await this.getProducts(shopId, offset, limit);
+        results.push({ shopId, items });
       } catch (e) {
-        console.warn(`Shopee 이미지 업로드 실패 (${url}):`, (e as Error).message);
+        console.error(`Shopee shop ${shopId} 상품 조회 실패:`, (e as Error).message);
+        results.push({ shopId, items: [] });
       }
     }
+    return results;
+  }
 
-    if (imageIds.length === 0) {
-      throw new Error('Shopee: 업로드된 이미지가 없어 리스팅 생성 불가');
-    }
+  /** 단일 상품 조회 */
+  async getProduct(itemId: string, shopId?: number): Promise<any> {
+    const sid = shopId || this.shopIds[0];
+    if (!sid) throw new Error('Shopee: shop_id 없음');
+    const data = await this.callShopApi('GET', '/api/v2/product/get_item_base_info', sid,
+      undefined, `&item_id_list=${itemId}`);
+    return data.response?.item_list?.[0];
+  }
+
+  async updateInventory(itemId: string, price: number, quantity: number, shopId?: number): Promise<void> {
+    const sid = shopId || this.shopIds[0];
+    if (!sid) throw new Error('Shopee: shop_id 없음');
+    await this.callShopApi('POST', '/api/v2/product/update_item', sid, {
+      item_id: parseInt(itemId), original_price: price,
+    });
+    await this.callShopApi('POST', '/api/v2/product/update_stock', sid, {
+      item_id: parseInt(itemId), stock_list: [{ seller_stock: [{ stock: quantity }] }],
+    });
+  }
+
+  async createListing(input: ListingInput): Promise<ListingResult> {
+    const sid = this.shopIds[0];
+    if (!sid) throw new Error('Shopee: shop_id 없음');
 
     const body: Record<string, any> = {
       item_name: input.title,
       description: input.description,
       original_price: input.price,
-      weight: (input.weight || 500) / 1000, // g → kg
+      weight: (input.weight || 500) / 1000,
       item_sku: input.sku,
       condition: input.condition === 'used' ? 'USED' : 'NEW',
       item_status: 'NORMAL',
       seller_stock: [{ stock: input.quantity }],
-      image: {
-        image_id_list: imageIds,
-      },
     };
+    if (this.defaultCategoryId) body.category_id = this.defaultCategoryId;
 
-    if (this.defaultCategoryId) {
-      body.category_id = this.defaultCategoryId;
-    }
-
-    const data = await this.callApi('POST', '/api/v2/product/add_item', body);
-
+    const data = await this.callShopApi('POST', '/api/v2/product/add_item', sid, body);
     const itemId = String(data.response?.item_id || 'unknown');
-    return {
-      itemId,
-      url: `https://shopee.com/product/${this.shopId}/${itemId}`,
-    };
+    return { itemId, url: `https://shopee.com/product/${sid}/${itemId}` };
   }
 
   async updateListing(itemId: string, updates: Partial<ListingInput>): Promise<void> {
-    const body: Record<string, any> = {
-      item_id: parseInt(itemId),
-    };
-
+    const sid = this.shopIds[0];
+    const body: Record<string, any> = { item_id: parseInt(itemId) };
     if (updates.title) body.item_name = updates.title;
     if (updates.description) body.description = updates.description;
     if (updates.price !== undefined) body.original_price = updates.price;
-
-    await this.callApi('POST', '/api/v2/product/update_item', body);
+    await this.callShopApi('POST', '/api/v2/product/update_item', sid, body);
   }
 
   async deleteListing(itemId: string): Promise<void> {
-    await this.callApi('POST', '/api/v2/product/delete_item', {
-      item_id: parseInt(itemId),
-    });
+    const sid = this.shopIds[0];
+    await this.callShopApi('POST', '/api/v2/product/delete_item', sid, { item_id: parseInt(itemId) });
   }
 
-  async updateInventory(itemId: string, price: number, quantity: number): Promise<void> {
-    // 가격 업데이트
-    await this.callApi('POST', '/api/v2/product/update_item', {
-      item_id: parseInt(itemId),
-      original_price: price,
-    });
-
-    // 재고 업데이트
-    await this.callApi('POST', '/api/v2/product/update_stock', {
-      item_id: parseInt(itemId),
-      stock_list: [{ seller_stock: [{ stock: quantity }] }],
-    });
-  }
-
-  // ─── 추가 메서드 ──────────────────────────────────
-
-  /** 단일 상품 조회 */
-  async getProduct(itemId: string): Promise<any> {
-    const data = await this.callApi('GET', `/api/v2/product/get_item_base_info`);
-    // item_id_list는 쿼리 파라미터로 전달해야 하므로 별도 처리 필요
-    // 현재는 기본 구현
-    return data.response?.item_list?.[0];
-  }
+  get shopIdList(): number[] { return this.shopIds; }
 }

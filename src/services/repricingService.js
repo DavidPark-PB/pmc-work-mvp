@@ -178,45 +178,92 @@ class RepricingService {
   }
 
   /**
-   * Get battle dashboard data: all SKUs with competitor tracking
+   * Get battle dashboard data: fetch real eBay listings from API, compare with competitor prices
    */
   async getBattleDashboard() {
     const db = getClient();
 
-    // Get products with their latest competitor prices
-    const { data: products } = await db
-      .from('products')
-      .select('sku, title, price_usd, purchase_price, cost_price, weight')
-      .not('price_usd', 'is', null)
-      .order('sku');
-
-    if (!products || products.length === 0) return [];
-
-    const repo = this._getPlatformRepo();
-    const dashboard = [];
-
-    for (const p of products.slice(0, 100)) { // Limit for performance
-      const competitor = await repo.getLatestCompetitorPrice(p.sku);
-      const recentChanges = await repo.getPriceChangeLog(p.sku, 5);
-
-      dashboard.push({
-        sku: p.sku,
-        title: p.title,
-        myPrice: parseFloat(p.price_usd) || 0,
-        competitorPrice: competitor ? parseFloat(competitor.competitor_price) : null,
-        competitorShipping: competitor ? parseFloat(competitor.competitor_shipping) : null,
-        competitorTotal: competitor
-          ? parseFloat(competitor.competitor_price) + parseFloat(competitor.competitor_shipping || 0)
-          : null,
-        lastTracked: competitor?.tracked_at || null,
-        recentChanges: recentChanges.map(c => ({
-          oldPrice: parseFloat(c.old_price),
-          newPrice: parseFloat(c.new_price),
-          reason: c.reason,
-          changedAt: c.changed_at,
-        })),
-      });
+    // Fetch active eBay listings from eBay API (page 1, up to 200 items)
+    const EbayAPI = require('../api/ebayAPI');
+    const ebayApi = new EbayAPI();
+    let ebayItems = [];
+    try {
+      // 첫 페이지만 (캐시 30분 — eBay API 호출 최소화)
+      const page1 = await ebayApi.getActiveListings(1, 200);
+      ebayItems = page1.items || [];
+    } catch (e) {
+      console.error('[BattleDashboard] eBay API 오류:', e.message);
+      return [];
     }
+
+    if (ebayItems.length === 0) return [];
+
+    // itemId를 식별자로, sku가 있으면 sku도 사용
+    const normalizedListings = ebayItems.map(item => ({
+      sku: item.sku || item.itemId || '',
+      itemId: item.itemId || '',
+      title: item.title || item.itemId || '',
+      price: parseFloat(item.price) || 0,
+      shipping: parseFloat(item.shippingCost) || 0,
+    })).filter(l => l.sku && l.price > 0);
+
+    if (normalizedListings.length === 0) return [];
+
+    // Batch-fetch all competitor prices in one query
+    const skus = normalizedListings.map(l => l.sku).filter(Boolean);
+    const { data: compRows } = await db
+      .from('competitor_prices')
+      .select('sku, competitor_id, competitor_price, competitor_shipping, competitor_url, tracked_at')
+      .in('sku', skus)
+      .order('tracked_at', { ascending: false });
+
+    // Fetch Korean product titles from products table
+    const { data: productRows } = await db
+      .from('products')
+      .select('sku, title, title_ko')
+      .in('sku', skus);
+    const productTitleMap = {};
+    (productRows || []).forEach(p => {
+      productTitleMap[p.sku] = p.title_ko || p.title || null;
+    });
+
+    // Build competitor list: sku → up to 3 competitors sorted by total (price + shipping) asc
+    const compList = {};
+    (compRows || []).forEach(c => {
+      if (!compList[c.sku]) compList[c.sku] = [];
+      if (compList[c.sku].length < 3) compList[c.sku].push(c);
+    });
+    Object.keys(compList).forEach(sku => {
+      compList[sku].sort((a, b) =>
+        (parseFloat(a.competitor_price) + parseFloat(a.competitor_shipping || 0)) -
+        (parseFloat(b.competitor_price) + parseFloat(b.competitor_shipping || 0))
+      );
+    });
+
+    const dashboard = normalizedListings.map(p => {
+      const competitors = compList[p.sku] || [];
+      const cheapest = competitors[0] || null;
+      return {
+        sku: p.sku,
+        itemId: p.itemId,
+        // title_ko (DB 한국어) → title (DB 영어) → eBay listing title
+        title: productTitleMap[p.sku] || p.title,
+        myPrice: p.price,
+        myShipping: p.shipping,
+        competitors: competitors.map(c => ({
+          itemId: c.competitor_id || null,
+          price: parseFloat(c.competitor_price),
+          shipping: parseFloat(c.competitor_shipping || 0),
+          total: parseFloat(c.competitor_price) + parseFloat(c.competitor_shipping || 0),
+          url: c.competitor_url || null,
+        })),
+        cheapestTotal: cheapest
+          ? parseFloat(cheapest.competitor_price) + parseFloat(cheapest.competitor_shipping || 0)
+          : null,
+        lastTracked: cheapest?.tracked_at || null,
+        recentChanges: [],
+      };
+    });
 
     return dashboard;
   }

@@ -14,7 +14,7 @@ import { listingRoutes } from './routes/listings.js';
 import { pageRoutes } from './routes/pages.js';
 import { settingsRoutes } from './routes/settings.js';
 import { assignRoutes } from './routes/assign.js';
-import { syncAllInventory } from './services/inventory-sync.js';
+import { startScheduler, stopScheduler, getSchedulerStatus } from './jobs/scheduler.js';
 import { getUser, type TeamUser } from './lib/user-session.js';
 
 const app = Fastify({
@@ -91,6 +91,11 @@ app.register(assignRoutes, { prefix: '/api' });
 app.register(pageRoutes);
 app.register(settingsRoutes);
 
+// ─── 스케줄러 상태 API ───────────────────────────
+app.get('/api/scheduler/status', async () => {
+  return { jobs: getSchedulerStatus() };
+});
+
 // ─── 서버 시작 ──────────────────────────────────
 async function start() {
   try {
@@ -98,23 +103,26 @@ async function start() {
     logger.info(`Server running on http://localhost:${env.PORT}`);
     logger.info(`Dashboard: http://localhost:${env.PORT}/`);
 
-    // 재고 자동추적: 30분마다 동기화
-    const SYNC_INTERVAL = 30 * 60 * 1000;
-    setInterval(async () => {
-      try {
-        logger.info('[인벤토리] 자동 동기화 시작...');
-        const results = await syncAllInventory();
-        const changed = results.filter(r => r.changed).length;
-        logger.info(`[인벤토리] 자동 동기화 완료: ${results.length}개 확인, ${changed}개 변경`);
-      } catch (e) {
-        logger.error(e, '[인벤토리] 자동 동기화 실패');
-      }
-    }, SYNC_INTERVAL);
-    logger.info('[인벤토리] 자동추적 활성화 (30분 간격)');
+    startScheduler();
   } catch (err) {
     logger.error(err, 'Failed to start server');
     process.exit(1);
   }
 }
+
+// ─── Graceful Shutdown ───────────────────────────
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM 수신 — graceful shutdown 시작');
+  stopScheduler();
+  await app.close();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  logger.info('SIGINT 수신 — graceful shutdown 시작');
+  stopScheduler();
+  await app.close();
+  process.exit(0);
+});
 
 start();

@@ -188,7 +188,7 @@ class CarrierSheets {
       (order.phone || '').replace(/^\+/, ''),      // U: phone
       '',                                          // V: HouseNumber
       order.email || '',                           // W: Email
-      '', '',                                      // X-Y: PackageNumber, PackageWeight (직원)
+      '', order.weightKg ? String(order.weightKg) : '', // X-Y: PackageNumber, PackageWeight
       '', '', '', '', '', '', '', '', '', '',      // Z-AI: Sender fields (직원)
       '', '', '', '', '', '',                      // AJ-AO: Platform fields (직원)
       '', '', '',                                  // AP-AR: EcommercePlatform~CurrencyCode (직원)
@@ -258,7 +258,10 @@ class CarrierSheets {
       order.street || '',                          // T: 수취인 주소1
       '',                                          // U: 수취인 주소2
       '', '',                                      // V-W: 수출신고 (빈칸)
-      '', '', '', '',                              // X-AA: 무게/크기 (직원)
+      order.weightKg ? String(order.weightKg) : '',   // X: 무게(kg)
+      order.dimL ? String(order.dimL) : '',            // Y: 가로(cm)
+      order.dimW ? String(order.dimW) : '',            // Z: 세로(cm)
+      order.dimH ? String(order.dimH) : '',            // AA: 높이(cm)
       customsType,                                 // AB: 통관번호종류
       customsNumber,                               // AC: 통관번호
     ];

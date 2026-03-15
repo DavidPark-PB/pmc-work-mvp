@@ -54,6 +54,9 @@ const envSchema = z.object({
   SHOPEE_REFRESH_TOKEN: z.string().optional(),
   SHOPEE_ENV: z.enum(['live', 'test']).default('test'),
   SHOPEE_DEFAULT_CATEGORY_ID: z.coerce.number().optional(),
+  SHOPEE_SHOP_ACCESS_TOKEN: z.string().optional(),
+  SHOPEE_SHOP_REFRESH_TOKEN: z.string().optional(),
+  SHOPEE_SHOP_IDS: z.string().optional(),
 
   // Qoo10 (optional until Phase 7)
   QOO10_API_KEY: z.string().optional(),

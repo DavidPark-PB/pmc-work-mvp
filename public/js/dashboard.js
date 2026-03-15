@@ -1,5 +1,15 @@
 const API = '/api';
-let currentPage = 'dashboard';
+var currentPage = 'dashboard';
+
+const CARRIERS = ['윤익스프레스', 'KPL', '다보내', '쉽터', 'KPacket', 'FedEx'];
+const CARRIER_COLORS = {
+  '윤익스프레스': '#1565c0',
+  'KPL': '#e65100',
+  '다보내': '#2e7d32',
+  '쉽터': '#6a1b9a',
+  'KPacket': '#c62828',
+  'FedEx': '#4a148c',
+};
 
 document.addEventListener('DOMContentLoaded', () => {
   setupNavigation();
@@ -63,6 +73,13 @@ function navigateTo(page) {
     case 'export': loadExportPage(); break;
     case 'automation': loadAutomationPage(); break;
     case 'crawl-results': loadCrawlResultsPage(); break;
+    // ── 운영 관리 페이지 (operations.js) ──
+    case 'ops-products':  if (window.opsProducts)  opsProducts.load();  break;
+    case 'ops-inventory': if (window.opsInventory) opsInventory.load(); break;
+    case 'ops-pricing':   if (window.opsPricing)   opsPricing.load();   break;
+    case 'ops-profit':    if (window.opsProfit)     opsProfit.load();    break;
+    case 'ops-competitor':if (window.opsCompetitor) opsCompetitor.load();break;
+    case 'ops-logs':      if (window.opsLogs)       opsLogs.load();      break;
   }
 }
 
@@ -178,7 +195,7 @@ async function loadProducts(platform) {
 
 // ===== 전체 상품 (인라인 편집) =====
 
-let _allProductSearchTimeout;
+var _allProductSearchTimeout;
 function setupAllProductSearch() {
   const searchEl = document.getElementById('allProductSearch');
   const filterEl = document.getElementById('allPlatformFilter');
@@ -215,14 +232,15 @@ async function loadAllProducts(platform) {
 
 async function loadAnalysis() {
   showLoading(true);
-  setupMarginCalculator();
   try {
-    const [summaryRes, productsRes] = await Promise.all([
+    const [summaryRes, productsRes, revenueRes] = await Promise.all([
       fetch(`${API}/analysis/summary`),
-      fetch(`${API}/analysis/products?sort=${document.getElementById('analysisSortBy')?.value || 'margin'}&limit=50`)
+      fetch(`${API}/analysis/products?sort=${document.getElementById('analysisSortBy')?.value || 'margin'}&limit=50`),
+      fetch(`${API}/revenue/summary`).catch(() => null)
     ]);
     const summary = await summaryRes.json();
     const products = await productsRes.json();
+    const revenueData = revenueRes ? await revenueRes.json() : null;
 
     if (summary.error === 'no_data') {
       document.getElementById('analysisCards').innerHTML =
@@ -231,7 +249,12 @@ async function loadAnalysis() {
     }
 
     renderAnalysisCards(summary);
-    renderPlatformRevenue(summary.byPlatform || {});
+    // 플랫폼별 매출: revenue/summary API 우선, 없으면 sheets byPlatform fallback
+    if (revenueData && revenueData.platforms) {
+      renderAnalysisPlatformRevenue(revenueData);
+    } else {
+      renderPlatformRevenue(summary.byPlatform || {});
+    }
     renderMarginDistribution(products);
     renderAnalysisTable(products);
 
@@ -378,6 +401,73 @@ function renderPlatformRevenueHTML(byPlatform, containerId) {
 
 function renderPlatformRevenue(byPlatform) {
   renderPlatformRevenueHTML(byPlatform, 'platformRevenue');
+}
+
+function renderAnalysisPlatformRevenue(revenueData) {
+  const container = document.getElementById('platformRevenue');
+  if (!container) return;
+  const platforms = revenueData.platforms || {};
+  const entries = Object.entries(platforms);
+  if (entries.length === 0) { container.innerHTML = '<p class="empty">데이터 없음</p>'; return; }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const thisMonth = today.slice(0, 7); // "2026-03"
+
+  const totalKRW = revenueData.totalRevenueKRW || 0;
+
+  const cards = entries.map(([name, p]) => {
+    const color = PLATFORM_COLORS[name] || '#888';
+    const isFx = p.currency !== 'KRW';
+    const fx = revenueData.exchangeRate || 1400;
+
+    // 오늘 매출
+    const todaySales = p.dailySales?.[today] || p.dailySales?.[yesterday] || null;
+    const todayRev = todaySales ? todaySales.revenue : 0;
+    const todayOrders = todaySales ? todaySales.orders : 0;
+    const todayLabel = p.dailySales?.[today] ? '오늘' : (p.dailySales?.[yesterday] ? '어제' : '오늘');
+
+    // 이번달 매출
+    const monthRevenue = Object.entries(p.dailySales || {})
+      .filter(([d]) => d.startsWith(thisMonth))
+      .reduce((s, [, v]) => s + (v.revenue || 0), 0);
+    const monthOrders = Object.entries(p.dailySales || {})
+      .filter(([d]) => d.startsWith(thisMonth))
+      .reduce((s, [, v]) => s + (v.orders || 0), 0);
+
+    const fmt = (v) => isFx ? '$' + v.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : '₩' + Math.round(v).toLocaleString();
+    const fmtKRW = (v) => { const k = Math.round(v); return k >= 10000 ? Math.round(k/10000) + '만원' : k.toLocaleString() + '원'; };
+    const toKRW = (v) => isFx ? v * fx : v;
+
+    const sharePct = totalKRW > 0 && p.revenueKRW > 0 ? (p.revenueKRW / totalKRW * 100).toFixed(1) : 0;
+
+    return `<div class="revenue-bar" style="margin-bottom:12px;padding:10px 0;border-bottom:1px solid #f0f0f0">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color}"></span>
+        <span style="font-weight:700;font-size:13px">${esc(name)}</span>
+        <span style="font-size:10px;color:#888;margin-left:auto">${p.orders || 0}건 · 30일 점유 ${sharePct}%</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div style="background:#f8f9fa;border-radius:6px;padding:8px;text-align:center">
+          <div style="font-size:10px;color:#888;margin-bottom:2px">${todayLabel} 매출</div>
+          <div style="font-size:14px;font-weight:700;color:${color}">${fmt(todayRev)}</div>
+          <div style="font-size:10px;color:#aaa">${todayOrders}건</div>
+        </div>
+        <div style="background:#f8f9fa;border-radius:6px;padding:8px;text-align:center">
+          <div style="font-size:10px;color:#888;margin-bottom:2px">이번달 매출</div>
+          <div style="font-size:14px;font-weight:700;color:${color}">${fmt(monthRevenue)}</div>
+          <div style="font-size:10px;color:#aaa">${monthOrders}건 · ≈${fmtKRW(toKRW(monthRevenue))}</div>
+        </div>
+        <div style="background:#f8f9fa;border-radius:6px;padding:8px;text-align:center">
+          <div style="font-size:10px;color:#888;margin-bottom:2px">30일 매출</div>
+          <div style="font-size:14px;font-weight:700;color:${color}">${fmt(p.revenue || 0)}</div>
+          <div style="font-size:10px;color:#aaa">≈${fmtKRW(p.revenueKRW || toKRW(p.revenue || 0))}</div>
+        </div>
+      </div>
+    </div>`;
+  });
+
+  container.innerHTML = cards.join('');
 }
 
 // API 기반 매출 도넛 차트
@@ -739,7 +829,7 @@ async function loadSyncPage() {
 
 // ===== 설정 페이지 =====
 
-let settingsData = null;
+var settingsData = null;
 
 async function loadSettingsPage() {
   // Tab switching
@@ -1007,7 +1097,7 @@ async function retryExport(sku, platform) {
 
 // ===== 번역 관리 =====
 
-let currentTranslateProductId = null;
+var currentTranslateProductId = null;
 
 async function searchTranslation() {
   const sku = document.getElementById('translateSkuSearch').value.trim();
@@ -1109,8 +1199,8 @@ async function saveTranslation() {
 
 // ===== 상품 등록 (멀티마켓 자동 최적화) =====
 
-let pricePreviewTimer = null;
-let uploadedImageUrls = [];
+var pricePreviewTimer = null;
+var uploadedImageUrls = [];
 
 function setupRegisterForm() {
   const form = document.getElementById('registerForm');
@@ -1283,7 +1373,7 @@ function removeImage(idx) {
 
 // ===== CSV 대량 등록 =====
 
-let csvParsedRows = [];
+var csvParsedRows = [];
 
 function setupCsvImport() {
   // Register tab switching
@@ -2228,7 +2318,7 @@ document.getElementById('editModal').addEventListener('click', (e) => {
 
 // ===== SKU 점수 관리 =====
 
-let skuScoreEventsInit = false;
+var skuScoreEventsInit = false;
 
 async function loadSkuScores() {
   showLoading(true);
@@ -2567,28 +2657,93 @@ function setupSkuScoreEvents() {
 
 // ===== 전투 상황판 (Battle Dashboard) =====
 
-let battleData = null;
-let battleEventsInit = false;
+var battleData = null;
+var battleEventsInit = false;
+var battlePage = 1;
+var BATTLE_PAGE_SIZE = 50;
+
+async function battleImportCompetitors(btn) {
+  if (!confirm('Google Sheets에서 경쟁사 데이터를 가져옵니다. 계속하시겠습니까?')) return;
+  const origText = btn.textContent;
+  btn.textContent = '⏳ 가져오는 중...';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`${API}/battle/import-competitors`, { method: 'POST' });
+    if (!res.ok && res.status === 404) throw new Error('서버를 재시작해주세요 (라우트 미등록)');
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch { throw new Error('서버 응답 파싱 실패: ' + text.slice(0, 100)); }
+    if (!data.success) throw new Error(data.error);
+    alert(`✅ ${data.inserted}건 경쟁사 데이터 임포트 완료`);
+    loadBattle();
+  } catch (err) {
+    alert('오류: ' + err.message);
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
+}
+
+async function loadBattleSalesStats() {
+  const el = document.getElementById('battleSalesStats');
+  if (!el) return;
+  try {
+    var r = await fetch(`${API}/revenue/summary`);
+    var data = JSON.parse(await r.text());
+    var platforms = data.platforms || {};
+    const PLATFORM_COLORS = { eBay:'#e53935', Shopify:'#2e7d32', Naver:'#1565c0', Shopee:'#f57c00', Qoo10:'#6a1b9a' };
+    const cards = Object.entries(platforms).map(([name, p]) => {
+      const color = PLATFORM_COLORS[name] || '#555';
+      const rev = p.currency === 'KRW'
+        ? Math.round(p.revenue || 0).toLocaleString() + '원'
+        : '$' + (p.revenue || 0).toLocaleString();
+      const revKRW = (p.revenueKRW || 0) >= 10000
+        ? Math.round((p.revenueKRW||0)/10000) + '만원'
+        : Math.round(p.revenueKRW||0).toLocaleString() + '원';
+      return `<div class="stat-card" style="border-left:3px solid ${color}">
+        <div class="label" style="color:${color};font-weight:600">${name}</div>
+        <div class="number" style="font-size:18px">${rev}</div>
+        <div style="font-size:10px;color:#888;margin-top:2px">≈ ${revKRW} · ${p.orders||0}건 · 30일</div>
+      </div>`;
+    });
+    if (cards.length === 0) {
+      el.innerHTML = '<div class="stat-card"><div class="label" style="color:#aaa">매출 데이터 없음</div></div>';
+    } else {
+      el.innerHTML = cards.join('');
+    }
+  } catch (e) {
+    el.innerHTML = '<div class="stat-card"><div class="label" style="color:#aaa">매출 로드 실패</div></div>';
+  }
+}
 
 async function loadBattle() {
   showLoading(true);
+  var _battleRes, _battleText;
   try {
-    const res = await fetch(`${API}/battle/data`);
-    battleData = await res.json();
+    _battleRes = await fetch(`${API}/battle/data`);
+    if (!_battleRes.ok) throw new Error('HTTP ' + _battleRes.status);
+    _battleText = await _battleRes.text();
+    battleData = JSON.parse(_battleText);
 
     renderBattleStats(battleData.summary);
     renderBattleTable(battleData.items);
     populateBattleSellerFilter(battleData.summary.uniqueSellers || []);
+    setupMarginCalculator();
 
     if (!battleEventsInit) {
       setupBattleEvents();
       setupRepricingEvents();
       battleEventsInit = true;
     }
+
+    // 플랫폼별 매출 — 비동기 별도 로드 (느려도 전투 데이터 표시 막지 않음)
+    loadBattleSalesStats();
   } catch (err) {
     console.error('Battle dashboard error:', err);
     document.getElementById('battleStats').innerHTML =
-      '<div class="stat-card"><div class="label">데이터 로드 실패</div></div>';
+      `<div class="stat-card"><div class="label">데이터 로드 실패</div><div style="font-size:10px;color:#e53935;margin-top:4px;word-break:break-all">${esc(err.message || String(err))}</div></div>`;
+    document.getElementById('battleTable').innerHTML =
+      `<tr><td colspan="6" style="color:#e53935;padding:12px">${esc(err.stack || err.message || String(err))}</td></tr>`;
   } finally {
     showLoading(false);
   }
@@ -2603,7 +2758,7 @@ function setupRepricingEvents() {
     evalBtn.textContent = '평가 중...';
     try {
       // Evaluate repricing for all items with competitors
-      const items = (battleData?.items || []).filter(i => i.compPrice);
+      const items = (battleData?.items || []).filter(i => i.competitors && i.competitors.length > 0);
       const results = [];
       for (const item of items.slice(0, 20)) { // limit 20
         try {
@@ -2727,11 +2882,11 @@ function renderBattleTable(items) {
 
   // 상태 필터
   if (filter === 'losing') filtered = filtered.filter(i => i.losing);
-  else if (filter === 'winning') filtered = filtered.filter(i => i.comp1Total > 0 && !i.losing);
-  else if (filter === 'no-comp') filtered = filtered.filter(i => !i.comp1Total || i.comp1Total === 0);
+  else if (filter === 'winning') filtered = filtered.filter(i => i.competitors.length > 0 && !i.losing);
+  else if (filter === 'no-comp') filtered = filtered.filter(i => i.competitors.length === 0);
 
-  // 셀러 필터
-  if (sellerFilter) filtered = filtered.filter(i => i.comp1Seller === sellerFilter);
+  // 셀러 필터 (첫 번째 경쟁사 itemId 기준)
+  if (sellerFilter) filtered = filtered.filter(i => (i.competitors[0]?.itemId || '') === sellerFilter);
 
   // 검색
   if (search) {
@@ -2746,14 +2901,15 @@ function renderBattleTable(items) {
     switch (sortBy) {
       case 'diff-desc': return (Math.abs(b.diff) || 0) - (Math.abs(a.diff) || 0);
       case 'diff-asc': return (Math.abs(a.diff) || 0) - (Math.abs(b.diff) || 0);
-      case 'comp-price': return (b.comp1Total || 0) - (a.comp1Total || 0);
+      case 'comp-price': return (b.competitors[0]?.total || 0) - (a.competitors[0]?.total || 0);
       case 'my-price': return (b.myTotal || 0) - (a.myTotal || 0);
-      case 'comp-sold': return (b.comp1Sold || 0) - (a.comp1Sold || 0);
+      case 'comp-sold': return 0;
       default: return 0;
     }
   });
 
-  if (countEl) countEl.textContent = `(${filtered.length}/${items.length})`;
+  const totalFiltered = filtered.length;
+  if (countEl) countEl.textContent = `(${totalFiltered}/${items.length})`;
 
   // 일괄 킬프라이스 버튼
   const killAllBtn = document.getElementById('battleKillAllBtn');
@@ -2763,29 +2919,59 @@ function renderBattleTable(items) {
     killAllBtn.textContent = `일괄 킬프라이스 (${losingCount})`;
   }
 
-  if (filtered.length === 0) {
-    el.innerHTML = '<tr><td colspan="9" class="empty">해당 조건의 상품 없음</td></tr>';
+  if (totalFiltered === 0) {
+    el.innerHTML = '<tr><td colspan="6" class="empty">해당 조건의 상품 없음</td></tr>';
+    renderBattlePagination(1, 0, 0);
     return;
   }
 
-  el.innerHTML = filtered.map(item => {
-    const rowClass = item.losing ? 'battle-row-losing' : (item.comp1Total > 0 ? 'battle-row-winning' : '');
-    const liveIcon = item.comp1Live
-      ? '<span class="battle-live-dot" title="실시간"></span>'
-      : '<span class="battle-live-dot stale" title="시트 데이터"></span>';
+  // 페이지네이션 (50개씩) — NaN 방지: 정수 강제 변환
+  var _ps = 50;
+  var _tp = Math.ceil(totalFiltered / _ps) || 1;
+  var _curPage = (battlePage === battlePage && battlePage > 0) ? battlePage : 1; // NaN guard
+  _curPage = Math.max(1, Math.min(_curPage, _tp));
+  battlePage = _curPage;
+  var _start = (_curPage - 1) * _ps;
+  var pageItems = filtered.slice(_start, _start + _ps);
+  renderBattlePagination(_curPage, _tp, totalFiltered);
+
+  el.innerHTML = pageItems.map(item => {
+    const hasComp = item.competitors.length > 0;
+    const rowClass = item.losing ? 'battle-row-losing' : (hasComp ? 'battle-row-winning' : '');
 
     const diffClass = item.diff > 0 ? 'positive' : (item.diff < 0 ? 'negative' : 'neutral');
     const diffText = item.diff !== null ? `${item.diff > 0 ? '+' : ''}$${item.diff.toFixed(2)}` : '-';
 
     const statusBadge = item.losing
       ? '<span class="battle-status losing">패배</span>'
-      : (item.comp1Total > 0 ? '<span class="battle-status winning">승리</span>' : '<span class="battle-status neutral">-</span>');
+      : (hasComp ? '<span class="battle-status winning">승리</span>' : '<span class="battle-status neutral">-</span>');
+
+    // 경쟁사 셀: 최대 3명 세로 나열
+    const compCell = hasComp
+      ? item.competitors.map((c, idx) => {
+          const iLose = item.myTotal > c.total;
+          const badge = iLose
+            ? '<span style="color:#c62828;font-size:9px;font-weight:700">▼</span>'
+            : '<span style="color:#2e7d32;font-size:9px;font-weight:700">▲</span>';
+          const link = c.url
+            ? `<a href="${esc(c.url)}" target="_blank" style="font-size:10px;color:#1565c0;margin-left:3px;text-decoration:none" title="경쟁사 리스팅 열기">🔗</a>`
+            : '';
+          const label = c.itemId ? `<span style="font-size:9px;color:#999;margin-left:2px">${esc(c.itemId.slice(0, 13))}</span>` : '';
+          return `<div style="padding:1px 0;${idx > 0 ? 'opacity:0.75;' : ''}">
+            ${badge} <span style="font-size:11px;font-weight:${idx===0?'700':'400'}">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=<b>\$${c.total.toFixed(2)}</b></span>${label}${link}
+          </div>`;
+        }).join('')
+      : '<span style="color:#ccc;font-size:11px">없음</span>';
+
+    // 내 리스팅 링크
+    const myLink = item.itemId
+      ? `<a href="https://www.ebay.com/itm/${esc(item.itemId)}" target="_blank" style="font-size:11px;color:#2e7d32;font-weight:600;white-space:nowrap">내 리스팅 🔗</a>`
+      : '';
 
     return `<tr class="${rowClass}">
       <td>${statusBadge}</td>
       <td>
         <div class="battle-product-info">
-          ${item.image ? `<img src="${esc(item.image)}" onerror="this.style.display='none'">` : ''}
           <div>
             <div class="sku">${esc(item.sku)}</div>
             <div class="title" title="${esc(item.title)}">${esc((item.title || '').slice(0, 40))}${(item.title || '').length > 40 ? '...' : ''}</div>
@@ -2796,40 +2982,43 @@ function renderBattleTable(items) {
         <div class="price-main">$${(item.myPrice || 0).toFixed(2)}</div>
         <div class="price-ship">+$${(item.myShipping || 0).toFixed(2)} 배송</div>
         <div class="price-total">합계 $${(item.myTotal || 0).toFixed(2)}</div>
+        <div style="margin-top:4px">${myLink}</div>
       </td>
-      <td class="battle-price-cell">
-        ${item.comp1Total > 0 ? `
-          ${liveIcon}
-          <div class="price-main">$${(item.comp1Price || 0).toFixed(2)}</div>
-          <div class="price-ship">+$${(item.comp1Shipping || 0).toFixed(2)} 배송</div>
-          <div class="price-total">합계 $${(item.comp1Total || 0).toFixed(2)}</div>
-        ` : '<span style="color:#ccc">데이터 없음</span>'}
-      </td>
+      <td class="battle-price-cell" style="min-width:160px">${compCell}</td>
       <td style="text-align:center">
         <div class="battle-diff ${diffClass}">${diffText}</div>
-      </td>
-      <td style="text-align:center">
-        <span class="battle-sold">${item.comp1Sold || '-'}</span>
       </td>
       <td style="text-align:center">
         ${item.losing && item.killPrice > 0
           ? `<div style="font-weight:700;color:#c62828">$${item.killPrice.toFixed(2)}</div>
              <button class="kill-price-btn" onclick="applyKillPrice('${esc(item.itemId)}', ${item.killPrice}, '${esc(item.sku)}')"
-                     id="kill-${esc(item.itemId)}">적용</button>`
-          : (item.comp1Total > 0 ? '<span style="color:#2e7d32;font-size:11px">불필요</span>' : '-')
+                     id="kill-${esc(item.itemId || item.sku)}">적용</button>`
+          : (hasComp ? '<span style="color:#2e7d32;font-size:11px">불필요</span>' : '-')
         }
-      </td>
-      <td>
-        <div class="battle-seller" title="${esc(item.comp1Seller)}">${esc(item.comp1Seller || '-')}</div>
-        ${item.comp2Seller ? `<div style="font-size:9px;color:#aaa">${esc(item.comp2Seller)}</div>` : ''}
-      </td>
-      <td style="white-space:nowrap">
-        ${item.itemId ? `<a href="https://www.ebay.com/itm/${esc(item.itemId)}" target="_blank" style="font-size:11px;color:#2e7d32;font-weight:600">내 리스팅</a>` : ''}
-        ${item.itemId && item.comp1ItemId ? ' · ' : ''}
-        ${item.comp1ItemId ? `<a href="https://www.ebay.com/itm/${esc(item.comp1ItemId)}" target="_blank" style="font-size:11px;color:#1565c0">경쟁사</a>` : ''}
       </td>
     </tr>`;
   }).join('');
+}
+
+function renderBattlePagination(page, totalPages, totalItems) {
+  var el = document.getElementById('battlePagination');
+  if (!el) return;
+  if (!totalPages || totalPages <= 1) { el.innerHTML = ''; return; }
+  var ps = 50;
+  var p = (page > 0 && page === page) ? page : 1;
+  var from = (p - 1) * ps + 1;
+  var to = Math.min(p * ps, totalItems);
+  var btnStyle = 'padding:4px 10px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:12px';
+  el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:10px 0;font-size:12px;color:#666">'
+    + '<button style="' + btnStyle + '" onclick="battleGoPage(' + (p-1) + ')" ' + (p===1?'disabled':'') + '>◀ 이전</button>'
+    + '<span>' + from + '–' + to + ' / 전체 ' + totalItems + '개 (' + p + '/' + totalPages + '페이지)</span>'
+    + '<button style="' + btnStyle + '" onclick="battleGoPage(' + (p+1) + ')" ' + (p===totalPages?'disabled':'') + '>다음 ▶</button>'
+    + '</div>';
+}
+
+function battleGoPage(p) {
+  battlePage = p;
+  if (battleData) renderBattleTable(battleData.items);
 }
 
 function populateBattleSellerFilter(sellers) {
@@ -2846,6 +3035,7 @@ function setupBattleEvents() {
   ['battleFilter', 'battleSellerFilter', 'battleSort'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', () => {
+      battlePage = 1;
       if (battleData) renderBattleTable(battleData.items);
     });
   });
@@ -2857,6 +3047,7 @@ function setupBattleEvents() {
     searchEl.addEventListener('input', () => {
       clearTimeout(searchTimeout);
       searchTimeout = setTimeout(() => {
+        battlePage = 1;
         if (battleData) renderBattleTable(battleData.items);
       }, 300);
     });
@@ -2949,9 +3140,13 @@ async function applyKillPrice(itemId, price, sku) {
 
 // ===== AI 리메이커 (Remarker) =====
 
-let remarkerCompData = null;
-let remarkerRemakeData = null;
-let remarkerEventsInit = false;
+var remarkerCompData = null;
+var remarkerRemakeData = null;
+var remarkerEventsInit = false;
+var sellerBattleMapping = {};
+var batchQueue = [];
+var batchIndex = -1;
+var batchRunning = false;
 
 function setupRemarker() {
   if (remarkerEventsInit) return;
@@ -3032,7 +3227,8 @@ async function remarkerFetch() {
     document.getElementById('step3Dot').className = 'step-dot';
     renderCompetitorPreview(data.item, resultEl);
   } catch (err) {
-    resultEl.innerHTML = `<div style="color:#c62828;font-size:12px">조회 실패: ${esc(err.message)}</div>`;
+    console.error('remarkerFetch error:', err);
+    resultEl.innerHTML = `<div style="color:#c62828;font-size:12px">조회 실패: ${esc(err.message)}<br><span style="font-size:10px;color:#999">${esc(err.stack || '')}</span></div>`;
   } finally {
     fetchBtn.disabled = false;
     fetchBtn.textContent = '조회';
@@ -3221,11 +3417,12 @@ async function remarkerRegister(e) {
         imageUrls,
         ebayCategoryId: document.getElementById('rmCategoryId').value,
         targetPlatforms: platforms,
+        itemSpecifics: remarkerCompData ? remarkerCompData.itemSpecifics || {} : {},
         // 셀러 전투 모드: 경쟁사 매핑
-        competitorSeller: sellerBattleMapping[remarkerCompData?.itemId]?.seller || '',
-        competitorItemId: sellerBattleMapping[remarkerCompData?.itemId]?.competitorItemId || '',
-        competitorPrice: sellerBattleMapping[remarkerCompData?.itemId]?.competitorPrice || '',
-        competitorShipping: sellerBattleMapping[remarkerCompData?.itemId]?.competitorShipping || '',
+        competitorSeller: (sellerBattleMapping && remarkerCompData && sellerBattleMapping[remarkerCompData.itemId]) ? sellerBattleMapping[remarkerCompData.itemId].seller || '' : '',
+        competitorItemId: (sellerBattleMapping && remarkerCompData && sellerBattleMapping[remarkerCompData.itemId]) ? sellerBattleMapping[remarkerCompData.itemId].competitorItemId || '' : '',
+        competitorPrice: (sellerBattleMapping && remarkerCompData && sellerBattleMapping[remarkerCompData.itemId]) ? sellerBattleMapping[remarkerCompData.itemId].competitorPrice || '' : '',
+        competitorShipping: (sellerBattleMapping && remarkerCompData && sellerBattleMapping[remarkerCompData.itemId]) ? sellerBattleMapping[remarkerCompData.itemId].competitorShipping || '' : '',
       })
     });
     const data = await res.json();
@@ -3405,10 +3602,7 @@ async function uploadTemplate() {
 
 // ===== 배치 리메이커 =====
 
-let batchQueue = [];
-let batchIndex = -1;
-let batchRunning = false;
-let sellerBattleMapping = {};
+// (variables moved to top, near remarkerCompData)
 
 function toggleRemarkerMode() {
   const mode = document.querySelector('input[name="remarkerMode"]:checked')?.value || 'single';
@@ -3685,7 +3879,7 @@ function setPreviewWidth(w) {
 
 // ===== 마진 계산기 =====
 
-let _mcTimeout;
+var _mcTimeout;
 function setupMarginCalculator() {
   const ids = ['mcPurchasePrice', 'mcWeight', 'mcTargetMargin', 'mcCompPrice', 'mcCompShipping'];
   ids.forEach(id => {
@@ -3836,7 +4030,7 @@ function renderMarginResult(data) {
 }
 
 // ==================== 재구성 (Reconstruct) ====================
-let reconstructFiles = [];
+var reconstructFiles = [];
 
 function handleReconstructDrop(e) {
   e.preventDefault();
@@ -4056,10 +4250,10 @@ function populateReconstructForm(data) {
 }
 
 // ==================== 재구성 독립 페이지 (rc*) ====================
-let rcFiles = [];
-let rcData = null; // 현재 결과 데이터
-let rcCurrentTab = 'en'; // 현재 언어 탭
-let rcEditMode = false; // 편집 모드 상태
+var rcFiles = [];
+var rcData = null; // 현재 결과 데이터
+var rcCurrentTab = 'en'; // 현재 언어 탭
+var rcEditMode = false; // 편집 모드 상태
 
 function setupReconstructPage() {
   // 페이지 진입 시 초기화만
@@ -4183,6 +4377,7 @@ function rcHandleHtmlFile(file) {
 
 async function rcUpload() {
   const htmlContent = document.getElementById('rcHtmlText').value.trim();
+  if (!rcFiles) rcFiles = [];
   if (!htmlContent && rcFiles.length === 0) {
     alert('이미지 또는 HTML 내용을 입력해주세요.');
     return;
@@ -4212,7 +4407,12 @@ async function rcUpload() {
     if (htmlContent) formData.append('htmlContent', htmlContent);
     formData.append('lang', lang);
     formData.append('mode', mode);
-    rcFiles.forEach(f => formData.append('images', f));
+    (rcFiles || []).forEach(f => formData.append('images', f));
+    // Include CDN URLs from URL input
+    var urlInput = document.getElementById('rcImageUrls');
+    if (urlInput && urlInput.value.trim()) {
+      formData.append('cdnImageUrls', urlInput.value.trim());
+    }
 
     const resp = await fetch('/api/remarker/reconstruct', { method: 'POST', body: formData });
     const data = await resp.json();
@@ -4489,6 +4689,154 @@ function rcReset() {
   if (btn) { btn.textContent = '편집 모드'; btn.style.background = '#fff'; btn.style.color = '#e94560'; }
 }
 
+// ===== Shopify CDN 이미지 업로드 =====
+
+var rcCdnUrls = [];
+
+async function rcUploadToCDN() {
+  var urlText = document.getElementById('rcImageUrls').value.trim();
+  var statusEl = document.getElementById('rcCdnStatus');
+  var btn = document.getElementById('rcCdnUploadBtn');
+  var previewEl = document.getElementById('rcCdnPreview');
+
+  if (!urlText) { statusEl.textContent = 'URL을 입력하세요'; statusEl.style.color = '#c62828'; return; }
+
+  var urls = urlText.split('\n').map(function(u) { return u.trim(); }).filter(function(u) { return u.startsWith('http'); });
+  if (urls.length === 0) { statusEl.textContent = '유효한 URL이 없습니다'; statusEl.style.color = '#c62828'; return; }
+
+  btn.disabled = true;
+  btn.textContent = '업로드 중...';
+  statusEl.textContent = urls.length + '장 업로드 중...';
+  statusEl.style.color = '#888';
+
+  try {
+    var res = await fetch(API + '/images/upload-cdn', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrls: urls.slice(0, 10) })
+    });
+    var data = await res.json();
+    if (!data.success) throw new Error(data.error);
+
+    rcCdnUrls = data.cdnUrls || [];
+    statusEl.textContent = rcCdnUrls.length + '장 CDN 업로드 완료';
+    statusEl.style.color = '#2e7d32';
+
+    // Replace textarea with CDN URLs
+    document.getElementById('rcImageUrls').value = rcCdnUrls.join('\n');
+
+    // Show preview
+    if (rcCdnUrls.length > 0) {
+      previewEl.style.display = 'grid';
+      previewEl.innerHTML = rcCdnUrls.map(function(u, i) {
+        return '<div style="border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;background:#fff;text-align:center">' +
+          '<img src="' + esc(u) + '" style="width:100%;height:80px;object-fit:contain;padding:4px">' +
+          '<div style="font-size:9px;color:#96bf48;padding:2px;background:#f8f9fa">CDN ' + (i+1) + '</div></div>';
+      }).join('');
+    }
+  } catch (err) {
+    statusEl.textContent = '실패: ' + err.message;
+    statusEl.style.color = '#c62828';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Shopify CDN 업로드';
+  }
+}
+
+// ===== 상품 페이지 URL → 이미지 추출 + CDN 업로드 (원스텝) =====
+
+async function rcExtractAndUpload() {
+  var urlText = document.getElementById('rcImageUrls').value.trim();
+  var statusEl = document.getElementById('rcCdnStatus');
+  var btn = document.getElementById('rcExtractBtn');
+  var previewEl = document.getElementById('rcCdnPreview');
+
+  if (!urlText) { statusEl.textContent = 'URL을 입력하세요'; statusEl.style.color = '#c62828'; return; }
+
+  var lines = urlText.split('\n').map(function(u) { return u.trim(); }).filter(function(u) { return u.startsWith('http'); });
+  if (lines.length === 0) { statusEl.textContent = '유효한 URL이 없습니다'; statusEl.style.color = '#c62828'; return; }
+
+  // Separate: page URLs vs direct image URLs
+  var pageUrls = [];
+  var directImages = [];
+  lines.forEach(function(u) {
+    if (u.match(/\.(jpg|jpeg|png|webp|gif)(\?|$)/i) || u.includes('coupangcdn') || u.includes('cdn.shopify')) {
+      directImages.push(u);
+    } else {
+      pageUrls.push(u);
+    }
+  });
+
+  btn.disabled = true;
+  btn.textContent = '추출 중...';
+  statusEl.textContent = '페이지에서 이미지 추출 중... (10~20초)';
+  statusEl.style.color = '#7c4dff';
+
+  try {
+    // Step 1: Extract images from page URLs
+    var extractedImages = [];
+    for (var i = 0; i < pageUrls.length; i++) {
+      statusEl.textContent = '페이지 ' + (i + 1) + '/' + pageUrls.length + ' 추출 중...';
+      var res = await fetch(API + '/images/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pageUrl: pageUrls[i] })
+      });
+      var data = await res.json();
+      if (data.success) {
+        extractedImages = extractedImages.concat(data.thumbnails || []).concat(data.detailImages || []);
+      }
+    }
+
+    // Combine: extracted + direct image URLs, deduplicate
+    var allImages = [];
+    var seen = {};
+    directImages.concat(extractedImages).forEach(function(u) {
+      if (!seen[u]) { seen[u] = true; allImages.push(u); }
+    });
+
+    if (allImages.length === 0) {
+      statusEl.textContent = '이미지를 찾을 수 없습니다';
+      statusEl.style.color = '#c62828';
+      return;
+    }
+
+    // Step 2: Upload to Shopify CDN
+    statusEl.textContent = allImages.length + '장 CDN 업로드 중...';
+    statusEl.style.color = '#96bf48';
+    var cdnRes = await fetch(API + '/images/upload-cdn', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrls: allImages.slice(0, 10) })
+    });
+    var cdnData = await cdnRes.json();
+    if (!cdnData.success) throw new Error(cdnData.error);
+
+    rcCdnUrls = cdnData.cdnUrls || [];
+    statusEl.textContent = rcCdnUrls.length + '장 CDN 업로드 완료!';
+    statusEl.style.color = '#2e7d32';
+
+    // Update textarea with CDN URLs
+    document.getElementById('rcImageUrls').value = rcCdnUrls.join('\n');
+
+    // Show preview
+    if (rcCdnUrls.length > 0) {
+      previewEl.style.display = 'grid';
+      previewEl.innerHTML = rcCdnUrls.map(function(u, i) {
+        return '<div style="border:1px solid #e0e0e0;border-radius:6px;overflow:hidden;background:#fff;text-align:center">' +
+          '<img src="' + esc(u) + '" style="width:100%;height:80px;object-fit:contain;padding:4px">' +
+          '<div style="font-size:9px;color:#96bf48;padding:2px;background:#f8f9fa">CDN ' + (i+1) + '</div></div>';
+      }).join('');
+    }
+  } catch (err) {
+    statusEl.textContent = '실패: ' + err.message;
+    statusEl.style.color = '#c62828';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '이미지 추출 + CDN 업로드';
+  }
+}
+
 // ==================== 배송 관리 페이지 ====================
 
 function setupShippingPage() {
@@ -4497,7 +4845,7 @@ function setupShippingPage() {
 }
 
 async function shippingSyncOrders() {
-  const days = document.getElementById('shippingSyncDays').value || 7;
+  const days = document.getElementById('shippingSyncDays')?.value || 7;
   const btn = document.getElementById('shippingSyncBtn');
   const resultEl = document.getElementById('shippingSyncResult');
   const msgEl = document.getElementById('shippingSyncMsg');
@@ -4521,10 +4869,13 @@ async function shippingSyncOrders() {
     }
 
     let msg = `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">`;
-    msg += `<span style="font-size:20px;font-weight:700;color:#0288d1">${data.newOrders}건</span>`;
-    msg += `<span style="color:#666">새 주문 추가</span>`;
-    if (data.duplicates > 0) {
-      msg += `<span style="color:#999;font-size:11px">(${data.duplicates}건 중복 스킵)</span>`;
+    msg += `<span style="font-size:20px;font-weight:700;color:#0288d1">${data.synced}건</span>`;
+    msg += `<span style="color:#666">주문 불러옴</span>`;
+    if (data.newOrders > 0) {
+      msg += `<span style="color:#4caf50;font-size:11px">(신규 ${data.newOrders}건 추가)</span>`;
+    }
+    if (data.supabaseUpserted > 0) {
+      msg += `<span style="color:#0288d1;font-size:11px">(미배송 ${data.supabaseUpserted}건 갱신)</span>`;
     }
     if (data.errors && data.errors.length > 0) {
       msg += `<div style="color:#c62828;font-size:11px;margin-top:4px">${data.errors.join(', ')}</div>`;
@@ -4543,25 +4894,15 @@ async function shippingSyncOrders() {
   }
 }
 
-const CARRIERS = ['윤익스프레스', 'KPL', '다보내', '쉽터', 'KPacket', 'FedEx'];
-const CARRIER_COLORS = {
-  '윤익스프레스': '#1565c0',
-  'KPL': '#e65100',
-  '다보내': '#2e7d32',
-  '쉽터': '#6a1b9a',
-  'KPacket': '#c62828',
-  'FedEx': '#4a148c',
-};
-
-// 주문 데이터 캐시 (검색 필터용)
-let _shippingOrders = [];
+// 주문 데이터 캐시 (검색 필터용) — must be declared before any function that reads it
+var _shippingOrders = [];
 
 async function shippingLoadRecent() {
   const tableEl = document.getElementById('shippingOrderTable');
   const countEl = document.getElementById('shippingOrderCount');
 
   try {
-    const resp = await fetch('/api/orders/recent?limit=100');
+    const resp = await fetch('/api/orders/recent?limit=200&status=NEW');
     const data = await resp.json();
 
     if (!data.success || !data.orders || data.orders.length === 0) {
@@ -4588,7 +4929,7 @@ async function shippingLoadRecent() {
 
     html += shippingRenderTable(_shippingOrders);
     tableEl.innerHTML = html;
-    countEl.textContent = `총 ${total}건 중 최근 ${data.orders.length}건 표시`;
+    countEl.textContent = `배송 대기 주문 ${data.orders.length}건`;
   } catch (err) {
     tableEl.innerHTML = `<p style="color:#c62828;text-align:center;padding:20px">로딩 실패: ${esc(err.message)}</p>`;
   }
@@ -4612,39 +4953,39 @@ function shippingRenderTable(orders) {
 }
 
 function shippingRenderRow(order) {
-  const rowIdx = order._rowIndex;
-  const status = order['상태'] || '';
-  const carrier = order['배송사'] || '';
-  const platform = order['플랫폼'] || '';
+  const rowIdx = order.orderNo || order.orderId;
+  const status = order.status || order['상태'] || '';
+  const carrier = order.carrier || order['배송사'] || '';
+  const platform = order.platform || order['플랫폼'] || '';
   const TD = 'padding:5px 8px;border-bottom:1px solid #f0f0f0;';
 
   // 주문일자 (MM-DD만)
-  const dateRaw = order['주문일자'] || '';
+  const dateRaw = order.orderDate || order['주문일자'] || '';
   const dateShort = dateRaw.length >= 10 ? dateRaw.substring(5) : dateRaw;
 
   // 플랫폼 색상
   const platformColor = platform === 'eBay' ? '#e53935' : platform === 'Shopify' ? '#96bf48' : '#333';
 
   // 주문번호 요약 (끝 8자리)
-  const orderNo = order['주문번호'] || '';
+  const orderNo = order.orderNo || order['주문번호'] || '';
   const orderShort = orderNo.length > 10 ? '...' + orderNo.slice(-8) : orderNo;
 
   // 상품명 (30자 제한)
-  const title = order['상품명'] || '';
+  const title = order.title || order['상품명'] || '';
   const titleShort = title.length > 30 ? title.substring(0, 30) + '...' : title;
 
   // 수량
-  const qty = order['수량'] || '1';
+  const qty = order.quantity || order['수량'] || '1';
 
   // 구매자 / 배송지
-  const buyer = order['구매자명'] || '';
-  const country = order.CountryCode || order['국가'] || '';
-  const city = order.City || '';
-  const zip = order.ZipCode || '';
-  const street = order.Street || '';
-  const province = order.Province || '';
-  const phone = order.Phone || '';
-  const email = order.Email || '';
+  const buyer = order.buyerName || order['구매자명'] || '';
+  const country = order.countryCode || order.CountryCode || order.country || order['국가'] || '';
+  const city = order.city || order.City || '';
+  const zip = order.zipCode || order.ZipCode || '';
+  const street = order.street || order.Street || '';
+  const province = order.province || order.Province || '';
+  const phone = order.phone || order.Phone || '';
+  const email = order.email || order.Email || '';
   const addrSummary = [country, city, zip].filter(Boolean).join(', ');
   const hasAddr = street || city || country;
 
@@ -4666,8 +5007,8 @@ function shippingRenderRow(order) {
   // 구매자 / 배송지 (클릭 시 주소 상세)
   html += `<td style="${TD}max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">`;
   if (hasAddr) {
-    html += `<span onclick="shippingToggleAddr(${rowIdx})" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;font-weight:600">${esc(buyer)}</span>`;
-    html += ` <span onclick="shippingToggleAddr(${rowIdx})" style="cursor:pointer;color:#888;font-size:10px">/ ${esc(addrSummary)}</span>`;
+    html += `<span onclick="shippingToggleAddr('${rowIdx}')" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;font-weight:600">${esc(buyer)}</span>`;
+    html += ` <span onclick="shippingToggleAddr('${rowIdx}')" style="cursor:pointer;color:#888;font-size:10px">/ ${esc(addrSummary)}</span>`;
   } else {
     html += `<span style="font-weight:600">${esc(buyer)}</span>`;
     if (addrSummary) html += ` <span style="color:#888;font-size:10px">/ ${esc(addrSummary)}</span>`;
@@ -4677,14 +5018,12 @@ function shippingRenderRow(order) {
   html += `<td style="${TD}white-space:normal;">`;
   if (carrier) {
     const clr = CARRIER_COLORS[carrier] || '#333';
-    html += `<span onclick="shippingCancelCarrier(${rowIdx})" style="display:inline-block;padding:3px 10px;border-radius:12px;background:${clr};color:#fff;font-size:10px;font-weight:600;cursor:pointer" title="클릭하면 취소">${esc(carrier)}</span>`;
+    html += `<span onclick="shippingCancelCarrier('${rowIdx}')" style="display:inline-block;padding:3px 10px;border-radius:12px;background:${clr};color:#fff;font-size:10px;font-weight:600;cursor:pointer" title="클릭하면 취소">${esc(carrier)}</span>`;
   } else {
-    html += `<div id="carrier-btns-${rowIdx}" style="display:flex;gap:3px;flex-wrap:wrap">`;
-    CARRIERS.forEach(c => {
-      const clr = CARRIER_COLORS[c] || '#333';
-      html += `<button onclick="shippingSetCarrier(${rowIdx},'${c}')" style="padding:2px 6px;border:1px solid ${clr};border-radius:10px;background:#fff;color:${clr};font-size:9px;cursor:pointer;font-weight:600;white-space:nowrap" onmouseover="this.style.background='${clr}';this.style.color='#fff'" onmouseout="this.style.background='#fff';this.style.color='${clr}'">${c}</button>`;
-    });
-    html += '</div>';
+    html += `<div>`;
+    html += `<button id="est-btn-${rowIdx}" onclick="shippingShowEstimate('${rowIdx}','${rowIdx}')" style="padding:2px 8px;border:1px solid #1565c0;border-radius:10px;background:#fff;color:#1565c0;font-size:9px;cursor:pointer;font-weight:600">배송사 추천 ▼</button>`;
+    html += `<div id="est-panel-${rowIdx}" style="display:none;margin-top:4px"></div>`;
+    html += `</div>`;
   }
   html += '</td>';
   // 상태
@@ -4781,6 +5120,92 @@ async function shippingCancelCarrier(rowIndex) {
   }
 }
 
+async function shippingSaveWeight(rowIdx, sku, orderNo) {
+  const weightKg = parseFloat(document.getElementById(`wgt-${rowIdx}`)?.value) || 0;
+  const boxL = parseFloat(document.getElementById(`diml-${rowIdx}`)?.value) || 0;
+  const boxW = parseFloat(document.getElementById(`dimw-${rowIdx}`)?.value) || 0;
+  const boxH = parseFloat(document.getElementById(`dimh-${rowIdx}`)?.value) || 0;
+  if (!weightKg) { alert('무게를 입력하세요'); return; }
+  try {
+    const r = await fetch('/api/products/update-weight', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku, weight_kg: weightKg, box_length: boxL, box_width: boxW, box_height: boxH })
+    });
+    const d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    // 패널 닫고 다시 열어서 새 견적 표시
+    const panel = document.getElementById(`est-panel-${rowIdx}`);
+    panel.style.display = 'none';
+    await shippingShowEstimate(rowIdx, orderNo);
+  } catch (e) {
+    alert('저장 실패: ' + e.message);
+  }
+}
+
+async function shippingShowEstimate(rowIdx, orderNo) {
+  const panel = document.getElementById(`est-panel-${rowIdx}`);
+  const btn = document.getElementById(`est-btn-${rowIdx}`);
+
+  if (panel.style.display !== 'none') {
+    panel.style.display = 'none';
+    btn.textContent = '배송사 추천 ▼';
+    return;
+  }
+
+  btn.textContent = '로딩 중...';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/orders/shipping-estimate/${encodeURIComponent(orderNo)}`);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+
+    let html = `<div style="border:1px solid #e0e0e0;border-radius:6px;padding:6px;background:#fafafa;font-size:10px;min-width:300px">`;
+    if (!data.weightKg && data.sku) {
+      html += `<div style="background:#fff3e0;border:1px solid #ffb74d;border-radius:4px;padding:5px 6px;margin-bottom:6px;font-size:9px">
+        <div style="color:#e65100;font-weight:600;margin-bottom:4px">⚠️ 무게 미설정 — 제품 정보를 입력하세요</div>
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          <label style="font-size:9px;color:#555">무게(kg)</label>
+          <input id="wgt-${rowIdx}" type="number" step="0.01" placeholder="0.00" style="width:55px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
+          <label style="font-size:9px;color:#555">가로</label>
+          <input id="diml-${rowIdx}" type="number" step="0.1" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
+          <label style="font-size:9px;color:#555">세로</label>
+          <input id="dimw-${rowIdx}" type="number" step="0.1" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
+          <label style="font-size:9px;color:#555">높이</label>
+          <input id="dimh-${rowIdx}" type="number" step="0.1" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
+          <button onclick="shippingSaveWeight('${rowIdx}','${data.sku}','${orderNo}')"
+                  style="padding:2px 8px;border:none;border-radius:4px;background:#e65100;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap">저장 후 계산</button>
+        </div>
+      </div>`;
+    }
+    if (data.estimates && data.estimates.length > 0) {
+      data.estimates.forEach(e => {
+        const star = e.isRecommended ? '⭐' : '　';
+        const bg = e.isRecommended ? '#e3f2fd' : '#fff';
+        html += `<div style="display:flex;align-items:center;gap:5px;padding:3px 4px;border-radius:4px;background:${bg};margin-bottom:2px">
+          <span style="width:16px;font-size:10px">${star}</span>
+          <span style="font-weight:600;min-width:110px;font-size:9px">${esc(e.carrier)} <span style="color:#666;font-weight:400">${esc(e.service)}</span></span>
+          <span style="color:${e.priceKRW ? '#c62828' : '#f57c00'};font-weight:700;min-width:55px;font-size:10px">${e.priceKRW ? '₩' + e.priceKRW.toLocaleString() : '무게 필요'}</span>
+          <span style="color:#666;min-width:40px;font-size:9px">${esc(e.days)}</span>
+          <button onclick="shippingSetCarrier('${rowIdx}','${e.carrier.replace(/'/g,"\\'")}');document.getElementById('est-panel-${rowIdx}').style.display='none';document.getElementById('est-btn-${rowIdx}').textContent='배송사 추천 ▼';"
+                  style="padding:1px 8px;border:1px solid #1565c0;border-radius:8px;background:#1565c0;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap">선택</button>
+        </div>`;
+      });
+    } else {
+      html += `<div style="color:#666;font-size:9px">해당 국가 배송 가능한 배송사 없음</div>`;
+    }
+    html += `</div>`;
+    panel.innerHTML = html;
+    panel.style.display = 'block';
+    btn.textContent = '배송사 추천 ▲';
+  } catch (err) {
+    panel.innerHTML = `<div style="color:red;font-size:10px;padding:4px">오류: ${err.message}</div>`;
+    panel.style.display = 'block';
+    btn.textContent = '배송사 추천 ▼';
+  }
+  btn.disabled = false;
+}
+
 async function shippingSetCarrier(rowIndex, carrier, sheetTab) {
   // 버튼 즉시 교체 (UI 반응성)
   const btnsEl = document.getElementById(`carrier-btns-${rowIndex}`);
@@ -4843,9 +5268,9 @@ async function shippingSetCarrier(rowIndex, carrier, sheetTab) {
 // B2B 인보이스 관리
 // ══════════════════════════════════════════════════════════
 
-let b2bInit = false;
-let b2bBuyersCache = [];
-let b2bInvoiceItems = [];
+var b2bInit = false;
+var b2bBuyersCache = [];
+var b2bInvoiceItems = [];
 
 function setupB2BPage() {
   if (!b2bInit) {
@@ -5312,7 +5737,7 @@ async function loadBuyerProducts(buyerId, buyerName) {
 // ===== 자동화 (ccorea-auto 연동) =====
 
 const AUTO_API = `${API}/auto`;
-let autoSelectedProductIds = [];
+var autoSelectedProductIds = [];
 
 async function loadAutomationPage() {
   setupAutoTabs();
@@ -5639,7 +6064,7 @@ function setupAutoCsvUpload() {
   });
 }
 
-let autoCsvData = null;
+var autoCsvData = null;
 
 function handleAutoCsvFile(file) {
   if (!file.name.endsWith('.csv')) return alert('CSV 파일만 업로드 가능합니다');

@@ -103,6 +103,11 @@ export class EbayClient implements PlatformAdapter {
     }
   }
 
+  /** 스케줄러에서 주기적으로 호출 — 만료 임박 시 선제 갱신 */
+  async ensureToken(): Promise<void> {
+    await this.ensureValidToken();
+  }
+
   // ─── 핵심: Trading API 호출 ───────────────────────────────
 
   private async callTradingAPI(callName: string, requestBody = ''): Promise<string> {

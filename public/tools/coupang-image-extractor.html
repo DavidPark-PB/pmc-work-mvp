@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>쿠팡 이미지 추출기 - PMC</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; background: #f8f9fa; color: #333; }
+  h1 { font-size: 20px; }
+  .bookmarklet { display: inline-block; background: #e94560; color: #fff; padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; cursor: grab; margin: 10px 0; }
+  .bookmarklet:hover { background: #c62828; }
+  .step { background: #fff; border-radius: 8px; padding: 16px; margin: 12px 0; border: 1px solid #e0e0e0; }
+  .step-num { display: inline-block; background: #7c4dff; color: #fff; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; font-size: 12px; font-weight: 700; margin-right: 8px; }
+  code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+  .console-code { background: #1a1a2e; color: #69f0ae; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; margin: 10px 0; }
+  .note { font-size: 12px; color: #888; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>🖼️ 쿠팡 상세페이지 이미지 추출기</h1>
+<p style="font-size:13px;color:#666">쿠팡 상품 페이지에서 썸네일 + 상세페이지 이미지 URL을 한 번에 추출합니다.</p>
+
+<div class="step">
+  <h3><span class="step-num">1</span>북마클릿 등록 (한 번만)</h3>
+  <p style="font-size:12px">아래 버튼을 <strong>북마크 바로 드래그</strong>하세요:</p>
+  <a class="bookmarklet" href="javascript:void(function(){var imgs=new Set;document.querySelectorAll('.prod-image__item img, .prod-image__detail img, img[src*=coupangcdn]').forEach(function(e){var s=e.src||e.dataset.src||e.getAttribute('data-img-src')||'';if(s&&s.indexOf('coupangcdn')>-1){s=s.replace(/\/q\/\d+/,'/q/90').replace(/\/c\/\d+x\d+/,'');imgs.add(s)}});var detail=document.querySelector('.product-detail-content-inside');if(detail){detail.querySelectorAll('img').forEach(function(e){var s=e.src||e.dataset.src||'';if(s&&s.match(/^https?:/)){s=s.replace(/\/q\/\d+/,'/q/90');imgs.add(s)}})}var list=Array.from(imgs);if(list.length===0){alert('이미지를 찾을 수 없습니다. 상세페이지가 로드되었는지 확인하세요.');return}var txt=list.join('\n');var ta=document.createElement('textarea');ta.value=txt;ta.style.cssText='position:fixed;top:10px;right:10px;width:400px;height:300px;z-index:99999;font-size:11px;padding:8px;border:2px solid #e94560;border-radius:8px;background:#fff;font-family:monospace';var hdr=document.createElement('div');hdr.style.cssText='position:fixed;top:320px;right:10px;z-index:99999;display:flex;gap:8px';var cpBtn=document.createElement('button');cpBtn.textContent='복사 ('+list.length+'장)';cpBtn.style.cssText='background:#e94560;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-weight:600';cpBtn.onclick=function(){navigator.clipboard.writeText(txt).then(function(){cpBtn.textContent='복사됨!';setTimeout(function(){ta.remove();hdr.remove()},1000)})};var clBtn=document.createElement('button');clBtn.textContent='닫기';clBtn.style.cssText='background:#666;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer';clBtn.onclick=function(){ta.remove();hdr.remove()};hdr.appendChild(cpBtn);hdr.appendChild(clBtn);document.body.appendChild(ta);document.body.appendChild(hdr)}())">📷 쿠팡 이미지 추출</a>
+</div>
+
+<div class="step">
+  <h3><span class="step-num">2</span>사용 방법</h3>
+  <ol style="font-size:13px;line-height:1.8">
+    <li>쿠팡 상품 페이지로 이동</li>
+    <li><strong>상세페이지를 아래로 스크롤</strong>하여 이미지가 로드되게 함</li>
+    <li>북마크 바에서 <code>📷 쿠팡 이미지 추출</code> 클릭</li>
+    <li>오른쪽 상단에 이미지 URL 목록 표시 → <strong>복사</strong> 클릭</li>
+    <li>PMC 대시보드 > 상세페이지 재구성 > 이미지 URL 입력란에 <strong>붙여넣기</strong></li>
+    <li><strong>Shopify CDN 업로드</strong> 클릭</li>
+  </ol>
+</div>
+
+<div class="step">
+  <h3><span class="step-num">A</span>대안: 크롬 콘솔에서 직접 실행</h3>
+  <p style="font-size:12px">북마클릿이 안 되면, 쿠팡 상품페이지에서 <code>F12</code> → Console 탭에 붙여넣기:</p>
+  <div class="console-code">var imgs=new Set;document.querySelectorAll('img[src*=coupangcdn],.product-detail-content-inside img').forEach(e=>{var s=e.src||e.dataset.src||e.getAttribute('data-img-src')||'';if(s.match(/^https?:/)){s=s.replace(/\/q\/\d+/,'/q/90');imgs.add(s)}});var list=[...imgs];copy(list.join('\n'));console.log(list.length+'장 복사됨!',list);</div>
+  <p class="note">실행하면 자동으로 클립보드에 복사됩니다.</p>
+</div>
+
+</body>
+</html>

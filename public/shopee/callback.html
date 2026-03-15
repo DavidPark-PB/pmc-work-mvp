@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Shopee OAuth Callback</title>
+  <style>
+    body { font-family: sans-serif; padding: 40px; background: #f0f4f8; }
+    .card { background: white; border-radius: 12px; padding: 32px; max-width: 560px; margin: 0 auto; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
+    h2 { color: #ee4d2d; margin-top: 0; }
+    .info { background: #f8f8f8; border-radius: 8px; padding: 16px; margin: 16px 0; font-family: monospace; word-break: break-all; font-size: 13px; }
+    .status { font-size: 18px; font-weight: bold; margin-bottom: 8px; }
+    .ok { color: #27ae60; }
+    .err { color: #e74c3c; }
+    small { color: #666; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h2>🛒 Shopee OAuth 콜백</h2>
+  <div id="content">처리 중...</div>
+</div>
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  const shopId = params.get('shop_id');
+  const error = params.get('error');
+
+  const el = document.getElementById('content');
+
+  if (error) {
+    el.innerHTML = `
+      <div class="status err">❌ 인증 실패</div>
+      <div class="info">error: ${error}<br>message: ${params.get('message') || '-'}</div>
+    `;
+  } else if (code && shopId) {
+    // localhost:9090으로 리디렉트 (OAuth 스크립트 서버)
+    const redirectUrl = 'http://localhost:9090/shopee/callback?' + window.location.search.slice(1);
+
+    el.innerHTML = `
+      <div class="status ok">✅ Shop ${shopId} 인증 코드 수신</div>
+      <div class="info">shop_id: ${shopId}<br>code: ${code}</div>
+      <p>로컬 OAuth 서버로 연결 중...</p>
+      <small>자동으로 이동하지 않으면 <a href="${redirectUrl}">여기를 클릭하세요</a></small>
+    `;
+
+    // 잠깐 보여주고 리디렉트
+    setTimeout(() => {
+      window.location.href = redirectUrl;
+    }, 1500);
+  } else {
+    el.innerHTML = `
+      <div class="status err">❌ 파라미터 없음</div>
+      <div class="info">code 또는 shop_id가 없습니다.</div>
+    `;
+  }
+</script>
+</body>
+</html>

@@ -79,6 +79,14 @@ function getAlibabaAPI() {
   const AlibabaAPI = require('../../api/alibabaAPI');
   return new AlibabaAPI();
 }
+let _shopeeInstance = null;
+function getShopeeAPI() {
+  if (!_shopeeInstance) {
+    const ShopeeAPI = require('../../api/shopeeAPI');
+    _shopeeInstance = new ShopeeAPI();
+  }
+  return _shopeeInstance;
+}
 
 // 캐시
 let platformCache = null;
@@ -89,7 +97,7 @@ const CACHE_TTL = 60000;
 const ANALYSIS_CACHE_TTL = 120000; // 2분
 let battleCache = null;
 let battleCacheTime = 0;
-const BATTLE_CACHE_TTL = 180000; // 3분
+const BATTLE_CACHE_TTL = 1800000; // 30분
 
 // ===========================
 // 기존 엔드포인트
@@ -270,24 +278,38 @@ router.get('/revenue/summary', async (req, res) => {
           return await api.getRevenueSummary(days);
         } catch (e) { return { error: e.message }; }
       })(),
+      // Shopee
+      (async () => {
+        try {
+          const api = getShopeeAPI();
+          return await api.getRevenueSummary(days);
+        } catch (e) { return { error: e.message }; }
+      })(),
     ]);
 
     const rates = await platformRegistry.getExchangeRates();
     const exchangeRate = rates.usd || 1400; // USD → KRW from DB
     const platforms = {};
-    const platformNames = ['Shopify', 'eBay', 'Naver'];
+    const platformNames = ['Shopify', 'eBay', 'Naver', 'Shopee'];
 
     platformNames.forEach((name, i) => {
       const r = results[i];
       if (r.status === 'fulfilled' && !r.value.error) {
         const data = r.value;
         const isKRW = name === 'Naver';
+        // Shopee uses revenue/orders fields; others use totalRevenue/orderCount
+        const revenue = data.revenue !== undefined
+          ? data.revenue
+          : (data.totalRevenue || data.payAmount || 0);
+        const orders = data.orders !== undefined
+          ? data.orders
+          : (data.orderCount || 0);
         platforms[name] = {
-          revenue: data.totalRevenue || data.payAmount || 0,
+          revenue,
           revenueKRW: isKRW
-            ? (data.totalRevenue || data.payAmount || 0)
-            : Math.round((data.totalRevenue || 0) * exchangeRate),
-          orders: data.orderCount || data.orderCount || 0,
+            ? revenue
+            : Math.round(revenue * exchangeRate),
+          orders,
           currency: data.currency || (isKRW ? 'KRW' : 'USD'),
           dailySales: data.dailySales || {},
           period: data.period || `${days}days`,
@@ -880,7 +902,9 @@ router.get('/master-products', async (req, res) => {
     const db = getClient();
 
     let query = db.from('products').select('*', { count: 'exact' })
-      .not('sku', 'is', null).neq('sku', '').order('sku');
+      .not('sku', 'is', null).neq('sku', '')
+      .neq('status', 'trashed')
+      .order('created_at', { ascending: false });
 
     if (search) {
       query = query.or(`sku.ilike.%${search}%,title.ilike.%${search}%,title_ko.ilike.%${search}%`);
@@ -1122,6 +1146,28 @@ router.put('/products/alibaba/:productId', async (req, res) => {
   }
 });
 
+// PUT /api/products/shopee/:itemId — Shopee price/stock update
+router.put('/products/shopee/:itemId', async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const { price, quantity, shopId } = req.body;
+    const api = getShopeeAPI();
+    const sid = shopId || null;
+
+    if (price !== undefined) {
+      await api.updatePrice(parseInt(itemId), parseFloat(price), null, sid);
+    }
+    if (quantity !== undefined) {
+      await api.updateStock(parseInt(itemId), parseInt(quantity), null, sid);
+    }
+
+    platformCache = null;
+    res.json({ success: true, platform: 'Shopee', itemId });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ===========================
 // Helper 함수
 // ===========================
@@ -1189,7 +1235,10 @@ async function getPlatformStatuses() {
           break;
         }
         case 'shopee': {
-          status = 'pending';
+          const api = getShopeeAPI();
+          const counts = await api.getAllShopsTotalCount();
+          productCount = counts.reduce((s, c) => s + c.total, 0);
+          status = 'connected';
           break;
         }
       }
@@ -1315,6 +1364,29 @@ async function getProducts(platformFilter, limit) {
         }));
       } catch (e) {
         console.error('Alibaba 상품 조회 실패:', e.message);
+        return [];
+      }
+    })());
+  }
+
+  if (!platformFilter || platformFilter === 'shopee') {
+    fetchTasks.push((async () => {
+      try {
+        const api = getShopeeAPI();
+        const items = await api.getProductsWithDetails(0, Math.min(limit, 50));
+        return items.map(p => ({
+          sku: String(p.item_id || ''),
+          itemId: String(p.item_id || ''),
+          title: p.item_name || '',
+          price: p.price_info?.[0]?.current_price || '',
+          shipping: '',
+          platform: 'Shopee',
+          imageUrl: p.image?.image_url_list?.[0] || '',
+          editId: String(p.item_id || ''),
+          quantity: p.stock_info_v2?.seller_stock?.[0]?.stock ?? p.stock_info?.[0]?.current_stock ?? '',
+        }));
+      } catch (e) {
+        console.error('Shopee 상품 조회 실패:', e.message);
         return [];
       }
     })());
@@ -1641,20 +1713,20 @@ router.get('/battle/data', async (req, res) => {
     }
 
     const battleItems = dashboard.map(row => {
-      const myTotal = row.myPrice;
-      const compTotal = row.competitorTotal || 0;
+      const myTotal = +(row.myPrice + (row.myShipping || 0)).toFixed(2);
+      const compTotal = row.cheapestTotal || 0;
       const diff = compTotal > 0 ? +(myTotal - compTotal).toFixed(2) : null;
       const losing = diff !== null && diff > 0;
-      const killPrice = losing && compTotal > 0 ? +(compTotal - 0.01).toFixed(2) : null;
+      const killPrice = losing ? +(compTotal - 0.01).toFixed(2) : null;
 
       return {
         sku: row.sku,
+        itemId: row.itemId,
         title: row.title,
         myPrice: row.myPrice,
-        myTotal: +myTotal.toFixed(2),
-        comp1Price: row.competitorPrice ? +row.competitorPrice.toFixed(2) : 0,
-        comp1Shipping: row.competitorShipping ? +row.competitorShipping.toFixed(2) : 0,
-        comp1Total: compTotal ? +compTotal.toFixed(2) : 0,
+        myShipping: row.myShipping || 0,
+        myTotal,
+        competitors: row.competitors || [],
         lastTracked: row.lastTracked,
         diff,
         losing,
@@ -1663,7 +1735,7 @@ router.get('/battle/data', async (req, res) => {
       };
     });
 
-    const withComp = battleItems.filter(i => i.comp1Total > 0);
+    const withComp = battleItems.filter(i => i.competitors.length > 0);
     const losingItems = withComp.filter(i => i.losing);
 
     const summary = {
@@ -1725,6 +1797,23 @@ router.post('/battle/kill-price', async (req, res) => {
     }
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/battle/import-competitors — Google Sheets에서 경쟁사 데이터 임포트
+router.post('/battle/import-competitors', async (req, res) => {
+  try {
+    const scriptPath = require('path').join(__dirname, '../../../scripts/import-competitor-prices');
+    delete require.cache[require.resolve(scriptPath)];
+    const { importCompetitorPrices } = require(scriptPath);
+    const result = await importCompetitorPrices();
+    // Clear battle cache so next load picks up new competitor data
+    battleCache = null;
+    battleCacheTime = 0;
+    res.json({ success: true, ...result });
+  } catch (e) {
+    console.error('[import-competitors]', e.message);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -1794,6 +1883,18 @@ router.post('/remarker/reconstruct', upload.array('images', 10), async (req, res
     const mode = req.body.mode || 'standard';
     const uploadedFiles = req.files || [];
 
+    // Extract image URLs from HTML content
+    let htmlImageUrls = [];
+    if (htmlContent) {
+      const imgMatches = htmlContent.match(/<img[^>]+src=["']([^"']+)["']/gi) || [];
+      htmlImageUrls = imgMatches.map(m => {
+        const srcMatch = m.match(/src=["']([^"']+)["']/i);
+        return srcMatch ? srcMatch[1] : null;
+      }).filter(u => u && (u.startsWith('http://') || u.startsWith('https://')));
+      // Deduplicate and limit to 3
+      htmlImageUrls = [...new Set(htmlImageUrls)].slice(0, 3);
+    }
+
     if (!htmlContent && uploadedFiles.length === 0) {
       return res.status(400).json({ success: false, error: '이미지 또는 상세페이지 HTML이 필요합니다' });
     }
@@ -1810,14 +1911,19 @@ router.post('/remarker/reconstruct', upload.array('images', 10), async (req, res
     const remarker = new AIRemarker();
     const aiResult = await remarker.reconstruct({
       htmlContent,
-      imageCount: uploadedFiles.length,
+      imageCount: uploadedFiles.length + htmlImageUrls.length,
       images,
       lang,
       mode,
     });
 
-    // 3. 원본 이미지 경로 목록 (브랜딩 없이 그대로)
-    const originalImages = uploadedFiles.map(f => `/uploads/${path.basename(f.path)}`);
+    // 3. 원본 이미지 경로 목록 (업로드 파일 + HTML 추출 + CDN URLs)
+    const cdnImageUrls = (req.body.cdnImageUrls || '').split('\n').map(u => u.trim()).filter(u => u.startsWith('http'));
+    const originalImages = [
+      ...uploadedFiles.map(f => `/uploads/${path.basename(f.path)}`),
+      ...htmlImageUrls,
+      ...cdnImageUrls,
+    ];
 
     res.json({
       success: true,
@@ -1828,6 +1934,74 @@ router.post('/remarker/reconstruct', upload.array('images', 10), async (req, res
     });
   } catch (error) {
     console.error('Reconstruct error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/images/extract — Extract images from product page URL via Playwright
+router.post('/images/extract', async (req, res) => {
+  try {
+    const { pageUrl } = req.body;
+    if (!pageUrl) return res.status(400).json({ success: false, error: 'URL이 필요합니다' });
+
+    const { chromium } = require('playwright');
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'ko-KR,ko;q=0.9' });
+
+    await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    // Scroll down to trigger lazy-loaded detail images
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(2000);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight * 0.5));
+    await page.waitForTimeout(1000);
+
+    // Extract all image URLs
+    const images = await page.evaluate(() => {
+      const imgs = new Set();
+      document.querySelectorAll('img').forEach(el => {
+        const src = el.src || el.dataset.src || el.getAttribute('data-img-src') || '';
+        if (src && src.match(/^https?:\/\//) && !src.includes('logo') && !src.includes('icon') && !src.includes('1x1')) {
+          // Clean up quality params for better resolution
+          const clean = src.replace(/\/q\/\d+/, '/q/90').replace(/\/c\/\d+x\d+/, '');
+          imgs.add(clean);
+        }
+      });
+      return [...imgs];
+    });
+
+    await browser.close();
+
+    // Separate thumbnails vs detail images
+    const thumbnails = images.filter(u => u.includes('thumbnail') || u.includes('remote/'));
+    const detailImgs = images.filter(u => !u.includes('thumbnail') && !u.includes('remote/') && (u.includes('.jpg') || u.includes('.png') || u.includes('.webp')));
+
+    res.json({
+      success: true,
+      thumbnails: thumbnails.slice(0, 5),
+      detailImages: detailImgs.slice(0, 15),
+      allImages: images,
+      total: images.length,
+    });
+  } catch (error) {
+    console.error('Image extract error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/images/upload-cdn — Upload image URLs to Shopify CDN
+router.post('/images/upload-cdn', async (req, res) => {
+  try {
+    const { imageUrls } = req.body;
+    if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
+      return res.status(400).json({ success: false, error: '이미지 URL이 필요합니다' });
+    }
+    const ShopifyAPI = require('../../api/shopifyAPI');
+    const shopify = new ShopifyAPI();
+    const cdnUrls = await shopify.uploadImagesToCDN(imageUrls.slice(0, 10));
+    res.json({ success: true, cdnUrls });
+  } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1896,7 +2070,8 @@ router.post('/remarker/register', async (req, res) => {
     const {
       sku, titleEn, description, priceUSD, shippingUSD,
       quantity, condition, imageUrls, ebayCategoryId,
-      targetPlatforms, purchasePrice, weight, targetMargin
+      targetPlatforms, purchasePrice, weight, targetMargin,
+      itemSpecifics
     } = req.body;
 
     if (!sku || !titleEn) {
@@ -1930,16 +2105,36 @@ router.post('/remarker/register', async (req, res) => {
       }).eq('id', productRow.id);
     }
 
-    // 2. eBay 등록 via ProductExporter
+    // 2. eBay direct listing (bypass ProductExporter/pricingEngine)
     const platforms = targetPlatforms || [];
     if (platforms.includes('ebay')) {
       try {
-        const exporter = new ProductExporter();
-        const exportResult = await exporter.exportProduct(sku, ['ebay']);
-        results.ebay = exportResult.results?.ebay || { success: false };
+        const ebayApi = getEbayAPI();
+        const ebayResult = await ebayApi.createProduct({
+          title: titleEn,
+          description: description || titleEn,
+          price: parseFloat(priceUSD) || 0,
+          quantity: parseInt(quantity) || 10,
+          sku,
+          categoryId: ebayCategoryId || '11450',
+          conditionId: condition === 'used' ? '3000' : '1000',
+          imageUrls: imageUrls || [],
+          currency: 'USD',
+          itemSpecifics: itemSpecifics || {},
+        });
+        results.ebay = ebayResult;
+
+        // Update ebay_item_id in DB
+        if (ebayResult.success && ebayResult.itemId && productRow?.id) {
+          const { getClient } = require('../../db/supabaseClient');
+          await getClient().from('products').update({
+            ebay_item_id: ebayResult.itemId,
+            workflow_status: 'listed',
+          }).eq('id', productRow.id);
+        }
 
         // Track competitor if provided
-        if (req.body.competitorItemId && results.ebay?.success) {
+        if (req.body.competitorItemId && ebayResult.success) {
           const repricing = new RepricingService();
           await repricing.trackCompetitorPrice(
             sku,
@@ -1986,7 +2181,8 @@ router.get('/orders/sync', async (req, res) => {
 router.get('/orders/recent', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
-    const result = await dataSource.getRecentOrders(limit);
+    const status = req.query.status || null;
+    const result = await dataSource.getRecentOrders(limit, status);
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Order recent error:', error.message);
@@ -2010,42 +2206,70 @@ router.get('/carrier-tabs/:carrier', async (req, res) => {
 // POST /api/orders/set-carrier — 배송사 지정 (시트 업데이트) + 캐리어 시트 자동 기록
 router.post('/orders/set-carrier', async (req, res) => {
   try {
-    const { rowIndex, carrier, sheetTab } = req.body;
-    console.log(`\n🔵 set-carrier 요청: row=${rowIndex}, carrier=${carrier}, tab=${sheetTab || '자동'}`);
+    const { rowIndex: orderNo, carrier, sheetTab } = req.body;
+    console.log(`\n🔵 set-carrier 요청: orderNo=${orderNo}, carrier=${carrier}, tab=${sheetTab || '자동'}`);
 
-    if (!rowIndex || !carrier) {
-      return res.status(400).json({ success: false, error: 'rowIndex와 carrier가 필요합니다' });
+    if (!orderNo || !carrier) {
+      return res.status(400).json({ success: false, error: 'rowIndex(orderNo)와 carrier가 필요합니다' });
     }
     const OrderSync = require('../../services/orderSync');
     const CarrierSheets = require('../../services/carrierSheets');
     const sync = new OrderSync();
 
+    // 주문번호로 실제 시트 행 번호 조회
+    const sheetRow = await sync.findOrderRow(orderNo);
+    if (!sheetRow) {
+      return res.status(404).json({ success: false, error: `주문번호 "${orderNo}" 시트에서 찾을 수 없음` });
+    }
+
     // 1. 주문 배송 시트에 배송사 기록
-    console.log(`   [1/3] 주문 시트에 배송사 '${carrier}' 기록...`);
-    await sync.setCarrier(rowIndex, carrier);
+    console.log(`   [1/3] 주문 시트에 배송사 '${carrier}' 기록 (행 ${sheetRow})...`);
+    await sync.setCarrier(sheetRow, carrier);
     console.log(`   [1/3] ✅ 완료`);
 
     // 2. 캐리어 시트에 자동 추가 (윤익스프레스 등 지원 배송사만)
     let carrierResult = null;
     const supported = CarrierSheets.getSupportedCarriers();
     if (supported.includes(carrier)) {
-      console.log(`   [2/3] 주문 데이터 읽기 (행 ${rowIndex})...`);
-      const order = await sync.getOrderRow(rowIndex);
+      console.log(`   [2/3] 주문 데이터 읽기 (행 ${sheetRow})...`);
+      const order = await sync.getOrderRow(sheetRow);
       if (order) {
         console.log(`   [2/3] ✅ 주문 데이터 로드 완료`);
+        // SKU로 무게/치수 조회해서 order에 추가 (캐리어 시트 자동 기입용)
+        try {
+          const { getClient } = require('../../db/supabaseClient');
+          const { data: prod } = await getClient()
+            .from('products').select('weight_kg, box_length, box_width, box_height')
+            .eq('sku', order.sku || '').single();
+          if (prod?.weight_kg) {
+            order.weightKg = parseFloat(prod.weight_kg);
+            order.dimL = parseFloat(prod.box_length) || 0;
+            order.dimW = parseFloat(prod.box_width) || 0;
+            order.dimH = parseFloat(prod.box_height) || 0;
+          }
+        } catch {}
         console.log(`   [3/3] 캐리어 시트 '${carrier}'에 등록...`);
         const cs = new CarrierSheets();
         const opts = sheetTab ? { sheetTab } : {};
         carrierResult = await cs.addToCarrierSheet(carrier, order, opts);
         console.log(`   [3/3] ✅ 캐리어 시트 등록 완료:`, carrierResult);
       } else {
-        console.warn(`   [2/3] ⚠️ 주문 데이터 없음 (행 ${rowIndex})`);
+        console.warn(`   [2/3] ⚠️ 주문 데이터 없음 (행 ${sheetRow})`);
       }
     } else {
       console.log(`   ℹ️ '${carrier}'은 시트 미지원 배송사 (지원: ${supported.join(', ')})`);
     }
 
-    res.json({ success: true, rowIndex, carrier, carrierResult });
+    // Supabase: order_no 기준으로 carrier + status 업데이트
+    try {
+      const { getClient } = require('../../db/supabaseClient');
+      await getClient().from('orders').update({ carrier, status: 'READY' }).eq('order_no', orderNo);
+      console.log(`✅ Supabase 상태 업데이트: order_no=${orderNo} → READY`);
+    } catch (dbErr) {
+      console.warn('Supabase 상태 업데이트 실패 (무시):', dbErr.message);
+    }
+
+    res.json({ success: true, rowIndex: orderNo, carrier, carrierResult });
   } catch (error) {
     console.error(`❌ set-carrier 에러:`, error.message);
     console.error(error.stack);
@@ -2056,26 +2280,96 @@ router.post('/orders/set-carrier', async (req, res) => {
 // POST /api/orders/cancel-carrier — 배송사 지정 취소
 router.post('/orders/cancel-carrier', async (req, res) => {
   try {
-    const { rowIndex } = req.body;
-    if (!rowIndex) {
-      return res.status(400).json({ success: false, error: 'rowIndex가 필요합니다' });
+    const { rowIndex: orderNo } = req.body;
+    if (!orderNo) {
+      return res.status(400).json({ success: false, error: 'rowIndex(orderNo)가 필요합니다' });
     }
 
     const OrderSync = require('../../services/orderSync');
+    const { getClient } = require('../../db/supabaseClient');
     const sync = new OrderSync();
+
+    // 주문번호로 실제 시트 행 번호 조회
+    const sheetRow = await sync.findOrderRow(orderNo);
+    if (!sheetRow) {
+      return res.status(404).json({ success: false, error: `주문번호 "${orderNo}" 시트에서 찾을 수 없음` });
+    }
 
     // K~M열 초기화: 배송사='', 운송장번호='', 상태='NEW'
     await sync.sheets.writeData(
       process.env.GOOGLE_SPREADSHEET_ID,
-      `주문 배송!K${rowIndex}:M${rowIndex}`,
+      `주문 배송!K${sheetRow}:M${sheetRow}`,
       [['', '', 'NEW']]
     );
 
-    console.log(`🔴 배송사 취소: 행 ${rowIndex}`);
-    res.json({ success: true, rowIndex });
+    // Supabase 상태 복원
+    try {
+      await getClient().from('orders').update({ carrier: null, status: 'NEW' }).eq('order_no', orderNo);
+    } catch (dbErr) {
+      console.warn('Supabase 상태 복원 실패 (무시):', dbErr.message);
+    }
+
+    console.log(`🔴 배송사 취소: orderNo=${orderNo} (행 ${sheetRow})`);
+    res.json({ success: true, rowIndex: orderNo });
   } catch (error) {
     console.error('❌ cancel-carrier 에러:', error.message);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/orders/shipping-estimate/:orderNo — 배송사 요금 추천
+router.get('/orders/shipping-estimate/:orderNo', async (req, res) => {
+  try {
+    const { orderNo } = req.params;
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+
+    const { data: order, error: orderErr } = await db
+      .from('orders')
+      .select('country_code, sku, quantity')
+      .eq('order_no', orderNo)
+      .single();
+    if (orderErr || !order) {
+      return res.status(404).json({ success: false, error: `주문 "${orderNo}" 없음` });
+    }
+
+    const { data: product } = await db
+      .from('products')
+      .select('weight_kg, box_length, box_width, box_height')
+      .eq('sku', order.sku)
+      .single();
+
+    const weightKg = (parseFloat(product?.weight_kg) || 0) * (order.quantity || 1);
+    const dims = (product?.box_length && product?.box_width && product?.box_height)
+      ? { l: parseFloat(product.box_length), w: parseFloat(product.box_width), h: parseFloat(product.box_height) }
+      : null;
+
+    const { getShippingEstimates } = require('../../services/shippingRates');
+    const estimates = getShippingEstimates((order.country_code || '').toUpperCase(), weightKg, dims);
+
+    res.json({ success: true, orderNo, sku: order.sku, countryCode: (order.country_code || '').toUpperCase(), weightKg, dims, estimates });
+  } catch (e) {
+    console.error('❌ shipping-estimate 에러:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PATCH /api/products/update-weight — 제품 무게/치수 업데이트 (배송 추천용)
+router.patch('/products/update-weight', async (req, res) => {
+  try {
+    const { sku, weight_kg, box_length, box_width, box_height } = req.body;
+    if (!sku) return res.status(400).json({ success: false, error: 'sku 필요' });
+    const { getClient } = require('../../db/supabaseClient');
+    const updates = {};
+    if (weight_kg !== undefined) updates.weight_kg = parseFloat(weight_kg) || 0;
+    if (box_length !== undefined) updates.box_length = parseFloat(box_length) || 0;
+    if (box_width !== undefined) updates.box_width = parseFloat(box_width) || 0;
+    if (box_height !== undefined) updates.box_height = parseFloat(box_height) || 0;
+    const { error } = await getClient().from('products').update(updates).eq('sku', sku);
+    if (error) throw new Error(error.message);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -2476,6 +2770,71 @@ router.get('/products/export-status', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message, items: [] });
   }
+});
+
+// GET /api/alibaba/oauth-callback — Alibaba OAuth 인증 콜백
+router.get('/alibaba/oauth-callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).send('Missing auth code');
+
+  try {
+    const axios = require('axios');
+    const crypto = require('crypto');
+
+    const appKey = process.env.ALIBABA_APP_KEY;
+    const appSecret = process.env.ALIBABA_APP_SECRET;
+    const apiPath = '/auth/token/create';
+    const timestamp = Date.now().toString();
+    const params = { app_key: appKey, timestamp, sign_method: 'sha256', code, state: 'pmc' };
+
+    const sorted = Object.keys(params).sort();
+    let baseString = apiPath;
+    for (const key of sorted) baseString += key + params[key];
+    params.sign = crypto.createHmac('sha256', appSecret).update(baseString).digest('hex').toUpperCase();
+
+    const r = await axios.post('https://openapi-api.alibaba.com/rest' + apiPath, null, { params, timeout: 15000 });
+    const data = r.data;
+
+    if (data.code && data.code !== '0') {
+      return res.status(400).send(`Alibaba OAuth error: ${data.code} - ${data.message}`);
+    }
+
+    const { access_token, refresh_token, expire_time } = data;
+    if (!access_token) {
+      return res.status(400).send('No access_token in response: ' + JSON.stringify(data));
+    }
+
+    // Save to DB
+    const { saveToken } = require('../../services/tokenStore');
+    await saveToken('alibaba', {
+      accessToken: access_token,
+      refreshToken: refresh_token,
+      expiresAt: expire_time ? new Date(expire_time * 1000) : null,
+    });
+    process.env.ALIBABA_ACCESS_TOKEN = access_token;
+    process.env.ALIBABA_REFRESH_TOKEN = refresh_token;
+
+    console.log('✅ Alibaba OAuth 완료. access_token DB에 저장됨. expire_time:', expire_time);
+    res.send(`
+      <h2>✅ Alibaba 인증 완료!</h2>
+      <p>access_token이 DB에 저장되었습니다.</p>
+      <p>만료 시간: ${expire_time ? new Date(expire_time * 1000).toLocaleString('ko-KR') : '알 수 없음'}</p>
+      <p><a href="/">대시보드로 돌아가기</a></p>
+    `);
+  } catch (e) {
+    console.error('Alibaba OAuth callback error:', e.response?.data || e.message);
+    res.status(500).send('OAuth 오류: ' + (e.response?.data?.message || e.message));
+  }
+});
+
+// GET /api/alibaba/oauth-url — Alibaba OAuth 인증 URL 반환
+router.get('/alibaba/oauth-url', (req, res) => {
+  const appKey = process.env.ALIBABA_APP_KEY;
+  const host = req.get('host') || 'localhost:3000';
+  const protocol = req.protocol || 'http';
+  const redirectUri = encodeURIComponent(`${protocol}://${host}/api/alibaba/oauth-callback`);
+  const url = `https://auth.alibaba.com/oauth/authorize?response_type=code&client_id=${appKey}&redirect_uri=${redirectUri}&view=web&sp=ICBU`;
+  res.json({ url });
 });
 
 module.exports = router;
