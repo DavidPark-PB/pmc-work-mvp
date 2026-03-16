@@ -36,32 +36,23 @@ app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 300 }));
 app.post('/api/auth/login', loginHandler);
 app.post('/api/auth/logout', logoutHandler);
 
-// ccorea-auto automation server proxy (before authGuard — ccorea-auto has its own auth)
+// Auth guard — protects everything below
+app.use(authGuard);
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ccorea-auto automation server proxy (kept for future API integration)
 app.use('/api/auto', createProxyMiddleware({
   target: `${AUTO_SERVICE_URL}/api`,
   pathRewrite: { '^/api/auto': '' },
   changeOrigin: true,
   onProxyRes: (proxyRes) => {
-    // SSE streaming support
     proxyRes.headers['X-Accel-Buffering'] = 'no';
   },
   onError: (err, req, res) => {
     res.status(502).json({ error: 'Automation server unavailable', detail: err.message });
   }
 }));
-app.use('/auto', createProxyMiddleware({
-  target: AUTO_SERVICE_URL,
-  pathRewrite: { '^/auto': '' },
-  changeOrigin: true,
-  onError: (err, req, res) => {
-    res.status(502).json({ error: 'Automation server unavailable', detail: err.message });
-  }
-}));
-
-// Auth guard — protects everything below
-app.use(authGuard);
-
-app.use(express.static(path.join(__dirname, 'public')));
 
 const apiRoutes = require('./src/web/routes/api');
 app.use('/api', apiRoutes);
