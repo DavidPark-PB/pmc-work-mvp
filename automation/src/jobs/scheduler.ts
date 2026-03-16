@@ -21,6 +21,7 @@ interface JobConfig {
   intervalMs: number;
   fn: () => Promise<void>;
   runOnStart?: boolean; // 서버 시작 직후 1회 즉시 실행 여부
+  startDelay?: number;  // 시작 지연(ms) — job 간 실행 시간 분산용
 }
 
 interface JobStatus {
@@ -78,14 +79,18 @@ function registerJob(config: JobConfig): void {
     }
   };
 
-  // 서버 시작 직후 즉시 실행 (선택)
+  // 서버 시작 직후 즉시 실행 (선택), startDelay로 job 간 간격 확보
   if (config.runOnStart) {
-    // 다른 초기화가 끝난 후 실행하기 위해 1초 딜레이
-    setTimeout(run, 1000);
+    setTimeout(run, config.startDelay || 1000);
   }
 
-  const timer = setInterval(run, config.intervalMs);
-  jobTimers.set(config.name, timer);
+  // interval도 startDelay만큼 지연 시작하여 job 간 겹침 방지
+  const delay = config.startDelay || 0;
+  const timerSetup = setTimeout(() => {
+    const timer = setInterval(run, config.intervalMs);
+    jobTimers.set(config.name, timer);
+  }, delay);
+  jobTimers.set(config.name, timerSetup as unknown as NodeJS.Timeout);
 }
 
 // ─── 잡 정의 ──────────────────────────────────────────
@@ -138,14 +143,16 @@ export function startScheduler(): void {
     name: 'ebay-token-refresh',
     intervalMs: 90 * 60 * 1000, // 90분
     fn: jobEbayTokenRefresh,
-    runOnStart: false, // main server가 별도로 관리 — 시작 시 즉시 토큰 건드리지 않음
+    runOnStart: false,
+    startDelay: 0,
   });
 
   registerJob({
     name: 'inventory-sync',
     intervalMs: 30 * 60 * 1000, // 30분
     fn: jobInventorySync,
-    runOnStart: false, // 서버 시작 직후는 API 준비 대기
+    runOnStart: false,
+    startDelay: 10 * 1000, // 10초 후 시작 (token refresh와 겹침 방지)
   });
 
   registerJob({
@@ -153,6 +160,7 @@ export function startScheduler(): void {
     intervalMs: 6 * 60 * 60 * 1000, // 6시간
     fn: jobAnomalyDetect,
     runOnStart: true,
+    startDelay: 20 * 1000, // 20초 후 시작
   });
 
   logger.info('[스케줄러] 시작됨 — 등록된 잡: ' + [...jobStatuses.keys()].join(', '));
