@@ -13,6 +13,7 @@ const rateLimit = require('express-rate-limit');
 const { authGuard, loginHandler, logoutHandler } = require('./src/middleware/auth');
 
 const app = express();
+app.set('trust proxy', 1); // Railway runs behind a reverse proxy
 const PORT = process.env.PORT || 3000;
 const AUTO_PORT = process.env.AUTO_PORT || 3001;
 const AUTO_SERVICE_URL = process.env.AUTO_SERVICE_URL || `http://localhost:${AUTO_PORT}`;
