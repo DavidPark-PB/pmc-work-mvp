@@ -36,12 +36,7 @@ app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 300 }));
 app.post('/api/auth/login', loginHandler);
 app.post('/api/auth/logout', logoutHandler);
 
-// Auth guard — protects everything below
-app.use(authGuard);
-
-app.use(express.static(path.join(__dirname, 'public')));
-
-// ccorea-auto automation server proxy (:3001)
+// ccorea-auto automation server proxy (before authGuard — ccorea-auto has its own auth)
 app.use('/api/auto', createProxyMiddleware({
   target: `${AUTO_SERVICE_URL}/api`,
   pathRewrite: { '^/api/auto': '' },
@@ -54,8 +49,6 @@ app.use('/api/auto', createProxyMiddleware({
     res.status(502).json({ error: 'Automation server unavailable', detail: err.message });
   }
 }));
-
-// Proxy page routes for automation UI (non-API)
 app.use('/auto', createProxyMiddleware({
   target: AUTO_SERVICE_URL,
   pathRewrite: { '^/auto': '' },
@@ -64,6 +57,11 @@ app.use('/auto', createProxyMiddleware({
     res.status(502).json({ error: 'Automation server unavailable', detail: err.message });
   }
 }));
+
+// Auth guard — protects everything below
+app.use(authGuard);
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 const apiRoutes = require('./src/web/routes/api');
 app.use('/api', apiRoutes);
