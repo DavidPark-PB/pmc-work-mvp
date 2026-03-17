@@ -2312,7 +2312,8 @@ async function loadEbayTrends() {
 function closeEditModal() {
   document.getElementById('editModal').classList.remove('show');
 }
-document.getElementById('editModal').addEventListener('click', (e) => {
+var _editModal = document.getElementById('editModal');
+if (_editModal) _editModal.addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeEditModal();
 });
 
