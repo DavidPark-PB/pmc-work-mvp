@@ -2,6 +2,11 @@ const fs0 = require('fs');
 if (fs0.existsSync('./config/.env')) {
   require('dotenv').config({ path: './config/.env' });
 }
+// Railway: write credentials.json from env var if file doesn't exist
+if (process.env.GOOGLE_CREDENTIALS && !fs0.existsSync('./config/credentials.json')) {
+  fs0.mkdirSync('./config', { recursive: true });
+  fs0.writeFileSync('./config/credentials.json', process.env.GOOGLE_CREDENTIALS);
+}
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
