@@ -552,19 +552,58 @@ class CarrierSheets {
     const template = sheetList.find(s => s.title === '원본복사의 사본');
 
     if (template) {
-      // 템플릿 복사 시도 → 셀 한도 초과 시 fallback
+      // 템플릿 복사 시도 → 셀 한도 초과 시 오래된 시트 삭제 후 재시도
       try {
         console.log(`   📋 템플릿 '${template.title}' (ID: ${template.sheetId}) 복사 → '${todayTab}'`);
         await this.sheets.duplicateSheet(spreadsheetId, template.sheetId, todayTab, 0);
         console.log(`   ✅ 탭 '${todayTab}' 템플릿 복사 완료 (맨 앞 위치)`);
         return todayTab;
       } catch (dupErr) {
-        console.warn(`   ⚠️ 템플릿 복사 실패 (${dupErr.message}) → 빈 탭 + 헤더 복사 fallback`);
+        if (dupErr.message && dupErr.message.includes('10000000')) {
+          // 셀 한도 초과: 오래된 시트(맨 뒤부터) 삭제 후 재시도
+          console.warn(`   ⚠️ 셀 한도 초과 — 오래된 시트 삭제 중...`);
+          const protectedNames = new Set(['원본복사의 사본', todayTab]);
+          const deletable = sheetList.filter(s => !protectedNames.has(s.title)).reverse();
+          for (let i = 0; i < Math.min(3, deletable.length); i++) {
+            try {
+              console.log(`   🗑️ 오래된 시트 삭제: '${deletable[i].title}'`);
+              await this.sheets.deleteSheet(spreadsheetId, deletable[i].sheetId);
+            } catch (delErr) {
+              console.warn(`   ⚠️ 시트 삭제 실패: ${delErr.message}`);
+            }
+          }
+          // 재시도
+          try {
+            await this.sheets.duplicateSheet(spreadsheetId, template.sheetId, todayTab, 0);
+            console.log(`   ✅ 오래된 시트 삭제 후 탭 '${todayTab}' 생성 성공`);
+            return todayTab;
+          } catch (retryErr) {
+            console.warn(`   ⚠️ 재시도 실패 (${retryErr.message}) → fallback`);
+          }
+        } else {
+          console.warn(`   ⚠️ 템플릿 복사 실패 (${dupErr.message}) → 빈 탭 + 헤더 복사 fallback`);
+        }
       }
     }
 
     // fallback: 빈 탭 생성 후 템플릿 헤더(1행) 복사
-    await this.sheets.createSheet(spreadsheetId, todayTab, 0);
+    try {
+      await this.sheets.createSheet(spreadsheetId, todayTab, 0);
+    } catch (createErr) {
+      if (createErr.message && createErr.message.includes('10000000')) {
+        console.warn(`   ⚠️ 빈 탭 생성도 셀 한도 초과 — 오래된 시트 추가 삭제`);
+        const protectedNames = new Set(['원본복사의 사본', todayTab]);
+        const deletable = sheetList.filter(s => !protectedNames.has(s.title)).reverse();
+        for (let i = 0; i < Math.min(5, deletable.length); i++) {
+          try {
+            await this.sheets.deleteSheet(spreadsheetId, deletable[i].sheetId);
+          } catch {}
+        }
+        await this.sheets.createSheet(spreadsheetId, todayTab, 0);
+      } else {
+        throw createErr;
+      }
+    }
     if (template) {
       try {
         const headerRows = await this.sheets.readData(spreadsheetId, `'원본복사의 사본'!1:2`);

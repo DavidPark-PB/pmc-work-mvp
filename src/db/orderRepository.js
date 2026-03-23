@@ -55,6 +55,7 @@ class OrderRepository {
     let query = this.db
       .from('orders')
       .select('*')
+      .not('status', 'in', '("SHIPPED","COMPLETED","CANCELLED")')
       .order('order_date', { ascending: false })
       .limit(limit);
     if (status) query = query.eq('status', status);
