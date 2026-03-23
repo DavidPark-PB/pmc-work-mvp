@@ -2333,15 +2333,33 @@ router.get('/orders/shipping-estimate/:orderNo', async (req, res) => {
       return res.status(404).json({ success: false, error: `주문 "${orderNo}" 없음` });
     }
 
-    const { data: product } = await db
-      .from('products')
+    // 1) 주문 자체에 저장된 무게 확인
+    const { data: orderFull } = await db
+      .from('orders')
       .select('weight_kg, box_length, box_width, box_height')
-      .eq('sku', order.sku)
+      .eq('order_no', orderNo)
       .single();
 
-    const weightKg = (parseFloat(product?.weight_kg) || 0) * (order.quantity || 1);
-    const dims = (product?.box_length && product?.box_width && product?.box_height)
-      ? { l: parseFloat(product.box_length), w: parseFloat(product.box_width), h: parseFloat(product.box_height) }
+    // 2) SKU가 있으면 products 테이블도 확인 (fallback)
+    let product = null;
+    if (order.sku) {
+      const { data: p } = await db
+        .from('products')
+        .select('weight_kg, box_length, box_width, box_height')
+        .eq('sku', order.sku)
+        .single();
+      product = p;
+    }
+
+    // 주문에 직접 저장된 무게 우선, 없으면 제품 무게 사용
+    const srcWeight = parseFloat(orderFull?.weight_kg) || parseFloat(product?.weight_kg) || 0;
+    const srcDimL = parseFloat(orderFull?.box_length) || parseFloat(product?.box_length) || 0;
+    const srcDimW = parseFloat(orderFull?.box_width) || parseFloat(product?.box_width) || 0;
+    const srcDimH = parseFloat(orderFull?.box_height) || parseFloat(product?.box_height) || 0;
+
+    const weightKg = srcWeight * (order.quantity || 1);
+    const dims = (srcDimL && srcDimW && srcDimH)
+      ? { l: srcDimL, w: srcDimW, h: srcDimH }
       : null;
 
     const { getShippingEstimates } = require('../../services/shippingRates');
@@ -2350,6 +2368,35 @@ router.get('/orders/shipping-estimate/:orderNo', async (req, res) => {
     res.json({ success: true, orderNo, sku: order.sku, countryCode: (order.country_code || '').toUpperCase(), weightKg, dims, estimates });
   } catch (e) {
     console.error('❌ shipping-estimate 에러:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PATCH /api/orders/save-weight — 주문 기반 무게/치수 저장 (SKU 없어도 동작)
+router.patch('/orders/save-weight', async (req, res) => {
+  try {
+    const { orderNo, sku, weight_kg, box_length, box_width, box_height } = req.body;
+    if (!orderNo) return res.status(400).json({ success: false, error: 'orderNo 필요' });
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const wt = parseFloat(weight_kg) || 0;
+    const bl = parseFloat(box_length) || 0;
+    const bw = parseFloat(box_width) || 0;
+    const bh = parseFloat(box_height) || 0;
+
+    // SKU가 있으면 products 테이블에도 저장 (다음 주문에 자동 적용)
+    if (sku) {
+      const { data: existing } = await db.from('products').select('sku').eq('sku', sku).single();
+      if (existing) {
+        await db.from('products').update({ weight_kg: wt, box_length: bl, box_width: bw, box_height: bh }).eq('sku', sku);
+      }
+    }
+
+    // orders 테이블에 임시 무게 저장 (메타 데이터로)
+    await db.from('orders').update({ weight_kg: wt, box_length: bl, box_width: bw, box_height: bh }).eq('order_no', orderNo);
+
+    res.json({ success: true });
+  } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });

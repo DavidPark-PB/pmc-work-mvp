@@ -133,12 +133,14 @@ class OrderSync {
         .select('order_no')
         .in('status', ['NEW', 'READY'])
         .eq('platform', 'eBay');
+      let shippedCount = 0;
       if (dbNewOrders) {
         const toShip = dbNewOrders.filter(o => !currentAwaitingOrderNos.has(o.order_no));
         if (toShip.length > 0) {
           const shipNos = toShip.map(o => o.order_no);
           await db.from('orders').update({ status: 'SHIPPED' }).in('order_no', shipNos);
-          console.log(`📦 ${toShip.length}건 주문 SHIPPED 처리 (eBay awaiting shipment에서 사라짐)`);
+          shippedCount = toShip.length;
+          console.log(`📦 ${shippedCount}건 주문 SHIPPED 처리 (eBay awaiting shipment에서 사라짐)`);
         }
       }
     } catch (dbErr) {
@@ -156,7 +158,7 @@ class OrderSync {
     const duplicates = allOrders.length - newOrders.length;
 
     if (newOrders.length === 0) {
-      return { synced: allOrders.length, newOrders: 0, duplicates, supabaseUpserted, errors };
+      return { synced: allOrders.length, newOrders: 0, duplicates, supabaseUpserted, shipped: shippedCount || 0, errors };
     }
 
     // 4. 날짜순 정렬 (최신이 아래로)
@@ -239,6 +241,7 @@ class OrderSync {
       newOrders: newOrders.length,
       duplicates,
       supabaseUpserted,
+      shipped: shippedCount || 0,
       euAssigned,
       errors,
     };

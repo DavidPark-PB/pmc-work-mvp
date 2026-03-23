@@ -4871,7 +4871,10 @@ async function shippingSyncOrders() {
 
     let msg = `<div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">`;
     msg += `<span style="font-size:20px;font-weight:700;color:#0288d1">${data.synced}건</span>`;
-    msg += `<span style="color:#666">주문 불러옴</span>`;
+    msg += `<span style="color:#666">수집 완료</span>`;
+    if (data.shipped > 0) {
+      msg += `<span style="color:#4caf50;font-size:11px">(${data.shipped}건 배송완료 처리)</span>`;
+    }
     if (data.newOrders > 0) {
       msg += `<span style="color:#4caf50;font-size:11px">(신규 ${data.newOrders}건 추가)</span>`;
     }
@@ -5128,15 +5131,15 @@ async function shippingSaveWeight(rowIdx, sku, orderNo) {
   const boxH = parseFloat(document.getElementById(`dimh-${rowIdx}`)?.value) || 0;
   if (!weightKg) { alert('무게를 입력하세요'); return; }
   try {
-    const r = await fetch('/api/products/update-weight', {
+    const r = await fetch('/api/orders/save-weight', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sku, weight_kg: weightKg, box_length: boxL, box_width: boxW, box_height: boxH })
+      body: JSON.stringify({ orderNo, sku: sku || '', weight_kg: weightKg, box_length: boxL, box_width: boxW, box_height: boxH })
     });
     const d = await r.json();
     if (!d.success) throw new Error(d.error);
     // 패널 닫고 다시 열어서 새 견적 표시
-    const panel = document.getElementById(`est-panel-${rowIdx}`);
+    var panel = document.getElementById(`est-panel-${rowIdx}`);
     panel.style.display = 'none';
     await shippingShowEstimate(rowIdx, orderNo);
   } catch (e) {
