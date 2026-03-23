@@ -1717,7 +1717,9 @@ router.get('/battle/data', async (req, res) => {
       const compTotal = row.cheapestTotal || 0;
       const diff = compTotal > 0 ? +(myTotal - compTotal).toFixed(2) : null;
       const losing = diff !== null && diff > 0;
-      const killPrice = losing ? +(compTotal - 0.01).toFixed(2) : null;
+      // 킬 프라이스 = 경쟁사 합계 - $2 - 내 배송비 (내 합계가 경쟁사보다 $2 싸게)
+      const myShip = row.myShipping || 0;
+      const killPrice = losing ? +Math.max(0.99, compTotal - 2.00 - myShip).toFixed(2) : null;
 
       return {
         sku: row.sku,
