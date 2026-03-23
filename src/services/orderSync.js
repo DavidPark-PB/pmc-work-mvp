@@ -63,6 +63,7 @@ class OrderSync {
 
     // 3-A. Supabase upsert: awaiting-shipment(NEW) orders always update, others insert-only
     let supabaseUpserted = 0;
+    let shippedCount = 0;
     try {
       const db = getSupabase();
       const allOrderNos = allOrders.map(o => o.orderId);
@@ -133,7 +134,7 @@ class OrderSync {
         .select('order_no')
         .in('status', ['NEW', 'READY'])
         .eq('platform', 'eBay');
-      let shippedCount = 0;
+      shippedCount = 0;
       if (dbNewOrders) {
         const toShip = dbNewOrders.filter(o => !currentAwaitingOrderNos.has(o.order_no));
         if (toShip.length > 0) {

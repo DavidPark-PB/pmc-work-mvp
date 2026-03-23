@@ -1817,6 +1817,56 @@ router.post('/battle/import-competitors', async (req, res) => {
   }
 });
 
+// POST /api/battle/add-competitor — 경쟁사 아이템 ID로 가격+배송비 조회 후 저장
+router.post('/battle/add-competitor', async (req, res) => {
+  try {
+    const { mySku, competitorItemId } = req.body;
+    if (!mySku || !competitorItemId) {
+      return res.status(400).json({ success: false, error: 'mySku와 competitorItemId가 필요합니다' });
+    }
+
+    // eBay Shopping API로 경쟁사 가격 조회
+    const ebay = getEbayAPI();
+    const item = await ebay.getCompetitorItemDetail(String(competitorItemId).trim());
+    if (!item) {
+      return res.status(404).json({ success: false, error: '경쟁사 상품을 찾을 수 없습니다' });
+    }
+
+    // competitor_prices 테이블에 저장
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const row = {
+      sku: mySku,
+      platform: 'ebay',
+      competitor_id: item.itemId,
+      competitor_price: item.price || 0,
+      competitor_shipping: item.shippingCost || 0,
+      competitor_url: item.viewItemURL || `https://www.ebay.com/itm/${item.itemId}`,
+      tracked_at: new Date().toISOString(),
+    };
+    await db.from('competitor_prices').upsert(row, { onConflict: 'sku,competitor_id' });
+
+    // 캐시 초기화
+    battleCache = null;
+    battleCacheTime = 0;
+
+    res.json({
+      success: true,
+      competitor: {
+        itemId: item.itemId,
+        title: item.title,
+        price: item.price,
+        shipping: item.shippingCost,
+        total: item.price + item.shippingCost,
+        seller: item.seller,
+      }
+    });
+  } catch (e) {
+    console.error('[add-competitor]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // GET /api/battle/competitor/:itemId — 경쟁사 단일 상품 상세
 router.get('/battle/competitor/:itemId', async (req, res) => {
   try {
@@ -2235,17 +2285,30 @@ router.post('/orders/set-carrier', async (req, res) => {
       const order = await sync.getOrderRow(sheetRow);
       if (order) {
         console.log(`   [2/3] ✅ 주문 데이터 로드 완료`);
-        // SKU로 무게/치수 조회해서 order에 추가 (캐리어 시트 자동 기입용)
+        // 무게/치수 조회: orders 테이블 우선, products 테이블 fallback
         try {
           const { getClient } = require('../../db/supabaseClient');
-          const { data: prod } = await getClient()
-            .from('products').select('weight_kg, box_length, box_width, box_height')
-            .eq('sku', order.sku || '').single();
-          if (prod?.weight_kg) {
-            order.weightKg = parseFloat(prod.weight_kg);
-            order.dimL = parseFloat(prod.box_length) || 0;
-            order.dimW = parseFloat(prod.box_width) || 0;
-            order.dimH = parseFloat(prod.box_height) || 0;
+          const db = getClient();
+          // 1) orders 테이블에서 직접 저장된 무게 확인
+          const { data: orderWeight } = await db
+            .from('orders').select('weight_kg, box_length, box_width, box_height')
+            .eq('order_no', orderNo).single();
+          if (orderWeight && parseFloat(orderWeight.weight_kg) > 0) {
+            order.weightKg = parseFloat(orderWeight.weight_kg);
+            order.dimL = parseFloat(orderWeight.box_length) || 0;
+            order.dimW = parseFloat(orderWeight.box_width) || 0;
+            order.dimH = parseFloat(orderWeight.box_height) || 0;
+          } else if (order.sku) {
+            // 2) products 테이블 fallback
+            const { data: prod } = await db
+              .from('products').select('weight_kg, box_length, box_width, box_height')
+              .eq('sku', order.sku).single();
+            if (prod && parseFloat(prod.weight_kg) > 0) {
+              order.weightKg = parseFloat(prod.weight_kg);
+              order.dimL = parseFloat(prod.box_length) || 0;
+              order.dimW = parseFloat(prod.box_width) || 0;
+              order.dimH = parseFloat(prod.box_height) || 0;
+            }
           }
         } catch {}
         console.log(`   [3/3] 캐리어 시트 '${carrier}'에 등록...`);

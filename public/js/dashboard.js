@@ -2964,6 +2964,11 @@ function renderBattleTable(items) {
         }).join('')
       : '<span style="color:#ccc;font-size:11px">없음</span>';
 
+    // 경쟁사 추가 버튼 (3명 미만일 때)
+    const addCompBtn = item.competitors.length < 3
+      ? `<div style="margin-top:2px"><button onclick="battleAddCompetitor('${esc(item.sku)}')" style="font-size:9px;padding:1px 6px;border:1px dashed #999;border-radius:4px;background:none;color:#666;cursor:pointer">+ 경쟁사 추가</button></div>`
+      : '';
+
     // 내 리스팅 링크
     const myLink = item.itemId
       ? `<a href="https://www.ebay.com/itm/${esc(item.itemId)}" target="_blank" style="font-size:11px;color:#2e7d32;font-weight:600;white-space:nowrap">내 리스팅 🔗</a>`
@@ -2985,7 +2990,7 @@ function renderBattleTable(items) {
         <div class="price-total">합계 $${(item.myTotal || 0).toFixed(2)}</div>
         <div style="margin-top:4px">${myLink}</div>
       </td>
-      <td class="battle-price-cell" style="min-width:160px">${compCell}</td>
+      <td class="battle-price-cell" style="min-width:160px">${compCell}${addCompBtn}</td>
       <td style="text-align:center">
         <div class="battle-diff ${diffClass}">${diffText}</div>
       </td>
@@ -2999,6 +3004,27 @@ function renderBattleTable(items) {
       </td>
     </tr>`;
   }).join('');
+}
+
+async function battleAddCompetitor(mySku) {
+  var itemId = prompt('경쟁사 eBay Item ID를 입력하세요:');
+  if (!itemId || !/^\d{9,15}$/.test(itemId.trim())) {
+    if (itemId !== null) alert('유효한 eBay Item ID를 입력하세요 (9~15자리 숫자)');
+    return;
+  }
+  try {
+    var r = await fetch('/api/battle/add-competitor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mySku: mySku, competitorItemId: itemId.trim() })
+    });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    alert('경쟁사 추가 완료: $' + d.competitor.price.toFixed(2) + ' + $' + d.competitor.shipping.toFixed(2) + ' = $' + d.competitor.total.toFixed(2) + ' (' + d.competitor.seller + ')');
+    loadBattle();
+  } catch (e) {
+    alert('경쟁사 추가 실패: ' + e.message);
+  }
 }
 
 function renderBattlePagination(page, totalPages, totalItems) {
