@@ -5162,7 +5162,7 @@ async function shippingShowEstimate(rowIdx, orderNo) {
     if (!data.success) throw new Error(data.error);
 
     let html = `<div style="border:1px solid #e0e0e0;border-radius:6px;padding:6px;background:#fafafa;font-size:10px;min-width:300px">`;
-    if (!data.weightKg && data.sku) {
+    if (!data.weightKg) {
       html += `<div style="background:#fff3e0;border:1px solid #ffb74d;border-radius:4px;padding:5px 6px;margin-bottom:6px;font-size:9px">
         <div style="color:#e65100;font-weight:600;margin-bottom:4px">⚠️ 무게 미설정 — 제품 정보를 입력하세요</div>
         <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">

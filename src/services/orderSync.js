@@ -126,6 +126,21 @@ class OrderSync {
         await db.from('orders').upsert(newRows, { onConflict: 'order_no', ignoreDuplicates: true });
         supabaseUpserted += newRows.length;
       }
+
+      // Mark orders no longer in awaiting shipment as SHIPPED
+      const currentAwaitingOrderNos = new Set(allOrderNos);
+      const { data: dbNewOrders } = await db.from('orders')
+        .select('order_no')
+        .in('status', ['NEW', 'READY'])
+        .eq('platform', 'eBay');
+      if (dbNewOrders) {
+        const toShip = dbNewOrders.filter(o => !currentAwaitingOrderNos.has(o.order_no));
+        if (toShip.length > 0) {
+          const shipNos = toShip.map(o => o.order_no);
+          await db.from('orders').update({ status: 'SHIPPED' }).in('order_no', shipNos);
+          console.log(`📦 ${toShip.length}건 주문 SHIPPED 처리 (eBay awaiting shipment에서 사라짐)`);
+        }
+      }
     } catch (dbErr) {
       console.error('⚠️ Supabase order upsert 실패 (시트 저장은 계속):', dbErr.message);
       errors.push(`Supabase: ${dbErr.message}`);
