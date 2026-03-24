@@ -1895,6 +1895,60 @@ router.post('/battle/add-competitor', async (req, res) => {
   }
 });
 
+// POST /api/battle/refresh-sellers — 기존 경쟁사에 seller 정보 백필
+router.post('/battle/refresh-sellers', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const ebay = getEbayAPI();
+
+    // seller_id가 비어있는 경쟁사 조회
+    const { data: rows } = await db.from('competitor_prices')
+      .select('id, competitor_id')
+      .or('seller_id.is.null,seller_id.eq.')
+      .limit(500);
+
+    if (!rows || rows.length === 0) {
+      return res.json({ success: true, updated: 0, message: '모든 경쟁사에 seller 정보가 있습니다' });
+    }
+
+    // GetMultipleItems로 배치 조회 (20개씩)
+    const itemIds = rows.map(r => r.competitor_id).filter(Boolean);
+    const items = await ebay.getCompetitorItems(itemIds);
+
+    // seller 정보 매핑
+    const sellerMap = {};
+    items.forEach(item => {
+      sellerMap[item.itemId] = { seller: item.seller, feedback: item.sellerFeedbackScore, price: item.price, shipping: item.shippingCost };
+    });
+
+    // DB 업데이트
+    let updated = 0;
+    for (const row of rows) {
+      const info = sellerMap[row.competitor_id];
+      if (info && info.seller) {
+        await db.from('competitor_prices').update({
+          seller_id: info.seller,
+          seller_feedback: info.feedback || 0,
+          competitor_price: info.price,
+          competitor_shipping: info.shipping,
+          tracked_at: new Date().toISOString(),
+        }).eq('id', row.id);
+        updated++;
+      }
+    }
+
+    // 캐시 초기화
+    battleCache = null;
+    battleCacheTime = 0;
+
+    res.json({ success: true, total: rows.length, updated, sellers: [...new Set(items.map(i => i.seller).filter(Boolean))] });
+  } catch (e) {
+    console.error('[refresh-sellers]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // GET /api/battle/competitor/:itemId — 경쟁사 단일 상품 상세
 router.get('/battle/competitor/:itemId', async (req, res) => {
   try {

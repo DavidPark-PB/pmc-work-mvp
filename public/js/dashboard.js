@@ -3079,6 +3079,25 @@ function renderBattleTable(items) {
   }).join('');
 }
 
+async function battleRefreshSellers() {
+  var btn = document.getElementById('battleRefreshSellersBtn');
+  btn.disabled = true;
+  btn.textContent = '업데이트 중...';
+  try {
+    var r = await fetch(API + '/battle/refresh-sellers', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    var sellers = d.sellers || [];
+    alert('셀러 정보 업데이트 완료!\n' + d.updated + '/' + d.total + '건 업데이트\n셀러: ' + (sellers.length > 0 ? sellers.join(', ') : '없음'));
+    loadBattle();
+  } catch (e) {
+    alert('실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '셀러 정보 업데이트';
+  }
+}
+
 async function battleAddCompetitor(mySku) {
   var itemId = prompt('경쟁사 eBay Item ID를 입력하세요:');
   if (!itemId || !/^\d{9,15}$/.test(itemId.trim())) {
