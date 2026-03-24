@@ -2886,8 +2886,8 @@ function renderBattleTable(items) {
   else if (filter === 'winning') filtered = filtered.filter(i => i.competitors.length > 0 && !i.losing);
   else if (filter === 'no-comp') filtered = filtered.filter(i => i.competitors.length === 0);
 
-  // 셀러 필터 (첫 번째 경쟁사 itemId 기준)
-  if (sellerFilter) filtered = filtered.filter(i => (i.competitors[0]?.itemId || '') === sellerFilter);
+  // 셀러 필터 (경쟁사 seller 이름 기준)
+  if (sellerFilter) filtered = filtered.filter(i => i.competitors.some(c => c.seller === sellerFilter));
 
   // 검색
   if (search) {
@@ -2957,9 +2957,10 @@ function renderBattleTable(items) {
           const link = c.url
             ? `<a href="${esc(c.url)}" target="_blank" style="font-size:10px;color:#1565c0;margin-left:3px;text-decoration:none" title="경쟁사 리스팅 열기">🔗</a>`
             : '';
+          const sellerTag = c.seller ? `<span style="font-size:8px;color:#5c6bc0;background:#e8eaf6;padding:0 3px;border-radius:2px;margin-left:2px">${esc(c.seller.slice(0,15))}</span>` : '';
           const label = c.itemId ? `<span style="font-size:9px;color:#999;margin-left:2px">${esc(c.itemId.slice(0, 13))}</span>` : '';
           return `<div style="padding:1px 0;${idx > 0 ? 'opacity:0.75;' : ''}">
-            ${badge} <span style="font-size:11px;font-weight:${idx===0?'700':'400'}">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=<b>\$${c.total.toFixed(2)}</b></span>${label}${link}
+            ${badge} <span style="font-size:11px;font-weight:${idx===0?'700':'400'}">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=<b>\$${c.total.toFixed(2)}</b></span>${sellerTag}${label}${link}
           </div>`;
         }).join('')
       : '<span style="color:#ccc;font-size:11px">없음</span>';
@@ -3102,9 +3103,14 @@ function setupBattleEvents() {
   const killAllBtn = document.getElementById('battleKillAllBtn');
   if (killAllBtn) {
     killAllBtn.addEventListener('click', async () => {
-      const losingItems = (battleData?.items || []).filter(i => i.losing && i.killPrice > 0);
-      if (losingItems.length === 0) return;
-      if (!confirm(`${losingItems.length}개 상품에 킬프라이스를 적용하시겠습니까?\n이 작업은 eBay 실제 가격을 변경합니다.`)) return;
+      var sellerFilter = document.getElementById('battleSellerFilter')?.value || '';
+      var losingItems = (battleData?.items || []).filter(i => i.losing && i.killPrice > 0);
+      if (sellerFilter) losingItems = losingItems.filter(i => i.competitors.some(c => c.seller === sellerFilter));
+      if (losingItems.length === 0) { alert('적용할 상품이 없습니다'); return; }
+      var msg = sellerFilter
+        ? `셀러 "${sellerFilter}" 상대 ${losingItems.length}개 상품에 킬프라이스를 적용하시겠습니까?\n이 작업은 eBay 실제 가격을 변경합니다.`
+        : `${losingItems.length}개 상품에 킬프라이스를 적용하시겠습니까?\n이 작업은 eBay 실제 가격을 변경합니다.`;
+      if (!confirm(msg)) return;
 
       killAllBtn.disabled = true;
       killAllBtn.textContent = '적용 중...';

@@ -213,7 +213,7 @@ class RepricingService {
     const skus = normalizedListings.map(l => l.sku).filter(Boolean);
     const { data: compRows } = await db
       .from('competitor_prices')
-      .select('sku, competitor_id, competitor_price, competitor_shipping, competitor_url, tracked_at')
+      .select('sku, competitor_id, competitor_price, competitor_shipping, competitor_url, seller_id, seller_feedback, tracked_at')
       .in('sku', skus)
       .order('tracked_at', { ascending: false });
 
@@ -256,6 +256,7 @@ class RepricingService {
           shipping: parseFloat(c.competitor_shipping || 0),
           total: parseFloat(c.competitor_price) + parseFloat(c.competitor_shipping || 0),
           url: c.competitor_url || null,
+          seller: c.seller_id || '',
         })),
         cheapestTotal: cheapest
           ? parseFloat(cheapest.competitor_price) + parseFloat(cheapest.competitor_shipping || 0)

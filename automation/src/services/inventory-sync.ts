@@ -31,6 +31,8 @@ export async function syncAllInventory(): Promise<SyncResult[]> {
     platformItemId: platformListings.platformItemId,
     quantity: platformListings.quantity,
     productSku: products.sku,
+    updatedAt: platformListings.updatedAt,
+    lastSyncedAt: platformListings.lastSyncedAt,
   })
     .from(platformListings)
     .leftJoin(products, eq(platformListings.productId, products.id))
@@ -90,6 +92,16 @@ async function syncEbayInventory(
         ? (ebayQuantityMap.get(listing.platformItemId) ?? oldQty)
         : oldQty;
       const changed = newQty !== oldQty;
+
+      // Skip if manually updated within last 1 hour (updatedAt > lastSyncedAt)
+      const updatedAt = (listing as any).updatedAt ? new Date((listing as any).updatedAt).getTime() : 0;
+      const lastSynced = (listing as any).lastSyncedAt ? new Date((listing as any).lastSyncedAt).getTime() : 0;
+      const manuallyEdited = updatedAt > lastSynced && (Date.now() - updatedAt) < 3600000;
+      if (changed && manuallyEdited) {
+        console.log(`[인벤토리] ${listing.productSku || listing.id}: 수동 변경 감지 — 싱크 스킵 (1시간 보호)`);
+        results.push({ listingId: listing.id, platform: 'ebay', sku: listing.productSku || '', oldQuantity: oldQty, newQuantity: oldQty, changed: false });
+        continue;
+      }
 
       if (changed) {
         await db.update(platformListings)

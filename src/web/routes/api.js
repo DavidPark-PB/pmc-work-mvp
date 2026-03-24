@@ -1740,6 +1740,11 @@ router.get('/battle/data', async (req, res) => {
     const withComp = battleItems.filter(i => i.competitors.length > 0);
     const losingItems = withComp.filter(i => i.losing);
 
+    // 유니크 셀러 목록 추출
+    const sellerSet = new Set();
+    battleItems.forEach(i => i.competitors.forEach(c => { if (c.seller) sellerSet.add(c.seller); }));
+    const uniqueSellers = [...sellerSet].sort();
+
     const summary = {
       totalItems: battleItems.length,
       withCompetitor: withComp.length,
@@ -1748,6 +1753,7 @@ router.get('/battle/data', async (req, res) => {
       avgDiff: withComp.length > 0
         ? +(withComp.reduce((s, i) => s + (i.diff || 0), 0) / withComp.length).toFixed(2)
         : 0,
+      uniqueSellers,
     };
 
     const response = { items: battleItems, summary, timestamp: new Date().toISOString() };
@@ -1844,6 +1850,8 @@ router.post('/battle/add-competitor', async (req, res) => {
       competitor_price: item.price || 0,
       competitor_shipping: item.shippingCost || 0,
       competitor_url: item.viewItemURL || `https://www.ebay.com/itm/${item.itemId}`,
+      seller_id: item.seller || '',
+      seller_feedback: item.sellerFeedbackScore || 0,
       tracked_at: new Date().toISOString(),
     };
     await db.from('competitor_prices').upsert(row, { onConflict: 'sku,competitor_id' });
