@@ -2961,7 +2961,7 @@ router.get('/alibaba/oauth-url', (req, res) => {
 router.post('/sync/products', async (req, res) => {
   try {
     const { syncPlatformProducts } = require('../../services/productSync');
-    const platforms = req.body.platforms || ['ebay', 'shopify', 'shopee', 'alibaba'];
+    const platforms = req.body.platforms || ['ebay', 'shopify'];
     console.log('[ProductSync] Starting sync for:', platforms.join(', '));
     const results = await syncPlatformProducts(platforms);
     res.json({ success: true, results });

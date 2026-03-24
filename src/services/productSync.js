@@ -3,46 +3,44 @@
 const { getClient } = require('../db/supabaseClient');
 
 /**
- * Multi-platform product sync → platform_listings table
- * Fetches products from eBay, Shopify, Shopee, Alibaba and upserts to Supabase
+ * Multi-platform product sync → platform-specific tables
+ * ebay_products, shopify_products, naver_products, alibaba_products
  */
 
-async function syncPlatformProducts(platforms = ['ebay', 'shopify', 'shopee', 'alibaba']) {
+async function syncPlatformProducts(platforms = ['ebay', 'shopify']) {
   const db = getClient();
   const results = {};
 
   for (const platform of platforms) {
     try {
-      const items = await fetchPlatformItems(platform);
-      if (!items || items.length === 0) {
+      const rawItems = await fetchPlatformItems(platform);
+      if (!rawItems || rawItems.length === 0) {
         results[platform] = { synced: 0, error: null };
         continue;
       }
 
+      // Deduplicate by itemId
+      const seen = new Set();
+      const items = rawItems.filter(item => {
+        const key = String(item.itemId);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
       let synced = 0;
+      const tableName = getTableName(platform);
+
       // Batch upsert in chunks of 50
       for (let i = 0; i < items.length; i += 50) {
         const batch = items.slice(i, i + 50);
-        const rows = batch.map(item => ({
-          platform,
-          platform_item_id: String(item.itemId),
-          platform_sku: item.sku || '',
-          title: (item.title || '').slice(0, 500),
-          price: parseFloat(item.price) || 0,
-          shipping_cost: parseFloat(item.shippingCost) || 0,
-          quantity: parseInt(item.quantity) || 0,
-          status: 'active',
-          listing_url: item.url || '',
-          image_url: item.imageUrl || '',
-          currency: item.currency || 'USD',
-          last_synced_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }));
+        const rows = batch.map(item => mapToRow(platform, item));
+        const conflict = getConflictColumn(platform);
 
-        const { error } = await db.from('platform_listings')
-          .upsert(rows, { onConflict: 'platform,platform_item_id' });
+        const { error } = await db.from(tableName)
+          .upsert(rows, { onConflict: conflict });
         if (error) {
-          console.error(`[ProductSync] ${platform} batch upsert error:`, error.message);
+          console.error(`[ProductSync] ${platform} batch error:`, error.message);
         } else {
           synced += batch.length;
         }
@@ -59,11 +57,54 @@ async function syncPlatformProducts(platforms = ['ebay', 'shopify', 'shopee', 'a
   return results;
 }
 
+function getTableName(platform) {
+  const map = { ebay: 'ebay_products', shopify: 'shopify_products', alibaba: 'alibaba_products' };
+  return map[platform] || `${platform}_products`;
+}
+
+function getConflictColumn(platform) {
+  if (platform === 'ebay') return 'item_id';
+  if (platform === 'shopify') return 'sku';
+  return 'sku';
+}
+
+function mapToRow(platform, item) {
+  if (platform === 'ebay') {
+    return {
+      item_id: String(item.itemId),
+      sku: item.sku || String(item.itemId),
+      title: (item.title || '').slice(0, 500),
+      price_usd: parseFloat(item.price) || 0,
+      shipping_usd: parseFloat(item.shippingCost) || 0,
+      stock: parseInt(item.quantity) || 0,
+      sales_count: parseInt(item.salesCount) || 0,
+      status: 'active',
+      image_url: item.imageUrl || '',
+    };
+  }
+  if (platform === 'shopify') {
+    return {
+      sku: item.sku || String(item.itemId),
+      title: (item.title || '').slice(0, 500),
+      price_usd: parseFloat(item.price) || 0,
+      status: item.status || 'active',
+    };
+  }
+  if (platform === 'alibaba') {
+    return {
+      sku: item.sku || String(item.itemId),
+      title: (item.title || '').slice(0, 500),
+    };
+  }
+  return { sku: item.sku || String(item.itemId), title: item.title || '' };
+}
+
+// ─── Platform Fetchers ───
+
 async function fetchPlatformItems(platform) {
   switch (platform) {
     case 'ebay': return fetchEbayItems();
     case 'shopify': return fetchShopifyItems();
-    case 'shopee': return fetchShopeeItems();
     case 'alibaba': return fetchAlibabaItems();
     default: return [];
   }
@@ -87,9 +128,8 @@ async function fetchEbayItems() {
         price: item.price || 0,
         shippingCost: item.shippingCost || 0,
         quantity: (parseInt(item.quantity) || 0) - (parseInt(item.quantitySold) || 0),
-        url: item.viewUrl || '',
+        salesCount: parseInt(item.quantitySold) || 0,
         imageUrl: item.imageUrl || '',
-        currency: 'USD',
       });
     }
 
@@ -108,87 +148,36 @@ async function fetchShopifyItems() {
   const items = [];
 
   for (const p of products) {
-    const variant = p.variants?.[0];
+    const variant = p.variants && p.variants[0];
     if (!variant) continue;
     items.push({
       itemId: String(p.id),
-      sku: variant.sku || '',
+      sku: variant.sku || String(p.id),
       title: p.title || '',
       price: parseFloat(variant.price) || 0,
-      shippingCost: 0,
-      quantity: variant.inventory_quantity || 0,
-      url: p.handle ? `https://${process.env.SHOPIFY_STORE_URL}/products/${p.handle}` : '',
-      imageUrl: p.image?.src || '',
-      currency: 'USD',
+      status: p.status || 'active',
     });
   }
 
   return items;
 }
 
-async function fetchShopeeItems() {
-  const ShopeeAPI = require('../api/shopeeAPI');
-  const shopee = new ShopeeAPI();
-  const allItems = [];
-
-  try {
-    const shopIds = shopee.shopIds || [];
-    for (const shopId of shopIds.slice(0, 2)) { // Limit to 2 shops to avoid timeout
-      try {
-        const result = await shopee.getProducts(0, 50, 'NORMAL', shopId);
-        const shopItems = result?.response?.item || result?.items || [];
-        for (const item of shopItems) {
-          allItems.push({
-            itemId: String(item.item_id),
-            sku: '',
-            title: item.item_name || '',
-            price: 0,
-            shippingCost: 0,
-            quantity: 0,
-            url: '',
-            imageUrl: '',
-            currency: 'SGD',
-          });
-        }
-      } catch (shopErr) {
-        console.warn(`[ProductSync] Shopee shop ${shopId} error:`, shopErr.message);
-      }
-      await sleep(500);
-    }
-  } catch (err) {
-    console.warn('[ProductSync] Shopee error:', err.message);
-  }
-
-  return allItems;
-}
-
 async function fetchAlibabaItems() {
   const AlibabaAPI = require('../api/alibabaAPI');
   const alibaba = new AlibabaAPI();
-  const allItems = [];
 
   try {
     const result = await alibaba.getProductList(1, 50);
-    if (result?.products) {
-      for (const p of result.products) {
-        allItems.push({
-          itemId: String(p.id || p.productId),
-          sku: '',
-          title: p.subject || p.title || '',
-          price: parseFloat(p.price) || 0,
-          shippingCost: 0,
-          quantity: 999,
-          url: p.productUrl || '',
-          imageUrl: p.imageUrl || '',
-          currency: 'USD',
-        });
-      }
-    }
+    if (!result || !result.products) return [];
+    return result.products.map(p => ({
+      itemId: String(p.id || p.productId),
+      sku: '',
+      title: p.subject || p.title || '',
+    }));
   } catch (err) {
     console.warn('[ProductSync] Alibaba error:', err.message);
+    return [];
   }
-
-  return allItems;
 }
 
 function sleep(ms) {
