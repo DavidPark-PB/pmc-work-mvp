@@ -1994,10 +1994,11 @@ function renderEditableTable(products, tableId, countId) {
     const qtyVal = p.quantity !== undefined && p.quantity !== '' ? p.quantity : '';
     const step = pf === 'Naver' ? '1' : '0.01';
 
+    var titleHtml = p.itemId ? '<a href="https://www.ebay.com/itm/' + esc(p.itemId) + '" target="_blank" style="color:#1565c0;text-decoration:none">' + esc(p.title) + ' ↗</a>' : esc(p.title);
     return `
     <tr data-platform="${esc(pf)}" data-edit-id="${esc(p.editId || '')}" data-sku="${esc(p.sku || '')}">
       <td>${esc(p.sku)}</td>
-      <td title="${esc(p.title)}">${esc(p.title)}</td>
+      <td title="${esc(p.title)}">${titleHtml}</td>
       <td><span class="badge ${pfLower}">${pf}</span></td>
       <td><input type="number" class="inline-input" data-field="price" value="${esc(String(priceVal))}" data-original="${esc(String(priceVal))}" step="${step}" placeholder="가격"></td>
       <td style="text-align:center;font-size:12px;color:#666">${shipVal ? (pf === 'Naver' ? '₩' + Number(shipVal).toLocaleString() : '$' + shipVal) : '-'}</td>
