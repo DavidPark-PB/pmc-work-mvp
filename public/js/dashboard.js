@@ -221,39 +221,83 @@ async function loadProducts(platform) {
   }
 }
 
-// ===== 전체 상품 (인라인 편집) =====
+// ===== 전체 상품 (인라인 편집 + 페이지네이션) =====
 
 var _allProductSearchTimeout;
+var _allProductPage = 1;
+
 function setupAllProductSearch() {
-  const searchEl = document.getElementById('allProductSearch');
-  const filterEl = document.getElementById('allPlatformFilter');
+  var searchEl = document.getElementById('allProductSearch');
+  var filterEl = document.getElementById('allPlatformFilter');
   if (searchEl && !searchEl._bound) {
     searchEl._bound = true;
-    searchEl.addEventListener('input', () => {
+    searchEl.addEventListener('input', function() {
       clearTimeout(_allProductSearchTimeout);
-      _allProductSearchTimeout = setTimeout(() => loadAllProducts(), 300);
+      _allProductSearchTimeout = setTimeout(function() { _allProductPage = 1; loadAllProducts(); }, 300);
     });
   }
   if (filterEl && !filterEl._bound) {
     filterEl._bound = true;
-    filterEl.addEventListener('change', () => loadAllProducts());
+    filterEl.addEventListener('change', function() { _allProductPage = 1; loadAllProducts(); });
   }
 }
 
 async function loadAllProducts(platform) {
   setupAllProductSearch();
   try {
-    const pf = platform || document.getElementById('allPlatformFilter').value;
-    const search = (document.getElementById('allProductSearch')?.value || '').trim();
-    let url = `${API}/products?limit=500`;
-    if (pf) url += `&platform=${pf}`;
-    if (search) url += `&search=${encodeURIComponent(search)}`;
-    const res = await fetch(url);
-    const products = await res.json();
+    var pf = platform || document.getElementById('allPlatformFilter').value;
+    var search = (document.getElementById('allProductSearch') ? document.getElementById('allProductSearch').value : '').trim();
+    var url = API + '/products?limit=100&page=' + _allProductPage;
+    if (pf) url += '&platform=' + pf;
+    if (search) url += '&search=' + encodeURIComponent(search);
+    var resp = await fetch(url);
+    var data = await resp.json();
+
+    // 새 API 형식: { products, total, page, totalPages }
+    var products = data.products || data;
+    var total = data.total || products.length;
+    var totalPages = data.totalPages || 1;
+
     renderEditableTable(products, 'allProductTable', 'allProductCount');
+
+    // 총 건수 표시
+    var countEl = document.getElementById('allProductCount');
+    if (countEl) countEl.textContent = total + '개 상품 (페이지 ' + _allProductPage + '/' + totalPages + ')';
+
+    // 페이지네이션 UI
+    renderAllProductPagination(totalPages);
   } catch (err) {
     console.error('All products load failed:', err);
   }
+}
+
+function renderAllProductPagination(totalPages) {
+  var container = document.getElementById('allProductPagination');
+  if (!container) {
+    var table = document.getElementById('allProductTable');
+    if (!table) return;
+    container = document.createElement('div');
+    container.id = 'allProductPagination';
+    container.style.cssText = 'display:flex;justify-content:center;gap:4px;margin-top:12px;flex-wrap:wrap';
+    table.parentNode.insertBefore(container, table.nextSibling);
+  }
+  if (totalPages <= 1) { container.innerHTML = ''; return; }
+
+  var html = '';
+  if (_allProductPage > 1) html += '<button onclick="_allProductPage=1;loadAllProducts()" style="padding:4px 10px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:11px">«</button>';
+  if (_allProductPage > 1) html += '<button onclick="_allProductPage--;loadAllProducts()" style="padding:4px 10px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:11px">‹</button>';
+
+  var start = Math.max(1, _allProductPage - 3);
+  var end = Math.min(totalPages, _allProductPage + 3);
+  for (var i = start; i <= end; i++) {
+    var active = i === _allProductPage;
+    html += '<button onclick="_allProductPage=' + i + ';loadAllProducts()" style="padding:4px 10px;border:1px solid ' + (active ? '#1565c0' : '#ddd') + ';border-radius:4px;background:' + (active ? '#1565c0' : '#fff') + ';color:' + (active ? '#fff' : '#333') + ';cursor:pointer;font-size:11px;font-weight:' + (active ? '700' : '400') + '">' + i + '</button>';
+  }
+
+  if (_allProductPage < totalPages) html += '<button onclick="_allProductPage++;loadAllProducts()" style="padding:4px 10px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:11px">›</button>';
+  if (_allProductPage < totalPages) html += '<button onclick="_allProductPage=' + totalPages + ';loadAllProducts()" style="padding:4px 10px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:11px">»</button>';
+
+  container.innerHTML = html;
 }
 
 // ===== 매출/마진 분석 =====

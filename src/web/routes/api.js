@@ -134,57 +134,63 @@ router.get('/platforms', async (req, res) => {
 // GET /api/products?platform=&limit=&search=
 router.get('/products', async (req, res) => {
   try {
-    const { platform, limit = 500, search } = req.query;
+    const { platform, limit = 100, page = 1, search } = req.query;
     const { getClient } = require('../../db/supabaseClient');
     const db = getClient();
+    const lim = Math.min(parseInt(limit) || 100, 200);
+    const pg = parseInt(page) || 1;
+    const offset = (pg - 1) * lim;
+
+    // Platform-specific DB query with pagination
+    if (platform === 'ebay') {
+      let q = db.from('ebay_products').select('*', { count: 'exact' }).order('updated_at', { ascending: false });
+      if (search) q = q.or(`sku.ilike.%${search}%,title.ilike.%${search}%,item_id.ilike.%${search}%`);
+      q = q.range(offset, offset + lim - 1);
+      const { data, count } = await q;
+      return res.json({ products: (data || []).map(r => ({ sku: r.sku || '', itemId: r.item_id || '', title: r.title || '', price: String(r.price_usd || ''), shipping: String(r.shipping_usd || ''), platform: 'eBay', imageUrl: r.image_url || '', editId: r.item_id || r.sku || '', quantity: String(r.stock || '') })), total: count || 0, page: pg, totalPages: Math.ceil((count || 0) / lim) });
+    }
+
+    if (platform === 'shopify') {
+      let q = db.from('shopify_products').select('*', { count: 'exact' }).order('updated_at', { ascending: false });
+      if (search) q = q.or(`sku.ilike.%${search}%,title.ilike.%${search}%`);
+      q = q.range(offset, offset + lim - 1);
+      const { data, count } = await q;
+      return res.json({ products: (data || []).map(r => ({ sku: r.sku || '', itemId: '', title: r.title || '', price: String(r.price_usd || ''), shipping: '0', platform: 'Shopify', imageUrl: '', editId: r.sku || '', quantity: '' })), total: count || 0, page: pg, totalPages: Math.ceil((count || 0) / lim) });
+    }
+
+    // 전체: eBay + Shopify counts, paginate eBay first then Shopify
+    const [{ count: ebayCount }, { count: shopifyCount }] = await Promise.all([
+      db.from('ebay_products').select('*', { count: 'exact', head: true }),
+      db.from('shopify_products').select('*', { count: 'exact', head: true }),
+    ]);
+    const totalCount = (ebayCount || 0) + (shopifyCount || 0);
     let products = [];
 
-    // eBay: ebay_products 테이블에서 읽기
-    if (!platform || platform === 'ebay') {
-      const { data: ebayRows } = await db.from('ebay_products').select('*').order('updated_at', { ascending: false }).limit(parseInt(limit));
-      (ebayRows || []).forEach(r => products.push({
-        sku: r.sku || '', itemId: r.item_id || '', title: r.title || '',
-        price: String(r.price_usd || ''), shipping: String(r.shipping_usd || ''),
-        platform: 'eBay', imageUrl: r.image_url || '', editId: r.item_id || r.sku || '',
-        quantity: String(r.stock || ''),
-      }));
-    }
-
-    // Shopify: shopify_products 테이블에서 읽기
-    if (!platform || platform === 'shopify') {
-      const { data: shopifyRows } = await db.from('shopify_products').select('*').order('updated_at', { ascending: false }).limit(parseInt(limit));
-      (shopifyRows || []).forEach(r => products.push({
-        sku: r.sku || '', itemId: '', title: r.title || '',
-        price: String(r.price_usd || ''), shipping: '0',
-        platform: 'Shopify', imageUrl: '', editId: r.sku || '',
-        quantity: '',
-      }));
-    }
-
-    // products 테이블(마스터)에서도 읽기 (automation/리메이커로 생성된 것)
-    if (!platform) {
-      const { data: masterRows } = await db.from('products').select('*').not('sku', 'is', null).neq('sku', '').neq('status', 'trashed').limit(200);
-      const existingSKUs = new Set(products.map(p => p.sku));
-      (masterRows || []).forEach(r => {
-        if (existingSKUs.has(r.sku)) return; // 중복 제거
-        products.push({
-          sku: r.sku || '', itemId: r.ebay_item_id || '', title: r.title_ko || r.title || '',
-          price: String(r.price_usd || ''), shipping: String(r.shipping_usd || ''),
-          platform: r.ebay_item_id ? 'eBay' : '마스터', imageUrl: r.image_url || '',
-          editId: r.ebay_item_id || r.sku || '', quantity: String(r.stock || ''),
-        });
-      });
-    }
-
     if (search) {
-      const q = search.toLowerCase();
-      products = products.filter(p =>
-        (p.sku || '').toLowerCase().includes(q) ||
-        (p.title || '').toLowerCase().includes(q) ||
-        (p.itemId || '').toLowerCase().includes(q)
-      );
+      // 검색 시: 양쪽 테이블에서 검색 후 합치기
+      const [{ data: eRows }, { data: sRows }] = await Promise.all([
+        db.from('ebay_products').select('*').or(`sku.ilike.%${search}%,title.ilike.%${search}%,item_id.ilike.%${search}%`).order('updated_at', { ascending: false }).limit(lim),
+        db.from('shopify_products').select('*').or(`sku.ilike.%${search}%,title.ilike.%${search}%`).order('updated_at', { ascending: false }).limit(lim),
+      ]);
+      (eRows || []).forEach(r => products.push({ sku: r.sku || '', itemId: r.item_id || '', title: r.title || '', price: String(r.price_usd || ''), shipping: String(r.shipping_usd || ''), platform: 'eBay', imageUrl: r.image_url || '', editId: r.item_id || r.sku || '', quantity: String(r.stock || '') }));
+      (sRows || []).forEach(r => products.push({ sku: r.sku || '', itemId: '', title: r.title || '', price: String(r.price_usd || ''), shipping: '0', platform: 'Shopify', imageUrl: '', editId: r.sku || '', quantity: '' }));
+      return res.json({ products: products.slice(0, lim), total: products.length, page: 1, totalPages: 1 });
     }
-    res.json(products.slice(0, parseInt(limit)));
+
+    // 페이지네이션: eBay 먼저, 넘치면 Shopify
+    const ec = ebayCount || 0;
+    if (offset < ec) {
+      const { data } = await db.from('ebay_products').select('*').order('updated_at', { ascending: false }).range(offset, Math.min(offset + lim - 1, ec - 1));
+      (data || []).forEach(r => products.push({ sku: r.sku || '', itemId: r.item_id || '', title: r.title || '', price: String(r.price_usd || ''), shipping: String(r.shipping_usd || ''), platform: 'eBay', imageUrl: r.image_url || '', editId: r.item_id || r.sku || '', quantity: String(r.stock || '') }));
+    }
+    if (products.length < lim) {
+      const shopifyOffset = Math.max(0, offset - ec);
+      const shopifyLim = lim - products.length;
+      const { data } = await db.from('shopify_products').select('*').order('updated_at', { ascending: false }).range(shopifyOffset, shopifyOffset + shopifyLim - 1);
+      (data || []).forEach(r => products.push({ sku: r.sku || '', itemId: '', title: r.title || '', price: String(r.price_usd || ''), shipping: '0', platform: 'Shopify', imageUrl: '', editId: r.sku || '', quantity: '' }));
+    }
+
+    res.json({ products, total: totalCount, page: pg, totalPages: Math.ceil(totalCount / lim) });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
