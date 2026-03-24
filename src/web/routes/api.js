@@ -134,34 +134,46 @@ router.get('/platforms', async (req, res) => {
 // GET /api/products?platform=&limit=&search=
 router.get('/products', async (req, res) => {
   try {
-    const { platform, limit = 200, search } = req.query;
-    let products;
+    const { platform, limit = 500, search } = req.query;
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    let products = [];
 
+    // eBay: ebay_products 테이블에서 읽기
     if (!platform || platform === 'ebay') {
-      // DB_SOURCE에 따라 Supabase or Sheets (2분 캐시)
-      const dashData = await dataSource.getDashboardData();
-      products = (dashData || [])
-        .filter(d => !platform || d.platform.includes('eBay'))
-        .map(d => ({
-          sku: d.sku || '',
-          itemId: d.itemId || '',
-          title: d.title || '',
-          price: d.priceUSD || '',
-          shipping: d.shippingUSD || '',
-          platform: d.platform || 'eBay',
-          imageUrl: d.image || '',
-          editId: d.itemId || d.sku || '',
-          quantity: d.stock || '',
-        }));
+      const { data: ebayRows } = await db.from('ebay_products').select('*').order('updated_at', { ascending: false }).limit(parseInt(limit));
+      (ebayRows || []).forEach(r => products.push({
+        sku: r.sku || '', itemId: r.item_id || '', title: r.title || '',
+        price: String(r.price_usd || ''), shipping: String(r.shipping_usd || ''),
+        platform: 'eBay', imageUrl: r.image_url || '', editId: r.item_id || r.sku || '',
+        quantity: String(r.stock || ''),
+      }));
+    }
 
-      // 전체 보기: 다른 플랫폼도 합침
-      if (!platform) {
-        const otherProducts = await getProductsNonEbay(parseInt(limit));
-        products = products.concat(otherProducts);
-      }
-    } else {
-      // Shopify, Naver, Alibaba는 기존 API 호출 (소량이라 빠름)
-      products = await getProducts(platform, parseInt(limit));
+    // Shopify: shopify_products 테이블에서 읽기
+    if (!platform || platform === 'shopify') {
+      const { data: shopifyRows } = await db.from('shopify_products').select('*').order('updated_at', { ascending: false }).limit(parseInt(limit));
+      (shopifyRows || []).forEach(r => products.push({
+        sku: r.sku || '', itemId: '', title: r.title || '',
+        price: String(r.price_usd || ''), shipping: '0',
+        platform: 'Shopify', imageUrl: '', editId: r.sku || '',
+        quantity: '',
+      }));
+    }
+
+    // products 테이블(마스터)에서도 읽기 (automation/리메이커로 생성된 것)
+    if (!platform) {
+      const { data: masterRows } = await db.from('products').select('*').not('sku', 'is', null).neq('sku', '').neq('status', 'trashed').limit(200);
+      const existingSKUs = new Set(products.map(p => p.sku));
+      (masterRows || []).forEach(r => {
+        if (existingSKUs.has(r.sku)) return; // 중복 제거
+        products.push({
+          sku: r.sku || '', itemId: r.ebay_item_id || '', title: r.title_ko || r.title || '',
+          price: String(r.price_usd || ''), shipping: String(r.shipping_usd || ''),
+          platform: r.ebay_item_id ? 'eBay' : '마스터', imageUrl: r.image_url || '',
+          editId: r.ebay_item_id || r.sku || '', quantity: String(r.stock || ''),
+        });
+      });
     }
 
     if (search) {
