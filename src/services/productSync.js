@@ -150,9 +150,12 @@ async function fetchShopifyItems() {
   for (const p of products) {
     const variant = p.variants && p.variants[0];
     if (!variant) continue;
+    const sku = variant.sku || String(p.id);
+    // Skip 번개장터 API products (numeric-only SKU = Shopify product ID)
+    if (/^\d+$/.test(sku)) continue;
     items.push({
       itemId: String(p.id),
-      sku: variant.sku || String(p.id),
+      sku,
       title: p.title || '',
       price: parseFloat(variant.price) || 0,
       status: p.status || 'active',
