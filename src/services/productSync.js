@@ -70,8 +70,8 @@ async function fetchPlatformItems(platform) {
 }
 
 async function fetchEbayItems() {
-  const { getEbayAPI } = require('./platformRegistry');
-  const ebay = getEbayAPI();
+  const EbayAPI = require('../api/ebayAPI');
+  const ebay = new EbayAPI();
   const allItems = [];
   let page = 1;
 
@@ -136,20 +136,19 @@ async function fetchShopeeItems() {
     for (const shopId of shopIds.slice(0, 2)) { // Limit to 2 shops to avoid timeout
       try {
         const result = await shopee.getProducts(0, 50, 'NORMAL', shopId);
-        if (result?.items) {
-          for (const item of result.items) {
-            allItems.push({
-              itemId: String(item.item_id),
-              sku: '',
-              title: item.item_name || '',
-              price: (item.price_info?.[0]?.current_price || 0) / 100000,
-              shippingCost: 0,
-              quantity: item.stock_info_v2?.summary_info?.total_available_stock || 0,
-              url: '',
-              imageUrl: item.image?.image_url_list?.[0] || '',
-              currency: 'SGD',
-            });
-          }
+        const shopItems = result?.response?.item || result?.items || [];
+        for (const item of shopItems) {
+          allItems.push({
+            itemId: String(item.item_id),
+            sku: '',
+            title: item.item_name || '',
+            price: 0,
+            shippingCost: 0,
+            quantity: 0,
+            url: '',
+            imageUrl: '',
+            currency: 'SGD',
+          });
         }
       } catch (shopErr) {
         console.warn(`[ProductSync] Shopee shop ${shopId} error:`, shopErr.message);
