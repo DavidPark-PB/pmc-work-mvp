@@ -83,6 +83,34 @@ function navigateTo(page) {
   }
 }
 
+// ===== 상품 동기화 =====
+
+async function syncAllProducts() {
+  var btn = document.getElementById('syncProductsBtn');
+  btn.disabled = true;
+  btn.textContent = '동기화 중...';
+  try {
+    var r = await fetch('/api/sync/products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    var msg = Object.entries(d.results).map(function(e) {
+      var p = e[0], v = e[1];
+      return p + ': ' + (v.synced || 0) + '건' + (v.error ? ' (오류)' : '');
+    }).join(', ');
+    alert('동기화 완료!\n' + msg);
+    loadDashboard();
+  } catch (e) {
+    alert('동기화 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '상품 동기화';
+  }
+}
+
 // ===== 대시보드 =====
 
 async function loadDashboard() {

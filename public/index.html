@@ -12,6 +12,7 @@
     <div class="header-right">
       <span class="last-updated" id="lastUpdated">로딩 중...</span>
       <button class="refresh-btn" id="refreshBtn">새로고침</button>
+      <button class="refresh-btn" id="syncProductsBtn" style="background:#0288d1;margin-left:8px" onclick="syncAllProducts()">상품 동기화</button>
       <button class="refresh-btn" id="logoutBtn" style="background:#e94560;margin-left:8px" onclick="fetch('/api/auth/logout',{method:'POST'}).then(()=>location.href='/login.html')">로그아웃</button>
     </div>
   </div>
@@ -2383,7 +2384,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260324a"></script>
+  <script src="/js/dashboard.js?v=20260324b"></script>
   <script src="/js/operations.js?v=20260315e"></script>
 
 

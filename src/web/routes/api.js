@@ -2957,4 +2957,18 @@ router.get('/alibaba/oauth-url', (req, res) => {
   res.json({ url });
 });
 
+// POST /api/sync/products — 멀티 플랫폼 상품 동기화
+router.post('/sync/products', async (req, res) => {
+  try {
+    const { syncPlatformProducts } = require('../../services/productSync');
+    const platforms = req.body.platforms || ['ebay', 'shopify', 'shopee', 'alibaba'];
+    console.log('[ProductSync] Starting sync for:', platforms.join(', '));
+    const results = await syncPlatformProducts(platforms);
+    res.json({ success: true, results });
+  } catch (e) {
+    console.error('[ProductSync] error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 module.exports = router;
