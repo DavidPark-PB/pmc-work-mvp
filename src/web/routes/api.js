@@ -3043,4 +3043,50 @@ router.post('/sync/products', async (req, res) => {
   }
 });
 
+// POST /api/sync/master — ebay_products + shopify_products → products 마스터 동기화
+router.post('/sync/master', async (req, res) => {
+  try {
+    const { syncToMaster } = require('../../services/productSync');
+    console.log('[MasterSync] Starting master table sync...');
+    const results = await syncToMaster();
+    console.log('[MasterSync] Done:', JSON.stringify(results));
+    res.json({ success: true, results });
+  } catch (e) {
+    console.error('[MasterSync] error:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/inventory/scan — 바코드 스캔 입출고
+router.post('/inventory/scan', async (req, res) => {
+  try {
+    const { sku, quantity, type } = req.body;
+    if (!sku || !quantity || !type) return res.status(400).json({ success: false, error: 'sku, quantity, type required' });
+    const db = getClient();
+
+    // Find product by SKU
+    const { data: product } = await db.from('products').select('id, stock').eq('sku', sku).limit(1).single();
+    if (!product) return res.status(404).json({ success: false, error: `SKU "${sku}" not found` });
+
+    const change = type === 'in' ? Math.abs(quantity) : -Math.abs(quantity);
+    const newStock = Math.max(0, (product.stock || 0) + change);
+
+    // Update products.stock
+    await db.from('products').update({ stock: newStock, updated_at: new Date().toISOString() }).eq('id', product.id);
+
+    // Log to inventory_log
+    await db.from('inventory_log').insert({
+      product_id: product.id,
+      sku,
+      change_qty: change,
+      type,
+      reason: type === 'in' ? 'scan' : 'scan-out',
+    }).then(() => {}).catch(() => {}); // Ignore if table doesn't exist yet
+
+    res.json({ success: true, sku, previousStock: product.stock || 0, newStock, change });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 module.exports = router;

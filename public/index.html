@@ -13,6 +13,7 @@
       <span class="last-updated" id="lastUpdated">로딩 중...</span>
       <button class="refresh-btn" id="refreshBtn">새로고침</button>
       <button class="refresh-btn" id="syncProductsBtn" style="background:#0288d1;margin-left:8px" onclick="syncAllProducts()">상품 동기화</button>
+      <button class="refresh-btn" id="syncMasterBtn" style="background:#6a1b9a;margin-left:8px" onclick="syncToMaster()">마스터 동기화</button>
       <button class="refresh-btn" id="logoutBtn" style="background:#e94560;margin-left:8px" onclick="fetch('/api/auth/logout',{method:'POST'}).then(()=>location.href='/login.html')">로그아웃</button>
     </div>
   </div>
@@ -2197,6 +2198,21 @@
           <button class="refresh-btn" onclick="opsInventory.search()">검색</button>
         </div>
       </div>
+      <!-- 바코드 스캔 입출고 -->
+      <div style="padding:12px 16px;background:#1a1a2e;border-bottom:1px solid #333;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span style="font-weight:600;color:#81d4fa">📦 입출고</span>
+        <input id="scanSkuInput" type="text" placeholder="SKU 스캔 또는 입력"
+          style="padding:6px 10px;border:1px solid #444;background:#0f0f1a;color:#e0e0e0;border-radius:4px;width:200px;font-size:14px">
+        <input id="scanQtyInput" type="number" value="1" min="1"
+          style="padding:6px 10px;border:1px solid #444;background:#0f0f1a;color:#e0e0e0;border-radius:4px;width:60px;font-size:14px">
+        <button onclick="scanInventory('in')" style="padding:6px 16px;background:#2e7d32;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">+ 입고</button>
+        <button onclick="scanInventory('out')" style="padding:6px 16px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">- 출고</button>
+        <button onclick="startBarcodeCamera()" style="padding:6px 12px;background:#1565c0;color:#fff;border:none;border-radius:4px;cursor:pointer">📷 스캔</button>
+        <div id="barcodeCameraContainer" style="display:none;margin-top:8px;width:100%">
+          <video id="barcodeVideo" style="width:300px;border:2px solid #444;border-radius:4px" autoplay></video>
+          <button onclick="stopBarcodeCamera()" style="margin-left:8px;padding:4px 12px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer">닫기</button>
+        </div>
+      </div>
       <div class="table-wrap">
         <table class="data-table">
           <thead>
@@ -2386,7 +2402,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260324e"></script>
+  <script src="/js/dashboard.js?v=20260324f"></script>
   <script src="/js/operations.js?v=20260315e"></script>
 
 

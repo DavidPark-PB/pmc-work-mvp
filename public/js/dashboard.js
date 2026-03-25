@@ -111,6 +111,74 @@ async function syncAllProducts() {
   }
 }
 
+async function syncToMaster() {
+  var btn = document.getElementById('syncMasterBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '마스터 동기화 중...'; }
+  try {
+    var r = await fetch('/api/sync/master', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    alert('마스터 동기화 완료!\neBay: ' + (d.results.ebay || 0) + '건, Shopify: ' + (d.results.shopify || 0) + '건');
+    loadDashboard();
+  } catch (e) {
+    alert('마스터 동기화 실패: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '마스터 동기화'; }
+  }
+}
+
+async function scanInventory(type) {
+  var sku = document.getElementById('scanSkuInput').value.trim();
+  var qty = parseInt(document.getElementById('scanQtyInput').value) || 1;
+  if (!sku) { alert('SKU를 입력하세요'); return; }
+  try {
+    var r = await fetch('/api/inventory/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku: sku, quantity: qty, type: type })
+    });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    var msg = type === 'in' ? '입고' : '출고';
+    alert(msg + ' 완료!\nSKU: ' + d.sku + '\n이전: ' + d.previousStock + ' → 현재: ' + d.newStock);
+    document.getElementById('scanSkuInput').value = '';
+    document.getElementById('scanQtyInput').value = '1';
+  } catch (e) {
+    alert('실패: ' + e.message);
+  }
+}
+
+var barcodeStream = null;
+function startBarcodeCamera() {
+  var container = document.getElementById('barcodeCameraContainer');
+  var video = document.getElementById('barcodeVideo');
+  container.style.display = 'block';
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+    .then(function(stream) {
+      barcodeStream = stream;
+      video.srcObject = stream;
+      // Use BarcodeDetector API if available
+      if ('BarcodeDetector' in window) {
+        var detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'qr_code'] });
+        var scanInterval = setInterval(function() {
+          if (!barcodeStream) { clearInterval(scanInterval); return; }
+          detector.detect(video).then(function(barcodes) {
+            if (barcodes.length > 0) {
+              document.getElementById('scanSkuInput').value = barcodes[0].rawValue;
+              stopBarcodeCamera();
+              clearInterval(scanInterval);
+            }
+          }).catch(function() {});
+        }, 500);
+      }
+    })
+    .catch(function(err) { alert('카메라 접근 실패: ' + err.message); container.style.display = 'none'; });
+}
+function stopBarcodeCamera() {
+  if (barcodeStream) { barcodeStream.getTracks().forEach(function(t) { t.stop(); }); barcodeStream = null; }
+  document.getElementById('barcodeCameraContainer').style.display = 'none';
+}
+
 // ===== 대시보드 =====
 
 async function loadDashboard() {

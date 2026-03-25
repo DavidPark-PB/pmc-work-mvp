@@ -187,4 +187,96 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-module.exports = { syncPlatformProducts };
+/**
+ * Sync ebay_products + shopify_products → master products table
+ */
+async function syncToMaster() {
+  const db = getClient();
+  const results = { ebay: 0, shopify: 0, errors: [] };
+
+  // 1. eBay → products
+  try {
+    const { data: ebayItems } = await db.from('ebay_products').select('*');
+    if (ebayItems && ebayItems.length > 0) {
+      for (const item of ebayItems) {
+        const sku = item.sku || `EBAY-${item.item_id}`;
+        try {
+          // Check if exists by ebay_item_id or sku
+          const { data: existing } = await db.from('products')
+            .select('id')
+            .or(`ebay_item_id.eq.${item.item_id},sku.eq.${sku}`)
+            .limit(1);
+
+          if (existing && existing.length > 0) {
+            // Update
+            await db.from('products').update({
+              title: item.title || undefined,
+              price_usd: item.price_usd || undefined,
+              stock: item.stock || 0,
+              updated_at: new Date().toISOString(),
+            }).eq('id', existing[0].id);
+          } else {
+            // Insert
+            await db.from('products').insert({
+              sku,
+              title: item.title || '',
+              price_usd: item.price_usd || 0,
+              stock: item.stock || 0,
+              ebay_item_id: item.item_id,
+              status: 'active',
+              workflow_status: 'listed',
+            });
+          }
+          results.ebay++;
+        } catch (e) {
+          // Skip duplicates silently
+        }
+      }
+    }
+  } catch (e) {
+    results.errors.push('eBay: ' + e.message);
+  }
+
+  // 2. Shopify → products
+  try {
+    const { data: shopifyItems } = await db.from('shopify_products').select('*');
+    if (shopifyItems && shopifyItems.length > 0) {
+      for (const item of shopifyItems) {
+        const sku = item.sku || `SHOP-${Date.now()}`;
+        if (/^\d+$/.test(sku)) continue; // Skip 번개장터
+        try {
+          const { data: existing } = await db.from('products')
+            .select('id')
+            .eq('sku', sku)
+            .limit(1);
+
+          if (existing && existing.length > 0) {
+            await db.from('products').update({
+              title: item.title || undefined,
+              price_usd: item.price_usd || undefined,
+              updated_at: new Date().toISOString(),
+            }).eq('id', existing[0].id);
+          } else {
+            await db.from('products').insert({
+              sku,
+              title: item.title || '',
+              price_usd: item.price_usd || 0,
+              stock: 0,
+              status: 'active',
+              workflow_status: 'listed',
+            });
+          }
+          results.shopify++;
+        } catch (e) {
+          // Skip duplicates silently
+        }
+      }
+    }
+  } catch (e) {
+    results.errors.push('Shopify: ' + e.message);
+  }
+
+  return results;
+}
+
+module.exports = { syncPlatformProducts, syncToMaster };
