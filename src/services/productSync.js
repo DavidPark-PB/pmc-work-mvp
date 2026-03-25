@@ -194,9 +194,18 @@ async function syncToMaster() {
   const db = getClient();
   const results = { ebay: 0, shopify: 0, errors: [] };
 
-  // 1. eBay → products
+  // 1. eBay → products (paginated to handle >1000 rows)
   try {
-    const { data: ebayItems } = await db.from('ebay_products').select('*');
+    let ebayItems = [];
+    let from = 0;
+    const pageSize = 1000;
+    while (true) {
+      const { data } = await db.from('ebay_products').select('*').range(from, from + pageSize - 1);
+      if (!data || data.length === 0) break;
+      ebayItems = ebayItems.concat(data);
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
     if (ebayItems && ebayItems.length > 0) {
       for (const item of ebayItems) {
         const sku = item.sku || `EBAY-${item.item_id}`;
@@ -237,9 +246,17 @@ async function syncToMaster() {
     results.errors.push('eBay: ' + e.message);
   }
 
-  // 2. Shopify → products
+  // 2. Shopify → products (paginated)
   try {
-    const { data: shopifyItems } = await db.from('shopify_products').select('*');
+    let shopifyItems = [];
+    let sfrom = 0;
+    while (true) {
+      const { data } = await db.from('shopify_products').select('*').range(sfrom, sfrom + pageSize - 1);
+      if (!data || data.length === 0) break;
+      shopifyItems = shopifyItems.concat(data);
+      if (data.length < pageSize) break;
+      sfrom += pageSize;
+    }
     if (shopifyItems && shopifyItems.length > 0) {
       for (const item of shopifyItems) {
         const sku = item.sku || `SHOP-${Date.now()}`;
