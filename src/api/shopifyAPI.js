@@ -329,26 +329,29 @@ class ShopifyAPI {
   async uploadImagesToCDN(imageUrls) {
     if (!imageUrls || imageUrls.length === 0) return [];
 
-    try {
-      // Create temporary product with images
-      const images = imageUrls.map(url => ({ src: url }));
-      const res = await axios.post(`${this.baseUrl}/products.json`, {
-        product: {
-          title: `_cdn_upload_${Date.now()}`,
-          status: 'draft',
-          images,
-        }
-      }, { headers: this.getHeaders() });
+    // Retry up to 3 times with delay for rate limiting
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        if (attempt > 1) await this.sleep(2000 * attempt);
+        const images = imageUrls.map(url => ({ src: url }));
+        const res = await axios.post(`${this.baseUrl}/products.json`, {
+          product: {
+            title: `_cdn_upload_${Date.now()}`,
+            status: 'draft',
+            images,
+          }
+        }, { headers: this.getHeaders(), timeout: 30000 });
 
-      const product = res.data.product;
-      const cdnUrls = (product.images || []).map(img => img.src);
-
-      // Keep product as draft (deleting removes CDN images)
-      console.log(`[Shopify CDN] Uploaded ${cdnUrls.length} images (draft product ${product.id} kept for CDN)`);
-      return cdnUrls;
-    } catch (err) {
-      console.error('[Shopify CDN] Upload failed:', err.response?.data || err.message);
-      throw new Error('Shopify CDN 업로드 실패: ' + (err.response?.data?.errors || err.message));
+        const product = res.data.product;
+        const cdnUrls = (product.images || []).map(img => img.src);
+        console.log(`[Shopify CDN] Uploaded ${cdnUrls.length} images (draft product ${product.id} kept for CDN)`);
+        return cdnUrls;
+      } catch (err) {
+        const status = err.response?.status;
+        const msg = err.response?.data?.errors || err.message;
+        console.warn(`[Shopify CDN] Attempt ${attempt}/3 failed (${status}): ${msg}`);
+        if (attempt === 3) throw new Error('Shopify CDN 업로드 실패: ' + msg);
+      }
     }
   }
 
