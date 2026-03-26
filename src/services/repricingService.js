@@ -188,9 +188,14 @@ class RepricingService {
     const ebayApi = new EbayAPI();
     let ebayItems = [];
     try {
-      // 첫 페이지만 (캐시 30분 — eBay API 호출 최소화)
-      const page1 = await ebayApi.getActiveListings(1, 200);
-      ebayItems = page1.items || [];
+      // Fetch all pages (up to 25 pages x 200 = 5000 items)
+      for (let page = 1; page <= 25; page++) {
+        const result = await ebayApi.getActiveListings(page, 200);
+        if (!result.items || result.items.length === 0) break;
+        ebayItems = ebayItems.concat(result.items);
+        if (result.items.length < 200) break;
+      }
+      console.log('[BattleDashboard] Loaded', ebayItems.length, 'eBay listings');
     } catch (e) {
       console.error('[BattleDashboard] eBay API 오류:', e.message);
       return [];
@@ -209,13 +214,18 @@ class RepricingService {
 
     if (normalizedListings.length === 0) return [];
 
-    // Batch-fetch all competitor prices in one query
+    // Batch-fetch all competitor prices (split into chunks of 500 for Supabase limit)
     const skus = normalizedListings.map(l => l.sku).filter(Boolean);
-    const { data: compRows } = await db
-      .from('competitor_prices')
-      .select('sku, competitor_id, competitor_price, competitor_shipping, competitor_url, seller_id, seller_feedback, tracked_at')
-      .in('sku', skus)
-      .order('tracked_at', { ascending: false });
+    let compRows = [];
+    for (let i = 0; i < skus.length; i += 500) {
+      const chunk = skus.slice(i, i + 500);
+      const { data } = await db
+        .from('competitor_prices')
+        .select('sku, competitor_id, competitor_price, competitor_shipping, competitor_url, seller_id, seller_feedback, tracked_at')
+        .in('sku', chunk)
+        .order('tracked_at', { ascending: false });
+      if (data) compRows = compRows.concat(data);
+    }
 
     // Fetch Korean product titles from products table
     const { data: productRows } = await db
