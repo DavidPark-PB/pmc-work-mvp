@@ -3125,8 +3125,9 @@ function renderBattleTable(items) {
             : '';
           const sellerTag = c.seller ? `<span style="font-size:8px;color:#5c6bc0;background:#e8eaf6;padding:0 3px;border-radius:2px;margin-left:2px">${esc(c.seller.slice(0,15))}</span>` : '';
           const label = c.itemId ? `<span style="font-size:9px;color:#999;margin-left:2px">${esc(c.itemId.slice(0, 13))}</span>` : '';
+          const delBtn = `<button onclick="battleDeleteCompetitor('${esc(item.sku)}','${esc(c.itemId || '')}',this)" style="font-size:8px;padding:0 3px;background:none;border:1px solid #c62828;color:#c62828;border-radius:2px;cursor:pointer;margin-left:2px" title="경쟁사 삭제">✕</button>`;
           return `<div style="padding:1px 0;${idx > 0 ? 'opacity:0.75;' : ''}">
-            ${badge} <span style="font-size:11px;font-weight:${idx===0?'700':'400'}">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=<b>\$${c.total.toFixed(2)}</b></span>${sellerTag}${label}${link}
+            ${badge} <span style="font-size:11px;font-weight:${idx===0?'700':'400'}">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=<b>\$${c.total.toFixed(2)}</b></span>${sellerTag}${label}${link}${delBtn}
           </div>`;
         }).join('')
       : '<span style="color:#ccc;font-size:11px">없음</span>';
@@ -3234,6 +3235,27 @@ async function runSellerScan() {
   } finally {
     btn.disabled = false;
     btn.textContent = '스캔 시작';
+  }
+}
+
+async function battleDeleteCompetitor(sku, competitorId, btn) {
+  if (!confirm('이 경쟁사를 삭제하시겠습니까?')) return;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    var r = await fetch(API + '/battle/delete-competitor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku: sku, competitorId: competitorId })
+    });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    btn.closest('div').remove();
+    loadBattle();
+  } catch (e) {
+    alert('삭제 실패: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '✕';
   }
 }
 

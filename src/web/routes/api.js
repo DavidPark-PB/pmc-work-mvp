@@ -1932,6 +1932,29 @@ router.post('/battle/add-competitor', async (req, res) => {
   }
 });
 
+// POST /api/battle/delete-competitor — 경쟁사 삭제
+router.post('/battle/delete-competitor', async (req, res) => {
+  try {
+    const { sku, competitorId } = req.body;
+    if (!sku) return res.status(400).json({ success: false, error: 'sku required' });
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+
+    let q = db.from('competitor_prices').delete().eq('sku', sku);
+    if (competitorId) q = q.eq('competitor_id', competitorId);
+    else q = q.eq('competitor_id', '');
+
+    const { error } = await q;
+    if (error) throw new Error(error.message);
+
+    battleCache = null;
+    battleCacheTime = 0;
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/battle/refresh-sellers — 기존 경쟁사에 seller 정보 백필
 router.post('/battle/refresh-sellers', async (req, res) => {
   try {
