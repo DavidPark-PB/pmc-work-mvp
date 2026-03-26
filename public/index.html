@@ -163,6 +163,15 @@
               <option value="alibaba">Alibaba</option>
               <option value="shopee">Shopee</option>
             </select>
+            <select id="allProductSort" onchange="_allProductPage=1;loadAllProducts()">
+              <option value="">최신순</option>
+              <option value="stock-desc">재고 많은순</option>
+              <option value="stock-asc">재고 적은순</option>
+              <option value="price-desc">가격 높은순</option>
+              <option value="price-asc">가격 낮은순</option>
+              <option value="title-asc">상품명 A→Z</option>
+              <option value="title-desc">상품명 Z→A</option>
+            </select>
           </div>
         </div>
         <div class="table-wrap">
@@ -2417,7 +2426,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260326b"></script>
+  <script src="/js/dashboard.js?v=20260326c"></script>
   <script src="/js/operations.js?v=20260315e"></script>
 
 

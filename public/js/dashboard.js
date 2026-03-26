@@ -315,9 +315,15 @@ async function loadAllProducts(platform) {
   try {
     var pf = platform || document.getElementById('allPlatformFilter').value;
     var search = (document.getElementById('allProductSearch') ? document.getElementById('allProductSearch').value : '').trim();
+    var sortEl = document.getElementById('allProductSort');
+    var sortVal = sortEl ? sortEl.value : '';
     var url = API + '/products?limit=100&page=' + _allProductPage;
     if (pf) url += '&platform=' + pf;
     if (search) url += '&search=' + encodeURIComponent(search);
+    if (sortVal) {
+      var parts = sortVal.split('-');
+      url += '&sort=' + parts[0] + '&dir=' + parts[1];
+    }
     var resp = await fetch(url);
     var data = await resp.json();
 

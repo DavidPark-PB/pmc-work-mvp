@@ -143,7 +143,10 @@ router.get('/products', async (req, res) => {
 
     // Platform-specific DB query with pagination
     if (platform === 'ebay') {
-      let q = db.from('ebay_products').select('*', { count: 'exact' }).order('updated_at', { ascending: false });
+      const sortBy = req.query.sort || 'updated_at';
+      const sortDir = req.query.dir === 'asc' ? true : false;
+      const sortCol = { price: 'price_usd', stock: 'stock', title: 'title', updated: 'updated_at' }[sortBy] || 'updated_at';
+      let q = db.from('ebay_products').select('*', { count: 'exact' }).order(sortCol, { ascending: sortDir });
       if (search) q = q.or(`sku.ilike.%${search}%,title.ilike.%${search}%,item_id.ilike.%${search}%`);
       q = q.range(offset, offset + lim - 1);
       const { data, count } = await q;
@@ -151,7 +154,10 @@ router.get('/products', async (req, res) => {
     }
 
     if (platform === 'shopify') {
-      let q = db.from('shopify_products').select('*', { count: 'exact' }).order('updated_at', { ascending: false });
+      const sSortBy = req.query.sort || 'updated_at';
+      const sSortDir = req.query.dir === 'asc' ? true : false;
+      const sSortCol = { price: 'price_usd', title: 'title', updated: 'updated_at' }[sSortBy] || 'updated_at';
+      let q = db.from('shopify_products').select('*', { count: 'exact' }).order(sSortCol, { ascending: sSortDir });
       if (search) q = q.or(`sku.ilike.%${search}%,title.ilike.%${search}%`);
       q = q.range(offset, offset + lim - 1);
       const { data, count } = await q;
