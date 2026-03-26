@@ -1003,40 +1003,6 @@ class EbayAPI {
       itemSpecifics: specifics,
     };
   }
-}
-
-// CLI 테스트
-async function testEbayAPI() {
-  console.log('=== eBay API 테스트 ===\n');
-
-  const ebay = new EbayAPI();
-
-  // 연결 테스트
-  const isConnected = await ebay.testConnection();
-
-  if (!isConnected) {
-    console.log('\n⚠️  eBay Developer Portal에서 User Token을 발급받으세요:');
-    console.log('   https://developer.ebay.com/my/keys\n');
-    return;
-  }
-
-  // 상품 목록 조회
-  console.log('\n📦 활성 리스팅 조회 중...\n');
-  const listings = await ebay.getAllActiveListings();
-
-  if (listings.length > 0) {
-    console.log(`\n샘플 상품 (처음 3개):\n`);
-    listings.slice(0, 3).forEach((item, index) => {
-      console.log(`${index + 1}. ${item.title}`);
-      console.log(`   SKU: ${item.sku}`);
-      console.log(`   가격: $${item.price}`);
-      console.log(`   수량: ${item.quantity}`);
-      console.log(`   판매: ${item.quantitySold}개\n`);
-    });
-  } else {
-    console.log('\n⚠️  활성 리스팅이 없습니다.\n');
-  }
-}
 
   /**
    * Find all listings by a specific seller using eBay Finding API
@@ -1080,6 +1046,40 @@ async function testEbayAPI() {
     }
     return allItems;
   }
+}
+
+// CLI 테스트
+async function testEbayAPI() {
+  console.log('=== eBay API 테스트 ===\n');
+
+  const ebay = new EbayAPI();
+
+  // 연결 테스트
+  const isConnected = await ebay.testConnection();
+
+  if (!isConnected) {
+    console.log('\n⚠️  eBay Developer Portal에서 User Token을 발급받으세요:');
+    console.log('   https://developer.ebay.com/my/keys\n');
+    return;
+  }
+
+  // 상품 목록 조회
+  console.log('\n📦 활성 리스팅 조회 중...\n');
+  const listings = await ebay.getAllActiveListings();
+
+  if (listings.length > 0) {
+    console.log(`\n샘플 상품 (처음 3개):\n`);
+    listings.slice(0, 3).forEach((item, index) => {
+      console.log(`${index + 1}. ${item.title}`);
+      console.log(`   SKU: ${item.sku}`);
+      console.log(`   가격: $${item.price}`);
+      console.log(`   수량: ${item.quantity}`);
+      console.log(`   판매: ${item.quantitySold}개\n`);
+    });
+  } else {
+    console.log('\n⚠️  활성 리스팅이 없습니다.\n');
+  }
+}
 
 if (require.main === module) {
   testEbayAPI();
