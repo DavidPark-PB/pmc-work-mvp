@@ -3122,7 +3122,7 @@ function renderBattleTable(items) {
         <div class="battle-product-info">
           <div>
             <div class="sku">${esc(item.sku)}</div>
-            <div class="title" title="${esc(item.title)}">${esc((item.title || '').slice(0, 40))}${(item.title || '').length > 40 ? '...' : ''}</div>
+            <div class="title" title="${esc(item.title)}" style="white-space:normal;word-break:break-word;max-width:300px;font-size:11px;line-height:1.3">${esc(item.title || '')}</div>
           </div>
         </div>
       </td>
