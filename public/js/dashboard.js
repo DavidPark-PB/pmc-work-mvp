@@ -3055,10 +3055,11 @@ function renderBattleTable(items) {
   // 셀러 필터 (경쟁사 seller 이름 기준)
   if (sellerFilter) filtered = filtered.filter(i => i.competitors.some(c => c.seller === sellerFilter));
 
-  // 검색
+  // 검색 (SKU, itemId, 상품명 모두)
   if (search) {
     filtered = filtered.filter(i =>
       (i.sku || '').toLowerCase().includes(search) ||
+      (i.itemId || '').toLowerCase().includes(search) ||
       (i.title || '').toLowerCase().includes(search)
     );
   }
