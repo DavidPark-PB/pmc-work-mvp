@@ -17,6 +17,7 @@ async function runCompetitorMonitor() {
     const { data } = await db.from('competitor_prices')
       .select('id, sku, competitor_id, competitor_price, competitor_shipping, seller_id, title, status')
       .neq('competitor_id', '')
+      .not('competitor_id', 'is', null)
       .range(from, from + 999);
     if (!data || data.length === 0) break;
     allComps = allComps.concat(data);
