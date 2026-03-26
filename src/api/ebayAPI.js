@@ -1046,6 +1046,41 @@ class EbayAPI {
     }
     return allItems;
   }
+
+  /**
+   * End (remove) an eBay listing
+   * @param {string} itemId - eBay item ID
+   * @param {string} reason - NotAvailable, Incorrect, LostOrBroken, OtherListingError, SellToHighBidder
+   */
+  async endListing(itemId, reason = 'NotAvailable') {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<EndFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <RequesterCredentials><eBayAuthToken>${this.userToken}</eBayAuthToken></RequesterCredentials>
+  <ItemID>${itemId}</ItemID>
+  <EndingReason>${reason}</EndingReason>
+</EndFixedPriceItemRequest>`;
+
+    try {
+      const resp = await axios.post(this.apiUrl, xml, {
+        headers: {
+          'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+          'X-EBAY-API-CALL-NAME': 'EndFixedPriceItem',
+          'X-EBAY-API-SITEID': '0',
+          'Content-Type': 'text/xml',
+        },
+        timeout: 15000,
+      });
+
+      const ack = resp.data.match(/<Ack>(.*?)<\/Ack>/)?.[1];
+      if (ack === 'Success' || ack === 'Warning') {
+        return { success: true, itemId };
+      }
+      const errMsg = resp.data.match(/<ShortMessage>(.*?)<\/ShortMessage>/)?.[1] || 'Unknown error';
+      return { success: false, error: errMsg };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }
 }
 
 // CLI 테스트

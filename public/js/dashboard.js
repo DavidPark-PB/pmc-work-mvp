@@ -2050,13 +2050,31 @@ function renderProductTable(products, tableId, countId) {
 }
 
 // 플랫폼 페이지용 인라인 편집 테이블 (6열: SKU, 상품명, 플랫폼, 가격, 재고, 상태)
+async function endEbayListing(itemId, btn) {
+  if (!confirm('이 eBay 리스팅을 종료(End)하시겠습니까?\nItem ID: ' + itemId + '\n\n종료하면 eBay에서 더 이상 판매되지 않습니다.')) return;
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    var r = await fetch(API + '/products/ebay/' + itemId, { method: 'DELETE' });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    btn.textContent = '종료됨';
+    btn.style.background = '#666';
+    btn.closest('tr').style.opacity = '0.4';
+  } catch (e) {
+    alert('End Listing 실패: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'End';
+  }
+}
+
 function renderEditableTable(products, tableId, countId) {
   const tbody = document.getElementById(tableId || 'allProductTable');
   const countEl = document.getElementById(countId || 'allProductCount');
   countEl.textContent = `(${products.length}개)`;
 
   if (products.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">상품 없음</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">상품 없음</td></tr>';
     return;
   }
 
@@ -2078,6 +2096,7 @@ function renderEditableTable(products, tableId, countId) {
       <td style="text-align:center;font-size:12px;color:#666">${shipVal ? (pf === 'Naver' ? '₩' + Number(shipVal).toLocaleString() : '$' + shipVal) : '-'}</td>
       <td><input type="number" class="inline-input" data-field="quantity" value="${esc(String(qtyVal))}" data-original="${esc(String(qtyVal))}" step="1" placeholder="재고"></td>
       <td class="save-cell"><span class="save-status"></span></td>
+      <td>${pfLower === 'ebay' && p.editId ? '<button onclick="endEbayListing(\'' + esc(p.editId) + '\', this)" style="font-size:10px;padding:2px 8px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer" title="eBay 리스팅 종료">End</button>' : ''}</td>
     </tr>`;
   }).join('');
 }

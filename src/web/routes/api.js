@@ -1055,6 +1055,25 @@ router.put('/products/ebay/:itemId', async (req, res) => {
   }
 });
 
+// DELETE /api/products/ebay/:itemId — eBay 리스팅 종료 (End Listing)
+router.delete('/products/ebay/:itemId', async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const api = getEbayAPI();
+    const result = await api.endListing(itemId);
+    if (result.success) {
+      // Update DB status
+      const { getClient } = require('../../db/supabaseClient');
+      const db = getClient();
+      await db.from('ebay_products').update({ status: 'ended' }).eq('item_id', itemId);
+      platformCache = null;
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // PUT /api/products/shopify/:variantId — Shopify 가격 수정 + Supabase 동기화
 router.put('/products/shopify/:variantId', async (req, res) => {
   try {
