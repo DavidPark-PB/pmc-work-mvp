@@ -3273,10 +3273,25 @@ async function battleAddCompetitor(mySku) {
     });
     var d = await r.json();
     if (!d.success) throw new Error(d.error);
-    alert('경쟁사 추가 완료: $' + d.competitor.price.toFixed(2) + ' + $' + d.competitor.shipping.toFixed(2) + ' = $' + d.competitor.total.toFixed(2) + ' (' + d.competitor.seller + ')');
-    await fetch(API + '/battle/refresh', { method: 'POST' });
-    battleData = null;
-    loadBattle();
+    alert('경쟁사 추가 완료: $' + d.competitor.price.toFixed(2) + ' + $' + d.competitor.shipping.toFixed(2) + ' = $' + d.competitor.total.toFixed(2) + ' (' + (d.competitor.seller || '') + ')');
+    // Update local data instead of full reload
+    if (battleData && battleData.items) {
+      var found = battleData.items.find(function(i) { return i.sku === mySku; });
+      if (found) {
+        found.competitors.push({
+          itemId: d.competitor.itemId || '',
+          price: d.competitor.price || 0,
+          shipping: d.competitor.shipping || 0,
+          total: d.competitor.total || 0,
+          url: 'https://www.ebay.com/itm/' + (d.competitor.itemId || ''),
+          seller: d.competitor.seller || ''
+        });
+        found.cheapestTotal = Math.min.apply(null, found.competitors.map(function(c) { return c.total; }));
+        found.diff = found.myTotal - found.cheapestTotal;
+        found.losing = found.diff > 0;
+        renderBattleTable(battleData.items);
+      }
+    }
   } catch (e) {
     alert('경쟁사 추가 실패: ' + e.message);
   }
