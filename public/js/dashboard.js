@@ -3274,6 +3274,8 @@ async function battleAddCompetitor(mySku) {
     var d = await r.json();
     if (!d.success) throw new Error(d.error);
     alert('경쟁사 추가 완료: $' + d.competitor.price.toFixed(2) + ' + $' + d.competitor.shipping.toFixed(2) + ' = $' + d.competitor.total.toFixed(2) + ' (' + d.competitor.seller + ')');
+    await fetch(API + '/battle/refresh', { method: 'POST' });
+    battleData = null;
     loadBattle();
   } catch (e) {
     alert('경쟁사 추가 실패: ' + e.message);
