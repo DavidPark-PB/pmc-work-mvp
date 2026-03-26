@@ -3475,14 +3475,25 @@ async function applyKillPrice(itemId, price, sku) {
     const result = await res.json();
 
     if (result.success) {
-      btn.textContent = '완료';
-      btn.className = 'kill-price-btn applied';
-      // 2초 후 전투 상황판 새로고침 → 승리/패배 상태 업데이트
-      setTimeout(() => loadBattle(), 2000);
+      btn.textContent = '✓ $' + price.toFixed(2);
+      btn.style.background = '#2e7d32';
+      btn.style.color = '#fff';
+      // Update local data immediately
+      if (battleData && battleData.items) {
+        var found = battleData.items.find(function(i) { return i.itemId === itemId; });
+        if (found) {
+          found.myPrice = price;
+          found.myTotal = price + (found.myShipping || 0);
+          found.diff = found.myTotal - (found.cheapestTotal || 0);
+          found.losing = found.diff > 0;
+          found.killPrice = 0; // Already applied
+          renderBattleTable(battleData.items);
+        }
+      }
     } else {
-      btn.textContent = '실패';
+      alert('킬프라이스 실패: ' + (result.error || '알 수 없는 오류'));
+      btn.textContent = '적용';
       btn.disabled = false;
-      setTimeout(() => { btn.textContent = '적용'; }, 2000);
     }
   } catch (e) {
     btn.textContent = '오류';
