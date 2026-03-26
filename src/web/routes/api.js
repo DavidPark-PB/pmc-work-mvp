@@ -1918,12 +1918,12 @@ router.post('/battle/add-competitor', async (req, res) => {
     res.json({
       success: true,
       competitor: {
-        itemId: item.itemId,
-        title: item.title,
-        price: item.price,
-        shipping: item.shippingCost,
-        total: item.price + item.shippingCost,
-        seller: item.seller,
+        itemId: item ? item.itemId : itemId,
+        title: item ? item.title : '(API 조회 실패 — 나중에 업데이트)',
+        price: item ? item.price : 0,
+        shipping: item ? item.shippingCost : 0,
+        total: item ? (item.price + item.shippingCost) : 0,
+        seller: item ? item.seller : '',
       }
     });
   } catch (e) {

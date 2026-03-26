@@ -189,13 +189,22 @@ class RepricingService {
     let ebayItems = [];
     try {
       // Fetch all pages (up to 25 pages x 200 = 5000 items)
+      const seenIds = new Set();
       for (let page = 1; page <= 25; page++) {
         const result = await ebayApi.getActiveListings(page, 200);
         if (!result.items || result.items.length === 0) break;
-        ebayItems = ebayItems.concat(result.items);
-        if (result.items.length < 200) break;
+        let newCount = 0;
+        for (const item of result.items) {
+          const id = item.itemId || item.sku;
+          if (id && !seenIds.has(id)) {
+            seenIds.add(id);
+            ebayItems.push(item);
+            newCount++;
+          }
+        }
+        if (newCount === 0) break; // No new items = we've seen them all
       }
-      console.log('[BattleDashboard] Loaded', ebayItems.length, 'eBay listings');
+      console.log('[BattleDashboard] Loaded', ebayItems.length, 'unique eBay listings');
     } catch (e) {
       console.error('[BattleDashboard] eBay API 오류:', e.message);
       return [];
