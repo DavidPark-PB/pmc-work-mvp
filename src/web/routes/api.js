@@ -1963,6 +1963,122 @@ router.get('/battle/competitor/:itemId', async (req, res) => {
   }
 });
 
+// POST /api/battle/scan-seller — 경쟁 셀러 전체 리스팅 스캔 + 내 상품과 매칭
+router.post('/battle/scan-seller', async (req, res) => {
+  try {
+    const { sellerName } = req.body;
+    if (!sellerName) return res.status(400).json({ success: false, error: 'sellerName required' });
+
+    const ebay = getEbayAPI();
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+
+    console.log(`[scan-seller] Scanning seller: ${sellerName}`);
+
+    // 1. Get seller's listings
+    const sellerItems = await ebay.findSellerListings(sellerName, 5);
+    console.log(`[scan-seller] Found ${sellerItems.length} listings for ${sellerName}`);
+
+    // 2. Get my active listings
+    const myListings = await ebay.getActiveListings(1, 200);
+    const myItems = myListings.items || [];
+    // Build title keyword index (lowercase, split by space, >3 chars)
+    const myByKeywords = {};
+    for (const my of myItems) {
+      const words = (my.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      for (const w of words) {
+        if (!myByKeywords[w]) myByKeywords[w] = [];
+        myByKeywords[w].push(my);
+      }
+    }
+
+    // Get more pages
+    for (let p = 2; p <= 25; p++) {
+      const page = await ebay.getActiveListings(p, 200);
+      if (!page.items || page.items.length === 0) break;
+      for (const my of page.items) {
+        const words = (my.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+        for (const w of words) {
+          if (!myByKeywords[w]) myByKeywords[w] = [];
+          myByKeywords[w].push(my);
+        }
+      }
+    }
+
+    // 3. Match seller items with my items by keyword overlap
+    let matched = 0;
+    const matchedPairs = [];
+    for (const si of sellerItems) {
+      const siWords = (si.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      const candidateScores = {};
+
+      for (const w of siWords) {
+        const matches = myByKeywords[w] || [];
+        for (const my of matches) {
+          const key = my.sku || my.itemId;
+          candidateScores[key] = (candidateScores[key] || { my, score: 0 });
+          candidateScores[key].score++;
+        }
+      }
+
+      // Best match: highest keyword overlap (min 3 words)
+      const best = Object.values(candidateScores).sort((a, b) => b.score - a.score)[0];
+      if (best && best.score >= 3) {
+        const mySku = best.my.sku || best.my.itemId;
+        matchedPairs.push({ mySku, sellerItem: si });
+
+        // Upsert to competitor_prices
+        const { data: existing } = await db.from('competitor_prices')
+          .select('id')
+          .eq('sku', mySku)
+          .eq('competitor_id', si.itemId)
+          .limit(1);
+
+        if (existing && existing.length > 0) {
+          await db.from('competitor_prices').update({
+            competitor_price: si.price,
+            competitor_shipping: si.shipping,
+            seller_id: sellerName,
+            tracked_at: new Date().toISOString(),
+          }).eq('id', existing[0].id);
+        } else {
+          await db.from('competitor_prices').insert({
+            sku: mySku,
+            platform: 'ebay',
+            competitor_id: si.itemId,
+            competitor_price: si.price,
+            competitor_shipping: si.shipping,
+            competitor_url: `https://www.ebay.com/itm/${si.itemId}`,
+            seller_id: sellerName,
+          });
+        }
+        matched++;
+      }
+    }
+
+    // Clear cache
+    battleCache = null;
+    battleCacheTime = 0;
+
+    console.log(`[scan-seller] ${sellerName}: ${sellerItems.length} listings, ${matched} matched`);
+    res.json({
+      success: true,
+      sellerName,
+      totalListings: sellerItems.length,
+      matched,
+      pairs: matchedPairs.slice(0, 20).map(p => ({
+        mySku: p.mySku,
+        competitorItemId: p.sellerItem.itemId,
+        competitorTitle: p.sellerItem.title.slice(0, 60),
+        competitorPrice: p.sellerItem.price,
+      })),
+    });
+  } catch (e) {
+    console.error('[scan-seller]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ===========================
 // AI 리메이커 (Remarker)
 // ===========================

@@ -3167,6 +3167,51 @@ async function battleRefreshSellers() {
   }
 }
 
+function showSellerScanModal() {
+  var modal = document.getElementById('sellerScanModal');
+  modal.style.display = 'flex';
+  document.getElementById('sellerScanInput').value = '';
+  document.getElementById('sellerScanResult').style.display = 'none';
+  document.getElementById('sellerScanInput').focus();
+}
+function closeSellerScanModal() {
+  document.getElementById('sellerScanModal').style.display = 'none';
+}
+async function runSellerScan() {
+  var sellerName = document.getElementById('sellerScanInput').value.trim();
+  if (!sellerName) { alert('셀러 username을 입력하세요'); return; }
+  var btn = document.getElementById('sellerScanBtn');
+  var resultDiv = document.getElementById('sellerScanResult');
+  btn.disabled = true;
+  btn.textContent = '스캔 중... (1~2분 소요)';
+  resultDiv.style.display = 'block';
+  resultDiv.innerHTML = '🔍 ' + sellerName + ' 리스팅을 검색하고 내 상품과 매칭 중...';
+  try {
+    var r = await fetch('/api/battle/scan-seller', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sellerName: sellerName })
+    });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    resultDiv.innerHTML = '✅ 스캔 완료!<br>' +
+      '셀러 리스팅: ' + d.totalListings + '개<br>' +
+      '겹치는 상품: <strong>' + d.matched + '개</strong> 등록됨';
+    if (d.pairs && d.pairs.length > 0) {
+      resultDiv.innerHTML += '<br><br><strong>매칭 예시:</strong><br>' +
+        d.pairs.slice(0, 5).map(function(p) {
+          return '• ' + p.mySku + ' ↔ $' + p.competitorPrice.toFixed(2);
+        }).join('<br>');
+    }
+    loadBattle(); // Refresh table
+  } catch (e) {
+    resultDiv.innerHTML = '❌ 실패: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '스캔 시작';
+  }
+}
+
 async function battleAddCompetitor(mySku) {
   var itemId = prompt('경쟁사 eBay Item ID를 입력하세요:');
   if (!itemId || !/^\d{9,15}$/.test(itemId.trim())) {
@@ -3302,7 +3347,19 @@ function setupBattleEvents() {
 async function applyKillPrice(itemId, price, sku) {
   const btn = document.getElementById(`kill-${itemId}`);
   if (!btn) return;
-  if (!confirm(`$${price.toFixed(2)}로 가격을 변경하시겠습니까?`)) return;
+  // Find item data for detailed confirm
+  var item = battleData && battleData.items ? battleData.items.find(function(i) { return i.itemId === itemId; }) : null;
+  var msg = '$' + price.toFixed(2) + '로 가격을 변경하시겠습니까?';
+  if (item) {
+    var myNewTotal = price + (item.myShipping || 0);
+    var compTotal = item.cheapestTotal || 0;
+    msg = '킬프라이스 적용\n\n' +
+      '내 새 가격: $' + price.toFixed(2) + ' + 배송 $' + (item.myShipping || 0).toFixed(2) + ' = $' + myNewTotal.toFixed(2) + '\n' +
+      '경쟁사 합계: $' + compTotal.toFixed(2) + '\n' +
+      '차이: -$' + (compTotal - myNewTotal).toFixed(2) + ' (내가 더 쌈)\n\n' +
+      '적용하시겠습니까?';
+  }
+  if (!confirm(msg)) return;
 
   btn.disabled = true;
   btn.textContent = '적용 중...';

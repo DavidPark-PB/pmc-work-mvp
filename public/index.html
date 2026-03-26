@@ -1009,6 +1009,7 @@
             <option value="">전체 셀러</option>
           </select>
           <button onclick="battleRefreshSellers()" id="battleRefreshSellersBtn" style="background:#5c6bc0;color:#fff;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">셀러 정보 업데이트</button>
+          <button onclick="showSellerScanModal()" style="background:#d84315;color:#fff;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">🎯 셀러 스캔</button>
           <input type="text" id="battleSearch" placeholder="SKU 또는 상품명 검색..."
                  style="flex:1;padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;min-width:200px">
           <button class="refresh-btn" id="battleRefreshBtn" style="background:#e53935;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
@@ -1070,6 +1071,20 @@
             </tbody>
           </table>
           <div id="battlePagination"></div>
+        </div>
+      </div>
+      <!-- 셀러 스캔 모달 -->
+      <div id="sellerScanModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:1000;display:none;align-items:center;justify-content:center">
+        <div style="background:#1a1a2e;border-radius:12px;padding:24px;width:400px;max-width:90vw;color:#e0e0e0">
+          <h3 style="margin:0 0 16px">🎯 경쟁 셀러 스캔</h3>
+          <p style="font-size:12px;color:#888;margin:0 0 12px">경쟁 셀러의 eBay username을 입력하면 자동으로 겹치는 상품을 찾아 등록합니다.</p>
+          <input id="sellerScanInput" type="text" placeholder="eBay seller username"
+            style="width:100%;padding:10px;border:1px solid #444;background:#0f0f1a;color:#e0e0e0;border-radius:6px;font-size:14px;box-sizing:border-box;margin-bottom:12px">
+          <div id="sellerScanResult" style="font-size:12px;color:#888;margin-bottom:12px;display:none"></div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="closeSellerScanModal()" style="padding:8px 16px;background:#333;color:#fff;border:none;border-radius:6px;cursor:pointer">취소</button>
+            <button onclick="runSellerScan()" id="sellerScanBtn" style="padding:8px 16px;background:#d84315;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">스캔 시작</button>
+          </div>
         </div>
       </div>
 
@@ -2402,7 +2417,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260324f"></script>
+  <script src="/js/dashboard.js?v=20260326a"></script>
   <script src="/js/operations.js?v=20260315e"></script>
 
 

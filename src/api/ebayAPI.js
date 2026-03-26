@@ -1038,6 +1038,49 @@ async function testEbayAPI() {
   }
 }
 
+  /**
+   * Find all listings by a specific seller using eBay Finding API
+   */
+  async findSellerListings(sellerName, maxPages = 5) {
+    const allItems = [];
+    for (let page = 1; page <= maxPages; page++) {
+      try {
+        const url = `https://svcs.ebay.com/services/search/FindingService/v1` +
+          `?OPERATION-NAME=findItemsAdvanced` +
+          `&SERVICE-VERSION=1.0.0` +
+          `&SECURITY-APPNAME=${this.appId}` +
+          `&RESPONSE-DATA-FORMAT=JSON` +
+          `&REST-PAYLOAD` +
+          `&paginationInput.entriesPerPage=100` +
+          `&paginationInput.pageNumber=${page}` +
+          `&itemFilter(0).name=Seller` +
+          `&itemFilter(0).value=${encodeURIComponent(sellerName)}`;
+
+        const resp = await axios.get(url, { timeout: 15000 });
+        const result = resp.data?.findItemsAdvancedResponse?.[0];
+        const items = result?.searchResult?.[0]?.item || [];
+        if (items.length === 0) break;
+
+        for (const item of items) {
+          allItems.push({
+            itemId: item.itemId?.[0] || '',
+            title: item.title?.[0] || '',
+            price: parseFloat(item.sellingStatus?.[0]?.currentPrice?.[0]?.__value__) || 0,
+            shipping: parseFloat(item.shippingInfo?.[0]?.shippingServiceCost?.[0]?.__value__) || 0,
+            seller: sellerName,
+          });
+        }
+
+        const totalPages = parseInt(result?.paginationOutput?.[0]?.totalPages?.[0]) || 1;
+        if (page >= totalPages) break;
+      } catch (err) {
+        console.error(`[findSellerListings] page ${page} error:`, err.message);
+        break;
+      }
+    }
+    return allItems;
+  }
+
 if (require.main === module) {
   testEbayAPI();
 }
