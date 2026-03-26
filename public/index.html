@@ -1028,8 +1028,14 @@
                   style="background:#1565c0;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
             📥 경쟁사 가져오기
           </button>
+          <button onclick="runCompetitorMonitor(this)"
+                  style="background:#ff6f00;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
+            🔍 경쟁사 변동 체크
+          </button>
         </div>
       </div>
+      <!-- 알림 배너 -->
+      <div id="battleAlerts" style="display:none;margin:8px 16px;padding:10px 16px;background:#fff3e0;border-left:4px solid #ff6f00;border-radius:4px;font-size:12px"></div>
 
       <!-- 자동 리프라이싱 패널 -->
       <div class="card" style="margin-bottom:16px;border-left:4px solid #ff9800">
@@ -2426,7 +2432,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260327a"></script>
+  <script src="/js/dashboard.js?v=20260327b"></script>
   <script src="/js/operations.js?v=20260315e"></script>
 
 

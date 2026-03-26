@@ -2883,7 +2883,44 @@ async function loadBattleSalesStats() {
   }
 }
 
+async function loadBattleAlerts() {
+  try {
+    var r = await fetch(API + '/battle/alerts');
+    var d = await r.json();
+    var el = document.getElementById('battleAlerts');
+    if (!el || !d.alerts || d.alerts.length === 0) { if (el) el.style.display = 'none'; return; }
+    var recent = d.alerts.slice(0, 10);
+    var icons = { ended: '⚠️', price_crash: '🔴', price_change: '📊', title_change: '⚡' };
+    el.innerHTML = '<strong>최근 알림:</strong><br>' + recent.map(function(a) {
+      var parsed = {};
+      try { parsed = JSON.parse(a.data); } catch(e) {}
+      return (icons[a.type] || '📌') + ' ' + a.message;
+    }).join('<br>');
+    el.style.display = 'block';
+  } catch (e) {}
+}
+
+async function runCompetitorMonitor(btn) {
+  btn.disabled = true;
+  btn.textContent = '체크 중...';
+  try {
+    var r = await fetch(API + '/battle/monitor', { method: 'POST' });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    var alertCount = d.alerts ? d.alerts.length : 0;
+    alert('경쟁사 변동 체크 완료!\n확인: ' + (d.checked || 0) + '개\n알림: ' + alertCount + '개');
+    loadBattleAlerts();
+    loadBattle();
+  } catch (e) {
+    alert('실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 경쟁사 변동 체크';
+  }
+}
+
 async function loadBattle() {
+  loadBattleAlerts();
   showLoading(true);
   var _battleRes, _battleText;
   try {

@@ -111,3 +111,15 @@ app.listen(PORT, () => {
   }, delay);
   console.log(`SKU 점수 자동 업데이트: ${next2AM.toLocaleString('ko-KR')} 예약됨`);
 });
+
+// Competitor Monitor — every 6 hours
+setInterval(async () => {
+  try {
+    const { runCompetitorMonitor } = require('./src/services/competitorMonitor');
+    const result = await runCompetitorMonitor();
+    console.log(`[CompetitorMonitor] ${result.alerts?.length || 0} alerts`);
+  } catch (e) {
+    console.error('[CompetitorMonitor] error:', e.message);
+  }
+}, 6 * 60 * 60 * 1000);
+

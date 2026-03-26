@@ -1840,8 +1840,33 @@ router.post('/battle/kill-price', async (req, res) => {
       return res.status(400).json({ error: 'itemId와 newPrice 필수' });
     }
 
+    const price = parseFloat(newPrice);
+
+    // Check for suspicious competitor (price crash > 50%)
+    if (sku) {
+      const { getClient } = require('../../db/supabaseClient');
+      const cpDb = getClient();
+      const { data: comps } = await cpDb.from('competitor_prices')
+        .select('competitor_price, prev_price, status')
+        .eq('sku', sku)
+        .order('competitor_price', { ascending: true })
+        .limit(1);
+      if (comps && comps[0]) {
+        const comp = comps[0];
+        if (comp.status === 'ended') {
+          return res.json({ success: false, error: '경쟁사 리스팅이 종료됨 — 가격 인상을 고려하세요' });
+        }
+        if (comp.prev_price && comp.competitor_price) {
+          const drop = (comp.prev_price - comp.competitor_price) / comp.prev_price * 100;
+          if (drop >= 50) {
+            return res.json({ success: false, error: `경쟁사 가격이 ${drop.toFixed(0)}% 폭락 — 비정상 가격, 따라가지 마세요 (이전: $${comp.prev_price}, 현재: $${comp.competitor_price})` });
+          }
+        }
+      }
+    }
+
     const ebay = getEbayAPI();
-    const result = await ebay.updateItem(itemId, { price: parseFloat(newPrice) });
+    const result = await ebay.updateItem(itemId, { price });
 
     if (result.success) {
       // Update price in Supabase
@@ -1929,6 +1954,35 @@ router.post('/battle/add-competitor', async (req, res) => {
   } catch (e) {
     console.error('[add-competitor]', e.message);
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/battle/monitor — 수동으로 경쟁사 모니터링 실행
+router.post('/battle/monitor', async (req, res) => {
+  try {
+    const { runCompetitorMonitor } = require('../../services/competitorMonitor');
+    const result = await runCompetitorMonitor();
+    battleCache = null;
+    battleCacheTime = 0;
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/battle/alerts — 최근 알림 조회
+router.get('/battle/alerts', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data } = await db.from('competitor_alerts')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    res.json({ success: true, alerts: data || [] });
+  } catch (e) {
+    // Table might not exist
+    res.json({ success: true, alerts: [] });
   }
 });
 
