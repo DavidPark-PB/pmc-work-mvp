@@ -241,6 +241,11 @@ class EbayAPI {
     while ((match = itemRegex.exec(xml)) !== null) {
       const itemXml = match[1];
 
+      // Extract min shipping cost (XML may contain multiple from transactions)
+      const shipMatches = [...itemXml.matchAll(/<ShippingServiceCost[^>]*>([\d.]+)<\/ShippingServiceCost>/g)];
+      const shipCosts = shipMatches.map(m => parseFloat(m[1])).filter(v => v > 0);
+      const minShip = shipCosts.length > 0 ? Math.min(...shipCosts) : 0;
+
       const item = {
         itemId: this.extractValue(itemXml, 'ItemID'),
         sku: this.extractValue(itemXml, 'SKU'),
@@ -248,7 +253,7 @@ class EbayAPI {
         price: this.extractValue(itemXml, 'CurrentPrice'),
         quantity: this.extractValue(itemXml, 'Quantity'),
         quantitySold: this.extractValue(itemXml, 'QuantitySold'),
-        shippingCost: this.extractValue(itemXml, 'ShippingServiceCost'),
+        shippingCost: minShip,
         listingType: this.extractValue(itemXml, 'ListingType'),
         viewUrl: this.extractValue(itemXml, 'ViewItemURL'),
         imageUrl: this.extractValue(itemXml, 'GalleryURL')
