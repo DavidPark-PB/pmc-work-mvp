@@ -76,10 +76,12 @@ function mapToRow(platform, item) {
       title: (item.title || '').slice(0, 500),
       price_usd: parseFloat(item.price) || 0,
       shipping_usd: parseFloat(item.shippingCost) || 0,
-      stock: parseInt(item.quantity) || 0,
+      ebay_api_stock: parseInt(item.quantity) || 0,
       sales_count: parseInt(item.salesCount) || 0,
       status: 'active',
       image_url: item.imageUrl || '',
+      // NOTE: stock is NOT included — preserves manual edits
+      // ebay_api_stock tracks eBay's actual quantity separately
     };
   }
   if (platform === 'shopify') {
