@@ -1887,23 +1887,26 @@ router.post('/battle/add-competitor', async (req, res) => {
 
     // eBay Shopping API로 경쟁사 가격 조회
     const ebay = getEbayAPI();
-    const item = await ebay.getCompetitorItemDetail(String(competitorItemId).trim());
-    if (!item) {
-      return res.status(404).json({ success: false, error: '경쟁사 상품을 찾을 수 없습니다' });
+    const itemId = String(competitorItemId).trim();
+    let item = null;
+    try {
+      item = await ebay.getCompetitorItemDetail(itemId);
+    } catch (e) {
+      console.warn('[add-competitor] API lookup failed:', e.message);
     }
 
-    // competitor_prices 테이블에 저장
+    // competitor_prices 테이블에 저장 (API 실패해도 item ID로 직접 저장)
     const { getClient } = require('../../db/supabaseClient');
     const db = getClient();
     const row = {
       sku: mySku,
       platform: 'ebay',
-      competitor_id: item.itemId,
-      competitor_price: item.price || 0,
-      competitor_shipping: item.shippingCost || 0,
-      competitor_url: item.viewItemURL || `https://www.ebay.com/itm/${item.itemId}`,
-      seller_id: item.seller || '',
-      seller_feedback: item.sellerFeedbackScore || 0,
+      competitor_id: item ? item.itemId : itemId,
+      competitor_price: item ? (item.price || 0) : 0,
+      competitor_shipping: item ? (item.shippingCost || 0) : 0,
+      competitor_url: item ? (item.viewItemURL || `https://www.ebay.com/itm/${itemId}`) : `https://www.ebay.com/itm/${itemId}`,
+      seller_id: item ? (item.seller || '') : '',
+      seller_feedback: item ? (item.sellerFeedbackScore || 0) : 0,
       tracked_at: new Date().toISOString(),
     };
     await db.from('competitor_prices').upsert(row, { onConflict: 'sku,competitor_id' });
