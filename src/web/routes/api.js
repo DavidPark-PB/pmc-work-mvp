@@ -1910,14 +1910,26 @@ router.post('/battle/add-competitor', async (req, res) => {
       return res.status(400).json({ success: false, error: 'mySku와 competitorItemId가 필요합니다' });
     }
 
-    // eBay Shopping API로 경쟁사 가격 조회
+    // eBay Shopping API → Browse API fallback으로 경쟁사 가격 조회
     const ebay = getEbayAPI();
     const itemId = String(competitorItemId).trim();
     let item = null;
+
+    // 1차: Shopping API
     try {
       item = await ebay.getCompetitorItemDetail(itemId);
     } catch (e) {
-      console.warn('[add-competitor] API lookup failed:', e.message);
+      console.warn('[add-competitor] Shopping API failed:', e.message);
+    }
+
+    // 2차: Browse API fallback (Shopping API rate limit 대비)
+    if (!item) {
+      try {
+        console.log('[add-competitor] Trying Browse API for', itemId);
+        item = await ebay._fetchViaBrowseAPI(itemId);
+      } catch (e) {
+        console.warn('[add-competitor] Browse API also failed:', e.message);
+      }
     }
 
     // competitor_prices 테이블에 저장 (API 실패해도 item ID로 직접 저장)
@@ -2026,9 +2038,27 @@ router.post('/battle/refresh-sellers', async (req, res) => {
       return res.json({ success: true, updated: 0, message: '모든 경쟁사에 seller 정보가 있습니다' });
     }
 
-    // GetMultipleItems로 배치 조회 (20개씩)
+    // GetMultipleItems로 배치 조회 (20개씩) + Browse API fallback
     const itemIds = rows.map(r => r.competitor_id).filter(Boolean);
-    const items = await ebay.getCompetitorItems(itemIds);
+    let items = [];
+    try {
+      items = await ebay.getCompetitorItems(itemIds);
+    } catch (e) {
+      console.warn('[refresh-sellers] Shopping API batch failed:', e.message);
+    }
+
+    // Shopping API에서 못 가져온 아이템은 Browse API로 개별 조회
+    const fetchedIds = new Set(items.map(i => i.itemId));
+    const missingIds = itemIds.filter(id => !fetchedIds.has(id));
+    if (missingIds.length > 0) {
+      console.log(`[refresh-sellers] ${missingIds.length} items missing, trying Browse API...`);
+      for (const mid of missingIds.slice(0, 50)) {
+        try {
+          const browseItem = await ebay._fetchViaBrowseAPI(mid);
+          if (browseItem) items.push(browseItem);
+        } catch (e) { /* skip */ }
+      }
+    }
 
     // seller 정보 매핑
     const sellerMap = {};
