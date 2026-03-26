@@ -146,7 +146,7 @@ router.get('/products', async (req, res) => {
       const sortBy = req.query.sort || 'updated_at';
       const sortDir = req.query.dir === 'asc' ? true : false;
       const sortCol = { price: 'price_usd', stock: 'stock', title: 'title', updated: 'updated_at' }[sortBy] || 'updated_at';
-      let q = db.from('ebay_products').select('*', { count: 'exact' }).order(sortCol, { ascending: sortDir });
+      let q = db.from('ebay_products').select('*', { count: 'exact' }).neq('status', 'ended').order(sortCol, { ascending: sortDir });
       if (search) q = q.or(`sku.ilike.%${search}%,title.ilike.%${search}%,item_id.ilike.%${search}%`);
       q = q.range(offset, offset + lim - 1);
       const { data, count } = await q;
@@ -1036,11 +1036,20 @@ router.put('/products/ebay/:itemId', async (req, res) => {
     const result = await api.updateItem(itemId, updates);
     platformCache = null;
 
-    // Sync to Supabase
+    // Sync to Supabase (products table)
     const dbUpdates = {};
     if (price !== undefined) dbUpdates.priceUSD = price;
     if (quantity !== undefined) dbUpdates.stock = quantity;
     const dbResult = await dataSource.updateProduct('itemId', itemId, dbUpdates, sku);
+
+    // Sync to ebay_products table
+    const { getClient } = require('../../db/supabaseClient');
+    const ebayDb = getClient();
+    const ebayUpdates = {};
+    if (price !== undefined) ebayUpdates.price_usd = parseFloat(price);
+    if (quantity !== undefined) ebayUpdates.stock = parseInt(quantity);
+    ebayUpdates.updated_at = new Date().toISOString();
+    await ebayDb.from('ebay_products').update(ebayUpdates).eq('item_id', itemId);
 
     res.json({
       success: result.success,
