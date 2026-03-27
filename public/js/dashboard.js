@@ -3042,22 +3042,22 @@ function renderBattleStats(summary) {
     ? (summary.losing / summary.withCompetitor * 100).toFixed(0) : 0;
 
   el.innerHTML = `
-    <div class="stat-card summary" style="border-left:4px solid #1a1a2e">
+    <div class="stat-card summary" style="border-left:4px solid #1a1a2e;cursor:pointer" onclick="document.getElementById('battleFilter').value='all';battlePage=1;renderBattleTable(battleData.items)">
       <div class="label">전체 상품</div>
       <div class="number">${summary.totalItems || 0}</div>
       <div style="font-size:10px;color:#888;margin-top:4px">eBay 활성 리스팅</div>
     </div>
-    <div class="stat-card summary" style="border-left:4px solid #e53935">
+    <div class="stat-card summary" style="border-left:4px solid #e53935;cursor:pointer" onclick="document.getElementById('battleFilter').value='all';battlePage=1;renderBattleTable(battleData.items)">
       <div class="label">경쟁사 추적</div>
       <div class="number">${summary.withCompetitor || 0}</div>
       <div style="font-size:10px;color:#888;margin-top:4px">${summary.uniqueSellers?.length || 0}개 셀러</div>
     </div>
-    <div class="stat-card summary" style="border-left:4px solid #c62828">
+    <div class="stat-card summary" style="border-left:4px solid #c62828;cursor:pointer" onclick="document.getElementById('battleFilter').value='losing';battlePage=1;renderBattleTable(battleData.items)">
       <div class="label">지고 있는 상품</div>
       <div class="number" style="color:#c62828">${summary.losing || 0}</div>
       <div style="font-size:10px;color:#c62828;margin-top:4px">${losingPct}% 패배율</div>
     </div>
-    <div class="stat-card summary" style="border-left:4px solid #2e7d32">
+    <div class="stat-card summary" style="border-left:4px solid #2e7d32;cursor:pointer" onclick="document.getElementById('battleFilter').value='winning';battlePage=1;renderBattleTable(battleData.items)">
       <div class="label">이기고 있는 상품</div>
       <div class="number" style="color:#2e7d32">${summary.winning || 0}</div>
       <div style="font-size:10px;color:#888;margin-top:4px">가격 우위</div>
