@@ -646,17 +646,90 @@ router.get('/anomalies', async (req, res) => {
     anomalies.lowMargin.sort((a, b) => a.margin - b.margin);
     anomalies.lowStock.sort((a, b) => a.stock - b.stock);
 
+    // 품절 복구 필요: ebay_api_stock이 0이고 이전에 재고가 있었던 상품
+    const { getClient } = require('../../db/supabaseClient');
+    const anomDb = getClient();
+    let outOfStock = [];
+    try {
+      const { data: oosData } = await anomDb.from('ebay_products')
+        .select('item_id, sku, title, stock, ebay_api_stock')
+        .eq('ebay_api_stock', 0)
+        .neq('status', 'ended')
+        .gt('stock', 0)
+        .limit(50);
+      outOfStock = (oosData || []).map(r => ({
+        itemId: r.item_id, sku: r.sku, title: (r.title || '').slice(0, 60),
+        prevStock: r.stock, status: 'eBay에서 품절'
+      }));
+    } catch (e) {}
+
+    // ebay_api_stock 컬럼이 없으면 stock=0인 상품으로 대체
+    if (outOfStock.length === 0) {
+      try {
+        const { data: oosData2 } = await anomDb.from('ebay_products')
+          .select('item_id, sku, title, stock')
+          .eq('stock', 0)
+          .neq('status', 'ended')
+          .limit(50);
+        outOfStock = (oosData2 || []).map(r => ({
+          itemId: r.item_id, sku: r.sku, title: (r.title || '').slice(0, 60),
+          prevStock: 0, status: '재고 0'
+        }));
+      } catch (e) {}
+    }
+
+    // 경쟁사 이상: competitor_alerts 최근 50개
+    let compAnomalies = [];
+    try {
+      const { data: alertData } = await anomDb.from('competitor_alerts')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+      compAnomalies = (alertData || []).map(a => {
+        let parsed = {};
+        try { parsed = JSON.parse(a.data || '{}'); } catch(e) {}
+        return {
+          sku: a.sku, seller: a.seller_id, type: a.type,
+          competitorId: a.competitor_id, message: a.message,
+          oldPrice: parsed.oldPrice, newPrice: parsed.newPrice,
+          createdAt: a.created_at,
+        };
+      });
+    } catch (e) {}
+
     res.json({
       ...anomalies,
+      outOfStock,
+      compAnomalies,
       summary: {
         lowMargin: anomalies.lowMargin.length,
         lowStock: anomalies.lowStock.length,
         salesDrop: anomalies.salesDrop.length,
-        total: anomalies.lowMargin.length + anomalies.lowStock.length + anomalies.salesDrop.length
+        outOfStock: outOfStock.length,
+        compAnomalies: compAnomalies.length,
+        total: anomalies.lowMargin.length + anomalies.lowStock.length + anomalies.salesDrop.length + outOfStock.length + compAnomalies.length
       }
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/anomalies/restore-stock — 품절 상품 재고 복구
+router.post('/anomalies/restore-stock', async (req, res) => {
+  try {
+    const { itemId, quantity } = req.body;
+    const qty = parseInt(quantity) || 5;
+    const ebay = getEbayAPI();
+    const result = await ebay.updateItem(itemId, { quantity: qty });
+    if (result.success) {
+      const { getClient } = require('../../db/supabaseClient');
+      const db = getClient();
+      await db.from('ebay_products').update({ stock: qty, ebay_api_stock: qty }).eq('item_id', itemId);
+    }
+    res.json({ success: result.success, itemId, quantity: qty, error: result.error });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 

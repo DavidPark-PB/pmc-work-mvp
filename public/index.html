@@ -1226,6 +1226,44 @@
         </div>
       </div>
 
+      <!-- 품절 복구 필요 -->
+      <div class="content-grid" style="margin-top:16px">
+        <div class="card">
+          <div class="card-header">
+            <h3>품절 복구 필요 <span class="count anomaly-count red" id="outOfStockCount">0</span></h3>
+            <button onclick="restoreAllOutOfStock(this)" style="background:#c62828;color:#fff;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">일괄 복구 (재고 5)</button>
+          </div>
+          <p style="font-size:11px;color:#888;margin:0 0 8px;padding:0 16px">갑자기 품절된 상품 — Lister 연결 이슈 또는 eBay 정책</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>SKU</th><th>상품명</th><th>이전 재고</th><th>상태</th><th>조치</th></tr>
+              </thead>
+              <tbody id="outOfStockTable">
+                <tr><td colspan="5" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>경쟁사 이상 <span class="count anomaly-count orange" id="compAnomalyCount">0</span></h3>
+          </div>
+          <p style="font-size:11px;color:#888;margin:0 0 8px;padding:0 16px">경쟁사 리스팅 종료, 가격 폭락, 제목 변경</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>내 SKU</th><th>경쟁사</th><th>유형</th><th>내용</th><th>조치</th></tr>
+              </thead>
+              <tbody id="compAnomalyTable">
+                <tr><td colspan="5" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <div class="card" style="margin-top:16px">
         <h3>판매 급감 <span class="count anomaly-count yellow" id="salesDropCount">0</span></h3>
         <div class="table-wrap">
@@ -2432,7 +2470,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260327d"></script>
+  <script src="/js/dashboard.js?v=20260328a"></script>
   <script src="/js/operations.js?v=20260315e"></script>
 
 

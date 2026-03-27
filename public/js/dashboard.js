@@ -813,6 +813,8 @@ async function loadAnomalies() {
     renderAnomalyTable(data.lowMargin || [], 'lowMarginTable', 'lowMarginCount', renderLowMarginRow);
     renderAnomalyTable(data.lowStock || [], 'lowStockTable', 'lowStockCount', renderLowStockRow);
     renderAnomalyTable(data.salesDrop || [], 'salesDropTable', 'salesDropCount', renderSalesDropRow);
+    renderOutOfStockTable(data.outOfStock || []);
+    renderCompAnomalyTable(data.compAnomalies || []);
   } catch (err) {
     console.error('Anomalies load failed:', err);
   } finally {
@@ -834,6 +836,14 @@ function renderAnomalySummary(summary) {
     <div class="anomaly-card yellow">
       <div class="number">${summary.salesDrop || 0}</div>
       <div class="label">판매 급감</div>
+    </div>
+    <div class="anomaly-card" style="background:#c62828;color:#fff">
+      <div class="number">${summary.outOfStock || 0}</div>
+      <div class="label">품절 복구</div>
+    </div>
+    <div class="anomaly-card" style="background:#e65100;color:#fff">
+      <div class="number">${summary.compAnomalies || 0}</div>
+      <div class="label">경쟁사 이상</div>
     </div>
     <div class="anomaly-card blue">
       <div class="number">${summary.total || 0}</div>
@@ -882,6 +892,101 @@ function renderSalesDropRow(item) {
     <td>${item.prev3weeks}</td>
     <td style="color:#c62828;font-weight:600">-${change}%</td>
   </tr>`;
+}
+
+function renderOutOfStockTable(items) {
+  var tbody = document.getElementById('outOfStockTable');
+  var countEl = document.getElementById('outOfStockCount');
+  if (!tbody) return;
+  if (countEl) countEl.textContent = items.length;
+  if (items.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">품절 상품 없음</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items.map(function(item) {
+    return '<tr>' +
+      '<td>' + esc(item.sku || item.itemId) + '</td>' +
+      '<td title="' + esc(item.title) + '">' + esc(item.title) + '</td>' +
+      '<td>' + (item.prevStock || 0) + '</td>' +
+      '<td style="color:#c62828;font-weight:600">' + esc(item.status) + '</td>' +
+      '<td><button onclick="restoreStock(\'' + esc(item.itemId) + '\',this)" style="background:#2e7d32;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">복구 (5개)</button></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function renderCompAnomalyTable(items) {
+  var tbody = document.getElementById('compAnomalyTable');
+  var countEl = document.getElementById('compAnomalyCount');
+  if (!tbody) return;
+  if (countEl) countEl.textContent = items.length;
+  if (items.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">경쟁사 이상 없음</td></tr>';
+    return;
+  }
+  var typeLabels = { ended: '리스팅 종료', price_crash: '가격 폭락', price_change: '가격 변동', title_change: '제목 변경' };
+  var typeColors = { ended: '#c62828', price_crash: '#d84315', price_change: '#ff8f00', title_change: '#5c6bc0' };
+  tbody.innerHTML = items.slice(0, 30).map(function(a) {
+    var label = typeLabels[a.type] || a.type;
+    var color = typeColors[a.type] || '#666';
+    var detail = a.message || '';
+    if (a.oldPrice && a.newPrice) detail = '$' + a.oldPrice.toFixed(2) + ' → $' + a.newPrice.toFixed(2);
+    return '<tr>' +
+      '<td>' + esc(a.sku) + '</td>' +
+      '<td>' + esc(a.seller || '') + '</td>' +
+      '<td><span style="color:' + color + ';font-weight:600;font-size:11px">' + label + '</span></td>' +
+      '<td style="font-size:11px">' + esc(detail) + '</td>' +
+      '<td>' + (a.type === 'ended' ? '<button onclick="battleDeleteCompetitor(\'' + esc(a.sku) + '\',\'' + esc(a.competitorId || '') + '\',this)" style="font-size:10px;padding:3px 8px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer">삭제</button>' : '') + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+async function restoreStock(itemId, btn) {
+  if (!confirm('이 상품 재고를 5개로 복구하시겠습니까?')) return;
+  btn.disabled = true;
+  btn.textContent = '복구 중...';
+  try {
+    var r = await fetch(API + '/anomalies/restore-stock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ itemId: itemId, quantity: 5 })
+    });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    btn.textContent = '완료';
+    btn.style.background = '#666';
+    btn.closest('tr').style.opacity = '0.4';
+  } catch (e) {
+    alert('복구 실패: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '복구 (5개)';
+  }
+}
+
+async function restoreAllOutOfStock(btn) {
+  var rows = document.querySelectorAll('#outOfStockTable tr button');
+  if (rows.length === 0) { alert('복구할 상품이 없습니다'); return; }
+  if (!confirm(rows.length + '개 상품 재고를 5개로 일괄 복구하시겠습니까?')) return;
+  btn.disabled = true;
+  btn.textContent = '복구 중...';
+  var success = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var itemBtn = rows[i];
+    if (itemBtn.disabled) continue;
+    var itemId = itemBtn.getAttribute('onclick').match(/'([^']+)'/)?.[1];
+    if (!itemId) continue;
+    try {
+      var r = await fetch(API + '/anomalies/restore-stock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemId: itemId, quantity: 5 })
+      });
+      var d = await r.json();
+      if (d.success) { success++; itemBtn.textContent = '완료'; itemBtn.style.background = '#666'; itemBtn.closest('tr').style.opacity = '0.4'; }
+    } catch (e) {}
+  }
+  alert(success + '개 상품 복구 완료');
+  btn.disabled = false;
+  btn.textContent = '일괄 복구 (재고 5)';
 }
 
 // ===== 효자상품 TOP =====
