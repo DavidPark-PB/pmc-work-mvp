@@ -223,11 +223,13 @@ class RepricingService {
 
     if (normalizedListings.length === 0) return [];
 
-    // Batch-fetch all competitor prices (split into chunks of 500 for Supabase limit)
+    // Batch-fetch all competitor prices by SKU and itemId (split into chunks of 500)
     const skus = normalizedListings.map(l => l.sku).filter(Boolean);
+    const itemIds = normalizedListings.map(l => l.itemId).filter(Boolean);
+    const allKeys = [...new Set([...skus, ...itemIds])];
     let compRows = [];
-    for (let i = 0; i < skus.length; i += 500) {
-      const chunk = skus.slice(i, i + 500);
+    for (let i = 0; i < allKeys.length; i += 500) {
+      const chunk = allKeys.slice(i, i + 500);
       const { data } = await db
         .from('competitor_prices')
         .select('sku, competitor_id, competitor_price, competitor_shipping, competitor_url, seller_id, seller_feedback, tracked_at')
@@ -260,7 +262,8 @@ class RepricingService {
     });
 
     const dashboard = normalizedListings.map(p => {
-      const competitors = compList[p.sku] || [];
+      // Match by SKU or itemId (CSV imports use eBay item ID as SKU)
+      const competitors = compList[p.sku] || compList[p.itemId] || [];
       const cheapest = competitors[0] || null;
       return {
         sku: p.sku,
