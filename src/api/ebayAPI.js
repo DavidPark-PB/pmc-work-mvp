@@ -1011,41 +1011,49 @@ class EbayAPI {
   /**
    * Find all listings by a specific seller using Browse API
    */
-  async findSellerListings(sellerName, maxPages = 5) {
+  async findSellerListings(sellerName, maxPages = 3) {
     const allItems = [];
+    const seenIds = new Set();
     const token = await this.getApplicationToken();
-    let offset = 0;
-    const limit = 200;
+    const headers = { 'Authorization': `Bearer ${token}`, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US' };
 
-    for (let page = 1; page <= maxPages; page++) {
-      try {
-        const url = `https://api.ebay.com/buy/browse/v1/item_summary/search?q=*&limit=${limit}&offset=${offset}&filter=sellers:%7B${encodeURIComponent(sellerName)}%7D`;
-        const resp = await axios.get(url, {
-          headers: { 'Authorization': `Bearer ${token}`, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US' },
-          timeout: 20000,
-        });
+    // Browse API requires a search query — use multiple keywords to cover more items
+    const queries = ['korean', 'pokemon', 'starbucks', 'card', 'toy', 'figure', 'plush', 'k-pop', 'game', 'set'];
 
-        const items = resp.data?.itemSummaries || [];
-        if (items.length === 0) break;
+    for (const q of queries) {
+      let offset = 0;
+      for (let page = 1; page <= maxPages; page++) {
+        try {
+          const url = `https://api.ebay.com/buy/browse/v1/item_summary/search?q=${encodeURIComponent(q)}&limit=200&offset=${offset}&filter=sellers:%7B${encodeURIComponent(sellerName)}%7D`;
+          const resp = await axios.get(url, { headers, timeout: 20000 });
+          const items = resp.data?.itemSummaries || [];
+          if (items.length === 0) break;
 
-        for (const item of items) {
-          allItems.push({
-            itemId: item.legacyItemId || item.itemId || '',
-            title: item.title || '',
-            price: parseFloat(item.price?.value) || 0,
-            shipping: parseFloat(item.shippingOptions?.[0]?.shippingCost?.value) || 0,
-            seller: sellerName,
-          });
+          for (const item of items) {
+            const id = item.legacyItemId || item.itemId || '';
+            if (id && !seenIds.has(id)) {
+              seenIds.add(id);
+              allItems.push({
+                itemId: id,
+                title: item.title || '',
+                price: parseFloat(item.price?.value) || 0,
+                shipping: parseFloat(item.shippingOptions?.[0]?.shippingCost?.value) || 0,
+                seller: sellerName,
+              });
+            }
+          }
+
+          const total = resp.data?.total || 0;
+          offset += 200;
+          if (offset >= total) break;
+        } catch (err) {
+          // Skip this query on error, try next
+          break;
         }
-
-        const total = resp.data?.total || 0;
-        offset += limit;
-        if (offset >= total) break;
-      } catch (err) {
-        console.error(`[findSellerListings] page ${page} error:`, err.response?.data?.errors?.[0]?.message || err.message);
-        break;
       }
     }
+
+    console.log(`[findSellerListings] ${sellerName}: ${allItems.length} unique items found`);
     return allItems;
   }
 
