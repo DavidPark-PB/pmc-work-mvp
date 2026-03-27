@@ -1842,25 +1842,29 @@ router.post('/battle/kill-price', async (req, res) => {
 
     const price = parseFloat(newPrice);
 
-    // Check for suspicious competitor (price crash > 50%)
+    // Check for suspicious competitor (price crash > 50%) — only active competitors with real item IDs
     if (sku) {
       const { getClient } = require('../../db/supabaseClient');
       const cpDb = getClient();
       const { data: comps } = await cpDb.from('competitor_prices')
-        .select('competitor_price, prev_price, status')
+        .select('competitor_price, prev_price, status, competitor_id')
         .eq('sku', sku)
-        .order('competitor_price', { ascending: true })
-        .limit(1);
-      if (comps && comps[0]) {
-        const comp = comps[0];
-        if (comp.status === 'ended') {
-          return res.json({ success: false, error: '경쟁사 리스팅이 종료됨 — 가격 인상을 고려하세요' });
-        }
-        if (comp.prev_price && comp.competitor_price) {
-          const drop = (comp.prev_price - comp.competitor_price) / comp.prev_price * 100;
-          if (drop >= 50) {
-            return res.json({ success: false, error: `경쟁사 가격이 ${drop.toFixed(0)}% 폭락 — 비정상 가격, 따라가지 마세요 (이전: $${comp.prev_price}, 현재: $${comp.competitor_price})` });
-          }
+        .neq('competitor_id', '')
+        .order('competitor_price', { ascending: true });
+
+      // Check if ALL active competitors are ended
+      const activeComps = (comps || []).filter(c => c.status !== 'ended' && c.competitor_id);
+      if (activeComps.length === 0 && comps && comps.length > 0) {
+        // All competitors ended — warn but don't block
+        console.log('[kill-price] Warning: all competitors ended for', sku);
+      }
+
+      // Check for price crash on active competitors only
+      const cheapest = activeComps[0];
+      if (cheapest && cheapest.prev_price && cheapest.competitor_price) {
+        const drop = (cheapest.prev_price - cheapest.competitor_price) / cheapest.prev_price * 100;
+        if (drop >= 50) {
+          return res.json({ success: false, error: `경쟁사 가격이 ${drop.toFixed(0)}% 폭락 — 비정상 가격, 따라가지 마세요 (이전: $${cheapest.prev_price}, 현재: $${cheapest.competitor_price})` });
         }
       }
     }
