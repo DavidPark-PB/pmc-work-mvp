@@ -44,7 +44,20 @@ async function runCompetitorMonitor() {
       items = await ebay.getCompetitorItems(batch);
     } catch (e) {
       console.warn('[CompetitorMonitor] API batch error:', e.message);
-      continue;
+      continue; // Skip entire batch on API error
+    }
+
+    // If API returned nothing for entire batch, it's likely rate limit — skip, don't mark as ended
+    if (items.length === 0 && batch.length > 0) {
+      console.warn(`[CompetitorMonitor] API returned 0 items for batch of ${batch.length} — likely rate limit, skipping`);
+      // Try Browse API for individual items
+      for (const bid of batch.slice(0, 5)) {
+        try {
+          const browseItem = await ebay._fetchViaBrowseAPI(bid);
+          if (browseItem) items.push(browseItem);
+        } catch (e) { /* skip */ }
+      }
+      if (items.length === 0) continue; // Still nothing — skip entire batch
     }
 
     const itemMap = {};
@@ -55,18 +68,20 @@ async function runCompetitorMonitor() {
       const live = itemMap[comp.competitor_id];
 
       if (!live) {
-        // Listing ended/removed
-        await db.from('competitor_prices').update({
-          status: 'ended',
-          prev_price: comp.competitor_price,
-        }).eq('id', comp.id);
-        alerts.push({
-          type: 'ended',
-          sku: comp.sku,
-          seller: comp.seller_id,
-          competitorId: comp.competitor_id,
-          message: `${comp.seller_id || 'Unknown'} listing ended (${comp.competitor_id})`,
-        });
+        // Only mark as ended if we got SOME results from API (not total failure)
+        if (items.length > 0) {
+          await db.from('competitor_prices').update({
+            status: 'ended',
+            prev_price: comp.competitor_price,
+          }).eq('id', comp.id);
+          alerts.push({
+            type: 'ended',
+            sku: comp.sku,
+            seller: comp.seller_id,
+            competitorId: comp.competitor_id,
+            message: `${comp.seller_id || 'Unknown'} listing ended (${comp.competitor_id})`,
+          });
+        }
         continue;
       }
 
