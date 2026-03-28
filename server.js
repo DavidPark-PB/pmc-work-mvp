@@ -112,14 +112,10 @@ app.listen(PORT, () => {
   console.log(`SKU 점수 자동 업데이트: ${next2AM.toLocaleString('ko-KR')} 예약됨`);
 });
 
-// Competitor Monitor — every 6 hours
-setInterval(async () => {
-  try {
-    const { runCompetitorMonitor } = require('./src/services/competitorMonitor');
-    const result = await runCompetitorMonitor();
-    console.log(`[CompetitorMonitor] ${result.alerts?.length || 0} alerts`);
-  } catch (e) {
-    console.error('[CompetitorMonitor] error:', e.message);
-  }
-}, 6 * 60 * 60 * 1000);
+// Competitor Monitor — DISABLED (was causing false 'ended' marking due to API rate limits)
+// Use manual "경쟁사 변동 체크" button instead
+// setInterval(async () => {
+//   const { runCompetitorMonitor } = require('./src/services/competitorMonitor');
+//   await runCompetitorMonitor();
+// }, 6 * 60 * 60 * 1000);
 
