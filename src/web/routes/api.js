@@ -2023,7 +2023,18 @@ router.post('/battle/add-competitor', async (req, res) => {
       seller_feedback: item ? (item.sellerFeedbackScore || 0) : 0,
       tracked_at: new Date().toISOString(),
     };
-    await db.from('competitor_prices').upsert(row, { onConflict: 'sku,competitor_id' });
+    // Check if exists, then update or insert (upsert requires unique constraint)
+    const compId = row.competitor_id;
+    const { data: existing } = await db.from('competitor_prices')
+      .select('id').eq('sku', mySku).eq('competitor_id', compId).limit(1);
+
+    if (existing && existing.length > 0) {
+      const { error: updateErr } = await db.from('competitor_prices').update(row).eq('id', existing[0].id);
+      if (updateErr) console.error('[add-competitor] Update error:', updateErr.message);
+    } else {
+      const { error: insertErr } = await db.from('competitor_prices').insert(row);
+      if (insertErr) console.error('[add-competitor] Insert error:', insertErr.message);
+    }
 
     // 캐시 초기화
     battleCache = null;
