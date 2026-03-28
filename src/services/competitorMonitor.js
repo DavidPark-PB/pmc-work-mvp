@@ -37,27 +37,25 @@ async function runCompetitorMonitor() {
   // Batch check with GetMultipleItems (20 at a time)
   const itemIds = [...new Set(activeComps.map(c => c.competitor_id).filter(Boolean))];
 
-  for (let i = 0; i < itemIds.length; i += 20) {
-    const batch = itemIds.slice(i, i + 20);
+  // Use Browse API only (Shopping API rate limit causes false 'ended' marking)
+  for (let i = 0; i < itemIds.length; i += 10) {
+    const batch = itemIds.slice(i, i + 10);
     let items = [];
-    try {
-      items = await ebay.getCompetitorItems(batch);
-    } catch (e) {
-      console.warn('[CompetitorMonitor] API batch error:', e.message);
-      continue; // Skip entire batch on API error
+
+    for (const bid of batch) {
+      try {
+        const browseItem = await ebay._fetchViaBrowseAPI(bid);
+        if (browseItem) items.push(browseItem);
+      } catch (e) {
+        // Browse API error for this item — skip, don't mark as ended
+        console.warn(`[CompetitorMonitor] Browse API error for ${bid}:`, e.message);
+      }
     }
 
-    // If API returned nothing for entire batch, it's likely rate limit — skip, don't mark as ended
+    // If we couldn't fetch ANY item in batch, likely API issue — skip entire batch
     if (items.length === 0 && batch.length > 0) {
-      console.warn(`[CompetitorMonitor] API returned 0 items for batch of ${batch.length} — likely rate limit, skipping`);
-      // Try Browse API for individual items
-      for (const bid of batch.slice(0, 5)) {
-        try {
-          const browseItem = await ebay._fetchViaBrowseAPI(bid);
-          if (browseItem) items.push(browseItem);
-        } catch (e) { /* skip */ }
-      }
-      if (items.length === 0) continue; // Still nothing — skip entire batch
+      console.warn(`[CompetitorMonitor] All ${batch.length} items failed — skipping batch`);
+      continue;
     }
 
     const itemMap = {};
