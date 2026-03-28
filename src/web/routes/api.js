@@ -2206,7 +2206,7 @@ router.post('/battle/scan-seller', async (req, res) => {
     // Build title keyword index (lowercase, split by space, >3 chars)
     const myByKeywords = {};
     for (const my of myItems) {
-      const words = (my.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      const words = (my.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 4);
       for (const w of words) {
         if (!myByKeywords[w]) myByKeywords[w] = [];
         myByKeywords[w].push(my);
@@ -2218,7 +2218,7 @@ router.post('/battle/scan-seller', async (req, res) => {
       const page = await ebay.getActiveListings(p, 200);
       if (!page.items || page.items.length === 0) break;
       for (const my of page.items) {
-        const words = (my.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+        const words = (my.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 4);
         for (const w of words) {
           if (!myByKeywords[w]) myByKeywords[w] = [];
           myByKeywords[w].push(my);
@@ -2227,24 +2227,27 @@ router.post('/battle/scan-seller', async (req, res) => {
     }
 
     // 3. Match seller items with my items by keyword overlap
+    // Exclude common/generic words that cause false matches
+    const stopWords = new Set(['korean', 'korea', 'card', 'game', 'board', 'figure', 'edition', 'limited', 'sealed', 'booster', 'pack', 'official', 'with', 'from', 'this', 'that', 'toys', 'doll', 'plush', 'mini', 'cute', 'baby', 'kids', 'animation']);
     let matched = 0;
     const matchedPairs = [];
     for (const si of sellerItems) {
-      const siWords = (si.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      const siWords = (si.title || '').toLowerCase().split(/\s+/).filter(w => w.length > 4 && !stopWords.has(w));
       const candidateScores = {};
 
       for (const w of siWords) {
         const matches = myByKeywords[w] || [];
         for (const my of matches) {
           const key = my.sku || my.itemId;
-          candidateScores[key] = (candidateScores[key] || { my, score: 0 });
+          candidateScores[key] = (candidateScores[key] || { my, score: 0, words: [] });
           candidateScores[key].score++;
+          if (!candidateScores[key].words.includes(w)) candidateScores[key].words.push(w);
         }
       }
 
-      // Best match: highest keyword overlap (min 3 words)
+      // Best match: highest keyword overlap (min 5 unique words)
       const best = Object.values(candidateScores).sort((a, b) => b.score - a.score)[0];
-      if (best && best.score >= 3) {
+      if (best && best.words.length >= 5) {
         const mySku = best.my.sku || best.my.itemId;
         matchedPairs.push({ mySku, sellerItem: si });
 
