@@ -248,17 +248,19 @@ class RepricingService {
       productTitleMap[p.sku] = p.title_ko || p.title || null;
     });
 
-    // Build competitor list: sku → up to 3 competitors sorted by total (price + shipping) asc
-    const compList = {};
+    // Build competitor list: sku → collect all, sort by total asc, keep top 3
+    const compListAll = {};
     (compRows || []).forEach(c => {
-      if (!compList[c.sku]) compList[c.sku] = [];
-      if (compList[c.sku].length < 3) compList[c.sku].push(c);
+      if (!compListAll[c.sku]) compListAll[c.sku] = [];
+      compListAll[c.sku].push(c);
     });
-    Object.keys(compList).forEach(sku => {
-      compList[sku].sort((a, b) =>
+    const compList = {};
+    Object.keys(compListAll).forEach(sku => {
+      compListAll[sku].sort((a, b) =>
         (parseFloat(a.competitor_price) + parseFloat(a.competitor_shipping || 0)) -
         (parseFloat(b.competitor_price) + parseFloat(b.competitor_shipping || 0))
       );
+      compList[sku] = compListAll[sku].slice(0, 3); // Keep cheapest 3
     });
 
     const dashboard = normalizedListings.map(p => {
