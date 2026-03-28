@@ -3393,8 +3393,24 @@ async function battleDeleteCompetitor(sku, competitorId, btn) {
     });
     var d = await r.json();
     if (!d.success) throw new Error(d.error);
-    btn.closest('div').remove();
-    loadBattle();
+    // Update local data and re-render
+    if (battleData && battleData.items) {
+      var found = battleData.items.find(function(i) { return i.sku === sku || i.itemId === sku; });
+      if (found) {
+        found.competitors = found.competitors.filter(function(c) { return c.itemId !== competitorId; });
+        if (found.competitors.length > 0) {
+          var cheapest = found.competitors.reduce(function(a, b) { return a.total < b.total ? a : b; });
+          found.cheapestTotal = cheapest.total;
+          found.diff = found.myTotal - found.cheapestTotal;
+          found.losing = found.diff > 0;
+        } else {
+          found.cheapestTotal = null;
+          found.diff = null;
+          found.losing = false;
+        }
+        renderBattleTable(battleData.items);
+      }
+    }
   } catch (e) {
     alert('삭제 실패: ' + e.message);
     btn.disabled = false;
