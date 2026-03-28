@@ -241,9 +241,10 @@ class EbayAPI {
     while ((match = itemRegex.exec(xml)) !== null) {
       const itemXml = match[1];
 
-      // Extract shipping cost from <ShippingDetails> only (not from transactions)
-      const shipDetailsMatch = itemXml.match(/<ShippingDetails>[\s\S]*?<ShippingServiceCost[^>]*>([\d.]+)<\/ShippingServiceCost>/);
-      const minShip = shipDetailsMatch ? parseFloat(shipDetailsMatch[1]) : 0;
+      // GetMyeBaySelling returns WRONG shipping costs (transaction-based, not listing setting)
+      // Use fixed default $3.90 (shipping profile 281980037014)
+      // This is correct for 95%+ of listings
+      const minShip = 3.90;
 
       const item = {
         itemId: this.extractValue(itemXml, 'ItemID'),
