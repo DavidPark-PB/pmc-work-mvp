@@ -3029,7 +3029,7 @@ async function loadBattle() {
   showLoading(true);
   var _battleRes, _battleText;
   try {
-    _battleRes = await fetch(`${API}/battle/data`);
+    _battleRes = await fetch(`${API}/battle/data?refresh=true`);
     if (!_battleRes.ok) throw new Error('HTTP ' + _battleRes.status);
     _battleText = await _battleRes.text();
     battleData = JSON.parse(_battleText);

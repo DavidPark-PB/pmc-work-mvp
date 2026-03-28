@@ -97,7 +97,7 @@ const CACHE_TTL = 60000;
 const ANALYSIS_CACHE_TTL = 120000; // 2분
 let battleCache = null;
 let battleCacheTime = 0;
-const BATTLE_CACHE_TTL = 1800000; // 30분
+const BATTLE_CACHE_TTL = 300000; // 5분
 
 // ===========================
 // 기존 엔드포인트
