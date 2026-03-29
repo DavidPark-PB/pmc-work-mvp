@@ -715,6 +715,48 @@ router.get('/anomalies', async (req, res) => {
   }
 });
 
+// POST /api/products/ebay/clear-sku — SKU(Custom Label) 일괄 초기화 (Lister 연결 끊기)
+router.post('/products/ebay/clear-sku', async (req, res) => {
+  try {
+    const ebay = getEbayAPI();
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+
+    let allItems = [];
+    let page = 1;
+    while (page <= 25) {
+      const result = await ebay.getActiveListings(page, 200);
+      if (!result.items || result.items.length === 0) break;
+      for (const item of result.items) {
+        const sku = item.sku || '';
+        if (sku && !sku.startsWith('PMC-') && !sku.startsWith('pmc-')) {
+          allItems.push({ itemId: item.itemId, sku });
+        }
+      }
+      if (!result.hasMore) break;
+      page++;
+    }
+
+    console.log(`[clear-sku] Found ${allItems.length} items with non-PMC SKU`);
+    let cleared = 0, failed = 0;
+    for (const item of allItems) {
+      const result = await ebay.clearCustomLabel(item.itemId);
+      if (result.success) {
+        cleared++;
+        await db.from('ebay_products').update({ sku: item.itemId }).eq('item_id', item.itemId);
+      } else {
+        failed++;
+      }
+      if (cleared % 20 === 0) await new Promise(r => setTimeout(r, 1000));
+    }
+
+    platformCache = null;
+    res.json({ success: true, total: allItems.length, cleared, failed });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/anomalies/restore-stock — 품절 상품 재고 복구
 router.post('/anomalies/restore-stock', async (req, res) => {
   try {

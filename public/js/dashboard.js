@@ -111,6 +111,23 @@ async function syncAllProducts() {
   }
 }
 
+async function clearAllSKU(btn) {
+  if (!confirm('모든 eBay 리스팅의 Custom Label(SKU)을 초기화합니다.\nLister 연결이 끊어지고 품절 문제가 해결됩니다.\n\nPMC- 접두사 SKU는 유지됩니다.\n\n진행하시겠습니까?')) return;
+  btn.disabled = true;
+  btn.textContent = 'SKU 초기화 중... (5~10분)';
+  try {
+    var r = await fetch(API + '/products/ebay/clear-sku', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    alert('SKU 초기화 완료!\n전체: ' + d.total + '개\n성공: ' + d.cleared + '개\n실패: ' + d.failed + '개');
+  } catch (e) {
+    alert('실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'SKU 일괄 초기화';
+  }
+}
+
 async function syncToMaster() {
   var btn = document.getElementById('syncMasterBtn');
   if (btn) { btn.disabled = true; btn.textContent = '마스터 동기화 중...'; }

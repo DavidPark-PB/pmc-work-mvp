@@ -1010,6 +1010,22 @@ class EbayAPI {
   }
 
   /**
+   * Clear Custom Label (SKU) from a listing to break Lister connection
+   */
+  async clearCustomLabel(itemId) {
+    try {
+      const resp = await this.callTradingAPI('ReviseFixedPriceItem',
+        `<Item><ItemID>${itemId}</ItemID><SKU></SKU></Item>`);
+      const ack = resp.match(/<Ack>(.*?)<\/Ack>/)?.[1];
+      if (ack === 'Success' || ack === 'Warning') return { success: true };
+      const err = resp.match(/<ShortMessage>(.*?)<\/ShortMessage>/)?.[1] || 'Unknown';
+      return { success: false, error: err };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  /**
    * Find all listings by a specific seller using Browse API
    */
   async findSellerListings(sellerName, maxPages = 3) {
