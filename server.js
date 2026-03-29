@@ -124,9 +124,54 @@ setInterval(async () => {
 }, 6 * 60 * 60 * 1000);
 
 // ===== AI Agent Team Scheduling =====
-// DISABLED — agents are not stabilized yet and may cause unintended
-// price/stock changes via Google Sheets data. Enable individually after testing.
-// Agents: MarginAgent, ProfitBrain, CSAgent, SourcingAgent, StrategyAgent,
-//         OperationsAgent, SalesAgent, MarketingAgent
-console.log('[Agents] All AI agents DISABLED (stabilization pending)');
+// Agents use Supabase + eBay API only (no Google Sheets dependency)
+
+// Margin Agent — every 4 hours
+setInterval(async () => {
+  try {
+    const { MarginAgent } = require('./src/agents/margin-agent');
+    const recs = await new MarginAgent().run();
+    console.log(`[MarginAgent] ${recs.length} recommendations`);
+  } catch (e) { console.error('[MarginAgent] error:', e.message); }
+}, 4 * 60 * 60 * 1000);
+
+// Profit Brain — every 4 hours, offset 30min
+setTimeout(() => {
+  setInterval(async () => {
+    try {
+      const { ProfitBrainAgent } = require('./src/agents/profit-brain');
+      const recs = await new ProfitBrainAgent().run();
+      console.log(`[ProfitBrain] ${recs.length} recommendations`);
+    } catch (e) { console.error('[ProfitBrain] error:', e.message); }
+  }, 4 * 60 * 60 * 1000);
+}, 30 * 60 * 1000);
+
+// CS Agent — every 30 minutes
+setInterval(async () => {
+  try {
+    const { CSAgent } = require('./src/agents/cs-agent');
+    const recs = await new CSAgent().run();
+    if (recs.length > 0) console.log(`[CSAgent] ${recs.length} drafts ready`);
+  } catch (e) { console.error('[CSAgent] error:', e.message); }
+}, 30 * 60 * 1000);
+
+// Daily agents
+const scheduleDaily = (hour, name, factory) => {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(hour, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  setTimeout(() => {
+    (async () => { try { await factory(); } catch (e) { console.error(`[${name}] error:`, e.message); } })();
+    setInterval(async () => { try { await factory(); } catch (e) { console.error(`[${name}] error:`, e.message); } }, 24 * 60 * 60 * 1000);
+  }, next - now);
+  console.log(`[${name}] 예약: ${next.toLocaleString('ko-KR')}`);
+};
+
+scheduleDaily(3, 'SourcingAgent', async () => { const { SourcingAgent } = require('./src/agents/sourcing-agent'); await new SourcingAgent().run(); });
+scheduleDaily(6, 'OperationsAgent', async () => { const { OperationsAgent } = require('./src/agents/operations-agent'); await new OperationsAgent().run(); });
+scheduleDaily(8, 'StrategyAgent', async () => { const { StrategyAgent } = require('./src/agents/strategy-agent'); await new StrategyAgent().run(); });
+scheduleDaily(9, 'SalesAgent', async () => { const { SalesAgent } = require('./src/agents/sales-agent'); await new SalesAgent().run(); });
+
+console.log('[Agents] All AI agents active (Supabase + eBay API only, no Google Sheets)');
 
