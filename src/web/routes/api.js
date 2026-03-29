@@ -2102,6 +2102,35 @@ router.post('/battle/add-competitor', async (req, res) => {
   }
 });
 
+// POST /api/repricer/run — 자동 리프라이싱 실행
+router.post('/repricer/run', async (req, res) => {
+  try {
+    const { runAutoRepricer } = require('../../services/autoRepricer');
+    const dryRun = req.body.dryRun !== false; // default true (dry run)
+    const report = await runAutoRepricer(dryRun);
+    battleCache = null;
+    battleCacheTime = 0;
+    res.json({ success: true, ...report });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/repricer/report — 최근 리프라이싱 로그
+router.get('/repricer/report', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data } = await db.from('repricer_log')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+    res.json({ success: true, logs: data || [] });
+  } catch (e) {
+    res.json({ success: true, logs: [] });
+  }
+});
+
 // POST /api/battle/monitor — 수동으로 경쟁사 모니터링 실행
 router.post('/battle/monitor', async (req, res) => {
   try {

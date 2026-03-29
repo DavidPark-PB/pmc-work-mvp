@@ -3080,40 +3080,43 @@ function setupRepricingEvents() {
 
   if (evalBtn) evalBtn.onclick = async () => {
     evalBtn.disabled = true;
-    evalBtn.textContent = '평가 중...';
+    evalBtn.textContent = '평가 중... (1~2분)';
     try {
-      // Evaluate repricing for all items with competitors
-      const items = (battleData?.items || []).filter(i => i.competitors && i.competitors.length > 0);
-      const results = [];
-      for (const item of items.slice(0, 20)) { // limit 20
-        try {
-          const res = await fetch(`${API}/repricing/evaluate/${encodeURIComponent(item.sku)}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.recommendation) results.push({ ...data.recommendation, sku: item.sku, title: item.productName || item.sku });
-          }
-        } catch (e) {}
-      }
+      var r = await fetch(API + '/repricer/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: true })
+      });
+      var data = await r.json();
+      if (!data.success) throw new Error(data.error);
 
-      const body = document.getElementById('repricingBody');
-      const container = document.getElementById('repricingResult');
+      var body = document.getElementById('repricingBody');
+      var container = document.getElementById('repricingResult');
       container.style.display = 'block';
 
-      if (results.length === 0) {
-        body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#888">리프라이싱 대상 없음</td></tr>';
+      var changes = data.changes || [];
+      var skipped = data.skipped || [];
+
+      if (changes.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#888">리프라이싱 대상 없음 (스킵: ' + skipped.length + '개)</td></tr>';
       } else {
-        body.innerHTML = results.map(r => `<tr>
-          <td title="${r.title}">${r.sku}</td>
-          <td>$${(r.currentPrice || 0).toFixed(2)}</td>
-          <td>$${(r.competitorPrice || 0).toFixed(2)}</td>
-          <td style="font-weight:700;color:${r.newPrice < r.currentPrice ? '#c62828' : '#2e7d32'}">$${(r.newPrice || 0).toFixed(2)}</td>
-          <td>${r.strategy || '-'}</td>
-          <td>${r.estimatedMargin || '-'}%</td>
-          <td><button class="refresh-btn" style="font-size:10px;padding:2px 8px;background:#e53935" onclick="executeRepricing('${r.sku}')">실행</button></td>
-        </tr>`).join('');
+        body.innerHTML = changes.map(function(c) {
+          return '<tr>' +
+            '<td title="' + esc(c.title || '') + '">' + esc(c.sku) + '</td>' +
+            '<td>$' + c.oldPrice.toFixed(2) + '</td>' +
+            '<td>$' + c.compTotal.toFixed(2) + ' <small style="color:#888">' + esc(c.competitorSeller) + '</small></td>' +
+            '<td style="font-weight:700;color:#c62828">$' + c.newPrice.toFixed(2) + '</td>' +
+            '<td>-$' + c.saving.toFixed(2) + '</td>' +
+            '<td>$' + c.myNewTotal.toFixed(2) + '</td>' +
+            '<td><span style="color:#ff9800;font-size:11px">드라이런</span></td>' +
+            '</tr>';
+        }).join('');
       }
+
+      // Show summary
+      alert('드라이런 완료!\n\n변경 예정: ' + changes.length + '개\n스킵: ' + skipped.length + '개\n\n"일괄 실행" 버튼으로 실제 적용할 수 있습니다.');
     } catch (e) {
-      console.error('Repricing eval error:', e);
+      alert('평가 실패: ' + e.message);
     } finally {
       evalBtn.textContent = '가격 평가';
       evalBtn.disabled = false;
@@ -3121,38 +3124,26 @@ function setupRepricingEvents() {
   };
 
   if (execBtn) execBtn.onclick = async () => {
-    if (!confirm('모든 추천 가격을 일괄 적용하시겠습니까?')) return;
+    if (!confirm('⚠️ 실제로 eBay 가격을 변경합니다!\n\n안전장치:\n• 최소가격 (현재가의 60%) 이하 차단\n• 30% 초과 인하 차단\n• 경쟁사 폭락 (50%+) 스킵\n• 일일 최대 50개\n\n진행하시겠습니까?')) return;
     execBtn.disabled = true;
     execBtn.textContent = '실행 중...';
-
-    const rows = document.querySelectorAll('#repricingBody tr');
-    let done = 0;
-    for (const row of rows) {
-      const sku = row.querySelector('td')?.textContent;
-      if (sku) {
-        try {
-          await fetch(`${API}/repricing/execute/${encodeURIComponent(sku)}`, { method: 'POST' });
-          done++;
-        } catch (e) {}
-      }
-    }
-
-    execBtn.textContent = `${done}건 완료!`;
-    setTimeout(() => { execBtn.textContent = '일괄 실행'; execBtn.disabled = false; }, 3000);
-    loadBattle(); // Refresh
-  };
-}
-
-async function executeRepricing(sku) {
-  try {
-    const res = await fetch(`${API}/repricing/execute/${encodeURIComponent(sku)}`, { method: 'POST' });
-    if (res.ok) {
-      alert(`${sku} 리프라이싱 실행 완료`);
+    try {
+      var r = await fetch(API + '/repricer/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: false })
+      });
+      var data = await r.json();
+      if (!data.success) throw new Error(data.error);
+      alert('리프라이싱 완료!\n\n변경: ' + data.changed + '개\n스킵: ' + (data.skipped?.length || 0) + '개\n에러: ' + (data.errors?.length || 0) + '개');
       loadBattle();
+    } catch (e) {
+      alert('실행 실패: ' + e.message);
+    } finally {
+      execBtn.textContent = '일괄 실행';
+      execBtn.disabled = false;
     }
-  } catch (e) {
-    alert('실행 실패: ' + e.message);
-  }
+  };
 }
 
 function renderBattleStats(summary) {
