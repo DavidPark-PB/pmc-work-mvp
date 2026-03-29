@@ -138,6 +138,41 @@ class AlibabaAPI {
     }
     return data;
   }
+  // ===== Buyer Inquiry APIs =====
+
+  /**
+   * Get buyer inquiries/messages
+   */
+  async getInquiries({ status = 'all', pageNo = 1, pageSize = 20 } = {}) {
+    try {
+      const data = await this.requestWithRetry(
+        'alibaba.icbu.message.list',
+        { page_no: pageNo, page_size: pageSize, message_status: status },
+        'POST'
+      );
+      return data?.result?.messages || [];
+    } catch (e) {
+      console.log('[Alibaba] getInquiries not available:', e.message);
+      return [];
+    }
+  }
+
+  /**
+   * Reply to a buyer inquiry
+   */
+  async replyInquiry(messageId, replyText) {
+    try {
+      const data = await this.requestWithRetry(
+        'alibaba.icbu.message.send',
+        { message_id: messageId, content: replyText },
+        'POST'
+      );
+      return { success: !data?.error_code, data };
+    } catch (e) {
+      console.error('[Alibaba] replyInquiry error:', e.message);
+      return { success: false, error: e.message };
+    }
+  }
 }
 
 module.exports = AlibabaAPI;
