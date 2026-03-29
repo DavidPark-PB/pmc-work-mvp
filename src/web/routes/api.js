@@ -227,9 +227,10 @@ router.get('/sync/history', async (req, res) => {
 router.post('/sync/trigger/:platform', async (req, res) => {
   const { platform } = req.params;
 
-  // Supabase-based sync: fetch from platform API → upsert to Supabase
+  // DISABLED: Google Sheets → eBay sync scripts (caused unwanted stock/price changes)
+  // Use Supabase-based sync only
   const syncScripts = {
-    ebay: 'node src/sync/sync-ebay-price-shipping.js',
+    // ebay: 'node src/sync/sync-ebay-price-shipping.js', // DISABLED
   };
 
   // For platforms with dedicated sync scripts, run them
