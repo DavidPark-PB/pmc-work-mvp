@@ -2156,16 +2156,15 @@ function renderProductTable(products, tableId, countId) {
 
 // 플랫폼 페이지용 인라인 편집 테이블 (6열: SKU, 상품명, 플랫폼, 가격, 재고, 상태)
 async function endEbayListing(itemId, btn) {
-  if (!confirm('이 eBay 리스팅을 종료(End)하시겠습니까?\nItem ID: ' + itemId + '\n\n종료하면 eBay에서 더 이상 판매되지 않습니다.')) return;
+  if (!confirm('이 eBay 리스팅을 종료(End)하시겠습니까?\nItem ID: ' + itemId + '\n\n종료하면 목록에서 사라집니다.')) return;
   btn.disabled = true;
   btn.textContent = '...';
   try {
     var r = await fetch(API + '/products/ebay/' + itemId, { method: 'DELETE' });
     var d = await r.json();
-    if (!d.success) throw new Error(d.error);
-    btn.textContent = '종료됨';
-    btn.style.background = '#666';
-    btn.closest('tr').style.opacity = '0.4';
+    if (!d.success && d.error && !d.error.includes('closed') && !d.error.includes('ended')) throw new Error(d.error);
+    // Remove row immediately
+    btn.closest('tr').remove();
   } catch (e) {
     alert('End Listing 실패: ' + e.message);
     btn.disabled = false;

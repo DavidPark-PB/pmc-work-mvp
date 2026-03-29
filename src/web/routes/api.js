@@ -1143,12 +1143,15 @@ router.delete('/products/ebay/:itemId', async (req, res) => {
     const { itemId } = req.params;
     const api = getEbayAPI();
     const result = await api.endListing(itemId);
-    if (result.success) {
-      // Update DB status
-      const { getClient } = require('../../db/supabaseClient');
-      const db = getClient();
-      await db.from('ebay_products').update({ status: 'ended' }).eq('item_id', itemId);
-      platformCache = null;
+    // Update DB regardless (already closed = still ended)
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    await db.from('ebay_products').update({ status: 'ended' }).eq('item_id', itemId);
+    platformCache = null;
+
+    // "auction has been closed" means already ended — treat as success
+    if (!result.success && result.error && (result.error.includes('closed') || result.error.includes('ended'))) {
+      result.success = true;
     }
     res.json(result);
   } catch (error) {
