@@ -219,6 +219,7 @@ class RepricingService {
       title: item.title || item.itemId || '',
       price: parseFloat(item.price) || 0,
       shipping: parseFloat(item.shippingCost) || 0,
+      quantity: (parseInt(item.quantity) || 0) - (parseInt(item.quantitySold) || 0),
     })).filter(l => l.sku && l.price > 0);
 
     if (normalizedListings.length === 0) return [];
@@ -274,6 +275,7 @@ class RepricingService {
         title: productTitleMap[p.sku] || p.title,
         myPrice: p.price,
         myShipping: p.shipping,
+        quantity: p.quantity || 0,
         competitors: competitors.map(c => ({
           itemId: c.competitor_id || null,
           price: parseFloat(c.competitor_price),

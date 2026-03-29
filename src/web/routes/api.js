@@ -1898,6 +1898,7 @@ router.get('/battle/data', async (req, res) => {
         title: row.title,
         myPrice: row.myPrice,
         myShipping: row.myShipping || 0,
+        quantity: row.quantity || 0,
         myTotal,
         competitors: row.competitors || [],
         lastTracked: row.lastTracked,

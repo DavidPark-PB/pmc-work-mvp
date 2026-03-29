@@ -3311,7 +3311,11 @@ function renderBattleTable(items) {
         <div class="price-main">$${(item.myPrice || 0).toFixed(2)}</div>
         <div class="price-ship">+$${(item.myShipping || 0).toFixed(2)} 배송</div>
         <div class="price-total">합계 $${(item.myTotal || 0).toFixed(2)}</div>
-        <div style="margin-top:4px">${myLink}</div>
+        <div style="margin-top:4px;display:flex;align-items:center;gap:4px">
+          <span style="font-size:10px;color:#888">재고:</span>
+          <input type="number" value="${item.quantity || 0}" min="0" style="width:40px;padding:2px 4px;font-size:11px;border:1px solid #ddd;border-radius:3px;text-align:center" onchange="battleUpdateStock('${esc(item.itemId)}',this.value,this)">
+        </div>
+        <div style="margin-top:2px">${myLink}</div>
       </td>
       <td class="battle-price-cell" style="min-width:160px">${compCell}${addCompBtn}</td>
       <td style="text-align:center">
@@ -3653,6 +3657,28 @@ function setupBattleEvents() {
 }
 
 // 킬프라이스 단일 적용
+async function battleUpdateStock(itemId, qty, input) {
+  var quantity = parseInt(qty);
+  if (isNaN(quantity) || quantity < 0) { input.style.borderColor = '#c62828'; return; }
+  input.style.borderColor = '#ff9800';
+  try {
+    var r = await fetch(API + '/products/ebay/' + itemId, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quantity: quantity })
+    });
+    var d = await r.json();
+    if (d.success) {
+      input.style.borderColor = '#2e7d32';
+      setTimeout(function() { input.style.borderColor = '#ddd'; }, 2000);
+    } else {
+      input.style.borderColor = '#c62828';
+    }
+  } catch (e) {
+    input.style.borderColor = '#c62828';
+  }
+}
+
 async function applyKillPrice(itemId, price, sku) {
   const btn = document.getElementById(`kill-${itemId}`);
   if (!btn) return;
