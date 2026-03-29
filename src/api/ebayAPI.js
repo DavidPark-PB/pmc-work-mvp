@@ -1108,6 +1108,51 @@ class EbayAPI {
       return { success: false, error: e.message };
     }
   }
+
+  // ===== Buyer Message APIs =====
+
+  async getMyMessages({ startTime, endTime, folder = 'Inbox', pageNumber = 1 } = {}) {
+    const now = new Date();
+    const start = startTime || new Date(now - 24 * 60 * 60 * 1000).toISOString();
+    const end = endTime || now.toISOString();
+    const data = await this.callTradingAPI('GetMyMessages', {
+      DetailLevel: 'ReturnHeaders',
+      FolderID: folder === 'Inbox' ? 0 : 1,
+      StartTime: start, EndTime: end,
+      Pagination: { EntriesPerPage: 25, PageNumber: pageNumber },
+    });
+    const messages = data?.Messages?.Message;
+    if (!messages) return [];
+    const arr = Array.isArray(messages) ? messages : [messages];
+    return arr.map(m => ({
+      messageId: m.MessageID, sender: m.Sender, subject: m.Subject || '',
+      messageType: m.MessageType, questionType: m.QuestionType || '',
+      receiveDate: m.ReceiveDate, read: m.Read === 'true', flagged: m.Flagged === 'true',
+      itemId: m.ItemID || '', externalMessageId: m.ExternalMessageID || '',
+    }));
+  }
+
+  async getMessageContent(messageId) {
+    const data = await this.callTradingAPI('GetMyMessages', {
+      DetailLevel: 'ReturnMessages', MessageIDs: { MessageID: messageId },
+    });
+    const msg = data?.Messages?.Message;
+    if (!msg) return null;
+    const m = Array.isArray(msg) ? msg[0] : msg;
+    return {
+      messageId: m.MessageID, sender: m.Sender, recipientUserId: m.RecipientUserID || m.SendToName || '',
+      subject: m.Subject || '', body: m.Text || m.Body || '', messageType: m.MessageType,
+      questionType: m.QuestionType || '', receiveDate: m.ReceiveDate, itemId: m.ItemID || '', itemTitle: m.ItemTitle || '',
+    };
+  }
+
+  async replyToMessage(itemId, recipientId, body, subject) {
+    const data = await this.callTradingAPI('AddMemberMessageRTQ', {
+      ItemID: itemId,
+      MemberMessage: { Body: body, Subject: subject || '', RecipientID: recipientId, MessageType: 'CustomizedSubject', QuestionType: 'General' },
+    });
+    return { success: data?.Ack === 'Success' || data?.Ack === 'Warning', data };
+  }
 }
 
 // CLI 테스트
@@ -1140,89 +1185,6 @@ async function testEbayAPI() {
     });
   } else {
     console.log('\n⚠️  활성 리스팅이 없습니다.\n');
-  }
-}
-
-  // ===== Buyer Message APIs =====
-
-  /**
-   * Get buyer messages from eBay inbox
-   * Uses GetMyMessages Trading API call
-   */
-  async getMyMessages({ startTime, endTime, folder = 'Inbox', pageNumber = 1 } = {}) {
-    const now = new Date();
-    const start = startTime || new Date(now - 24 * 60 * 60 * 1000).toISOString();
-    const end = endTime || now.toISOString();
-
-    const data = await this.callTradingAPI('GetMyMessages', {
-      DetailLevel: 'ReturnHeaders',
-      FolderID: folder === 'Inbox' ? 0 : 1,
-      StartTime: start,
-      EndTime: end,
-      Pagination: { EntriesPerPage: 25, PageNumber: pageNumber },
-    });
-
-    const messages = data?.Messages?.Message;
-    if (!messages) return [];
-    const arr = Array.isArray(messages) ? messages : [messages];
-
-    return arr.map(m => ({
-      messageId: m.MessageID,
-      sender: m.Sender,
-      subject: m.Subject || '',
-      messageType: m.MessageType,
-      questionType: m.QuestionType || '',
-      receiveDate: m.ReceiveDate,
-      read: m.Read === 'true',
-      flagged: m.Flagged === 'true',
-      itemId: m.ItemID || '',
-      externalMessageId: m.ExternalMessageID || '',
-    }));
-  }
-
-  /**
-   * Get full message content by ID
-   */
-  async getMessageContent(messageId) {
-    const data = await this.callTradingAPI('GetMyMessages', {
-      DetailLevel: 'ReturnMessages',
-      MessageIDs: { MessageID: messageId },
-    });
-
-    const msg = data?.Messages?.Message;
-    if (!msg) return null;
-    const m = Array.isArray(msg) ? msg[0] : msg;
-
-    return {
-      messageId: m.MessageID,
-      sender: m.Sender,
-      recipientUserId: m.RecipientUserID || m.SendToName || '',
-      subject: m.Subject || '',
-      body: m.Text || m.Body || '',
-      messageType: m.MessageType,
-      questionType: m.QuestionType || '',
-      receiveDate: m.ReceiveDate,
-      itemId: m.ItemID || '',
-      itemTitle: m.ItemTitle || '',
-    };
-  }
-
-  /**
-   * Send reply to a buyer message
-   * Uses AddMemberMessageRTQ (Reply To Question)
-   */
-  async replyToMessage(itemId, recipientId, body, subject) {
-    const data = await this.callTradingAPI('AddMemberMessageRTQ', {
-      ItemID: itemId,
-      MemberMessage: {
-        Body: body,
-        Subject: subject || '',
-        RecipientID: recipientId,
-        MessageType: 'CustomizedSubject',
-        QuestionType: 'General',
-      },
-    });
-    return { success: data?.Ack === 'Success' || data?.Ack === 'Warning', data };
   }
 }
 
