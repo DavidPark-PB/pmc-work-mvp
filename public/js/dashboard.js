@@ -80,8 +80,12 @@ function navigateTo(page) {
     case 'ops-profit':    if (window.opsProfit)     opsProfit.load();    break;
     case 'ops-competitor':if (window.opsCompetitor) opsCompetitor.load();break;
     case 'ops-logs':      if (window.opsLogs)       opsLogs.load();      break;
+    case 'agent-dashboard': if (window.loadAgentDashboard) loadAgentDashboard(); break;
   }
 }
+
+// Alias for inline onclick calls
+function showPage(page) { navigateTo(page); }
 
 // ===== 상품 동기화 =====
 
@@ -209,9 +213,10 @@ async function loadDashboard() {
     updateLastUpdated(data.timestamp);
     loadProducts();
 
-    // 매출 요약 + 마스터 상품 로드
+    // 매출 요약 + 마스터 상품 로드 + AI 에이전트 요약
     loadSummaryCards();
     loadDashboardMasterProducts();
+    if (window.loadAgentSummary) loadAgentSummary();
   } catch (err) {
     console.error('Dashboard load failed:', err);
   } finally {
@@ -2049,7 +2054,7 @@ function renderMasterProducts(products, meta) {
     return `<tr>
       <td><strong>${esc(p.sku)}</strong></td>
       <td title="${esc(p.titleEn || '')}">${esc(p.title)}</td>
-      <td>${krw(p.purchasePrice)}</td>
+      <td class="editable-cost" data-sku="${esc(p.sku)}" style="cursor:pointer;color:${p.purchasePrice ? '#fff' : '#f44336'}" title="클릭하여 매입가 수정">${p.purchasePrice ? krw(p.purchasePrice) : '미입력'}</td>
       <td>${p.targetMargin}%</td>
       <td>${ebay?.status === 'active'
         ? `<span class="platform-badge active">$${ebay.price}</span>`
@@ -3341,6 +3346,80 @@ async function battleRefreshSellers() {
     btn.disabled = false;
     btn.textContent = '셀러 정보 업데이트';
   }
+}
+
+// ===== 셀러 관리 =====
+var tierColors = { F: '#c62828', D: '#e65100', C: '#f9a825', B: '#2e7d32', A: '#1565c0' };
+var tierLabels = { F: '몰살', D: '강공격', C: '보통', B: '약공격', A: '공존' };
+var tierUndercuts = { F: '$3.00', D: '$2.00', C: '$1.00', B: '$0.50', A: '$0' };
+
+function showSellerManagerModal() {
+  document.getElementById('sellerManagerModal').style.display = 'flex';
+  loadTargetSellers();
+}
+function closeSellerManagerModal() {
+  document.getElementById('sellerManagerModal').style.display = 'none';
+}
+
+async function loadTargetSellers() {
+  var tbody = document.getElementById('sellerManagerList');
+  try {
+    var r = await fetch(API + '/battle/target-sellers');
+    var d = await r.json();
+    var sellers = d.sellers || [];
+    if (sellers.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#666;padding:12px">등록된 셀러 없음</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sellers.map(function(s) {
+      var color = tierColors[s.tier] || '#666';
+      return '<tr style="border-bottom:1px solid #222">' +
+        '<td style="padding:8px;font-weight:600">' + esc(s.seller_name) + '</td>' +
+        '<td style="text-align:center;padding:8px"><select onchange="updateSellerTier(\'' + esc(s.seller_name) + '\',this.value)" style="background:#0f0f1a;color:' + color + ';border:1px solid #444;border-radius:4px;padding:4px;font-weight:700;font-size:12px">' +
+          ['F','D','C','B','A'].map(function(t) { return '<option value="' + t + '"' + (t === s.tier ? ' selected' : '') + '>' + t + ' ' + (tierLabels[t]||'') + '</option>'; }).join('') +
+        '</select></td>' +
+        '<td style="text-align:center;padding:8px;color:' + color + ';font-weight:600">' + (tierUndercuts[s.tier]||'') + '</td>' +
+        '<td style="text-align:center;padding:8px;font-size:12px">' + (s.matchCount || 0) + '개</td>' +
+        '<td style="padding:8px"><button onclick="removeTargetSeller(\'' + esc(s.seller_name) + '\')" style="font-size:10px;padding:3px 8px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer">삭제</button></td>' +
+        '</tr>';
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#c62828;padding:12px">로드 실패</td></tr>';
+  }
+}
+
+async function addTargetSeller() {
+  var name = document.getElementById('newSellerName').value.trim();
+  var tier = document.getElementById('newSellerTier').value;
+  if (!name) { alert('셀러 username을 입력하세요'); return; }
+  try {
+    var r = await fetch(API + '/battle/target-sellers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sellerName: name, tier: tier })
+    });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    document.getElementById('newSellerName').value = '';
+    loadTargetSellers();
+  } catch (e) { alert('추가 실패: ' + e.message); }
+}
+
+async function updateSellerTier(sellerName, tier) {
+  try {
+    await fetch(API + '/battle/target-sellers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sellerName: sellerName, tier: tier })
+    });
+    loadTargetSellers();
+  } catch (e) { alert('변경 실패: ' + e.message); }
+}
+
+async function removeTargetSeller(sellerName) {
+  if (!confirm(sellerName + ' 셀러를 삭제하시겠습니까?')) return;
+  try {
+    await fetch(API + '/battle/target-sellers/' + encodeURIComponent(sellerName), { method: 'DELETE' });
+    loadTargetSellers();
+  } catch (e) { alert('삭제 실패: ' + e.message); }
 }
 
 function showSellerScanModal() {

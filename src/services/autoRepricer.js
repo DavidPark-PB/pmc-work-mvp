@@ -54,6 +54,15 @@ async function runAutoRepricer(dryRun = true) {
 
   console.log(`[AutoRepricer] ${Object.keys(compBySku).length} SKUs with competitors`);
 
+  // 1.5. Load target seller tiers for custom undercuts
+  const tierUndercuts = { F: 3.00, D: 2.00, C: 1.00, B: 0.50, A: 0 };
+  const sellerTiers = {};
+  try {
+    const { data: tiers } = await db.from('target_sellers').select('seller_name, tier, undercut');
+    (tiers || []).forEach(t => { sellerTiers[t.seller_name] = { tier: t.tier, undercut: t.undercut || tierUndercuts[t.tier] || KILL_PRICE_UNDERCUT }; });
+    console.log(`[AutoRepricer] ${Object.keys(sellerTiers).length} target sellers loaded`);
+  } catch (e) { /* table might not exist */ }
+
   // 2. Get my eBay listings
   let myListings = [];
   for (let page = 1; page <= 25; page++) {
@@ -115,8 +124,10 @@ async function runAutoRepricer(dryRun = true) {
       }
     }
 
-    // Calculate kill price
-    const killPrice = Math.max(0.99, compTotal - KILL_PRICE_UNDERCUT - MY_SHIPPING);
+    // Calculate kill price with seller-specific undercut
+    const sellerInfo = sellerTiers[comp.seller_id] || null;
+    const undercut = sellerInfo ? sellerInfo.undercut : KILL_PRICE_UNDERCUT;
+    const killPrice = Math.max(0.99, compTotal - undercut - MY_SHIPPING);
     const killPriceRounded = +killPrice.toFixed(2);
 
     // Safety check 2: Floor price (60% of current price)

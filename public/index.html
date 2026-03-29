@@ -47,6 +47,8 @@
     <div class="menu-title">자동화</div>
     <a href="https://ccorea-auto-production.up.railway.app" target="_blank" class="menu-item" style="color:#ff5722;font-weight:600;text-decoration:none;display:block">리스팅 자동화 ↗</a>
     <div class="menu-item" data-page="crawl-results">크롤링 결과</div>
+    <div class="menu-title" style="color:#ff9800;margin-top:8px">AI 에이전트</div>
+    <div class="menu-item" data-page="agent-dashboard" style="color:#ff9800;font-weight:600">AI 권장사항</div>
     <div class="menu-title" style="color:#64b5f6;margin-top:8px">── 운영 관리 ──</div>
     <div class="menu-item ops-menu" data-page="ops-products" style="color:#81d4fa;font-weight:600">상품 검색/관리</div>
     <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">재고 관리</div>
@@ -68,6 +70,22 @@
 
     <!-- ===== 대시보드 페이지 ===== -->
     <div id="page-dashboard" class="page active">
+      <!-- AI 에이전트 요약 배너 -->
+      <div id="agentSummaryBanner" class="stats" style="display:none;">
+        <div class="stat-card" style="background:linear-gradient(135deg,#ff9800,#f57c00);color:#fff;cursor:pointer" onclick="showPage('agent-dashboard')">
+          <div style="font-size:14px;opacity:0.9">AI 대기중 제안</div>
+          <div style="font-size:28px;font-weight:700" id="agentPendingCount">-</div>
+        </div>
+        <div class="stat-card" style="background:linear-gradient(135deg,#f44336,#d32f2f);color:#fff;cursor:pointer" onclick="showPage('agent-dashboard')">
+          <div style="font-size:14px;opacity:0.9">긴급 알림</div>
+          <div style="font-size:28px;font-weight:700" id="agentCriticalCount">-</div>
+        </div>
+        <div class="stat-card" style="background:linear-gradient(135deg,#4caf50,#388e3c);color:#fff">
+          <div style="font-size:14px;opacity:0.9">오늘 실행</div>
+          <div style="font-size:28px;font-weight:700" id="agentExecutedCount">-</div>
+        </div>
+      </div>
+
       <!-- 플랫폼 카드 -->
       <div class="stats" id="platformCards"></div>
 
@@ -144,6 +162,88 @@
             <button class="sync-btn" data-platform="alibaba">Alibaba</button>
             <button class="sync-btn" data-platform="shopee">Shopee</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== AI 에이전트 대시보드 ===== -->
+    <div id="page-agent-dashboard" class="page">
+      <div class="card">
+        <div class="card-header">
+          <h3 style="color:#ff9800">AI 에이전트 권장사항</h3>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <select id="agentSelector" style="padding:6px 12px;border-radius:4px;border:1px solid #555;background:#222;color:#fff">
+              <option value="margin-agent">Margin Agent</option>
+              <option value="profit-brain">Profit Brain</option>
+              <option value="sourcing-agent">Sourcing Agent</option>
+              <option value="cs-agent">CS Agent</option>
+              <option value="sales-agent">Sales Agent</option>
+              <option value="operations-agent">Operations Agent</option>
+              <option value="marketing-agent">Marketing Agent</option>
+              <option value="strategy-agent">Strategy Agent</option>
+            </select>
+            <button onclick="agentRunNow(document.getElementById('agentSelector').value)" style="background:#ff9800;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer">실행</button>
+            <button onclick="loadAgentDashboard()" style="background:#333;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer">새로고침</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Alert Banner -->
+      <div id="agentAlertBanner" style="display:none"></div>
+
+      <!-- Summary Cards -->
+      <div class="stats" id="agentSummaryCards">
+        <div class="stat-card"><div style="font-size:13px;color:#999">대기중</div><div style="font-size:24px;font-weight:700" id="adPending">-</div></div>
+        <div class="stat-card"><div style="font-size:13px;color:#999">긴급 알림</div><div style="font-size:24px;font-weight:700;color:#f44336" id="adCritical">-</div></div>
+        <div class="stat-card"><div style="font-size:13px;color:#999">오늘 실행</div><div style="font-size:24px;font-weight:700;color:#4caf50" id="adExecuted">-</div></div>
+        <div class="stat-card"><div style="font-size:13px;color:#999">마지막 실행</div><div style="font-size:13px;font-weight:600" id="adLastRun">-</div></div>
+      </div>
+
+      <!-- Filter Tabs -->
+      <div class="card" style="padding:8px 16px">
+        <div style="display:flex;gap:8px">
+          <button class="agent-filter-btn active" data-filter="">전체</button>
+          <button class="agent-filter-btn" data-filter="pending">대기</button>
+          <button class="agent-filter-btn" data-filter="approved">승인됨</button>
+          <button class="agent-filter-btn" data-filter="auto_approved">자동승인</button>
+          <button class="agent-filter-btn" data-filter="executed">실행됨</button>
+          <button class="agent-filter-btn" data-filter="dismissed">기각</button>
+        </div>
+      </div>
+
+      <!-- Recommendations Table -->
+      <div class="card">
+        <table class="data-table" style="width:100%">
+          <thead>
+            <tr>
+              <th style="width:30px"></th>
+              <th>SKU</th>
+              <th>상품명</th>
+              <th>유형</th>
+              <th>현재가</th>
+              <th>제안가</th>
+              <th>마진</th>
+              <th>사유</th>
+              <th>상태</th>
+              <th>액션</th>
+            </tr>
+          </thead>
+          <tbody id="agentRecsTable"></tbody>
+        </table>
+        <div id="agentRecsPagination" style="text-align:center;padding:12px"></div>
+      </div>
+
+      <!-- Audit Log (collapsible) -->
+      <div class="card">
+        <div class="card-header" style="cursor:pointer" onclick="document.getElementById('auditLogBody').style.display=document.getElementById('auditLogBody').style.display==='none'?'block':'none'">
+          <h3>감사 로그</h3>
+          <span style="color:#999;font-size:13px">클릭하여 펼치기/접기</span>
+        </div>
+        <div id="auditLogBody" style="display:none">
+          <table class="data-table" style="width:100%">
+            <thead><tr><th>시각</th><th>에이전트</th><th>액션</th><th>SKU</th><th>결정</th><th>결과</th></tr></thead>
+            <tbody id="auditLogTable"></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -442,10 +542,15 @@
     <div id="page-master-products" class="page">
       <div class="card">
         <h3>마스터 상품 DB</h3>
-        <div style="margin-bottom:15px;display:flex;gap:10px;align-items:center">
+        <div style="margin-bottom:15px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
           <input type="text" id="masterSearch" placeholder="SKU 또는 상품명 검색..." style="flex:1;padding:8px 12px;border:1px solid #ddd;border-radius:6px">
           <button class="refresh-btn" id="masterRefreshBtn">새로고침</button>
+          <label style="background:#ff9800;color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">
+            매입가 CSV 업로드
+            <input type="file" id="costCsvUpload" accept=".csv" style="display:none" onchange="handleCostCsvUpload(this)">
+          </label>
         </div>
+        <div id="costUploadStatus" style="display:none;padding:10px;border-radius:6px;margin-bottom:10px"></div>
         <div class="table-wrap">
           <table class="data-table" id="masterProductsTable">
             <thead>
@@ -1020,6 +1125,7 @@
           </select>
           <button onclick="battleRefreshSellers()" id="battleRefreshSellersBtn" style="background:#5c6bc0;color:#fff;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">셀러 정보 업데이트</button>
           <button onclick="showSellerScanModal()" style="background:#d84315;color:#fff;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">🎯 셀러 스캔</button>
+          <button onclick="showSellerManagerModal()" style="background:#2e7d32;color:#fff;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">👥 셀러 관리</button>
           <input type="text" id="battleSearch" placeholder="SKU 또는 상품명 검색..."
                  style="flex:1;padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;min-width:200px">
           <button class="refresh-btn" id="battleRefreshBtn" style="background:#e53935;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
@@ -1100,6 +1206,51 @@
           <div style="display:flex;gap:8px;justify-content:flex-end">
             <button onclick="closeSellerScanModal()" style="padding:8px 16px;background:#333;color:#fff;border:none;border-radius:6px;cursor:pointer">취소</button>
             <button onclick="runSellerScan()" id="sellerScanBtn" style="padding:8px 16px;background:#d84315;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">스캔 시작</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 셀러 관리 모달 -->
+      <div id="sellerManagerModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:1000;align-items:center;justify-content:center">
+        <div style="background:#1a1a2e;border-radius:12px;padding:24px;width:500px;max-width:90vw;color:#e0e0e0;max-height:80vh;overflow-y:auto">
+          <h3 style="margin:0 0 16px">👥 경쟁 셀러 관리</h3>
+          <p style="font-size:12px;color:#888;margin:0 0 12px">셀러별 티어를 설정하면 리프라이싱 전략이 달라집니다.</p>
+          <!-- 셀러 추가 -->
+          <div style="display:flex;gap:8px;margin-bottom:16px">
+            <input id="newSellerName" type="text" placeholder="eBay seller username"
+              style="flex:1;padding:8px;border:1px solid #444;background:#0f0f1a;color:#e0e0e0;border-radius:6px;font-size:13px">
+            <select id="newSellerTier" style="padding:8px;border:1px solid #444;background:#0f0f1a;color:#e0e0e0;border-radius:6px;font-size:13px">
+              <option value="F">F (몰살)</option>
+              <option value="D">D (강공격)</option>
+              <option value="C">C (보통)</option>
+              <option value="B">B (약공격)</option>
+              <option value="A">A (공존)</option>
+            </select>
+            <button onclick="addTargetSeller()" style="padding:8px 16px;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">추가</button>
+          </div>
+          <!-- 티어 설명 -->
+          <div style="font-size:11px;color:#666;margin-bottom:12px;padding:8px;background:#0f0f1a;border-radius:6px">
+            <div><span style="color:#c62828;font-weight:700">F 몰살</span>: 경쟁사 합계 -$3 (원가까지 쫓아감)</div>
+            <div><span style="color:#e65100;font-weight:700">D 강공격</span>: 경쟁사 합계 -$2</div>
+            <div><span style="color:#f9a825;font-weight:700">C 보통</span>: 경쟁사 합계 -$1</div>
+            <div><span style="color:#2e7d32;font-weight:700">B 약공격</span>: 경쟁사 합계 -$0.50</div>
+            <div><span style="color:#1565c0;font-weight:700">A 공존</span>: 경쟁사와 동일가격</div>
+          </div>
+          <!-- 셀러 목록 -->
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="border-bottom:1px solid #333">
+              <th style="text-align:left;padding:6px;font-size:12px">셀러</th>
+              <th style="text-align:center;padding:6px;font-size:12px">티어</th>
+              <th style="text-align:center;padding:6px;font-size:12px">언더컷</th>
+              <th style="text-align:center;padding:6px;font-size:12px">매칭</th>
+              <th style="padding:6px"></th>
+            </tr></thead>
+            <tbody id="sellerManagerList">
+              <tr><td colspan="5" style="text-align:center;color:#666;padding:12px">로딩 중...</td></tr>
+            </tbody>
+          </table>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+            <button onclick="closeSellerManagerModal()" style="padding:8px 16px;background:#333;color:#fff;border:none;border-radius:6px;cursor:pointer">닫기</button>
           </div>
         </div>
       </div>
@@ -2471,10 +2622,81 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260329e"></script>
+  <script src="/js/dashboard.js?v=20260330a"></script>
   <script src="/js/operations.js?v=20260315e"></script>
+  <script src="/js/agent-dashboard.js?v=20260324a"></script>
+  <script>
+  // ===== Inline cost editing for master products =====
+  document.addEventListener('click', async (e) => {
+    const cell = e.target.closest('.editable-cost');
+    if (!cell || cell.querySelector('input')) return;
+    const sku = cell.dataset.sku;
+    const origText = cell.textContent;
+    const input = document.createElement('input');
+    input.type = 'number'; input.min = '0'; input.step = '100';
+    input.style.cssText = 'width:80px;padding:4px;border:1px solid #ff9800;border-radius:3px;font-size:13px;background:#222;color:#fff';
+    input.value = cell.textContent.replace(/[^0-9]/g, '') || '';
+    cell.textContent = ''; cell.appendChild(input); input.focus(); input.select();
 
+    const save = async () => {
+      const val = input.value.trim();
+      if (!val || isNaN(val)) { cell.textContent = origText; return; }
+      try {
+        const res = await fetch('/api/master-products/' + encodeURIComponent(sku) + '/cost', {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ cost_price: parseFloat(val) })
+        });
+        const json = await res.json();
+        if (json.success) { cell.textContent = '₩' + parseInt(val).toLocaleString(); cell.style.color = '#4caf50'; }
+        else { cell.textContent = origText; alert('저장 실패: ' + json.error); }
+      } catch (err) { cell.textContent = origText; alert('오류: ' + err.message); }
+    };
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); } if (ev.key === 'Escape') { cell.textContent = origText; } });
+  });
 
+  // ===== CSV bulk cost upload =====
+  async function handleCostCsvUpload(input) {
+    const file = input.files[0]; if (!file) return;
+    const statusEl = document.getElementById('costUploadStatus');
+    statusEl.style.display = 'block'; statusEl.style.background = '#333'; statusEl.style.color = '#fff';
+    statusEl.textContent = 'CSV 파싱 중...';
+
+    const text = await file.text();
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+    if (lines.length < 2) { statusEl.textContent = '데이터가 없습니다'; statusEl.style.background = '#f44336'; return; }
+
+    const header = lines[0].split(',').map(h => h.trim().replace(/"/g, '').toLowerCase());
+    const skuIdx = header.findIndex(h => h === 'sku' || h === '상품코드');
+    const costIdx = header.findIndex(h => h === '매입가' || h === 'cost_price' || h === 'purchase_price' || h === '원가');
+    if (skuIdx < 0 || costIdx < 0) {
+      statusEl.textContent = 'CSV에 "sku"와 "매입가" 열이 필요합니다. (현재 열: ' + header.join(', ') + ')';
+      statusEl.style.background = '#f44336'; return;
+    }
+
+    const items = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',').map(c => c.trim().replace(/"/g, ''));
+      const sku = cols[skuIdx]; const cost = parseFloat(cols[costIdx]);
+      if (sku && !isNaN(cost) && cost >= 0) items.push({ sku, cost_price: cost });
+    }
+
+    statusEl.textContent = items.length + '건 파싱 완료. 업로드 중...';
+    try {
+      const res = await fetch('/api/master-products/bulk-cost', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ items })
+      });
+      const json = await res.json();
+      if (json.success) {
+        statusEl.style.background = '#4caf50';
+        statusEl.textContent = '완료! ' + json.updated + '건 업데이트, ' + json.failed + '건 실패' + (json.errors?.length ? ' — ' + json.errors[0] : '');
+        loadMasterProducts(1);
+      } else { statusEl.style.background = '#f44336'; statusEl.textContent = '실패: ' + json.error; }
+    } catch (err) { statusEl.style.background = '#f44336'; statusEl.textContent = '오류: ' + err.message; }
+    input.value = '';
+  }
+  </script>
 
 
   <!-- 가격/재고 수정 모달 -->

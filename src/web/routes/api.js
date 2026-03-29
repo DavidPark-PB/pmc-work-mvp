@@ -2102,6 +2102,59 @@ router.post('/battle/add-competitor', async (req, res) => {
   }
 });
 
+// GET /api/battle/target-sellers — 타겟 셀러 목록
+router.get('/battle/target-sellers', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data } = await db.from('target_sellers').select('*').order('tier', { ascending: true });
+    const sellers = data || [];
+    for (const s of sellers) {
+      const { count } = await db.from('competitor_prices')
+        .select('*', { count: 'exact', head: true })
+        .eq('seller_id', s.seller_name)
+        .neq('competitor_id', '');
+      s.matchCount = count || 0;
+    }
+    res.json({ success: true, sellers });
+  } catch (e) {
+    res.json({ success: true, sellers: [] });
+  }
+});
+
+// POST /api/battle/target-sellers — 타겟 셀러 추가/수정
+router.post('/battle/target-sellers', async (req, res) => {
+  try {
+    const { sellerName, tier } = req.body;
+    if (!sellerName) return res.status(400).json({ success: false, error: 'sellerName required' });
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const validTier = ['F', 'D', 'C', 'B', 'A'].includes(tier) ? tier : 'C';
+    const undercuts = { F: 3.00, D: 2.00, C: 1.00, B: 0.50, A: 0 };
+    const { data: existing } = await db.from('target_sellers').select('id').eq('seller_name', sellerName.trim()).limit(1);
+    if (existing && existing.length > 0) {
+      await db.from('target_sellers').update({ tier: validTier, undercut: undercuts[validTier] }).eq('id', existing[0].id);
+    } else {
+      await db.from('target_sellers').insert({ seller_name: sellerName.trim(), tier: validTier, undercut: undercuts[validTier] });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// DELETE /api/battle/target-sellers/:sellerName — 타겟 셀러 삭제
+router.delete('/battle/target-sellers/:sellerName', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    await db.from('target_sellers').delete().eq('seller_name', req.params.sellerName);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/repricer/run — 자동 리프라이싱 실행
 router.post('/repricer/run', async (req, res) => {
   try {
@@ -3509,6 +3562,298 @@ router.post('/inventory/scan', async (req, res) => {
     }).then(() => {}).catch(() => {}); // Ignore if table doesn't exist yet
 
     res.json({ success: true, sku, previousStock: product.stock || 0, newStock, change });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ===== CS Message API =====
+const { MessageRepository } = require('../../db/messageRepository');
+const csMessageRepo = new MessageRepository();
+
+// GET /api/cs/messages — pending messages with drafts
+router.get('/cs/messages', async (req, res) => {
+  try {
+    const messages = await csMessageRepo.getPendingMessages({
+      platform: req.query.platform,
+      limit: parseInt(req.query.limit) || 50,
+    });
+    res.json({ success: true, data: messages });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// POST /api/cs/approve/:id — approve draft and send reply
+router.post('/cs/approve/:id', async (req, res) => {
+  try {
+    const msg = await csMessageRepo.getById(req.params.id);
+    if (!msg) return res.status(404).json({ success: false, error: 'Message not found' });
+
+    const replyText = req.body.reply || msg.approved_reply || msg.draft_reply;
+    if (!replyText) return res.status(400).json({ success: false, error: 'No reply text' });
+
+    let sendResult = { success: false, error: 'Unknown platform' };
+
+    if (msg.platform === 'ebay' && msg.item_id) {
+      const EbayAPI = require('../../api/ebayAPI');
+      const ebay = new EbayAPI();
+      sendResult = await ebay.replyToMessage(msg.item_id, msg.sender, replyText, msg.subject);
+    } else if (msg.platform === 'alibaba') {
+      const AlibabaAPI = require('../../api/alibabaAPI');
+      const alibaba = new AlibabaAPI();
+      sendResult = await alibaba.replyInquiry(msg.message_id, replyText);
+    }
+
+    const updated = await csMessageRepo.updateMessage(msg.id, {
+      approved_reply: replyText,
+      status: sendResult.success ? 'sent' : 'failed',
+      replied_at: sendResult.success ? new Date().toISOString() : null,
+    });
+
+    res.json({ success: sendResult.success, data: updated, sendResult });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// POST /api/cs/edit/:id — edit draft before sending
+router.post('/cs/edit/:id', async (req, res) => {
+  try {
+    const updated = await csMessageRepo.updateMessage(req.params.id, {
+      draft_reply: req.body.draft_reply,
+      status: 'draft_ready',
+    });
+    res.json({ success: true, data: updated });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// ===== Bulk Purchase Price Update =====
+
+// POST /api/master-products/bulk-cost — CSV 매입가 일괄 업데이트
+router.post('/master-products/bulk-cost', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { items } = req.body; // [{ sku, cost_price }, ...]
+    if (!items || !Array.isArray(items)) {
+      return res.status(400).json({ success: false, error: 'items array required' });
+    }
+
+    let updated = 0, failed = 0, errors = [];
+    for (const item of items) {
+      if (!item.sku || item.cost_price == null) { failed++; continue; }
+      const cost = parseFloat(item.cost_price);
+      if (isNaN(cost) || cost < 0) { failed++; errors.push(`${item.sku}: invalid cost`); continue; }
+
+      const { error } = await db.from('products')
+        .update({ cost_price: cost, purchase_price: cost, updated_at: new Date().toISOString() })
+        .eq('sku', item.sku);
+      if (error) { failed++; errors.push(`${item.sku}: ${error.message}`); }
+      else updated++;
+    }
+
+    res.json({ success: true, updated, failed, total: items.length, errors: errors.slice(0, 10) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PUT /api/master-products/:sku/cost — 단일 매입가 인라인 수정
+router.put('/master-products/:sku/cost', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const cost = parseFloat(req.body.cost_price);
+    if (isNaN(cost) || cost < 0) return res.status(400).json({ success: false, error: 'Invalid cost_price' });
+
+    const { data, error } = await db.from('products')
+      .update({ cost_price: cost, purchase_price: cost, updated_at: new Date().toISOString() })
+      .eq('sku', req.params.sku).select().single();
+    if (error) throw error;
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ===== Agent System API =====
+const { AuditLogger } = require('../../agents/core/audit-logger');
+const agentLogger = new AuditLogger();
+
+// GET /api/agents/summary — overview for dashboard card
+router.get('/agents/summary', async (req, res) => {
+  try {
+    const summary = await agentLogger.getSummary();
+    res.json({ success: true, ...summary });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/agents/recommendations — list with filters
+router.get('/agents/recommendations', async (req, res) => {
+  try {
+    const { status, agent, priority, sku, page = 1, limit = 20 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const recs = await agentLogger.getRecommendations({
+      status: status || undefined,
+      agent_name: agent || undefined,
+      priority: priority || undefined,
+      sku: sku || undefined,
+      limit: parseInt(limit),
+      offset,
+    });
+    res.json({ success: true, data: recs, page: parseInt(page), limit: parseInt(limit) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/agents/recommendations/:id — single detail
+router.get('/agents/recommendations/:id', async (req, res) => {
+  try {
+    const rec = await agentLogger.getRecommendationById(req.params.id);
+    if (!rec) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data: rec });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PUT /api/agents/recommendations/:id/approve
+router.put('/agents/recommendations/:id/approve', async (req, res) => {
+  try {
+    const rec = await agentLogger.updateRecommendation(req.params.id, {
+      status: 'approved',
+      approved_by: req.body.approved_by || 'user',
+    });
+    await agentLogger.logAction('system', 'approve_recommendation', {
+      sku: rec.sku,
+      platform: rec.platform,
+      decision: 'approved',
+      output: { recommendation_id: rec.id },
+    });
+    res.json({ success: true, data: rec });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PUT /api/agents/recommendations/:id/dismiss
+router.put('/agents/recommendations/:id/dismiss', async (req, res) => {
+  try {
+    const rec = await agentLogger.updateRecommendation(req.params.id, {
+      status: 'dismissed',
+      approved_by: req.body.dismissed_by || 'user',
+      execution_result: { dismiss_reason: req.body.reason || '' },
+    });
+    await agentLogger.logAction('system', 'dismiss_recommendation', {
+      sku: rec.sku,
+      platform: rec.platform,
+      decision: 'dismissed',
+      reason: req.body.reason || '',
+    });
+    res.json({ success: true, data: rec });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/agents/recommendations/:id/execute — execute an approved recommendation
+router.post('/agents/recommendations/:id/execute', async (req, res) => {
+  try {
+    const rec = await agentLogger.getRecommendationById(req.params.id);
+    if (!rec) return res.status(404).json({ success: false, error: 'Not found' });
+    if (rec.status !== 'approved' && rec.status !== 'auto_approved') {
+      return res.status(400).json({ success: false, error: `Cannot execute: status is "${rec.status}"` });
+    }
+
+    let executionResult = {};
+
+    // Execute based on recommendation type
+    if (rec.type === 'price_adjustment' && rec.platform === 'ebay') {
+      const itemId = rec.current_value?.ebayItemId;
+      const newPrice = rec.recommended_value?.price;
+      if (itemId && newPrice) {
+        try {
+          const EbayAPI = require('../../api/ebayAPI');
+          const ebay = new EbayAPI();
+          await ebay.updatePrice(itemId, newPrice);
+          executionResult = { applied: true, itemId, newPrice };
+        } catch (apiErr) {
+          executionResult = { applied: false, error: apiErr.message };
+        }
+      } else {
+        executionResult = { applied: false, error: 'Missing itemId or price' };
+      }
+    }
+
+    const status = executionResult.applied ? 'executed' : 'failed';
+    const updated = await agentLogger.updateRecommendation(rec.id, {
+      status,
+      executed_at: new Date().toISOString(),
+      execution_result: executionResult,
+    });
+
+    await agentLogger.logAction('system', 'execute_recommendation', {
+      sku: rec.sku,
+      platform: rec.platform,
+      decision: status,
+      output: executionResult,
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/agents/alerts — list alerts
+router.get('/agents/alerts', async (req, res) => {
+  try {
+    const { severity, is_read, limit = 50 } = req.query;
+    const alerts = await agentLogger.getAlerts({
+      severity: severity || undefined,
+      is_read: is_read !== undefined ? is_read === 'true' : undefined,
+      limit: parseInt(limit),
+    });
+    res.json({ success: true, data: alerts });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PUT /api/agents/alerts/:id/read — mark alert as read
+router.put('/agents/alerts/:id/read', async (req, res) => {
+  try {
+    const alert = await agentLogger.markAlertRead(req.params.id);
+    res.json({ success: true, data: alert });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/agents/audit — audit log query
+router.get('/agents/audit', async (req, res) => {
+  try {
+    const { agent, action_type, sku, from, to, limit = 50 } = req.query;
+    const logs = await agentLogger.getAuditLog({
+      agent_name: agent || undefined,
+      action_type: action_type || undefined,
+      sku: sku || undefined,
+      from: from || undefined,
+      to: to || undefined,
+      limit: parseInt(limit),
+    });
+    res.json({ success: true, data: logs });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/agents/run/:agentName — manually trigger an agent
+router.post('/agents/run/:agentName', async (req, res) => {
+  try {
+    const { runAgent } = require('../../agents');
+    const results = await runAgent(req.params.agentName);
+    res.json({ success: true, agent: req.params.agentName, recommendations: results.length });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
