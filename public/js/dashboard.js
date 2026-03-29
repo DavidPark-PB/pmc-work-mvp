@@ -3102,7 +3102,7 @@ function setupRepricingEvents() {
       } else {
         body.innerHTML = changes.map(function(c) {
           return '<tr>' +
-            '<td title="' + esc(c.title || '') + '">' + esc(c.sku) + '</td>' +
+            '<td title="' + esc(c.title || '') + '"><a href="https://www.ebay.com/itm/' + esc(c.itemId || c.sku) + '" target="_blank" style="color:#1565c0;text-decoration:none">' + esc(c.sku) + ' ↗</a><div style="font-size:10px;color:#888;max-width:200px;white-space:normal">' + esc(c.title || '') + '</div></td>' +
             '<td>$' + c.oldPrice.toFixed(2) + '</td>' +
             '<td>$' + c.compTotal.toFixed(2) + ' <small style="color:#888">' + esc(c.competitorSeller) + '</small></td>' +
             '<td style="font-weight:700;color:#c62828">$' + c.newPrice.toFixed(2) + '</td>' +
