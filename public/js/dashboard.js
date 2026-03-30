@@ -3285,12 +3285,31 @@ function renderBattleTable(items) {
 
   el.innerHTML = pageItems.map(item => {
     const hasComp = item.competitors.length > 0;
-    const rowClass = item.losing ? 'battle-row-losing' : (hasComp ? 'battle-row-winning' : '');
 
-    const diffClass = item.diff > 0 ? 'positive' : (item.diff < 0 ? 'negative' : 'neutral');
-    const diffText = item.diff !== null ? `${item.diff > 0 ? '+' : ''}$${item.diff.toFixed(2)}` : '-';
+    // Frontend calculation — ignore backend cache
+    const myTotal = (item.myPrice || 0) + (item.myShipping || 0);
+    let cheapestComp = null;
+    if (hasComp) {
+      cheapestComp = item.competitors.reduce((a, b) => (a.total < b.total ? a : b));
+    }
+    const cheapestTotal = cheapestComp ? cheapestComp.total : null;
+    const diff = cheapestTotal ? +(myTotal - cheapestTotal).toFixed(2) : null;
+    const losing = diff !== null && diff > 0;
+    const killPrice = losing ? +Math.max(0.99, cheapestTotal - 2.00 - (item.myShipping || 0)).toFixed(2) : null;
 
-    const statusBadge = item.losing
+    // Override backend values
+    item.diff = diff;
+    item.losing = losing;
+    item.killPrice = killPrice;
+    item.myTotal = +myTotal.toFixed(2);
+    item.cheapestTotal = cheapestTotal;
+
+    const rowClass = losing ? 'battle-row-losing' : (hasComp ? 'battle-row-winning' : '');
+
+    const diffClass = diff > 0 ? 'positive' : (diff < 0 ? 'negative' : 'neutral');
+    const diffText = diff !== null ? `${diff > 0 ? '+' : ''}$${diff.toFixed(2)}` : '-';
+
+    const statusBadge = losing
       ? '<span class="battle-status losing">패배</span>'
       : (hasComp ? '<span class="battle-status winning">승리</span>' : '<span class="battle-status neutral">-</span>');
 
