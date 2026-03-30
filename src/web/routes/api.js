@@ -1058,8 +1058,57 @@ router.get('/master-products', async (req, res) => {
     const { data, count, error } = await query;
     if (error) throw error;
 
+    // Join platform data from ebay_products and shopify_products
+    const products = data || [];
+    if (products.length > 0) {
+      const skus = products.map(p => p.sku).filter(Boolean);
+      const ebayItemIds = products.map(p => p.ebay_item_id).filter(Boolean);
+      const allKeys = [...new Set([...skus, ...ebayItemIds])];
+
+      // Fetch eBay listings
+      let ebayMap = {};
+      if (allKeys.length > 0) {
+        for (let i = 0; i < allKeys.length; i += 500) {
+          const chunk = allKeys.slice(i, i + 500);
+          const { data: ebayData } = await db.from('ebay_products')
+            .select('item_id, sku, price_usd, shipping_usd, stock, status')
+            .in('sku', chunk);
+          (ebayData || []).forEach(e => { ebayMap[e.sku] = e; });
+        }
+        // Also match by item_id for products with ebay_item_id
+        if (ebayItemIds.length > 0) {
+          const { data: ebayById } = await db.from('ebay_products')
+            .select('item_id, sku, price_usd, shipping_usd, stock, status')
+            .in('item_id', ebayItemIds);
+          (ebayById || []).forEach(e => { ebayMap[e.item_id] = e; });
+        }
+      }
+
+      // Fetch Shopify listings
+      let shopifyMap = {};
+      if (skus.length > 0) {
+        for (let i = 0; i < skus.length; i += 500) {
+          const chunk = skus.slice(i, i + 500);
+          const { data: shopData } = await db.from('shopify_products')
+            .select('sku, title, price_usd, status')
+            .in('sku', chunk);
+          (shopData || []).forEach(s => { shopifyMap[s.sku] = s; });
+        }
+      }
+
+      // Attach platform info to each product
+      products.forEach(p => {
+        const ebay = ebayMap[p.sku] || ebayMap[p.ebay_item_id] || null;
+        const shopify = shopifyMap[p.sku] || null;
+        p.platforms = {
+          ebay: ebay ? { itemId: ebay.item_id, price: ebay.price_usd, stock: ebay.stock, status: ebay.status, link: `https://www.ebay.com/itm/${ebay.item_id}` } : null,
+          shopify: shopify ? { price: shopify.price_usd, status: shopify.status } : null,
+        };
+      });
+    }
+
     res.json({
-      products: data || [],
+      products,
       total: count || 0,
       page: pageNum,
       totalPages: Math.ceil((count || 0) / limitNum),

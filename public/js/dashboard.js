@@ -2051,21 +2051,34 @@ function renderMasterProducts(products, meta) {
     const ebay = p.platforms?.ebay;
     const shopify = p.platforms?.shopify;
     const naver = p.platforms?.naver;
+
+    // eBay cell
+    var ebayCell = '-';
+    if (ebay && ebay.status !== 'ended') {
+      ebayCell = '<div style="font-size:11px">' +
+        '<a href="' + esc(ebay.link || '') + '" target="_blank" style="color:#1565c0;text-decoration:none;font-weight:600">$' + (ebay.price || 0).toFixed(2) + ' ↗</a>' +
+        '<div style="display:flex;gap:4px;margin-top:2px;align-items:center">' +
+        '<span style="color:#888;font-size:10px">재고:</span>' +
+        '<input type="number" value="' + (ebay.stock || 0) + '" style="width:35px;padding:1px 3px;font-size:10px;border:1px solid #444;border-radius:3px;background:#0f0f1a;color:#e0e0e0;text-align:center" onchange="masterUpdateEbay(\'' + esc(ebay.itemId) + '\',{quantity:parseInt(this.value)},this)">' +
+        '<button onclick="endEbayListing(\'' + esc(ebay.itemId) + '\',this)" style="font-size:8px;padding:1px 4px;background:#c62828;color:#fff;border:none;border-radius:2px;cursor:pointer">End</button>' +
+        '</div></div>';
+    }
+
+    // Shopify cell
+    var shopifyCell = shopify ? '<span style="font-size:11px;color:#2e7d32">$' + (shopify.price || 0).toFixed(2) + '</span>' : '-';
+
+    // Naver cell
+    var naverCell = naver?.status === 'active' ? '<span style="font-size:11px">₩' + (naver.price || 0).toLocaleString() + '</span>' : '-';
+
     return `<tr>
-      <td><strong>${esc(p.sku)}</strong></td>
-      <td title="${esc(p.titleEn || '')}">${esc(p.title)}</td>
-      <td class="editable-cost" data-sku="${esc(p.sku)}" style="cursor:pointer;color:${p.purchasePrice ? '#fff' : '#f44336'}" title="클릭하여 매입가 수정">${p.purchasePrice ? krw(p.purchasePrice) : '미입력'}</td>
-      <td>${p.targetMargin}%</td>
-      <td>${ebay?.status === 'active'
-        ? `<span class="platform-badge active">$${ebay.price}</span>`
-        : '<span class="platform-badge none">-</span>'}</td>
-      <td>${shopify?.status === 'active'
-        ? `<span class="platform-badge active">$${shopify.price}</span>`
-        : '<span class="platform-badge none">-</span>'}</td>
-      <td>${naver?.status === 'active'
-        ? `<span class="platform-badge active">₩${(naver.price || 0).toLocaleString()}</span>`
-        : '<span class="platform-badge none">-</span>'}</td>
-      <td style="font-size:11px;color:#888">${p.createdAt ? new Date(p.createdAt).toLocaleDateString('ko') : '-'}</td>
+      <td><strong style="font-size:11px">${esc(p.sku)}</strong></td>
+      <td title="${esc(p.title_en || p.title || '')}" style="font-size:11px;max-width:200px;white-space:normal;word-break:break-word">${esc(p.title || p.title_ko || '')}</td>
+      <td class="editable-cost" data-sku="${esc(p.sku)}" style="cursor:pointer;color:${p.purchase_price ? '#e0e0e0' : '#f44336'};font-size:11px" title="클릭하여 매입가 수정">${p.purchase_price ? krw(p.purchase_price) : '미입력'}</td>
+      <td style="font-size:11px">${p.target_margin || 0}%</td>
+      <td>${ebayCell}</td>
+      <td>${shopifyCell}</td>
+      <td>${naverCell}</td>
+      <td style="font-size:10px;color:#888">${p.created_at ? new Date(p.created_at).toLocaleDateString('ko') : '-'}</td>
     </tr>`;
   }).join('');
 
@@ -2080,6 +2093,19 @@ function renderMasterProducts(products, meta) {
   } else {
     pagEl.innerHTML = '';
   }
+}
+
+async function masterUpdateEbay(itemId, updates, input) {
+  input.style.borderColor = '#ff9800';
+  try {
+    var r = await fetch(API + '/products/ebay/' + itemId, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    });
+    var d = await r.json();
+    input.style.borderColor = d.success ? '#2e7d32' : '#c62828';
+    setTimeout(function() { input.style.borderColor = '#444'; }, 2000);
+  } catch (e) { input.style.borderColor = '#c62828'; }
 }
 
 // ===== 대시보드 마스터 상품 요약 =====
