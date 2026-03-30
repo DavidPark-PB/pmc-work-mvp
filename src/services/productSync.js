@@ -129,7 +129,7 @@ async function fetchEbayItems() {
         title: item.title || '',
         price: item.price || 0,
         shippingCost: item.shippingCost || 0,
-        quantity: (parseInt(item.quantity) || 0) - (parseInt(item.quantitySold) || 0),
+        quantity: parseInt(item.quantity) || 0,
         salesCount: parseInt(item.quantitySold) || 0,
         imageUrl: item.imageUrl || '',
       });

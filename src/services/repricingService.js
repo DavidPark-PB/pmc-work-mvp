@@ -219,7 +219,7 @@ class RepricingService {
       title: item.title || item.itemId || '',
       price: parseFloat(item.price) || 0,
       shipping: parseFloat(item.shippingCost) || 0,
-      quantity: (parseInt(item.quantity) || 0) - (parseInt(item.quantitySold) || 0),
+      quantity: parseInt(item.quantity) || 0,
     })).filter(l => l.sku && l.price > 0);
 
     if (normalizedListings.length === 0) return [];
@@ -244,6 +244,14 @@ class RepricingService {
       .from('products')
       .select('sku, title, title_ko')
       .in('sku', skus);
+
+    // Fetch DB stock from ebay_products (more reliable than API quantity)
+    const dbStockMap = {};
+    for (let i = 0; i < allKeys.length; i += 500) {
+      const chunk = allKeys.slice(i, i + 500);
+      const { data: stockData } = await db.from('ebay_products').select('item_id, sku, stock').in('sku', chunk);
+      (stockData || []).forEach(s => { dbStockMap[s.sku] = s.stock; dbStockMap[s.item_id] = s.stock; });
+    }
     const productTitleMap = {};
     (productRows || []).forEach(p => {
       productTitleMap[p.sku] = p.title_ko || p.title || null;
@@ -275,7 +283,7 @@ class RepricingService {
         title: productTitleMap[p.sku] || p.title,
         myPrice: p.price,
         myShipping: p.shipping,
-        quantity: p.quantity || 0,
+        quantity: (dbStockMap[p.sku] !== undefined ? dbStockMap[p.sku] : null) ?? (dbStockMap[p.itemId] !== undefined ? dbStockMap[p.itemId] : null) ?? p.quantity ?? 0,
         competitors: competitors.map(c => ({
           itemId: c.competitor_id || null,
           price: parseFloat(c.competitor_price),
