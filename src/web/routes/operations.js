@@ -676,6 +676,41 @@ router.post('/pricing/bulk-update', async (req, res) => {
   }
 });
 
+/**
+ * PUT /api/ops/pricing/cost — 매입가 수정 (단일 + SKU 기반 전체 DB 동기화)
+ * Body: { id: int, cost_price: number }
+ */
+router.put('/pricing/cost', async (req, res) => {
+  try {
+    const { id, cost_price } = req.body;
+    if (!id || cost_price === undefined) return res.status(400).json({ success: false, error: 'id and cost_price required' });
+
+    const supabase = getSupabase();
+    const costVal = parseFloat(cost_price);
+
+    // Update products table
+    const { data: product, error } = await supabase
+      .from('products')
+      .update({ cost_price: costVal, purchase_price: costVal, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select('sku, price_usd, cost_price')
+      .single();
+
+    if (error) return res.status(500).json({ success: false, error: error.message });
+
+    // Recalculate margin if price exists
+    let margin = null;
+    if (product && product.price_usd && costVal > 0) {
+      margin = +((product.price_usd - costVal) / product.price_usd * 100).toFixed(1);
+      await supabase.from('products').update({ margin_pct: margin }).eq('id', id);
+    }
+
+    res.json({ success: true, sku: product?.sku, cost_price: costVal, margin });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── 7. COMPETITOR MONITOR ──────────────────────────────────────────────────
 
 /**

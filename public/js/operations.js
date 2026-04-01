@@ -497,7 +497,12 @@ const opsPricing = (() => {
               onchange="opsPricing.toggleOne(this, ${p.id})"></td>
             <td style="font-family:monospace;font-size:12px">${p.sku}</td>
             <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.title || '—'}</td>
-            <td>₩${Number(p.cost_price || 0).toLocaleString()}</td>
+            <td>
+              <input type="number" step="100" min="0"
+                id="cost-${p.id}" value="${p.cost_price || ''}"
+                style="width:80px;padding:3px 6px;background:#1a1a2e;border:1px solid #444;color:#e0e0e0;border-radius:3px"
+                onchange="opsPricing.saveCost(${p.id}, this)">
+            </td>
             <td>
               <input type="number" step="0.01" min="0"
                 id="price-${p.id}" value="${p.price_usd || ''}"
@@ -577,7 +582,36 @@ const opsPricing = (() => {
     }
   }
 
-  return { load, search, goPage, markDirty, toggleAll, toggleOne, saveSingle, saveAll };
+  async function saveCost(id, input) {
+    var costPrice = parseFloat(input.value);
+    if (isNaN(costPrice) || costPrice < 0) { input.style.borderColor = '#c62828'; return; }
+    input.style.borderColor = '#ff9800';
+    try {
+      var r = await fetch('/api/ops/pricing/cost', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: id, cost_price: costPrice })
+      });
+      var d = await r.json();
+      if (d.success) {
+        input.style.borderColor = '#2e7d32';
+        setTimeout(function() { input.style.borderColor = '#444'; }, 2000);
+        // Update margin display in same row
+        if (d.margin !== null) {
+          var row = input.closest('tr');
+          var marginCell = row.querySelectorAll('td')[5];
+          if (marginCell) {
+            marginCell.textContent = d.margin.toFixed(1) + '%';
+            marginCell.style.color = d.margin >= 20 ? '#69f0ae' : '#ef9a9a';
+          }
+        }
+      } else {
+        input.style.borderColor = '#c62828';
+      }
+    } catch (e) { input.style.borderColor = '#c62828'; }
+  }
+
+  return { load, search, goPage, markDirty, toggleAll, toggleOne, saveSingle, saveAll, saveCost };
 })();
 
 // ─── 6. PROFIT ──────────────────────────────────────────────────────────────
