@@ -3586,6 +3586,25 @@ router.post('/sync/master', async (req, res) => {
   }
 });
 
+// POST /api/inventory/barcode-match — 바코드 ↔ SKU 매칭 등록
+router.post('/inventory/barcode-match', async (req, res) => {
+  try {
+    const { sku, barcode } = req.body;
+    if (!sku || !barcode) return res.status(400).json({ success: false, error: 'sku and barcode required' });
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+
+    // Update ebay_products barcode
+    await db.from('ebay_products').update({ barcode: barcode.trim() }).eq('sku', sku);
+    // Also update products table
+    await db.from('products').update({ barcode: barcode.trim() }).eq('sku', sku);
+
+    res.json({ success: true, sku, barcode: barcode.trim() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/inventory/scan — 바코드 스캔 입출고
 router.post('/inventory/scan', async (req, res) => {
   try {
@@ -3594,9 +3613,43 @@ router.post('/inventory/scan', async (req, res) => {
     const { getClient } = require('../../db/supabaseClient');
     const db = getClient();
 
-    // Find product by SKU
-    const { data: product } = await db.from('products').select('id, stock').eq('sku', sku).limit(1).single();
-    if (!product) return res.status(404).json({ success: false, error: `SKU "${sku}" not found` });
+    // Find product by barcode → SKU → eBay item ID
+    const scanCode = sku.trim();
+    let product = null;
+    let matchedSku = scanCode;
+
+    // 1. Try barcode in ebay_products
+    const { data: byBarcode } = await db.from('ebay_products').select('item_id, sku, stock, barcode').eq('barcode', scanCode).limit(1);
+    if (byBarcode && byBarcode.length > 0) {
+      matchedSku = byBarcode[0].sku || byBarcode[0].item_id;
+      const { data: p } = await db.from('products').select('id, stock, sku').eq('sku', matchedSku).limit(1).single();
+      product = p;
+    }
+
+    // 2. Try SKU in products
+    if (!product) {
+      const { data: p } = await db.from('products').select('id, stock, sku').eq('sku', scanCode).limit(1).single();
+      product = p;
+    }
+
+    // 3. Try eBay item_id
+    if (!product) {
+      const { data: byItemId } = await db.from('ebay_products').select('item_id, sku').eq('item_id', scanCode).limit(1);
+      if (byItemId && byItemId.length > 0) {
+        matchedSku = byItemId[0].sku || byItemId[0].item_id;
+        const { data: p } = await db.from('products').select('id, stock, sku').eq('sku', matchedSku).limit(1).single();
+        product = p;
+      }
+    }
+
+    // 4. Try barcode in products table
+    if (!product) {
+      const { data: p } = await db.from('products').select('id, stock, sku').eq('barcode', scanCode).limit(1).single();
+      product = p;
+      if (p) matchedSku = p.sku;
+    }
+
+    if (!product) return res.status(404).json({ success: false, error: `"${scanCode}" 매칭 상품 없음 (바코드/SKU/Item ID)` });
 
     const change = type === 'in' ? Math.abs(quantity) : -Math.abs(quantity);
     const newStock = Math.max(0, (product.stock || 0) + change);
@@ -3607,13 +3660,13 @@ router.post('/inventory/scan', async (req, res) => {
     // Log to inventory_log
     await db.from('inventory_log').insert({
       product_id: product.id,
-      sku,
+      sku: matchedSku,
       change_qty: change,
       type,
       reason: type === 'in' ? 'scan' : 'scan-out',
-    }).then(() => {}).catch(() => {}); // Ignore if table doesn't exist yet
+    }).then(() => {}).catch(() => {});
 
-    res.json({ success: true, sku, previousStock: product.stock || 0, newStock, change });
+    res.json({ success: true, sku: matchedSku, scanned: scanCode, previousStock: product.stock || 0, newStock, change });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
