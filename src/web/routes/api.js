@@ -3591,6 +3591,7 @@ router.post('/inventory/scan', async (req, res) => {
   try {
     const { sku, quantity, type } = req.body;
     if (!sku || !quantity || !type) return res.status(400).json({ success: false, error: 'sku, quantity, type required' });
+    const { getClient } = require('../../db/supabaseClient');
     const db = getClient();
 
     // Find product by SKU
