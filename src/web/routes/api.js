@@ -3983,11 +3983,11 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
 
     // Platform-specific settings
     const settings = {
-      alibaba: { position: 'bottom-right', size: 15, padding: 20 },
-      ebay: { position: 'bottom-left', size: 12, padding: 15 },
-      shopify: { position: 'bottom-right', size: 10, padding: 10 },
-      shopee: { position: 'top-right', size: 12, padding: 15 },
-      qoo10: { position: 'bottom-right', size: 12, padding: 15 },
+      alibaba: { position: 'bottom-right', size: 35, padding: 20 },
+      ebay: { position: 'bottom-left', size: 30, padding: 15 },
+      shopify: { position: 'bottom-right', size: 25, padding: 10 },
+      shopee: { position: 'top-right', size: 30, padding: 15 },
+      qoo10: { position: 'bottom-right', size: 30, padding: 15 },
     };
     const cfg = settings[platform] || settings.ebay;
 
