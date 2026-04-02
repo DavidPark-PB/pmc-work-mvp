@@ -3965,7 +3965,6 @@ router.post('/agents/run/:agentName', async (req, res) => {
 });
 
 // POST /api/thumbnail/generate — 썸네일 만들기 (로고 합성)
-const multer = require('multer');
 const thumbnailUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (req, res) => {
