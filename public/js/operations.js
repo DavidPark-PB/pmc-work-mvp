@@ -366,11 +366,17 @@ const opsInventory = (() => {
     try {
       const { data, pagination } = await opsApi.get(_buildUrl());
       tbody.innerHTML = data.length === 0
-        ? '<tr><td colspan="7" class="empty">데이터 없음</td></tr>'
+        ? '<tr><td colspan="8" class="empty">데이터 없음</td></tr>'
         : data.map(inv => `
           <tr>
             <td style="font-family:monospace;font-size:12px">${inv.products?.sku || '—'}</td>
-            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${inv.products?.title || '—'}</td>
+            <td>
+              <input type="text" id="inv-bc-${inv.product_id}" value="${inv.products?.barcode || ''}"
+                placeholder="바코드 입력"
+                style="width:120px;padding:3px 6px;background:#1a1a2e;border:1px solid #444;color:#e0e0e0;border-radius:3px;font-size:11px"
+                onchange="opsInventory.saveBarcode('${inv.products?.sku || ''}', this)">
+            </td>
+            <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${inv.products?.title || '—'}</td>
             <td>
               <input type="number" id="inv-qty-${inv.product_id}" value="${inv.quantity}"
                 min="0" style="width:70px;padding:3px 6px;background:#1a1a2e;border:1px solid #444;color:#e0e0e0;border-radius:3px;text-align:center">
@@ -410,7 +416,25 @@ const opsInventory = (() => {
     }
   }
 
-  return { load, search, goPage, save };
+  async function saveBarcode(sku, input) {
+    var barcode = input.value.trim();
+    if (!sku) return;
+    input.style.borderColor = '#ff9800';
+    try {
+      var r = await fetch('/api/inventory/barcode-match', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sku: sku, barcode: barcode })
+      });
+      var d = await r.json();
+      input.style.borderColor = d.success ? '#69f0ae' : '#ef9a9a';
+      setTimeout(function() { input.style.borderColor = '#444'; }, 2000);
+    } catch (e) {
+      input.style.borderColor = '#ef9a9a';
+    }
+  }
+
+  return { load, search, goPage, save, saveBarcode };
 })();
 
 // ─── 4. LISTING MATRIX ──────────────────────────────────────────────────────

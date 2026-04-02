@@ -296,7 +296,7 @@ router.get('/inventory', async (req, res) => {
     let query = supabase
       .from('products')
       .select(
-        `id, sku, title, title_ko, stock, workflow_status, status, updated_at`,
+        `id, sku, title, title_ko, stock, barcode, workflow_status, status, updated_at`,
         { count: 'exact' }
       );
 
@@ -323,7 +323,7 @@ router.get('/inventory', async (req, res) => {
       reserved: 0,
       location: 'default',
       updated_at: p.updated_at,
-      products: { id: p.id, sku: p.sku, title: p.title, title_ko: p.title_ko },
+      products: { id: p.id, sku: p.sku, title: p.title, title_ko: p.title_ko, barcode: p.barcode || '' },
     }));
 
     res.json({
