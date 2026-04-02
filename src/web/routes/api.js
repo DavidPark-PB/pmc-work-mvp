@@ -3964,4 +3964,80 @@ router.post('/agents/run/:agentName', async (req, res) => {
   }
 });
 
+// POST /api/thumbnail/generate — 썸네일 만들기 (로고 합성)
+const multer = require('multer');
+const thumbnailUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
+router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (req, res) => {
+  try {
+    const sharp = require('sharp');
+    const path = require('path');
+    const fs = require('fs');
+
+    const platform = req.body.platform || 'ebay';
+    const files = req.files;
+    if (!files || files.length === 0) return res.status(400).json({ success: false, error: 'No images uploaded' });
+
+    // Load logo (PNG with transparency)
+    const logoPath = path.join(__dirname, '../../..', 'public/images/pmc_logo.png');
+    if (!fs.existsSync(logoPath)) return res.status(400).json({ success: false, error: 'Logo file not found. Upload pmc_logo.png to public/images/' });
+
+    // Platform-specific settings
+    const settings = {
+      alibaba: { position: 'bottom-right', size: 15, padding: 20 },
+      ebay: { position: 'bottom-left', size: 12, padding: 15 },
+      shopify: { position: 'bottom-right', size: 10, padding: 10 },
+      shopee: { position: 'top-right', size: 12, padding: 15 },
+      qoo10: { position: 'bottom-right', size: 12, padding: 15 },
+    };
+    const cfg = settings[platform] || settings.ebay;
+
+    const results = [];
+    for (const file of files) {
+      try {
+        const img = sharp(file.buffer);
+        const meta = await img.metadata();
+        const imgW = meta.width || 800;
+        const imgH = meta.height || 800;
+
+        // Resize logo to percentage of image width
+        const logoW = Math.round(imgW * cfg.size / 100);
+        const resizedLogo = await sharp(logoPath)
+          .resize(logoW, null, { fit: 'inside' })
+          .png()
+          .toBuffer();
+        const logoMeta = await sharp(resizedLogo).metadata();
+        const logoH = logoMeta.height || logoW;
+
+        // Calculate position
+        let left, top;
+        switch (cfg.position) {
+          case 'bottom-right': left = imgW - logoW - cfg.padding; top = imgH - logoH - cfg.padding; break;
+          case 'bottom-left': left = cfg.padding; top = imgH - logoH - cfg.padding; break;
+          case 'top-right': left = imgW - logoW - cfg.padding; top = cfg.padding; break;
+          case 'top-left': left = cfg.padding; top = cfg.padding; break;
+          default: left = imgW - logoW - cfg.padding; top = imgH - logoH - cfg.padding;
+        }
+
+        const output = await img
+          .composite([{ input: resizedLogo, left: Math.max(0, left), top: Math.max(0, top) }])
+          .jpeg({ quality: 90 })
+          .toBuffer();
+
+        results.push({
+          filename: file.originalname,
+          data: 'data:image/jpeg;base64,' + output.toString('base64'),
+          size: output.length,
+        });
+      } catch (e) {
+        results.push({ filename: file.originalname, error: e.message });
+      }
+    }
+
+    res.json({ success: true, platform, images: results, count: results.filter(r => !r.error).length });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 module.exports = router;

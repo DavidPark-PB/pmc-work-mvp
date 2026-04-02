@@ -27,6 +27,7 @@
     <div class="menu-item" data-page="register">상품 등록</div>
     <div class="menu-item" data-page="remarker" style="color:#7c4dff;font-weight:600">AI 리메이커</div>
     <div class="menu-item" data-page="reconstruct" style="color:#e94560;font-weight:600">상세페이지 재구성</div>
+    <div class="menu-item" data-page="thumbnail" style="color:#ff9800;font-weight:600">썸네일 만들기</div>
     <div class="menu-title">배송</div>
     <div class="menu-item" data-page="shipping" style="color:#0288d1;font-weight:600">배송 관리</div>
     <div class="menu-title">분석</div>
@@ -830,6 +831,30 @@
           </div>
           <div id="batchSummaryContent" style="margin-top:12px"></div>
         </div>
+      </div>
+    </div>
+
+    <!-- ===== 썸네일 만들기 페이지 ===== -->
+    <div id="page-thumbnail" class="page">
+      <div class="card">
+        <h3 style="margin-bottom:8px">썸네일 만들기 <span style="font-size:12px;color:#ff9800;font-weight:400">상품 이미지에 PMC 로고 자동 합성</span></h3>
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+          <select id="thumbPlatform" style="padding:8px 12px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:6px">
+            <option value="alibaba">Alibaba (우하단)</option>
+            <option value="ebay">eBay (좌하단)</option>
+            <option value="shopify">Shopify (우하단 작게)</option>
+            <option value="shopee">Shopee (우상단)</option>
+            <option value="qoo10">Qoo10 (우하단)</option>
+          </select>
+          <label style="padding:8px 20px;background:#ff9800;color:#fff;border-radius:6px;cursor:pointer;font-weight:600">
+            이미지 선택 (최대 20장)
+            <input type="file" id="thumbFiles" multiple accept="image/*" style="display:none" onchange="thumbPreview()">
+          </label>
+          <button onclick="thumbGenerate()" id="thumbGenBtn" style="padding:8px 20px;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">생성</button>
+          <button onclick="thumbDownloadAll()" id="thumbDlBtn" style="padding:8px 20px;background:#1565c0;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;display:none">전체 다운로드</button>
+        </div>
+        <div id="thumbPreviewArea" style="display:flex;flex-wrap:wrap;gap:12px"></div>
+        <div id="thumbResultArea" style="display:flex;flex-wrap:wrap;gap:12px;margin-top:16px"></div>
       </div>
     </div>
 
@@ -2622,7 +2647,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260330d"></script>
+  <script src="/js/dashboard.js?v=20260402a"></script>
   <script src="/js/operations.js?v=20260315e"></script>
   <script src="/js/agent-dashboard.js?v=20260324a"></script>
   <script>

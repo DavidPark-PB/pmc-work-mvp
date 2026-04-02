@@ -170,6 +170,68 @@ async function scanInventory(type) {
 }
 
 var barcodeStream = null;
+// ===== 썸네일 만들기 =====
+var thumbResults = [];
+
+function thumbPreview() {
+  var files = document.getElementById('thumbFiles').files;
+  var area = document.getElementById('thumbPreviewArea');
+  area.innerHTML = '';
+  document.getElementById('thumbResultArea').innerHTML = '';
+  document.getElementById('thumbDlBtn').style.display = 'none';
+  for (var i = 0; i < files.length; i++) {
+    var url = URL.createObjectURL(files[i]);
+    area.innerHTML += '<div style="text-align:center"><img src="' + url + '" style="width:150px;height:150px;object-fit:cover;border-radius:6px;border:1px solid #444"><div style="font-size:10px;color:#888;margin-top:4px">' + files[i].name + '</div></div>';
+  }
+}
+
+async function thumbGenerate() {
+  var files = document.getElementById('thumbFiles').files;
+  if (!files || files.length === 0) { alert('이미지를 선택하세요'); return; }
+  var platform = document.getElementById('thumbPlatform').value;
+  var btn = document.getElementById('thumbGenBtn');
+  btn.disabled = true;
+  btn.textContent = '생성 중... (' + files.length + '장)';
+
+  var formData = new FormData();
+  formData.append('platform', platform);
+  for (var i = 0; i < files.length; i++) formData.append('images', files[i]);
+
+  try {
+    var r = await fetch(API + '/thumbnail/generate', { method: 'POST', body: formData });
+    var d = await r.json();
+    if (!d.success) throw new Error(d.error);
+
+    thumbResults = d.images || [];
+    var area = document.getElementById('thumbResultArea');
+    area.innerHTML = '<h4 style="width:100%;margin:0 0 8px;color:#ff9800">' + d.count + '/' + d.images.length + ' 생성 완료 (' + platform + ')</h4>';
+    thumbResults.forEach(function(img, idx) {
+      if (img.error) {
+        area.innerHTML += '<div style="color:#c62828;font-size:11px">' + img.filename + ': ' + img.error + '</div>';
+      } else {
+        area.innerHTML += '<div style="text-align:center"><img src="' + img.data + '" style="width:150px;height:150px;object-fit:cover;border-radius:6px;border:2px solid #ff9800"><div style="font-size:10px;color:#888;margin-top:4px">' + img.filename + '</div><a href="' + img.data + '" download="thumb_' + img.filename + '" style="font-size:10px;color:#1565c0">다운로드</a></div>';
+      }
+    });
+    document.getElementById('thumbDlBtn').style.display = 'inline-block';
+  } catch (e) {
+    alert('생성 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '생성';
+  }
+}
+
+function thumbDownloadAll() {
+  thumbResults.forEach(function(img) {
+    if (img.data && !img.error) {
+      var a = document.createElement('a');
+      a.href = img.data;
+      a.download = 'thumb_' + img.filename;
+      a.click();
+    }
+  });
+}
+
 function startBarcodeCamera() {
   var container = document.getElementById('barcodeCameraContainer');
   var video = document.getElementById('barcodeVideo');
