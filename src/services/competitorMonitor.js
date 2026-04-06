@@ -107,6 +107,18 @@ async function runCompetitorMonitor() {
             changePct: changePct.toFixed(1),
             message: `${comp.seller_id || live.seller} price crashed ${changePct.toFixed(0)}%: $${oldPrice.toFixed(2)} → $${newPrice.toFixed(2)}`,
           });
+        } else if (newPrice > oldPrice && changePct >= 5) {
+          // 경쟁사 가격 인상 → 우리도 올릴 기회!
+          alerts.push({
+            type: 'raise_opportunity',
+            sku: comp.sku,
+            seller: comp.seller_id || live.seller,
+            competitorId: comp.competitor_id,
+            oldPrice,
+            newPrice,
+            changePct: changePct.toFixed(1),
+            message: `▲ ${comp.seller_id || live.seller} 가격 인상 +${changePct.toFixed(0)}%: $${oldPrice.toFixed(2)} → $${newPrice.toFixed(2)} — 마진 회복 기회!`,
+          });
         } else if (changePct >= 10) {
           alerts.push({
             type: 'price_change',

@@ -112,8 +112,67 @@ async function runAutoRepricer(dryRun = true) {
     const myTotal = myPrice + MY_SHIPPING;
     const compTotal = comp.total;
 
-    // Already winning?
-    if (myTotal <= compTotal) continue;
+    // Check if we're winning or losing
+    const diff = myTotal - compTotal;
+    const isLosing = diff > 0;
+    const isWinning = diff < 0;
+
+    // === FOLLOW-UP: 경쟁사 가격 인상 시 따라 올리기 ===
+    if (isWinning && comp.prev_price && comp.prev_price > 0) {
+      const prevCompTotal = parseFloat(comp.prev_price) + parseFloat(comp.competitor_shipping || 0);
+      const compRaised = compTotal > prevCompTotal; // 경쟁사가 가격을 올렸는가?
+
+      if (compRaised) {
+        // 경쟁사가 올렸으면 나도 따라 올림 (경쟁사 - undercut)
+        const sellerInfo2 = sellerTiers[comp.seller_id] || null;
+        const undercut2 = sellerInfo2 ? sellerInfo2.undercut : KILL_PRICE_UNDERCUT;
+        const raisePrice = Math.max(myPrice, +(compTotal - undercut2 - MY_SHIPPING).toFixed(2));
+
+        // 현재보다 높을 때만 올림 (내리는 건 아래 킬프라이스에서 처리)
+        if (raisePrice > myPrice) {
+          const maxRaise = +(myPrice * 1.30).toFixed(2); // 최대 30% 인상 제한
+          const finalRaise = Math.min(raisePrice, maxRaise);
+
+          const change = {
+            itemId: myItem.itemId, sku,
+            title: (myItem.title || '').slice(0, 50),
+            oldPrice: myPrice, newPrice: finalRaise,
+            myOldTotal: myTotal, myNewTotal: +(finalRaise + MY_SHIPPING).toFixed(2),
+            compTotal, competitorSeller: comp.seller_id || '',
+            saving: +(finalRaise - myPrice).toFixed(2),
+            action: 'raise', // 인상
+            reason: `경쟁사 인상 ($${prevCompTotal.toFixed(2)}→$${compTotal.toFixed(2)})`,
+          };
+
+          if (dryRun) {
+            change.status = 'dry_run';
+            report.changes.push(change);
+            report.changed++;
+          } else if (report.changed < MAX_DAILY_CHANGES - todayChanges) {
+            try {
+              const result = await ebay.updateItem(myItem.itemId, { price: finalRaise });
+              change.status = result.success ? 'applied' : 'failed';
+              if (result.success) { report.changed++; await new Promise(r => setTimeout(r, 500)); }
+              else { change.error = result.error; report.errors.push(change); }
+            } catch (e) { change.status = 'error'; change.error = e.message; report.errors.push(change); }
+            report.changes.push(change);
+          }
+
+          // Log
+          try {
+            await db.from('repricer_log').insert({
+              item_id: myItem.itemId, sku, old_price: myPrice, new_price: finalRaise,
+              competitor_price: comp.competitor_price, reason: change.reason,
+              status: change.status, created_at: new Date().toISOString(),
+            });
+          } catch (e) { /* ignore */ }
+        }
+      }
+      continue; // 이기고 있으면 킬프라이스 불필요
+    }
+
+    // Already winning (경쟁사 인상 아님) — skip
+    if (!isLosing) continue;
 
     // Safety check 1: Competitor price crash (>50% drop from previous)
     if (comp.prev_price && comp.prev_price > 0) {
