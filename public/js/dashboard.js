@@ -2135,7 +2135,7 @@ function renderMasterProducts(products, meta) {
     return `<tr>
       <td><strong style="font-size:11px">${esc(p.sku)}</strong></td>
       <td title="${esc(p.title_en || p.title || '')}" style="font-size:11px;max-width:200px;white-space:normal;word-break:break-word">${esc(p.title || p.title_ko || '')}</td>
-      <td class="editable-cost" data-sku="${esc(p.sku)}" style="cursor:pointer;color:${p.purchase_price ? '#e0e0e0' : '#f44336'};font-size:11px" title="클릭하여 매입가 수정">${p.purchase_price ? krw(p.purchase_price) : '미입력'}</td>
+      <td class="editable-cost" data-sku="${esc(p.sku)}" style="cursor:pointer;color:${(p.cost_price || p.purchase_price) ? '#e0e0e0' : '#f44336'};font-size:11px" title="클릭하여 매입가 수정">${(p.cost_price || p.purchase_price) ? krw(p.cost_price || p.purchase_price) : '미입력'}</td>
       <td style="font-size:11px">${p.target_margin || 0}%</td>
       <td>${ebayCell}</td>
       <td>${shopifyCell}</td>
