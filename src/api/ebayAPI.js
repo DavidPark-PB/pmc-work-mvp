@@ -246,11 +246,15 @@ class EbayAPI {
       // This is correct for 95%+ of listings
       const minShip = 3.90;
 
+      // Extract price from <SellingStatus><CurrentPrice> only (not from transactions)
+      const sellingStatusMatch = itemXml.match(/<SellingStatus>[\s\S]*?<CurrentPrice[^>]*>([\d.]+)<\/CurrentPrice>/);
+      const accuratePrice = sellingStatusMatch ? sellingStatusMatch[1] : this.extractValue(itemXml, 'CurrentPrice');
+
       const item = {
         itemId: this.extractValue(itemXml, 'ItemID'),
         sku: this.extractValue(itemXml, 'SKU'),
         title: this.extractValue(itemXml, 'Title'),
-        price: this.extractValue(itemXml, 'CurrentPrice'),
+        price: accuratePrice,
         quantity: this.extractValue(itemXml, 'Quantity'),
         quantitySold: this.extractValue(itemXml, 'QuantitySold'),
         shippingCost: minShip,
