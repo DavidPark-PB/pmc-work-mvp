@@ -385,7 +385,15 @@ class ShopeeAPI {
             const orders = detailData?.response?.order_list || [];
             for (const o of orders) {
               const amount = parseFloat(o.total_amount || 0);
-              totalRevenue += amount;
+              const currency = (o.currency || '').toUpperCase();
+              // Convert local currency to USD
+              const localToUSD = {
+                'SGD': 0.74, 'MYR': 0.22, 'PHP': 0.018, 'VND': 0.000041,
+                'TWD': 0.031, 'THB': 0.029, 'IDR': 0.000063, 'BRL': 0.19,
+                'USD': 1, 'KRW': 0.00072,
+              };
+              const rate = localToUSD[currency] || 1;
+              totalRevenue += amount * rate;
               totalOrders++;
               // Daily grouping using create_time unix timestamp
               const ts = createTimeMap[o.order_sn] || o.create_time;
@@ -393,7 +401,7 @@ class ShopeeAPI {
                 ? new Date(ts * 1000).toISOString().slice(0, 10)
                 : new Date().toISOString().slice(0, 10);
               if (!dailySales[date]) dailySales[date] = { revenue: 0, orders: 0 };
-              dailySales[date].revenue += amount;
+              dailySales[date].revenue += amount * rate;
               dailySales[date].orders++;
             }
           }
