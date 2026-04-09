@@ -22,9 +22,9 @@
   <div class="sidebar">
     <div class="menu-item active" data-page="dashboard">대시보드</div>
     <div class="menu-title">상품 관리</div>
-    <div class="menu-item" data-page="master-products">마스터 상품</div>
+    <!-- 마스터 상품 메뉴 제거 — 상품검색/관리로 통합 -->
     <div class="menu-item" data-page="products">전체 상품</div>
-    <div class="menu-item" data-page="register">상품 등록</div>
+    <!-- 상품 등록 메뉴 제거 — automation에서 처리 -->
     <div class="menu-item" data-page="remarker" style="color:#7c4dff;font-weight:600">AI 리메이커</div>
     <div class="menu-item" data-page="reconstruct" style="color:#e94560;font-weight:600">상세페이지 재구성</div>
     <div class="menu-item" data-page="thumbnail" style="color:#ff9800;font-weight:600">썸네일 만들기</div>
@@ -46,7 +46,7 @@
     <div class="menu-title">B2B</div>
     <div class="menu-item" data-page="b2b" style="color:#0288d1;font-weight:600">B2B 인보이스</div>
     <div class="menu-title">자동화</div>
-    <a href="https://ccorea-auto-production.up.railway.app" target="_blank" class="menu-item" style="color:#ff5722;font-weight:600;text-decoration:none;display:block">리스팅 자동화 ↗</a>
+    <a href="https://ccorea-auto.fly.dev" target="_blank" class="menu-item" style="color:#ff5722;font-weight:600;text-decoration:none;display:block">리스팅 자동화 ↗</a>
     <div class="menu-item" data-page="crawl-results">크롤링 결과</div>
     <div class="menu-title" style="color:#ff9800;margin-top:8px">AI 에이전트</div>
     <div class="menu-item" data-page="agent-dashboard" style="color:#ff9800;font-weight:600">AI 권장사항</div>
@@ -105,24 +105,7 @@
         </div>
       </div>
 
-      <!-- 마스터 상품 요약 -->
-      <div class="card" id="dashboardMasterCard">
-        <div class="card-header">
-          <h3>마스터 상품 DB</h3>
-          <button class="refresh-btn" onclick="navigateTo('master-products')" style="font-size:12px">전체보기</button>
-        </div>
-        <div class="stats" id="masterStatsCards" style="margin-bottom:12px"></div>
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr><th>SKU</th><th>상품명</th><th>매입가</th><th>eBay</th><th>Shopify</th><th>Naver</th><th>마진</th></tr>
-            </thead>
-            <tbody id="dashboardMasterBody">
-              <tr><td colspan="7" class="empty">로딩 중...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <!-- 마스터 상품 요약 제거 — 상품검색/관리로 통합 -->
 
       <!-- 콘텐츠 -->
       <div class="content-grid">
