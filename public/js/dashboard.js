@@ -3796,7 +3796,7 @@ async function battleUpdateStock(itemId, qty, input) {
 }
 
 async function applyKillPrice(itemId, price, sku) {
-  const btn = document.getElementById(`kill-${itemId}`);
+  const btn = document.getElementById(`kill-${itemId}`) || document.getElementById(`raise-${itemId}`);
   if (!btn) return;
   // Find item data for detailed confirm
   var item = battleData && battleData.items ? battleData.items.find(function(i) { return i.itemId === itemId; }) : null;
