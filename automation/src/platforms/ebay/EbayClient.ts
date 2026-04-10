@@ -194,9 +194,12 @@ export class EbayClient implements PlatformAdapter {
     const categoryId = await this.suggestCategoryId(categoryKeyword);
 
     // ItemSpecifics: 동적 생성 (템플릿 또는 상품별 커스텀)
-    const specs: Record<string, string> = input.itemSpecifics && Object.keys(input.itemSpecifics).length > 0
-      ? input.itemSpecifics
+    const rawSpecs: Record<string, string> = input.itemSpecifics && Object.keys(input.itemSpecifics).length > 0
+      ? { ...input.itemSpecifics }
       : { Brand: input.brand || 'Unbranded', Type: input.productType || 'See Description' };
+    // Card Condition은 ConditionDescriptors로 처리 — ItemSpecifics에서 제거
+    delete rawSpecs['Card Condition'];
+    const specs = rawSpecs;
     const itemSpecificsXml = `
     <ItemSpecifics>${Object.entries(specs).map(([k, v]) =>
       `\n      <NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(String(v))}</Value></NameValueList>`
@@ -211,7 +214,13 @@ export class EbayClient implements PlatformAdapter {
       <CategoryID>${categoryId}</CategoryID>
     </PrimaryCategory>
     <StartPrice currencyID="USD">${input.price.toFixed(2)}</StartPrice>
-    <ConditionID>${conditionId}</ConditionID>
+    <ConditionID>${conditionId}</ConditionID>${conditionId === '4000' ? `
+    <ConditionDescriptors>
+      <ConditionDescriptor>
+        <Name>40001</Name>
+        <Value>4000</Value>
+      </ConditionDescriptor>
+    </ConditionDescriptors>` : ''}
     <Country>KR</Country>
     <Currency>USD</Currency>
     <DispatchTimeMax>5</DispatchTimeMax>
