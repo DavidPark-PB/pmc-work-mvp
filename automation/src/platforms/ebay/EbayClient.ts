@@ -185,7 +185,9 @@ export class EbayClient implements PlatformAdapter {
       .map(url => `<PictureURL>${this.escapeXml(url)}</PictureURL>`)
       .join('\n      ');
 
-    const conditionId = input.condition === 'used' ? '3000' : '1000'; // 1000=New, 3000=Used
+    // Condition: ungraded(4000) for cards, new(1000) for others, used(3000)
+    const conditionMap: Record<string, string> = { 'used': '3000', 'new': '1000', 'ungraded': '4000' };
+    const conditionId = conditionMap[input.condition] || '4000'; // default: ungraded
 
     // 동적 카테고리 매핑: productType 또는 title 기반
     const categoryKeyword = input.productType || input.title;
