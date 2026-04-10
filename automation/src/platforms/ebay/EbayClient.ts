@@ -247,7 +247,12 @@ export class EbayClient implements PlatformAdapter {
       const errorMsg = this.extractXmlValue(response, 'LongMessage')
         || this.extractXmlValue(response, 'ShortMessage')
         || 'Unknown error';
-      throw new Error(`eBay AddItem 실패: ${errorMsg}`);
+      // "renamed as per eBay recommendations" is a warning, not a real error
+      if (errorMsg.includes('renamed as per eBay recommendations')) {
+        console.log(`[eBay] Item specifics renamed (non-fatal warning), continuing...`);
+      } else {
+        throw new Error(`eBay AddItem 실패: ${errorMsg}`);
+      }
     }
 
     const itemId = this.extractXmlValue(response, 'ItemID');
