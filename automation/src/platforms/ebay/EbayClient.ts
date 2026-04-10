@@ -218,7 +218,7 @@ export class EbayClient implements PlatformAdapter {
     <ConditionDescriptors>
       <ConditionDescriptor>
         <Name>40001</Name>
-        <Value>4000</Value>
+        <Value>400010</Value>
       </ConditionDescriptor>
     </ConditionDescriptors>` : ''}
     <Country>KR</Country>
