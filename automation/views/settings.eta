@@ -1,57 +1,15 @@
 <% if (!it.authed) { %>
-<!-- 패스워드 입력 화면 -->
+<!-- 관리자 전용 -->
 <div class="settings-auth-container">
   <div class="settings-auth-card">
     <div class="settings-auth-icon">
       <i class="ti ti-lock"></i>
     </div>
-    <h2>설정 접근</h2>
-    <p class="text-muted">패스워드를 입력하세요</p>
-    <form id="auth-form" onsubmit="return handleAuth(event)">
-      <div class="form-group">
-        <input type="password" id="settings-password" class="form-input" placeholder="패스워드" autofocus>
-      </div>
-      <button type="submit" class="btn btn-primary btn-block" id="auth-btn">확인</button>
-      <p id="auth-error" class="text-error" style="display:none; margin-top: 0.75rem;"></p>
-    </form>
+    <h2>접근 제한</h2>
+    <p class="text-muted">이 페이지는 관리자(Admin) 계정으로 로그인해야 접근할 수 있습니다.</p>
+    <a href="/" class="btn btn-primary btn-block" style="margin-top: var(--space-4);"><i class="ti ti-arrow-left"></i> 대시보드로 돌아가기</a>
   </div>
 </div>
-
-<script>
-async function handleAuth(e) {
-  e.preventDefault();
-  const pw = document.getElementById('settings-password').value;
-  const errEl = document.getElementById('auth-error');
-  const btn = document.getElementById('auth-btn');
-
-  btn.disabled = true;
-  btn.textContent = '확인 중...';
-  errEl.style.display = 'none';
-
-  try {
-    const res = await fetch('/api/settings/auth', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pw }),
-    });
-
-    if (res.ok) {
-      window.location.reload();
-    } else {
-      errEl.textContent = '패스워드가 올바르지 않습니다.';
-      errEl.style.display = 'block';
-    }
-  } catch {
-    errEl.textContent = '서버 연결 오류';
-    errEl.style.display = 'block';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '확인';
-  }
-
-  return false;
-}
-</script>
 
 <% } else { %>
 <!-- 설정 페이지 -->
@@ -108,6 +66,48 @@ async function handleAuth(e) {
   <button class="btn btn-primary btn-lg" onclick="saveSettings()">
     <i class="ti ti-device-floppy"></i> 저장
   </button>
+</div>
+
+<!-- 상품 설명 템플릿 -->
+<div class="page-header" style="margin-top: var(--space-8);">
+  <h1><i class="ti ti-file-text"></i> 상품 설명 템플릿</h1>
+  <p class="text-muted">리스팅 등록 시 AI가 생성한 개별 상품 설명 뒤에 추가되는 공통 HTML 템플릿입니다. (배송/결제/반품 정책 등)</p>
+</div>
+
+<div class="desc-template-section">
+  <div class="desc-template-tabs">
+    <button class="desc-tab active" data-tab="common" onclick="switchDescTab('common')">공통 (Common)</button>
+    <button class="desc-tab" data-tab="ebay" onclick="switchDescTab('ebay')">eBay</button>
+    <button class="desc-tab" data-tab="shopify" onclick="switchDescTab('shopify')">Shopify</button>
+    <button class="desc-tab" data-tab="alibaba" onclick="switchDescTab('alibaba')">Alibaba</button>
+    <button class="desc-tab" data-tab="shopee" onclick="switchDescTab('shopee')">Shopee</button>
+  </div>
+
+  <div class="desc-template-hint">
+    <i class="ti ti-info-circle"></i>
+    플랫폼별 템플릿이 비어있으면 <strong>공통(Common)</strong> 템플릿이 사용됩니다. <code>{{PRODUCT_DESCRIPTION}}</code>을 쓰면 해당 위치에 개별 설명이 삽입됩니다.
+  </div>
+
+  <% const descPlatforms = ['common', 'ebay', 'shopify', 'alibaba', 'shopee']; %>
+  <% for (const dp of descPlatforms) { %>
+  <div class="desc-tab-content" id="desc-tab-<%= dp %>" style="<%= dp !== 'common' ? 'display:none;' : '' %>">
+    <textarea class="form-input desc-template-input" id="desc-template-<%= dp %>" rows="12" placeholder="HTML 템플릿을 입력하세요..."><%= (it.descSettings && it.descSettings[dp]) ? it.descSettings[dp].templateHtml : '' %></textarea>
+  </div>
+  <% } %>
+
+  <div class="desc-template-actions">
+    <button class="btn btn-primary" onclick="saveDescriptionSettings()">
+      <i class="ti ti-device-floppy"></i> 템플릿 저장
+    </button>
+    <button class="btn btn-outline" onclick="previewDescription()">
+      <i class="ti ti-eye"></i> 미리보기
+    </button>
+  </div>
+
+  <div class="desc-preview-box" id="desc-preview-box" style="display:none;">
+    <h4>미리보기</h4>
+    <div class="desc-preview-content" id="desc-preview-content"></div>
+  </div>
 </div>
 
 <!-- 가격 미리보기 -->
@@ -239,6 +239,58 @@ function applyLiveRate(platform, rate) {
     input.value = rate;
     input.dispatchEvent(new Event('input'));
   }
+}
+
+// ── 상품 설명 템플릿 ──
+let activeDescTab = 'common';
+
+function switchDescTab(tab) {
+  activeDescTab = tab;
+  document.querySelectorAll('.desc-tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
+  document.querySelectorAll('.desc-tab-content').forEach(el => el.style.display = 'none');
+  document.getElementById('desc-tab-' + tab).style.display = '';
+}
+
+async function saveDescriptionSettings() {
+  const data = {};
+  ['common', 'ebay', 'shopify', 'alibaba', 'shopee'].forEach(p => {
+    const val = document.getElementById('desc-template-' + p).value;
+    if (val || val === '') data[p] = { templateHtml: val };
+  });
+
+  try {
+    const res = await fetch('/api/settings/description', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+
+    if (res.ok) {
+      const result = await res.json();
+      showToast('템플릿이 저장되었습니다. (' + result.updated.join(', ') + ')', 'success');
+    } else {
+      showToast('저장 실패', 'error');
+    }
+  } catch {
+    showToast('서버 연결 오류', 'error');
+  }
+}
+
+function previewDescription() {
+  const template = document.getElementById('desc-template-' + activeDescTab).value;
+  const sampleProduct = '<p>Pokemon Card 151 Booster Box Korean Ver. Factory sealed with 20 booster packs per box.</p>';
+  let result;
+
+  if (template.includes('{{PRODUCT_DESCRIPTION}}')) {
+    result = template.replace('{{PRODUCT_DESCRIPTION}}', sampleProduct);
+  } else {
+    result = sampleProduct + '\n' + template;
+  }
+
+  const box = document.getElementById('desc-preview-box');
+  const content = document.getElementById('desc-preview-content');
+  content.innerHTML = result;
+  box.style.display = '';
 }
 
 fetchLiveRate();

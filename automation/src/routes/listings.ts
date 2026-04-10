@@ -10,13 +10,69 @@ import { db } from '../db/index.js';
 import { crawlResults, platformListings, products } from '../db/schema.js';
 import { eq, and, inArray, sql } from 'drizzle-orm';
 import { getUser } from '../lib/user-session.js';
-import { assertCrawlResultOwnership, OwnershipError } from '../lib/ownership.js';
+import { assertCrawlResultOwnership, assertProductOwnership, OwnershipError } from '../lib/ownership.js';
+import { logBatchAction } from '../lib/audit-log.js';
+
+/** 이미 import된 product에 대해 리스팅만 생성 */
+async function runProductListingJob(
+  jobId: string,
+  productIds: number[],
+  platforms: string[],
+  dryRun: boolean,
+) {
+  for (const productId of productIds) {
+    const product = await db.query.products.findFirst({
+      where: eq(products.id, productId),
+    });
+    const title = product?.titleKo || product?.title || `#${productId}`;
+
+    for (const platform of platforms) {
+      const job = await jobStore.get(jobId);
+      if (!job) return;
+
+      try {
+        const result = await createListing(productId, platform, { dryRun });
+        job.completed++;
+        job.results.push({
+          crawlResultId: productId,
+          title,
+          platform,
+          success: true,
+          platformItemId: result.itemId,
+          listingUrl: result.url,
+        });
+      } catch (e) {
+        job.failed++;
+        job.results.push({
+          crawlResultId: productId,
+          title,
+          platform,
+          success: false,
+          error: (e as Error).message,
+        });
+      }
+
+      await jobStore.update(jobId, {
+        completed: job.completed,
+        failed: job.failed,
+        results: job.results,
+      });
+
+      if (!dryRun) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+  }
+
+  await jobStore.update(jobId, { status: 'done', finishedAt: new Date() });
+}
 
 async function runListingJob(
   jobId: string,
   crawlResultIds: number[],
   platforms: string[],
   dryRun: boolean,
+  markDone: boolean = true,
 ) {
   for (const crId of crawlResultIds) {
     // 크롤 결과 제목 조회
@@ -87,7 +143,9 @@ async function runListingJob(
     }
   }
 
-  await jobStore.update(jobId, { status: 'done', finishedAt: new Date() });
+  if (markDone) {
+    await jobStore.update(jobId, { status: 'done', finishedAt: new Date() });
+  }
 }
 
 async function runRetryJob(jobId: string, listings: any[]) {
@@ -182,22 +240,26 @@ export async function listingRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: '이름을 먼저 설정해 주세요.' });
     }
 
-    const { crawlResultIds, platforms, platform, dryRun = false } = request.body as {
-      crawlResultIds: number[];
+    const { crawlResultIds, productIds, platforms, platform, dryRun = false } = request.body as {
+      crawlResultIds?: number[];
+      productIds?: number[];
       platforms?: string[];
       platform?: string;       // 하위 호환
       dryRun?: boolean;
     };
 
     const platformList = platforms || (platform ? [platform] : []);
+    const hasCrawl = crawlResultIds && crawlResultIds.length > 0;
+    const hasProduct = productIds && productIds.length > 0;
 
-    if (!crawlResultIds?.length || !platformList.length) {
-      return { error: 'crawlResultIds와 platforms(또는 platform)이 필요합니다' };
+    if ((!hasCrawl && !hasProduct) || !platformList.length) {
+      return { error: 'crawlResultIds 또는 productIds와 platforms가 필요합니다' };
     }
 
     // 소유권 검증
     try {
-      await assertCrawlResultOwnership(crawlResultIds, user);
+      if (hasCrawl) await assertCrawlResultOwnership(crawlResultIds, user);
+      if (hasProduct) await assertProductOwnership(productIds, user);
     } catch (e) {
       if (e instanceof OwnershipError) {
         return reply.status(403).send({ error: e.message });
@@ -205,11 +267,12 @@ export async function listingRoutes(app: FastifyInstance) {
       throw e;
     }
 
+    const totalItems = (hasCrawl ? crawlResultIds.length : 0) + (hasProduct ? productIds.length : 0);
     const jobId = randomUUID();
     const job: JobState = {
       status: 'running',
       platforms: platformList,
-      total: crawlResultIds.length * platformList.length,
+      total: totalItems * platformList.length,
       completed: 0,
       failed: 0,
       results: [],
@@ -218,8 +281,17 @@ export async function listingRoutes(app: FastifyInstance) {
     };
     await jobStore.set(jobId, job);
 
+    logBatchAction(user, 'listing.create', {
+      targetType: 'listing',
+      count: totalItems * platformList.length,
+      details: { crawlResultIds, productIds, platforms: platformList, dryRun, jobId },
+    });
+
     // 비동기 실행 (await 하지 않음)
-    runListingJob(jobId, crawlResultIds, platformList, dryRun);
+    (async () => {
+      if (hasCrawl) await runListingJob(jobId, crawlResultIds, platformList, dryRun, !hasProduct);
+      if (hasProduct) await runProductListingJob(jobId, productIds, platformList, dryRun);
+    })();
 
     return { jobId };
   });
@@ -278,6 +350,7 @@ export async function listingRoutes(app: FastifyInstance) {
 
   // POST /api/listings/retry — 실패/대기 리스팅 재시도
   app.post('/listings/retry', async (request) => {
+    const user = getUser(request);
     const { listingIds } = request.body as {
       listingIds: number[];
     };
@@ -310,6 +383,12 @@ export async function listingRoutes(app: FastifyInstance) {
     };
     await jobStore.set(jobId, job);
 
+    logBatchAction(user, 'listing.retry', {
+      targetType: 'listing',
+      count: listings.length,
+      details: { listingIds, platforms: uniquePlatforms, jobId },
+    });
+
     // 비동기 실행
     runRetryJob(jobId, listings);
 
@@ -318,6 +397,7 @@ export async function listingRoutes(app: FastifyInstance) {
 
   // POST /api/listings/end — 판매 내리기 (active → ended)
   app.post('/listings/end', async (request) => {
+    const user = getUser(request);
     const { listingIds } = request.body as { listingIds: number[] };
 
     if (!listingIds?.length) {
@@ -334,16 +414,23 @@ export async function listingRoutes(app: FastifyInstance) {
       }
     }
 
-    return {
-      total: results.length,
-      succeeded: results.filter(r => r.success).length,
-      failed: results.filter(r => !r.success).length,
-      results,
-    };
+    const succeeded = results.filter(r => r.success).length;
+    const failedCount = results.filter(r => !r.success).length;
+
+    logBatchAction(user, 'listing.end', {
+      targetType: 'listing',
+      count: listingIds.length,
+      succeeded,
+      failed: failedCount,
+      details: { listingIds },
+    });
+
+    return { total: results.length, succeeded, failed: failedCount, results };
   });
 
   // POST /api/listings/cancel — 업로드 취소 (pending/error → draft)
   app.post('/listings/cancel', async (request) => {
+    const user = getUser(request);
     const { listingIds } = request.body as { listingIds: number[] };
 
     if (!listingIds?.length) {
@@ -360,16 +447,23 @@ export async function listingRoutes(app: FastifyInstance) {
       }
     }
 
-    return {
-      total: results.length,
-      succeeded: results.filter(r => r.success).length,
-      failed: results.filter(r => !r.success).length,
-      results,
-    };
+    const succeeded = results.filter(r => r.success).length;
+    const failedCount = results.filter(r => !r.success).length;
+
+    logBatchAction(user, 'listing.cancel', {
+      targetType: 'listing',
+      count: listingIds.length,
+      succeeded,
+      failed: failedCount,
+      details: { listingIds },
+    });
+
+    return { total: results.length, succeeded, failed: failedCount, results };
   });
 
   // POST /api/listings/relist — 판매 재개 (ended → re-upload)
   app.post('/listings/relist', async (request) => {
+    const user = getUser(request);
     const { listingIds } = request.body as { listingIds: number[] };
 
     if (!listingIds?.length) {
@@ -400,6 +494,12 @@ export async function listingRoutes(app: FastifyInstance) {
     };
     await jobStore.set(jobId, job);
 
+    logBatchAction(user, 'listing.relist', {
+      targetType: 'listing',
+      count: listings.length,
+      details: { listingIds, platforms: uniquePlatforms, jobId },
+    });
+
     // 비동기 실행
     runRelistJob(jobId, listings);
 
@@ -408,6 +508,7 @@ export async function listingRoutes(app: FastifyInstance) {
 
   // POST /api/listings/delete — 상품 + 리스팅 삭제
   app.post('/listings/delete', async (request) => {
+    const user = getUser(request);
     const { productIds } = request.body as { productIds: number[] };
 
     if (!productIds?.length) {
@@ -424,12 +525,18 @@ export async function listingRoutes(app: FastifyInstance) {
       }
     }
 
-    return {
-      total: results.length,
-      succeeded: results.filter(r => r.success).length,
-      failed: results.filter(r => !r.success).length,
-      results,
-    };
+    const succeeded = results.filter(r => r.success).length;
+    const failedCount = results.filter(r => !r.success).length;
+
+    logBatchAction(user, 'listing.delete', {
+      targetType: 'product',
+      count: productIds.length,
+      succeeded,
+      failed: failedCount,
+      details: { productIds },
+    });
+
+    return { total: results.length, succeeded, failed: failedCount, results };
   });
 
   // GET /api/listings/job/:jobId — 잡 상태 조회 (폴링용)
@@ -446,6 +553,7 @@ export async function listingRoutes(app: FastifyInstance) {
 
   // POST /api/trash — 선택된 상품/크롤결과를 휴지통으로 이동
   app.post('/trash', async (request) => {
+    const user = getUser(request);
     const { ids, types } = request.body as { ids: number[]; types: string[] };
 
     if (!ids?.length || !types?.length || ids.length !== types.length) {
@@ -494,11 +602,18 @@ export async function listingRoutes(app: FastifyInstance) {
       trashedCrawls = crawlIds.length;
     }
 
+    logBatchAction(user, 'product.trash', {
+      targetType: 'product',
+      count: ids.length,
+      details: { productIds, crawlIds },
+    });
+
     return { success: true, trashedProducts, trashedCrawls };
   });
 
   // POST /api/restore — 휴지통에서 복원
   app.post('/restore', async (request) => {
+    const user = getUser(request);
     const { ids, types } = request.body as { ids: number[]; types: string[] };
 
     if (!ids?.length || !types?.length || ids.length !== types.length) {
@@ -529,11 +644,18 @@ export async function listingRoutes(app: FastifyInstance) {
       restoredCrawls = crawlIds.length;
     }
 
+    logBatchAction(user, 'product.restore', {
+      targetType: 'product',
+      count: ids.length,
+      details: { productIds, crawlIds },
+    });
+
     return { success: true, restoredProducts, restoredCrawls };
   });
 
   // POST /api/permanently-delete — 완전 삭제
   app.post('/permanently-delete', async (request) => {
+    const user = getUser(request);
     const { ids, types } = request.body as { ids: number[]; types: string[] };
 
     if (!ids?.length || !types?.length || ids.length !== types.length) {
@@ -557,11 +679,17 @@ export async function listingRoutes(app: FastifyInstance) {
       }
     }
 
-    return {
-      total: results.length,
-      succeeded: results.filter(r => r.success).length,
-      failed: results.filter(r => !r.success).length,
-      results,
-    };
+    const succeeded = results.filter(r => r.success).length;
+    const failedCount = results.filter(r => !r.success).length;
+
+    logBatchAction(user, 'product.permanentDelete', {
+      targetType: 'product',
+      count: ids.length,
+      succeeded,
+      failed: failedCount,
+      details: { ids, types },
+    });
+
+    return { total: results.length, succeeded, failed: failedCount, results };
   });
 }

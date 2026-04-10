@@ -35,6 +35,7 @@ export const crawlResults = pgTable('crawl_results', {
   sourceId: integer('source_id').references(() => crawlSources.id).notNull(),
   externalId: varchar('external_id', { length: 255 }),      // 원본 사이트 상품ID (중복 방지)
   title: varchar('title', { length: 500 }).notNull(),       // 한글 상품명
+  titleEn: varchar('title_en', { length: 500 }),            // 영문 번역 상품명
   price: numeric('price', { precision: 10, scale: 2 }),     // 원본 가격 (KRW)
   currency: varchar('currency', { length: 10 }).default('KRW'),
   url: text('url'),                                         // 원본 상품 URL
@@ -155,7 +156,15 @@ export const csvUploads = pgTable('csv_uploads', {
   filename: varchar('filename', { length: 500 }).notNull(),            // 원본 파일명
   rowCount: integer('row_count').notNull(),                            // 행 수
   importedCount: integer('imported_count').default(0),                  // DB 등록된 행 수
-  status: varchar('status', { length: 50 }).default('uploaded').notNull(), // uploaded → imported
+  status: varchar('status', { length: 50 }).default('uploaded').notNull(), // uploaded → mapped → imported
+  rawFields: jsonb('raw_fields').$type<string[][]>(),                    // 원본 CSV 필드 (헤더+데이터), 매핑 확정 후 null
+  columnMapping: jsonb('column_mapping').$type<Record<string, number>>(), // 확정 매핑 {name: 2, price: 5, ...}
+  parsedRows: jsonb('parsed_rows').$type<{
+    image: string; url: string; name: string; price: number;
+    rating: number; reviewCount: number; discountRate: string;
+    originalPrice: number; category?: string; brand?: string;
+    weight?: number; description?: string;
+  }[]>(),                                                              // 매핑 확정 후 생성
   ownerId: varchar('owner_id', { length: 100 }),             // 업로더 UUID
   ownerName: varchar('owner_name', { length: 100 }),         // 업로더 닉네임
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -197,6 +206,65 @@ export const platformTokens = pgTable('platform_tokens', {
   metadata: jsonb('metadata'),                                      // 플랫폼별 추가 데이터
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
+
+// ============================================================
+// Category Cache — 플랫폼 카테고리 매핑 캐시
+// ============================================================
+export const categoryCache = pgTable('category_cache', {
+  id: serial('id').primaryKey(),
+  platform: varchar('platform', { length: 50 }).notNull(),      // 'ebay'
+  keyword: varchar('keyword', { length: 500 }).notNull(),        // 검색 키워드
+  categoryId: varchar('category_id', { length: 100 }).notNull(), // 플랫폼 카테고리 ID
+  categoryName: varchar('category_name', { length: 500 }),       // 카테고리명
+  cachedAt: timestamp('cached_at').defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex('category_cache_platform_keyword_idx').on(table.platform, table.keyword),
+]);
+
+// ============================================================
+// Description Settings — 플랫폼별 상품 설명 템플릿
+// ============================================================
+export const descriptionSettings = pgTable('description_settings', {
+  id: serial('id').primaryKey(),
+  platform: varchar('platform', { length: 50 }).notNull().unique(), // 'common', 'ebay', 'shopify', 'alibaba', 'shopee'
+  templateHtml: text('template_html').notNull().default(''),        // 공통 정책 HTML (배송/결제/반품)
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// ============================================================
+// Users — 직원 계정 (로그인용)
+// ============================================================
+export const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  username: varchar('username', { length: 50 }).notNull().unique(),
+  passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+  displayName: varchar('display_name', { length: 100 }).notNull(),
+  role: varchar('role', { length: 20 }).default('staff').notNull(), // 'admin' | 'staff'
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  lastLoginAt: timestamp('last_login_at'),
+});
+
+// ============================================================
+// Audit Logs — 작업자별 감사 로그
+// ============================================================
+export const auditLogs = pgTable('audit_logs', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id'),                                    // nullable: 시스템 작업
+  userName: varchar('user_name', { length: 100 }),               // 당시 displayName (삭제/이름변경 후에도 추적)
+  action: varchar('action', { length: 100 }).notNull(),          // 'listing.create', 'staff.delete' 등
+  category: varchar('category', { length: 30 }).notNull(),       // 'listing'|'product'|'staff'|'setting'|'assign'|'import'|'system'
+  targetType: varchar('target_type', { length: 50 }),            // 'product', 'listing', 'crawl_result', 'user', 'setting'
+  targetId: varchar('target_id', { length: 100 }),               // 대상 ID (복수 대상은 details에)
+  success: boolean('success').default(true).notNull(),
+  details: jsonb('details'),                                     // { error, count, platform, before, after, ... }
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [
+  index('audit_logs_user_id_idx').on(table.userId),
+  index('audit_logs_action_idx').on(table.action),
+  index('audit_logs_category_idx').on(table.category),
+  index('audit_logs_created_at_idx').on(table.createdAt),
+]);
 
 // ============================================================
 // Relations

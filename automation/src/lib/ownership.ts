@@ -3,7 +3,7 @@
  */
 import { eq, inArray, isNull, isNotNull, or } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { crawlResults, products } from '../db/schema.js';
+import { crawlResults, products, users } from '../db/schema.js';
 import type { TeamUser } from './user-session.js';
 
 /** crawlResult가 요청자 소유인지 확인 (Admin은 항상 통과) */
@@ -69,16 +69,14 @@ export async function transferCrawlResultOwnership(
   return result.length;
 }
 
-/** 활성 팀원 목록 조회 (분배 대상 선택용) */
+/** 활성 팀원 목록 조회 (분배 대상 선택용 — users 테이블 기반) */
 export async function getActiveUsers(): Promise<{ id: string; name: string }[]> {
   const rows = await db
-    .selectDistinct({ ownerId: crawlResults.ownerId, ownerName: crawlResults.ownerName })
-    .from(crawlResults)
-    .where(isNotNull(crawlResults.ownerId));
+    .select({ id: users.id, displayName: users.displayName })
+    .from(users)
+    .where(eq(users.isActive, true));
 
-  return rows
-    .filter((r): r is { ownerId: string; ownerName: string } => r.ownerId !== null && r.ownerName !== null)
-    .map(r => ({ id: r.ownerId, name: r.ownerName }));
+  return rows.map(r => ({ id: String(r.id), name: r.displayName }));
 }
 
 export class OwnershipError extends Error {

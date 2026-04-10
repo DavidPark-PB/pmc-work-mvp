@@ -7,6 +7,9 @@
 import axios from 'axios';
 import { env } from '../../lib/config.js';
 import { loadToken, saveToken } from '../../lib/token-store.js';
+import { db } from '../../db/index.js';
+import { categoryCache } from '../../db/schema.js';
+import { eq, and } from 'drizzle-orm';
 import type { PlatformAdapter, ListingInput, ListingResult } from '../index.js';
 
 export class EbayClient implements PlatformAdapter {
@@ -103,11 +106,6 @@ export class EbayClient implements PlatformAdapter {
     }
   }
 
-  /** 스케줄러에서 주기적으로 호출 — 만료 임박 시 선제 갱신 */
-  async ensureToken(): Promise<void> {
-    await this.ensureValidToken();
-  }
-
   // ─── 핵심: Trading API 호출 ───────────────────────────────
 
   private async callTradingAPI(callName: string, requestBody = ''): Promise<string> {
@@ -189,12 +187,31 @@ export class EbayClient implements PlatformAdapter {
 
     const conditionId = input.condition === 'used' ? '3000' : '1000'; // 1000=New, 3000=Used
 
+    // 동적 카테고리 매핑: productType 또는 title 기반
+    const categoryKeyword = input.productType || input.title;
+    const categoryId = await this.suggestCategoryId(categoryKeyword);
+
+    // ItemSpecifics: Brand + Type (카테고리 필수 항목 대응)
+    const brandValue = this.escapeXml(input.brand || 'Unbranded');
+    const typeValue = this.escapeXml(input.productType || 'See Description');
+    const itemSpecificsXml = `
+    <ItemSpecifics>
+      <NameValueList>
+        <Name>Brand</Name>
+        <Value>${brandValue}</Value>
+      </NameValueList>
+      <NameValueList>
+        <Name>Type</Name>
+        <Value>${typeValue}</Value>
+      </NameValueList>
+    </ItemSpecifics>`;
+
     const requestBody = `
   <Item>
     <Title>${this.escapeXml(input.title.substring(0, 80))}</Title>
     <Description><![CDATA[${input.description}]]></Description>
     <PrimaryCategory>
-      <CategoryID>${this.defaultCategoryId}</CategoryID>
+      <CategoryID>${categoryId}</CategoryID>
     </PrimaryCategory>
     <StartPrice currencyID="USD">${input.price.toFixed(2)}</StartPrice>
     <ConditionID>${conditionId}</ConditionID>
@@ -208,7 +225,7 @@ export class EbayClient implements PlatformAdapter {
     <SKU>${this.escapeXml(input.sku)}</SKU>
     <PictureDetails>
       ${pictureXml}
-    </PictureDetails>
+    </PictureDetails>${itemSpecificsXml}
     <SellerProfiles>
       <SellerShippingProfile>
         <ShippingProfileID>${this.shippingProfileId}</ShippingProfileID>
@@ -352,6 +369,89 @@ export class EbayClient implements PlatformAdapter {
     }
 
     return allItems;
+  }
+
+  // ─── REST API 호출 (Taxonomy API 등) ─────────────────────
+
+  private async callRestApi(url: string): Promise<any> {
+    await this.ensureValidToken();
+    try {
+      const response = await axios.get(url, {
+        headers: { 'Authorization': `Bearer ${this.userToken}` },
+        timeout: 15000,
+      });
+      return response.data;
+    } catch (e: any) {
+      // 토큰 만료 시 1회 갱신 후 재시도
+      if (e.response?.status === 401) {
+        await this.refreshAccessToken();
+        const response = await axios.get(url, {
+          headers: { 'Authorization': `Bearer ${this.userToken}` },
+          timeout: 15000,
+        });
+        return response.data;
+      }
+      throw e;
+    }
+  }
+
+  /** eBay Taxonomy API로 키워드 기반 카테고리 추천 (캐시 포함) */
+  async suggestCategoryId(keyword: string): Promise<string> {
+    if (!keyword) return this.defaultCategoryId;
+
+    // 1. DB 캐시 확인 (30일 TTL)
+    try {
+      const cached = await db.query.categoryCache.findFirst({
+        where: and(
+          eq(categoryCache.platform, 'ebay'),
+          eq(categoryCache.keyword, keyword.substring(0, 500)),
+        ),
+      });
+
+      if (cached) {
+        const age = Date.now() - cached.cachedAt.getTime();
+        if (age < 30 * 24 * 60 * 60 * 1000) {
+          return cached.categoryId;
+        }
+      }
+    } catch {
+      // 캐시 조회 실패는 무시
+    }
+
+    // 2. eBay Taxonomy API 호출
+    try {
+      const url = `https://api.ebay.com/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=${encodeURIComponent(keyword)}`;
+      const data = await this.callRestApi(url);
+      const suggestions = data?.categorySuggestions;
+
+      if (suggestions?.length > 0) {
+        const best = suggestions[0].category;
+        const categoryId = best.categoryId;
+        const categoryName = best.categoryName || '';
+
+        // 캐시 저장 (upsert)
+        try {
+          await db.insert(categoryCache).values({
+            platform: 'ebay',
+            keyword: keyword.substring(0, 500),
+            categoryId,
+            categoryName,
+          }).onConflictDoUpdate({
+            target: [categoryCache.platform, categoryCache.keyword],
+            set: { categoryId, categoryName, cachedAt: new Date() },
+          });
+        } catch {
+          // 캐시 저장 실패는 무시
+        }
+
+        console.log(`eBay 카테고리 매핑: "${keyword}" → ${categoryId} (${categoryName})`);
+        return categoryId;
+      }
+    } catch (e) {
+      console.warn(`eBay getCategorySuggestions 실패: ${(e as Error).message} — 기본 카테고리 사용`);
+    }
+
+    return this.defaultCategoryId;
   }
 
   private escapeXml(str: string): string {

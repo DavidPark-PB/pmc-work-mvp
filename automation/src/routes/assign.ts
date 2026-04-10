@@ -7,6 +7,7 @@ import { db } from '../db/index.js';
 import { crawlResults } from '../db/schema.js';
 import { getUser } from '../lib/user-session.js';
 import { getActiveUsers, transferCrawlResultOwnership } from '../lib/ownership.js';
+import { logBatchAction } from '../lib/audit-log.js';
 
 export async function assignRoutes(app: FastifyInstance) {
   // POST /api/assign — 개별 상품 분배
@@ -27,6 +28,7 @@ export async function assignRoutes(app: FastifyInstance) {
     }
 
     const count = await transferCrawlResultOwnership(crawlResultIds, targetUserId, targetUserName);
+    logBatchAction(user, 'assign.assign', { targetType: 'crawl_result', count: crawlResultIds.length, details: { crawlResultIds, targetUserId, targetUserName } });
     return { success: true, assigned: count };
   });
 
@@ -47,6 +49,7 @@ export async function assignRoutes(app: FastifyInstance) {
       .set({ ownerId: null, ownerName: null })
       .where(inArray(crawlResults.id, crawlResultIds));
 
+    logBatchAction(user, 'assign.unassign', { targetType: 'crawl_result', count: crawlResultIds.length, details: { crawlResultIds } });
     return { success: true, unassigned: crawlResultIds.length };
   });
 

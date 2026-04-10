@@ -1,0 +1,210 @@
+<div class="page-header">
+  <h1 class="page-title"><i class="ti ti-report-analytics"></i> 작업 로그</h1>
+</div>
+
+<!-- 필터 -->
+<div class="card" style="margin-bottom: 16px;">
+  <form id="audit-filter" method="GET" action="/audit" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+    <div>
+      <label style="font-size:var(--text-xs);color:var(--text-muted);display:block;margin-bottom:4px;">작업자</label>
+      <select name="userId" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:var(--text-sm);">
+        <option value="">전체</option>
+        <% it.users.forEach((u) => { %>
+          <option value="<%= u.id %>" <%= String(it.filters.userId) === String(u.id) ? 'selected' : '' %>><%= u.displayName %></option>
+        <% }) %>
+      </select>
+    </div>
+    <div>
+      <label style="font-size:var(--text-xs);color:var(--text-muted);display:block;margin-bottom:4px;">카테고리</label>
+      <select name="category" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:var(--text-sm);">
+        <option value="">전체</option>
+        <option value="listing" <%= it.filters.category === 'listing' ? 'selected' : '' %>>리스팅</option>
+        <option value="product" <%= it.filters.category === 'product' ? 'selected' : '' %>>상품</option>
+        <option value="staff" <%= it.filters.category === 'staff' ? 'selected' : '' %>>직원관리</option>
+        <option value="setting" <%= it.filters.category === 'setting' ? 'selected' : '' %>>설정</option>
+        <option value="assign" <%= it.filters.category === 'assign' ? 'selected' : '' %>>분배</option>
+        <option value="import" <%= it.filters.category === 'import' ? 'selected' : '' %>>임포트</option>
+        <option value="system" <%= it.filters.category === 'system' ? 'selected' : '' %>>시스템</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size:var(--text-xs);color:var(--text-muted);display:block;margin-bottom:4px;">결과</label>
+      <select name="success" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:var(--text-sm);">
+        <option value="">전체</option>
+        <option value="true" <%= it.filters.success === 'true' ? 'selected' : '' %>>성공</option>
+        <option value="false" <%= it.filters.success === 'false' ? 'selected' : '' %>>실패</option>
+      </select>
+    </div>
+    <div>
+      <label style="font-size:var(--text-xs);color:var(--text-muted);display:block;margin-bottom:4px;">시작일</label>
+      <input type="date" name="from" value="<%= it.filters.from || '' %>" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:var(--text-sm);">
+    </div>
+    <div>
+      <label style="font-size:var(--text-xs);color:var(--text-muted);display:block;margin-bottom:4px;">종료일</label>
+      <input type="date" name="to" value="<%= it.filters.to || '' %>" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:var(--text-sm);">
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm"><i class="ti ti-search"></i> 검색</button>
+    <a href="/audit" class="btn btn-secondary btn-sm"><i class="ti ti-refresh"></i> 초기화</a>
+  </form>
+</div>
+
+<!-- 로그 테이블 -->
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-list-details"></i> 감사 로그</h2>
+    <span class="text-muted">총 <strong><%= it.pagination.total %></strong>건</span>
+  </div>
+
+  <% if (it.logs.length === 0) { %>
+    <div class="empty-state">
+      <i class="ti ti-file-off"></i>
+      <p>조건에 맞는 로그가 없습니다.</p>
+    </div>
+  <% } else { %>
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>시간</th>
+          <th>작업자</th>
+          <th>액션</th>
+          <th>대상</th>
+          <th>결과</th>
+          <th>상세</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.logs.forEach((log) => { %>
+        <tr>
+          <td class="tabular-nums nowrap" style="font-size:var(--text-xs);"><%= new Date(log.createdAt).toLocaleString('ko-KR') %></td>
+          <td>
+            <% if (log.userName) { %>
+              <strong><%= log.userName %></strong>
+            <% } else { %>
+              <span class="text-muted">시스템</span>
+            <% } %>
+          </td>
+          <td>
+            <%
+              const actionLabels = {
+                'listing.create': '리스팅 생성',
+                'listing.retry': '리스팅 재시도',
+                'listing.end': '판매 내리기',
+                'listing.cancel': '업로드 취소',
+                'listing.relist': '판매 재개',
+                'listing.delete': '리스팅 삭제',
+                'product.create': '상품 생성',
+                'product.update': '상품 수정',
+                'product.delete': '상품 삭제',
+                'product.trash': '휴지통 이동',
+                'product.restore': '휴지통 복원',
+                'product.permanentDelete': '완전 삭제',
+                'staff.create': '직원 생성',
+                'staff.update': '직원 수정',
+                'staff.delete': '직원 삭제',
+                'staff.resetPassword': '비밀번호 초기화',
+                'setting.pricing': '가격 설정 변경',
+                'assign.assign': '작업 할당',
+                'assign.unassign': '할당 해제',
+                'import.csv': 'CSV 업로드',
+                'import.batch': '배치 임포트',
+                'system.error': '시스템 에러',
+              };
+              const categoryColors = {
+                listing: 'badge-pending',
+                product: 'badge-success',
+                staff: 'badge-error',
+                setting: 'badge-draft',
+                assign: 'badge-pending',
+                import: 'badge-success',
+                system: 'badge-error',
+              };
+            %>
+            <span class="badge <%= categoryColors[log.category] || 'badge-draft' %>"><%= actionLabels[log.action] || log.action %></span>
+          </td>
+          <td class="font-mono" style="font-size:var(--text-xs);">
+            <% if (log.targetType && log.targetId) { %>
+              <%= log.targetType %>#<%= log.targetId %>
+            <% } else if (log.details?.count) { %>
+              <%= log.details.count %>건
+            <% } else { %>
+              -
+            <% } %>
+          </td>
+          <td>
+            <% if (log.success) { %>
+              <span class="text-green"><i class="ti ti-check"></i></span>
+            <% } else { %>
+              <span class="text-red"><i class="ti ti-x"></i></span>
+            <% } %>
+          </td>
+          <td>
+            <% if (log.details) { %>
+              <button class="btn btn-secondary btn-sm"
+                      onclick="showDetail(this)"
+                      data-detail="<%= encodeURIComponent(JSON.stringify(log.details || {})) %>"
+                      style="font-size:var(--text-xs);">
+                <i class="ti ti-code"></i>
+              </button>
+            <% } else { %>
+              -
+            <% } %>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+
+  <% if (it.pagination.totalPages > 1) { %>
+  <div class="pagination">
+    <%
+      const buildUrl = (p) => {
+        const params = new URLSearchParams();
+        params.set('page', String(p));
+        if (it.filters.userId) params.set('userId', it.filters.userId);
+        if (it.filters.category) params.set('category', it.filters.category);
+        if (it.filters.success) params.set('success', it.filters.success);
+        if (it.filters.from) params.set('from', it.filters.from);
+        if (it.filters.to) params.set('to', it.filters.to);
+        return '/audit?' + params.toString();
+      };
+    %>
+    <a href="<%= buildUrl(Math.max(1, it.pagination.page - 1)) %>"
+       class="page-btn <%= it.pagination.page <= 1 ? 'disabled' : '' %>">
+      <i class="ti ti-chevron-left"></i>
+    </a>
+    <% for (let p = 1; p <= it.pagination.totalPages; p++) { %>
+      <% if (p === 1 || p === it.pagination.totalPages || Math.abs(p - it.pagination.page) <= 2) { %>
+        <a href="<%= buildUrl(p) %>" class="page-btn <%= p === it.pagination.page ? 'active' : '' %>"><%= p %></a>
+      <% } else if (Math.abs(p - it.pagination.page) === 3) { %>
+        <span class="page-info">...</span>
+      <% } %>
+    <% } %>
+    <a href="<%= buildUrl(Math.min(it.pagination.totalPages, it.pagination.page + 1)) %>"
+       class="page-btn <%= it.pagination.page >= it.pagination.totalPages ? 'disabled' : '' %>">
+      <i class="ti ti-chevron-right"></i>
+    </a>
+  </div>
+  <% } %>
+  <% } %>
+</div>
+
+<!-- 상세 모달 -->
+<div id="detail-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--bg-card);border-radius:12px;padding:24px;max-width:600px;width:90%;max-height:80vh;overflow:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h3 style="margin:0;">상세 정보</h3>
+      <button onclick="document.getElementById('detail-modal').style.display='none'" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--text-muted);"><i class="ti ti-x"></i></button>
+    </div>
+    <pre id="detail-content" style="background:var(--bg);padding:16px;border-radius:8px;overflow:auto;font-size:var(--text-xs);max-height:60vh;"></pre>
+  </div>
+</div>
+
+<script>
+function showDetail(btn) {
+  const data = JSON.parse(decodeURIComponent(btn.dataset.detail));
+  document.getElementById('detail-content').textContent = JSON.stringify(data, null, 2);
+  document.getElementById('detail-modal').style.display = 'flex';
+}
+</script>

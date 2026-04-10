@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>로그인 — PMC-AUTO</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css">
+  <link rel="stylesheet" href="/style.css?v=<%= Date.now() %>">
+  <style>
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: var(--bg-primary);
+      padding: var(--space-4);
+    }
+    .login-card {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      padding: var(--space-8);
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    }
+    .login-logo {
+      text-align: center;
+      margin-bottom: var(--space-6);
+    }
+    .login-logo i {
+      font-size: 3rem;
+      color: var(--accent);
+    }
+    .login-logo h1 {
+      font-size: var(--text-xl);
+      font-weight: 700;
+      margin-top: var(--space-2);
+    }
+    .login-logo p {
+      color: var(--text-muted);
+      font-size: var(--text-sm);
+      margin-top: var(--space-1);
+    }
+    .login-form .form-group {
+      margin-bottom: var(--space-4);
+    }
+    .login-form label {
+      display: block;
+      font-size: var(--text-sm);
+      font-weight: 500;
+      margin-bottom: var(--space-1);
+      color: var(--text-secondary);
+    }
+    .login-form .form-input {
+      width: 100%;
+      padding: var(--space-3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: var(--text-base);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      transition: border-color 0.2s;
+    }
+    .login-form .form-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+    .login-error {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--danger);
+      padding: var(--space-3);
+      border-radius: var(--radius);
+      font-size: var(--text-sm);
+      margin-bottom: var(--space-4);
+      display: none;
+    }
+    .login-btn {
+      width: 100%;
+      padding: var(--space-3);
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-size: var(--text-base);
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .login-btn:hover { opacity: 0.9; }
+    .login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="login-card" id="login-card">
+    <div class="login-logo">
+      <i class="ti ti-package"></i>
+      <h1>PMC-AUTO</h1>
+      <p>계정으로 로그인하세요</p>
+    </div>
+
+    <div class="login-error" id="login-error"></div>
+
+    <form class="login-form" id="login-form" onsubmit="return handleLogin(event)">
+      <div class="form-group">
+        <label for="username">아이디</label>
+        <input type="text" id="username" class="form-input" placeholder="아이디를 입력하세요" autocomplete="username" autofocus>
+      </div>
+      <div class="form-group">
+        <label for="password">비밀번호</label>
+        <input type="password" id="password" class="form-input" placeholder="비밀번호를 입력하세요" autocomplete="current-password">
+      </div>
+      <button type="submit" class="login-btn" id="login-btn">
+        <i class="ti ti-login"></i> 로그인
+      </button>
+    </form>
+  </div>
+
+  <!-- 이름 설정 모달 (첫 로그인) -->
+  <div id="name-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:100; display:none; align-items:center; justify-content:center; padding:var(--space-4);">
+    <div class="login-card" style="animation: fadeIn 0.3s ease;">
+      <div class="login-logo">
+        <i class="ti ti-user-circle" style="font-size:3rem; color:var(--accent);"></i>
+        <h1 style="font-size:var(--text-xl); font-weight:700; margin-top:var(--space-2);">환영합니다!</h1>
+        <p style="color:var(--text-muted); font-size:var(--text-sm); margin-top:var(--space-1);">사용하실 이름을 알려주세요.<br>다른 팀원들에게 표시됩니다.</p>
+      </div>
+      <div class="login-form">
+        <div class="form-group">
+          <label>이름</label>
+          <input type="text" id="setup-name" class="form-input" placeholder="이름을 입력해 주세요" maxlength="100" autofocus>
+        </div>
+        <button class="login-btn" onclick="submitName()">
+          <i class="ti ti-check"></i> 확인
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 환영 카드 (로그인 카드와 교체) -->
+  <div id="welcome-card" class="login-card" style="display:none; text-align:center; animation: fadeIn 0.3s ease;">
+    <i class="ti ti-confetti" style="font-size:3rem; color:var(--accent);"></i>
+    <h2 id="welcome-msg" style="margin-top:var(--space-3); font-weight:700;"></h2>
+    <p style="color:var(--text-muted); margin-top:var(--space-1);">잠시 후 대시보드로 이동합니다...</p>
+  </div>
+
+  <style>
+    @keyframes fadeIn { from { opacity:0; transform:translateY(-10px); } to { opacity:1; transform:translateY(0); } }
+  </style>
+
+  <script>
+  async function handleLogin(e) {
+    e.preventDefault();
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    const errorEl = document.getElementById('login-error');
+    const btn = document.getElementById('login-btn');
+
+    if (!username || !password) {
+      errorEl.textContent = '아이디와 비밀번호를 입력해 주세요.';
+      errorEl.style.display = 'block';
+      return false;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ti ti-loader ti-spin"></i> 로그인 중...';
+    errorEl.style.display = 'none';
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        // 이름 설정이 필요하면 모달 표시, 아니면 환영 후 이동
+        if (data.user.needsName) {
+          showNameSetup(data.user);
+        } else {
+          showWelcome(data.user.displayName);
+        }
+        return false;
+      } else {
+        errorEl.textContent = data.error || '로그인에 실패했습니다.';
+        errorEl.style.display = 'block';
+      }
+    } catch {
+      errorEl.textContent = '서버 연결 오류';
+      errorEl.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ti ti-login"></i> 로그인';
+    }
+
+    return false;
+  }
+
+  function showNameSetup(user) {
+    document.getElementById('login-card').style.display = 'none';
+    const modal = document.getElementById('name-modal');
+    modal.style.display = 'flex';
+    setTimeout(() => document.getElementById('setup-name').focus(), 100);
+    // Enter 키 지원
+    document.getElementById('setup-name').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitName();
+    });
+  }
+
+  async function submitName() {
+    const name = document.getElementById('setup-name').value.trim();
+    if (!name) {
+      document.getElementById('setup-name').focus();
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/auth/set-name', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName: name }),
+      });
+      if (res.ok) {
+        document.getElementById('name-modal').style.display = 'none';
+        showWelcome(name);
+      }
+    } catch {}
+  }
+
+  function showWelcome(displayName) {
+    document.getElementById('login-card').style.display = 'none';
+    document.getElementById('name-modal').style.display = 'none';
+    document.getElementById('welcome-msg').textContent = displayName + '님, 반갑습니다!';
+    document.getElementById('welcome-card').style.display = 'block';
+    setTimeout(() => { window.location.href = '/'; }, 1500);
+  }
+  </script>
+</body>
+</html>

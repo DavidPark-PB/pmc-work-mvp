@@ -4,13 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PMC-AUTO</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css">
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="preconnect" href="https://unpkg.com" crossorigin>
   <link rel="stylesheet" href="/style.css?v=<%= Date.now() %>">
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-  <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" media="print" onload="this.media='all'">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" media="print" onload="this.media='all'">
+  <script defer src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script defer src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
 </head>
 <body>
   <!-- Mobile Header -->
@@ -31,16 +31,13 @@
       </a>
     </div>
 
-    <div class="sidebar-label">메뉴</div>
+    <div class="sidebar-label">상품</div>
     <nav class="sidebar-nav">
       <a href="/" class="nav-item <%= it.step === 0 ? 'active' : '' %>">
-        <i class="ti ti-layout-dashboard"></i> 대시보드
+        <i class="ti ti-package"></i> 상품 관리
       </a>
       <a href="/upload-csv" class="nav-item <%= it.step === 1 ? 'active' : '' %>">
         <i class="ti ti-file-upload"></i> CSV 업로드
-      </a>
-      <a href="/select" class="nav-item <%= it.step === 3 ? 'active' : '' %>">
-        <i class="ti ti-shopping-cart"></i> 쇼핑몰 선택
       </a>
       <a href="/history" class="nav-item <%= it.step === 6 ? 'active' : '' %>">
         <i class="ti ti-history"></i> 히스토리
@@ -48,8 +45,31 @@
       <a href="/trash" class="nav-item <%= it.step === 8 ? 'active' : '' %>">
         <i class="ti ti-trash"></i> 휴지통
       </a>
+    </nav>
+
+    <div class="sidebar-label admin-only">관리</div>
+    <nav class="sidebar-nav admin-only">
       <a href="/settings" class="nav-item <%= it.step === 7 ? 'active' : '' %>">
         <i class="ti ti-settings"></i> 설정
+      </a>
+      <a href="/tokens" class="nav-item <%= it.step === 9 ? 'active' : '' %>">
+        <i class="ti ti-key"></i> 토큰 관리
+      </a>
+      <a href="/staff" class="nav-item <%= it.step === 11 ? 'active' : '' %>">
+        <i class="ti ti-users-group"></i> 직원 관리
+      </a>
+      <a href="/audit" class="nav-item <%= it.step === 12 ? 'active' : '' %>">
+        <i class="ti ti-report-analytics"></i> 작업 로그
+      </a>
+      <a href="/backups" class="nav-item <%= it.step === 13 ? 'active' : '' %>">
+        <i class="ti ti-database-export"></i> DB 백업
+      </a>
+    </nav>
+
+    <div class="sidebar-label">도움말</div>
+    <nav class="sidebar-nav">
+      <a href="/manual" class="nav-item <%= it.step === 20 ? 'active' : '' %>">
+        <i class="ti ti-book"></i> 사용설명서
       </a>
     </nav>
 
@@ -78,42 +98,21 @@
     <% } %>
 
     <div class="sidebar-footer">
-      <div class="sidebar-user" id="sidebar-user" onclick="showNameModal()">
+      <div class="sidebar-user" id="sidebar-user">
         <div class="sidebar-user-avatar" id="user-avatar">?</div>
         <div class="sidebar-user-info">
-          <span class="sidebar-user-name" id="user-name-display">설정 안됨</span>
+          <span class="sidebar-user-name" id="user-name-display">로딩 중...</span>
           <span class="sidebar-user-role" id="user-role-badge"></span>
         </div>
-        <i class="ti ti-pencil sidebar-user-edit"></i>
+        <button class="sidebar-user-edit" onclick="handleLogout()" title="로그아웃" style="background:none;border:none;cursor:pointer;color:var(--text-muted);padding:4px;">
+          <i class="ti ti-logout"></i>
+        </button>
       </div>
       <div class="sidebar-footer-text">
         <i class="ti ti-code"></i> PMC Auto v1.0
       </div>
     </div>
   </aside>
-
-  <!-- 닉네임 설정 모달 -->
-  <div class="modal-overlay" id="name-modal">
-    <div class="modal-card">
-      <div class="modal-icon">
-        <i class="ti ti-user-circle"></i>
-      </div>
-      <h3 class="modal-title">안녕하세요!</h3>
-      <p class="modal-desc">원활한 팀 협업을 위해 사용하실 이름을 알려주세요.<br>다른 팀원들에게 표시됩니다.</p>
-      <input type="text" id="name-input" class="modal-input" placeholder="이름을 입력해 주세요" maxlength="20">
-      <label class="modal-checkbox" id="admin-check-label">
-        <input type="checkbox" id="admin-check" onchange="toggleAdminField()">
-        <span>관리자로 로그인</span>
-      </label>
-      <div class="modal-admin-field" id="admin-field" style="display:none;">
-        <input type="password" id="admin-password" class="modal-input" placeholder="관리자 비밀번호를 입력해 주세요">
-      </div>
-      <div class="modal-actions">
-        <button id="name-cancel-btn" class="btn btn-secondary" onclick="hideNameModal()">취소</button>
-        <button class="btn btn-primary" onclick="saveName()"><i class="ti ti-check"></i> 확인</button>
-      </div>
-    </div>
-  </div>
 
   <!-- Main Content -->
   <main class="main-content">
@@ -129,137 +128,43 @@
     document.getElementById('sidebar-overlay').classList.toggle('active');
   }
 
-  // ── 사용자 세션 관리 ──
-  function getTeamUser() {
-    try {
-      const raw = document.cookie.split('; ').find(c => c.startsWith('team_user='));
-      if (!raw) return null;
-      return JSON.parse(decodeURIComponent(raw.split('=').slice(1).join('=')));
-    } catch { return null; }
-  }
-
+  // ── 사용자 표시 ──
   function updateUserDisplay() {
-    const user = getTeamUser();
-    const nameEl = document.getElementById('user-name-display');
-    const badgeEl = document.getElementById('user-role-badge');
-    const avatarEl = document.getElementById('user-avatar');
-    const userEl = document.getElementById('sidebar-user');
+    fetch('/api/auth/me').then(r => r.json()).then(data => {
+      const nameEl = document.getElementById('user-name-display');
+      const badgeEl = document.getElementById('user-role-badge');
+      const avatarEl = document.getElementById('user-avatar');
+      const userEl = document.getElementById('sidebar-user');
 
-    if (user && user.name) {
-      nameEl.textContent = user.name;
-      avatarEl.textContent = user.name.charAt(0).toUpperCase();
-      userEl.classList.add('active');
-      fetch('/api/user/me').then(r => r.json()).then(data => {
-        if (data.user?.isAdmin) {
+      if (data.user) {
+        nameEl.textContent = data.user.displayName;
+        avatarEl.textContent = data.user.displayName.charAt(0).toUpperCase();
+        userEl.classList.add('active');
+
+        if (data.user.role === 'admin') {
           badgeEl.textContent = 'Admin';
           badgeEl.className = 'sidebar-user-role role-admin';
+          document.querySelectorAll('.admin-only').forEach(el => el.classList.add('visible'));
         } else {
-          badgeEl.textContent = '팀원';
+          badgeEl.textContent = 'Staff';
           badgeEl.className = 'sidebar-user-role role-member';
         }
-      }).catch(() => {});
-    } else {
-      nameEl.textContent = '이름을 설정해 주세요';
-      avatarEl.textContent = '?';
-      badgeEl.className = 'sidebar-user-role';
-      badgeEl.textContent = '';
-      userEl.classList.remove('active');
-    }
+      }
+    }).catch(() => {});
   }
 
-  function toggleAdminField() {
-    const checked = document.getElementById('admin-check').checked;
-    const field = document.getElementById('admin-field');
-    field.style.display = checked ? '' : 'none';
-    if (checked) {
-      setTimeout(() => document.getElementById('admin-password').focus(), 50);
-    }
-  }
-
-  function showNameModal() {
-    const modal = document.getElementById('name-modal');
-    const input = document.getElementById('name-input');
-    const cancelBtn = document.getElementById('name-cancel-btn');
-    const adminCheck = document.getElementById('admin-check');
-    const adminField = document.getElementById('admin-field');
-    const adminPw = document.getElementById('admin-password');
-    const user = getTeamUser();
-    if (user?.name) {
-      input.value = user.name;
-      cancelBtn.style.display = '';
-    } else {
-      input.value = '';
-      cancelBtn.style.display = 'none';
-    }
-    // Admin 필드 초기화
-    adminCheck.checked = false;
-    adminField.style.display = 'none';
-    adminPw.value = '';
-    modal.classList.add('visible');
-    setTimeout(() => input.focus(), 100);
-  }
-
-  function hideNameModal() {
-    document.getElementById('name-modal').classList.remove('visible');
-  }
-
-  async function saveName() {
-    const name = document.getElementById('name-input').value.trim();
-    if (!name) return;
-
-    const wantAdmin = document.getElementById('admin-check').checked;
-    const adminPassword = document.getElementById('admin-password').value;
-
-    // Admin 체크했는데 비밀번호 미입력
-    if (wantAdmin && !adminPassword) {
-      showToast('관리자 비밀번호를 입력해 주세요.', 'error');
-      document.getElementById('admin-password').focus();
-      return;
-    }
-
+  async function handleLogout() {
+    if (!confirm('로그아웃 하시겠습니까?')) return;
     try {
-      // 1) Admin 인증 (체크된 경우)
-      if (wantAdmin) {
-        const authRes = await fetch('/api/settings/auth', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: adminPassword }),
-        });
-        const authData = await authRes.json();
-        if (authData.error) {
-          showToast('관리자 비밀번호가 올바르지 않습니다.', 'error');
-          document.getElementById('admin-password').focus();
-          return;
-        }
-      }
-
-      // 2) 이름 설정
-      const res = await fetch('/api/user/set-name', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, asAdmin: wantAdmin }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        showToast(data.error, 'error');
-        return;
-      }
-      hideNameModal();
-      updateUserDisplay();
-      const greeting = wantAdmin ? name + '님, 관리자로 로그인되었습니다!' : name + '님, 환영합니다!';
-      showToast(greeting, 'success');
-    } catch (e) {
-      showToast('이름 설정에 실패했습니다. 다시 시도해 주세요.', 'error');
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login';
+    } catch {
+      window.location.href = '/login';
     }
   }
 
-  // 페이지 로드 시 닉네임 확인
   document.addEventListener('DOMContentLoaded', () => {
     updateUserDisplay();
-    const user = getTeamUser();
-    if (!user || !user.name) {
-      showNameModal();
-    }
   });
 
   function showToast(message, type = 'info') {

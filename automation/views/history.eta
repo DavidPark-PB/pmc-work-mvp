@@ -2,10 +2,65 @@
   <h1 class="page-title">히스토리</h1>
 </div>
 
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-file-upload"></i> CSV 임포트 이력</h2>
+    <span class="text-muted">총 <strong><%= it.uploads.length %></strong>건</span>
+  </div>
+
+  <% if (it.uploads.length === 0) { %>
+    <div class="empty-state">
+      <i class="ti ti-file-off"></i>
+      <p>아직 업로드 이력이 없습니다.</p>
+    </div>
+  <% } else { %>
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>업로드 시간</th>
+          <th>업로더</th>
+          <th>파일명</th>
+          <th class="text-center">행 수</th>
+          <th class="text-center">등록 수</th>
+          <th>상태</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.uploads.forEach((u) => { %>
+        <tr>
+          <td class="tabular-nums nowrap"><%= new Date(u.createdAt).toLocaleString('ko-KR') %></td>
+          <td><%= u.ownerName || '—' %></td>
+          <td class="font-mono truncate" style="max-width: 300px;" title="<%= u.filename %>"><%= u.filename %></td>
+          <td class="text-center tabular-nums"><%= u.rowCount %></td>
+          <td class="text-center tabular-nums"><%= u.importedCount || 0 %></td>
+          <td>
+            <% if (u.status === 'imported') { %>
+              <span class="badge badge-success">등록완료</span>
+            <% } else if (u.status === 'mapped') { %>
+              <span class="badge badge-pending">매핑완료</span>
+            <% } else { %>
+              <span class="badge badge-draft">업로드됨</span>
+            <% } %>
+          </td>
+          <td>
+            <% if (u.status !== 'imported') { %>
+              <a href="/import?uploadId=<%= u.uploadId %>" class="btn btn-secondary btn-sm"><i class="ti ti-database-import"></i> 등록</a>
+            <% } %>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+  <% } %>
+</div>
+
 <% if (it.jobs.length > 0) { %>
 <div class="card">
   <div class="section-header">
-    <h2><i class="ti ti-clock-play"></i> 현재 세션 잡</h2>
+    <h2><i class="ti ti-clock-play"></i> 플랫폼 업로드 잡</h2>
     <span class="badge badge-draft"><%= it.jobs.length %>건</span>
   </div>
 
@@ -105,7 +160,7 @@
             <% } else if (l.status === 'error') { %>
               <span class="badge badge-error">실패</span>
             <% } else if (l.status === 'ended') { %>
-              <span class="badge badge-draft">종료</span>
+              <span class="badge badge-ended">종료</span>
             <% } else { %>
               <span class="badge badge-draft"><%= l.status %></span>
             <% } %>
@@ -145,59 +200,4 @@
   </div>
   <% } %>
   <% } %>
-</div>
-
-<div class="card">
-  <div class="section-header">
-    <h2><i class="ti ti-file-upload"></i> CSV 업로드 이력</h2>
-    <span class="text-muted">총 <strong><%= it.uploads.length %></strong>건</span>
-  </div>
-
-  <% if (it.uploads.length === 0) { %>
-    <div class="empty-state">
-      <i class="ti ti-file-off"></i>
-      <p>아직 업로드 이력이 없습니다.</p>
-    </div>
-  <% } else { %>
-  <div style="overflow-x: auto;">
-    <table>
-      <thead>
-        <tr>
-          <th>업로드 시간</th>
-          <th>파일명</th>
-          <th class="text-center">행 수</th>
-          <th class="text-center">등록 수</th>
-          <th>상태</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        <% it.uploads.forEach((u) => { %>
-        <tr>
-          <td class="tabular-nums nowrap"><%= new Date(u.createdAt).toLocaleString('ko-KR') %></td>
-          <td class="font-mono truncate" style="max-width: 300px;" title="<%= u.filename %>"><%= u.filename %></td>
-          <td class="text-center tabular-nums"><%= u.rowCount %></td>
-          <td class="text-center tabular-nums"><%= u.importedCount || 0 %></td>
-          <td>
-            <% if (u.status === 'imported') { %>
-              <span class="badge badge-success">등록완료</span>
-            <% } else { %>
-              <span class="badge badge-pending">업로드됨</span>
-            <% } %>
-          </td>
-          <td>
-            <% if (u.status !== 'imported') { %>
-              <a href="/import?uploadId=<%= u.uploadId %>" class="btn btn-secondary btn-sm"><i class="ti ti-database-import"></i> 등록</a>
-            <% } %>
-          </td>
-        </tr>
-        <% }) %>
-      </tbody>
-    </table>
-  </div>
-  <% } %>
-</div>
-
-<div class="mt-16">
-  <a href="/upload-csv" class="btn btn-primary"><i class="ti ti-file-upload"></i> 새 업로드</a>
 </div>

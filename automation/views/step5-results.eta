@@ -103,6 +103,6 @@
 
 <div class="flex gap-8 mt-16">
   <a href="/" class="btn btn-primary btn-lg"><i class="ti ti-home"></i> 홈으로</a>
-  <a href="/select" class="btn btn-secondary"><i class="ti ti-shopping-cart"></i> 쇼핑몰 선택</a>
+  <a href="/" class="btn btn-secondary"><i class="ti ti-shopping-cart"></i> 상품 관리</a>
   <a href="/history" class="btn btn-secondary"><i class="ti ti-history"></i> 히스토리</a>
 </div>

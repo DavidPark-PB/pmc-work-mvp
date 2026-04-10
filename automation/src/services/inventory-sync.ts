@@ -5,7 +5,7 @@
  * eBay: GetMyeBaySelling → Quantity - QuantitySold
  * Shopify: GET /products/{id}.json → variants[0].inventory_quantity
  */
-import { eq, and, like } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { platformListings, products } from '../db/schema.js';
 import { EbayClient } from '../platforms/ebay/EbayClient.js';
@@ -31,13 +31,10 @@ export async function syncAllInventory(): Promise<SyncResult[]> {
     platformItemId: platformListings.platformItemId,
     quantity: platformListings.quantity,
     productSku: products.sku,
-    updatedAt: platformListings.updatedAt,
-    lastSyncedAt: platformListings.lastSyncedAt,
   })
     .from(platformListings)
     .leftJoin(products, eq(platformListings.productId, products.id))
-    // automation이 생성한 상품(PMC- SKU)만 동기화 — main server 상품은 건드리지 않음
-    .where(and(eq(platformListings.status, 'active'), like(products.sku, 'PMC-%')));
+    .where(eq(platformListings.status, 'active'));
 
   if (activeListings.length === 0) {
     console.log('[인벤토리] 동기화할 활성 리스팅 없음');
@@ -92,16 +89,6 @@ async function syncEbayInventory(
         ? (ebayQuantityMap.get(listing.platformItemId) ?? oldQty)
         : oldQty;
       const changed = newQty !== oldQty;
-
-      // Skip if manually updated within last 1 hour (updatedAt > lastSyncedAt)
-      const updatedAt = (listing as any).updatedAt ? new Date((listing as any).updatedAt).getTime() : 0;
-      const lastSynced = (listing as any).lastSyncedAt ? new Date((listing as any).lastSyncedAt).getTime() : 0;
-      const manuallyEdited = updatedAt > lastSynced && (Date.now() - updatedAt) < 3600000;
-      if (changed && manuallyEdited) {
-        console.log(`[인벤토리] ${listing.productSku || listing.id}: 수동 변경 감지 — 싱크 스킵 (1시간 보호)`);
-        results.push({ listingId: listing.id, platform: 'ebay', sku: listing.productSku || '', oldQuantity: oldQty, newQuantity: oldQty, changed: false });
-        continue;
-      }
 
       if (changed) {
         await db.update(platformListings)

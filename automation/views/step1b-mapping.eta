@@ -1,0 +1,169 @@
+<div class="page-header">
+  <h1 class="page-title">컬럼 매핑 확인</h1>
+  <span class="badge"><%= it.filename %> &middot; <%= it.totalRows %>개 행</span>
+</div>
+
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-columns-3"></i> CSV 컬럼 매핑</h2>
+    <span class="text-muted">각 컬럼이 어떤 필드인지 확인하세요</span>
+  </div>
+
+  <div style="overflow-x: auto;">
+    <table id="mapping-table">
+      <thead>
+        <tr>
+          <th style="width:40px">#</th>
+          <th>CSV 헤더</th>
+          <th style="width:160px">매핑 대상</th>
+          <th>샘플 데이터</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.headerRow.forEach((header, colIdx) => { %>
+        <tr>
+          <td class="text-muted"><%= colIdx %></td>
+          <td><strong><%= header || '(컬럼 ' + (colIdx + 1) + ')' %></strong></td>
+          <td>
+            <select class="mapping-select" data-col="<%= colIdx %>"
+                    style="width:100%;padding:6px 8px;border-radius:var(--radius);border:1px solid var(--border);font-size:var(--text-sm);">
+              <option value="">(무시)</option>
+              <option value="name">상품명</option>
+              <option value="price">가격 (판매가)</option>
+              <option value="url">상품 URL</option>
+              <option value="image">이미지 URL</option>
+              <option value="originalPrice">정가</option>
+              <option value="discountRate">할인율</option>
+              <option value="category">카테고리</option>
+              <option value="brand">브랜드</option>
+              <option value="weight">무게</option>
+              <option value="description">설명</option>
+              <option value="rating">평점</option>
+              <option value="reviewCount">리뷰수</option>
+            </select>
+          </td>
+          <td style="max-width:340px;">
+            <% it.sampleRows.forEach((row) => {
+              var cellVal = row[colIdx] || '';
+              var display = (cellVal || '—').substring(0, 70) + (cellVal.length > 70 ? '...' : '');
+            %>
+              <div class="truncate text-muted" style="font-size:var(--text-xs);margin-bottom:2px;"
+                   title="<%= cellVal %>">
+                <%= display %>
+              </div>
+            <% }) %>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 경고 메시지 -->
+  <div id="mapping-warning" class="hidden mt-16" style="color:var(--yellow);background:rgba(202,138,4,0.08);padding:10px 16px;border-radius:var(--radius);font-size:var(--text-sm);">
+    <i class="ti ti-alert-triangle"></i> <span id="warning-text"></span>
+  </div>
+  <div id="duplicate-warning" class="hidden mt-8" style="color:var(--red);background:rgba(220,38,38,0.08);padding:10px 16px;border-radius:var(--radius);font-size:var(--text-sm);">
+    <i class="ti ti-alert-circle"></i> <span id="duplicate-text"></span>
+  </div>
+
+  <div class="flex justify-between align-center mt-24">
+    <a href="/upload-csv" class="btn btn-secondary"><i class="ti ti-arrow-left"></i> 뒤로</a>
+    <button id="confirm-btn" class="btn btn-primary btn-lg" onclick="confirmMapping()">
+      <i class="ti ti-check"></i> 매핑 확인 (<%= it.totalRows %>개)
+    </button>
+  </div>
+</div>
+
+<script>
+var fieldLabels = {
+  name: '상품명', price: '가격', url: '상품URL', image: '이미지',
+  originalPrice: '정가', discountRate: '할인율', category: '카테고리',
+  brand: '브랜드', weight: '무게', description: '설명',
+  rating: '평점', reviewCount: '리뷰수'
+};
+
+// autoMapping으로 드롭다운 초기값 설정
+var autoMapping = <%~ JSON.stringify(it.autoMapping) %>;
+document.addEventListener('DOMContentLoaded', function() {
+  for (var field in autoMapping) {
+    var sel = document.querySelector('select[data-col="' + autoMapping[field] + '"]');
+    if (sel) sel.value = field;
+  }
+  validateMapping();
+});
+
+// 드롭다운 변경 시 유효성 검사
+document.querySelectorAll('.mapping-select').forEach(function(sel) {
+  sel.addEventListener('change', validateMapping);
+});
+
+function validateMapping() {
+  var selects = document.querySelectorAll('.mapping-select');
+  var usedFields = {};
+  var duplicates = [];
+
+  selects.forEach(function(sel) {
+    var field = sel.value;
+    if (!field) return;
+    if (usedFields[field]) {
+      duplicates.push(field);
+    }
+    usedFields[field] = true;
+  });
+
+  // 중복 체크
+  var dupEl = document.getElementById('duplicate-warning');
+  if (duplicates.length > 0) {
+    document.getElementById('duplicate-text').textContent =
+      '같은 필드가 여러 컬럼에 선택됨: ' + duplicates.map(function(f) { return fieldLabels[f] || f; }).join(', ');
+    dupEl.classList.remove('hidden');
+  } else {
+    dupEl.classList.add('hidden');
+  }
+
+  // 필수 필드 체크
+  var warnEl = document.getElementById('mapping-warning');
+  var warnText = document.getElementById('warning-text');
+  if (!usedFields.name) {
+    warnText.textContent = '"상품명" 매핑이 필요합니다.';
+    warnEl.classList.remove('hidden');
+  } else if (!usedFields.url && !usedFields.price) {
+    warnText.textContent = '"상품URL" 또는 "가격" 중 하나는 매핑이 필요합니다.';
+    warnEl.classList.remove('hidden');
+  } else {
+    warnEl.classList.add('hidden');
+  }
+
+  // 버튼 활성화
+  var btn = document.getElementById('confirm-btn');
+  btn.disabled = !usedFields.name || (!usedFields.url && !usedFields.price) || duplicates.length > 0;
+}
+
+async function confirmMapping() {
+  var btn = document.getElementById('confirm-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> 처리 중...';
+
+  var mapping = {};
+  document.querySelectorAll('.mapping-select').forEach(function(sel) {
+    if (sel.value) mapping[sel.value] = parseInt(sel.dataset.col);
+  });
+
+  try {
+    var res = await fetch('/api/upload/confirm-mapping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uploadId: '<%= it.uploadId %>', mapping: mapping }),
+    });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || '서버 오류');
+
+    window.location.href = '/import?uploadId=' + data.uploadId;
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-check"></i> 매핑 확인 (<%= it.totalRows %>개)';
+    if (typeof showToast === 'function') showToast('매핑 실패: ' + e.message, 'error');
+  }
+}
+</script>

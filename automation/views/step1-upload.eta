@@ -109,7 +109,7 @@ async function uploadFile(file) {
     uploadProgress.classList.remove('striped');
 
     setTimeout(() => {
-      window.location.href = '/import?uploadId=' + data.uploadId;
+      window.location.href = '/mapping?uploadId=' + data.uploadId;
     }, 800);
   } catch (e) {
     uploadErrorText.textContent = '업로드 실패: ' + e.message;

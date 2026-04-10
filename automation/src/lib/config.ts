@@ -54,17 +54,25 @@ const envSchema = z.object({
   SHOPEE_REFRESH_TOKEN: z.string().optional(),
   SHOPEE_ENV: z.enum(['live', 'test']).default('test'),
   SHOPEE_DEFAULT_CATEGORY_ID: z.coerce.number().optional(),
-  SHOPEE_SHOP_ACCESS_TOKEN: z.string().optional(),
-  SHOPEE_SHOP_REFRESH_TOKEN: z.string().optional(),
-  SHOPEE_SHOP_IDS: z.string().optional(),
 
   // Qoo10 (optional until Phase 7)
   QOO10_API_KEY: z.string().optional(),
   QOO10_USER_ID: z.string().optional(),
   QOO10_PASSWORD: z.string().optional(),
 
+  // Gemini (for product translation)
+  GEMINI_API_KEY: z.string().optional(),
+
+  // GitHub (backup management via Actions)
+  GITHUB_TOKEN: z.string().optional(),
+  GITHUB_REPO: z.string().default('CCOREA-AUTO/ccorea-auto'),
+
   // Settings page password
   SETTINGS_PASSWORD: z.string().default('tjdals!1212'),
+
+  // Admin seed account
+  ADMIN_USERNAME: z.string().default('admin'),
+  ADMIN_PASSWORD: z.string().default('changeme'),
 });
 
 const parsed = envSchema.safeParse(process.env);

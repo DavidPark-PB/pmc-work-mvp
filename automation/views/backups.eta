@@ -1,0 +1,656 @@
+<div class="page-header">
+  <h1><i class="ti ti-database-export"></i> DB 백업 관리</h1>
+  <p class="text-muted">데이터베이스 백업 상태 확인, 수동 백업, 복원</p>
+</div>
+
+<!-- Status + Action Card -->
+<div class="backup-status-card">
+  <div class="backup-status-inner">
+    <div id="backup-status">
+      <span class="text-muted"><i class="ti ti-loader ti-spin"></i> 상태 확인 중...</span>
+    </div>
+    <div class="backup-actions">
+      <button class="btn-backup" id="btn-backup" onclick="triggerBackup()">
+        <i class="ti ti-database-export"></i> 지금 백업
+      </button>
+      <button class="btn-refresh-list" onclick="loadBackups()">
+        <i class="ti ti-refresh"></i>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- No Token Warning -->
+<div id="no-token-warning" class="backup-warning" style="display:none;">
+  <i class="ti ti-alert-triangle"></i>
+  <div>
+    <strong>GitHub 토큰 미설정</strong>
+    <p>백업 기능을 사용하려면 .env 파일에 GITHUB_TOKEN을 설정해 주세요.</p>
+  </div>
+</div>
+
+<!-- Backup List -->
+<div class="backup-list-card">
+  <div class="backup-list-header">
+    <h3><i class="ti ti-list"></i> 백업 목록</h3>
+  </div>
+  <div class="backup-table-wrap">
+    <table class="backup-table">
+      <thead>
+        <tr>
+          <th>날짜</th>
+          <th>이름</th>
+          <th>유형</th>
+          <th>크기</th>
+          <th>만료일</th>
+          <th>작업</th>
+        </tr>
+      </thead>
+      <tbody id="backup-tbody">
+        <tr><td colspan="6" class="backup-empty">
+          <i class="ti ti-loader ti-spin"></i> 백업 목록 로딩 중...
+        </td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Restore Modal (2-step) -->
+<div class="modal-overlay" id="restore-modal" style="display:none;">
+  <div class="restore-modal">
+    <!-- Step 1 -->
+    <div id="restore-step1">
+      <div class="restore-icon danger">
+        <i class="ti ti-alert-triangle"></i>
+      </div>
+      <div class="restore-title">데이터베이스 복원</div>
+      <div class="restore-desc" id="restore-info"></div>
+      <div class="restore-notice">
+        <i class="ti ti-info-circle"></i> 복원 전 현재 DB가 자동으로 백업됩니다.
+      </div>
+      <label class="restore-checkbox">
+        <input type="checkbox" id="restore-understand" onchange="updateStep1Btn()">
+        <span>현재 데이터가 덮어써지는 것을 이해합니다</span>
+      </label>
+      <div class="restore-actions">
+        <button class="btn-secondary" onclick="closeRestoreModal()">취소</button>
+        <button class="btn-danger" id="btn-next-step" onclick="goToStep2()" disabled>다음</button>
+      </div>
+    </div>
+    <!-- Step 2 -->
+    <div id="restore-step2" style="display:none;">
+      <div class="restore-icon danger">
+        <i class="ti ti-database-off"></i>
+      </div>
+      <div class="restore-title">최종 확인</div>
+      <div class="restore-desc">아래에 백업 이름을 정확히 입력해 주세요:</div>
+      <div class="restore-target-name" id="restore-target-name"></div>
+      <input class="restore-input" id="restore-confirm-input" placeholder="백업 이름을 입력하세요" autocomplete="off" oninput="updateStep2Btn()">
+      <div class="restore-actions">
+        <button class="btn-secondary" onclick="closeRestoreModal()">취소</button>
+        <button class="btn-danger" id="btn-execute-restore" onclick="executeRestore()" disabled>
+          <i class="ti ti-database-import"></i> 복원 시작
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+/* Status Card */
+.backup-status-card {
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.backup-status-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+#backup-status {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-dot.green { background: #22c55e; }
+.status-dot.red { background: #ef4444; }
+.status-dot.yellow { background: #f59e0b; animation: pulse 1.5s ease-in-out infinite; }
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.backup-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.btn-backup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-backup:hover:not(:disabled) { background: #1d4ed8; }
+.btn-backup:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-backup.running i { animation: spin 1s linear infinite; }
+
+.btn-refresh-list {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px;
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-muted, #6b7280);
+  transition: all 0.15s;
+}
+
+.btn-refresh-list:hover { border-color: var(--text-muted, #9ca3af); }
+
+/* Warning */
+.backup-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+  color: #92400e;
+}
+
+.backup-warning i { font-size: 1.5rem; margin-top: 2px; }
+.backup-warning p { margin: 4px 0 0; font-size: 0.85rem; opacity: 0.8; }
+
+/* Table */
+.backup-list-card {
+  background: var(--card-bg, #fff);
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.backup-list-header {
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+}
+
+.backup-list-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.backup-table-wrap {
+  overflow-x: auto;
+}
+
+.backup-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.backup-table th {
+  background: var(--hover-bg, #f9fafb);
+  padding: 0.625rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted, #6b7280);
+  white-space: nowrap;
+  font-size: 0.8rem;
+}
+
+.backup-table td {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  white-space: nowrap;
+}
+
+.backup-table tbody tr:hover {
+  background: var(--hover-bg, #f9fafb);
+}
+
+.backup-empty {
+  text-align: center;
+  padding: 3rem 1rem !important;
+  color: var(--text-muted, #6b7280);
+}
+
+/* Type badges */
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.type-scheduled { background: #dbeafe; color: #1e40af; }
+.type-manual { background: #dcfce7; color: #166534; }
+.type-pre-restore { background: #fef3c7; color: #92400e; }
+
+/* Restore button */
+.btn-restore {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid #fca5a5;
+  background: #fff;
+  color: #dc2626;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-restore:hover { background: #fef2f2; }
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.restore-modal {
+  background: var(--card-bg, #fff);
+  border-radius: 16px;
+  padding: 2rem;
+  width: 100%;
+  max-width: 440px;
+  text-align: center;
+}
+
+.restore-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 1rem;
+  font-size: 1.5rem;
+}
+
+.restore-icon.danger { background: #fee2e2; color: #dc2626; }
+
+.restore-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.restore-desc {
+  font-size: 0.9rem;
+  color: var(--text-muted, #6b7280);
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+.restore-notice {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.8rem;
+  color: #92400e;
+  margin-bottom: 1rem;
+  text-align: left;
+}
+
+.restore-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  margin-bottom: 1.25rem;
+  text-align: left;
+}
+
+.restore-checkbox input { width: 16px; height: 16px; cursor: pointer; }
+
+.restore-target-name {
+  background: var(--hover-bg, #f3f4f6);
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  font-family: 'Pretendard Variable', monospace;
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+  word-break: break-all;
+  text-align: left;
+  font-weight: 600;
+}
+
+.restore-input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  margin-bottom: 1.25rem;
+  box-sizing: border-box;
+}
+
+.restore-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+.restore-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.btn-secondary {
+  padding: 8px 18px;
+  border: 1px solid var(--border-color, #e5e7eb);
+  background: var(--card-bg, #fff);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-secondary:hover { background: var(--hover-bg, #f9fafb); }
+
+.btn-danger {
+  padding: 8px 18px;
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-danger:hover:not(:disabled) { background: #b91c1c; }
+.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.ti-spin { animation: spin 1s linear infinite; }
+
+@media (max-width: 640px) {
+  .backup-status-inner { flex-direction: column; align-items: flex-start; }
+  .backup-table { font-size: 0.8rem; }
+  .backup-table th, .backup-table td { padding: 0.5rem 0.625rem; }
+}
+</style>
+
+<script>
+let restoreTarget = '';
+let statusPollTimer = null;
+let isPollingActive = false;
+
+// ── Load backups ──
+async function loadBackups() {
+  const tbody = document.getElementById('backup-tbody');
+  try {
+    const res = await fetch('/api/backups');
+    if (res.status === 503) {
+      document.getElementById('no-token-warning').style.display = 'flex';
+      tbody.innerHTML = '<tr><td colspan="6" class="backup-empty">GitHub 토큰을 설정해 주세요.</td></tr>';
+      return;
+    }
+    if (!res.ok) throw new Error('API 오류');
+    const data = await res.json();
+    renderBackupTable(data.backups);
+  } catch {
+    tbody.innerHTML = '<tr><td colspan="6" class="backup-empty"><i class="ti ti-alert-circle"></i> 백업 목록을 불러올 수 없습니다.</td></tr>';
+  }
+}
+
+function renderBackupTable(backups) {
+  const tbody = document.getElementById('backup-tbody');
+  if (!backups.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="backup-empty">백업이 없습니다.</td></tr>';
+    return;
+  }
+
+  const typeLabels = { scheduled: '예약', manual: '수동', 'pre-restore': '복원전' };
+  const typeClasses = { scheduled: 'type-scheduled', manual: 'type-manual', 'pre-restore': 'type-pre-restore' };
+  const typeIcons = { scheduled: 'clock', manual: 'hand-click', 'pre-restore': 'shield' };
+
+  tbody.innerHTML = backups.map(b => {
+    const expires = new Date(b.expiresAt);
+    const now = new Date();
+    const daysLeft = Math.ceil((expires - now) / (1000 * 60 * 60 * 24));
+    const expiresText = daysLeft > 0 ? daysLeft + '일 남음' : '만료됨';
+
+    return '<tr>' +
+      '<td>' + escapeHtml(b.date) + '</td>' +
+      '<td style="font-family:monospace;font-size:0.8rem;">' + escapeHtml(b.name) + '</td>' +
+      '<td><span class="type-badge ' + typeClasses[b.type] + '"><i class="ti ti-' + typeIcons[b.type] + '"></i> ' + typeLabels[b.type] + '</span></td>' +
+      '<td>' + escapeHtml(b.sizeFormatted) + '</td>' +
+      '<td>' + expiresText + '</td>' +
+      '<td>' + (daysLeft > 0 ? '<button class="btn-restore" onclick="openRestoreModal(\'' + escapeHtml(b.name) + '\', \'' + escapeHtml(b.date) + '\', \'' + escapeHtml(b.sizeFormatted) + '\')"><i class="ti ti-rotate-2"></i> 복원</button>' : '<span class="text-muted">만료</span>') + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+// ── Status polling ──
+async function checkStatus() {
+  try {
+    const res = await fetch('/api/backups/status');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const statusEl = document.getElementById('backup-status');
+    const btn = document.getElementById('btn-backup');
+    const parts = [];
+
+    if (data.backupRunning) {
+      parts.push('<span class="status-item"><span class="status-dot yellow"></span> 백업 진행 중...</span>');
+      btn.disabled = true;
+      btn.classList.add('running');
+      btn.innerHTML = '<i class="ti ti-loader"></i> 백업 중...';
+      startActivePoll();
+    } else if (data.restoreRunning) {
+      parts.push('<span class="status-item"><span class="status-dot yellow"></span> 복원 진행 중...</span>');
+      btn.disabled = true;
+      startActivePoll();
+    } else {
+      btn.disabled = false;
+      btn.classList.remove('running');
+      btn.innerHTML = '<i class="ti ti-database-export"></i> 지금 백업';
+      stopActivePoll();
+    }
+
+    if (data.lastBackupRun) {
+      const run = data.lastBackupRun;
+      const dot = run.conclusion === 'success' ? 'green' : run.conclusion === 'failure' ? 'red' : 'yellow';
+      const label = run.conclusion === 'success' ? '성공' : run.conclusion === 'failure' ? '실패' : '진행 중';
+      const time = new Date(run.created_at).toLocaleString('ko-KR');
+      parts.push('<span class="status-item"><span class="status-dot ' + dot + '"></span> 마지막 백업: ' + time + ' (' + label + ')</span>');
+    } else {
+      parts.push('<span class="status-item text-muted">백업 기록 없음</span>');
+    }
+
+    statusEl.innerHTML = parts.join('');
+  } catch {}
+}
+
+function startActivePoll() {
+  if (isPollingActive) return;
+  isPollingActive = true;
+  if (statusPollTimer) clearInterval(statusPollTimer);
+  statusPollTimer = setInterval(async () => {
+    await checkStatus();
+    if (!isPollingActive) {
+      // Operation finished, refresh the backup list
+      await loadBackups();
+    }
+  }, 5000);
+}
+
+function stopActivePoll() {
+  if (!isPollingActive) return;
+  isPollingActive = false;
+  if (statusPollTimer) clearInterval(statusPollTimer);
+  statusPollTimer = setInterval(checkStatus, 30000);
+}
+
+// ── Trigger backup ──
+async function triggerBackup() {
+  const btn = document.getElementById('btn-backup');
+  btn.disabled = true;
+  btn.classList.add('running');
+  btn.innerHTML = '<i class="ti ti-loader"></i> 시작 중...';
+
+  try {
+    const res = await fetch('/api/backups/trigger', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(data.message || '백업이 시작되었습니다.', 'success');
+      startActivePoll();
+      checkStatus();
+    } else {
+      showToast(data.error || '백업 시작 실패', 'error');
+      btn.disabled = false;
+      btn.classList.remove('running');
+      btn.innerHTML = '<i class="ti ti-database-export"></i> 지금 백업';
+    }
+  } catch {
+    showToast('서버 연결 오류', 'error');
+    btn.disabled = false;
+    btn.classList.remove('running');
+    btn.innerHTML = '<i class="ti ti-database-export"></i> 지금 백업';
+  }
+}
+
+// ── Restore modal (2-step) ──
+function openRestoreModal(name, date, size) {
+  restoreTarget = name;
+  document.getElementById('restore-info').innerHTML =
+    '<strong>' + escapeHtml(name) + '</strong><br>' +
+    '<span class="text-muted">' + escapeHtml(date) + ' &middot; ' + escapeHtml(size) + '</span>';
+  document.getElementById('restore-target-name').textContent = name;
+  document.getElementById('restore-understand').checked = false;
+  document.getElementById('btn-next-step').disabled = true;
+  document.getElementById('restore-confirm-input').value = '';
+  document.getElementById('btn-execute-restore').disabled = true;
+  document.getElementById('restore-step1').style.display = '';
+  document.getElementById('restore-step2').style.display = 'none';
+  document.getElementById('restore-modal').style.display = '';
+}
+
+function closeRestoreModal() {
+  document.getElementById('restore-modal').style.display = 'none';
+  restoreTarget = '';
+}
+
+function updateStep1Btn() {
+  document.getElementById('btn-next-step').disabled = !document.getElementById('restore-understand').checked;
+}
+
+function goToStep2() {
+  document.getElementById('restore-step1').style.display = 'none';
+  document.getElementById('restore-step2').style.display = '';
+  document.getElementById('restore-confirm-input').focus();
+}
+
+function updateStep2Btn() {
+  const val = document.getElementById('restore-confirm-input').value.trim();
+  document.getElementById('btn-execute-restore').disabled = val !== restoreTarget;
+}
+
+async function executeRestore() {
+  const btn = document.getElementById('btn-execute-restore');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader ti-spin"></i> 복원 중...';
+
+  try {
+    const res = await fetch('/api/backups/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artifactName: restoreTarget, confirmText: restoreTarget }),
+    });
+    const data = await res.json();
+    closeRestoreModal();
+    if (res.ok) {
+      showToast(data.message || '복원이 시작되었습니다.', 'success');
+      startActivePoll();
+      checkStatus();
+    } else {
+      showToast(data.error || '복원 시작 실패', 'error');
+    }
+  } catch {
+    closeRestoreModal();
+    showToast('서버 연결 오류', 'error');
+  }
+}
+
+// ── Helpers ──
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ── Init ──
+document.addEventListener('DOMContentLoaded', () => {
+  loadBackups();
+  checkStatus();
+  statusPollTimer = setInterval(checkStatus, 30000);
+});
+
+// Close modal on overlay click
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'restore-modal') closeRestoreModal();
+});
+
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeRestoreModal();
+});
+</script>

@@ -14,8 +14,17 @@ import { listingRoutes } from './routes/listings.js';
 import { pageRoutes } from './routes/pages.js';
 import { settingsRoutes } from './routes/settings.js';
 import { assignRoutes } from './routes/assign.js';
-import { startScheduler, stopScheduler, getSchedulerStatus } from './jobs/scheduler.js';
-import { getUser, type TeamUser } from './lib/user-session.js';
+import { tokenRoutes } from './routes/tokens.js';
+import { backupRoutes } from './routes/backups.js';
+import { authRoutes } from './routes/auth.js';
+
+import { syncAllInventory } from './services/inventory-sync.js';
+import { db } from './db/index.js';
+import { platformListings } from './db/schema.js';
+import { sql } from 'drizzle-orm';
+import { resolveUser, type TeamUser } from './lib/user-session.js';
+import { seedAdminUser } from './lib/auth.js';
+import { startTokenRefreshScheduler } from './lib/token-scheduler.js';
 
 const app = Fastify({
   logger: false,
@@ -32,7 +41,6 @@ const eta = new Eta({ views: path.join(process.cwd(), 'views') });
 await app.register(fastifyView, {
   engine: { eta },
   root: path.join(process.cwd(), 'views'),
-  layout: 'layout.eta',
   viewExt: 'eta',
 });
 
@@ -47,10 +55,33 @@ declare module 'fastify' {
   }
 }
 
-app.addHook('onRequest', async (request) => {
-  const user = getUser(request);
+// 로그인 불필요 경로
+const PUBLIC_PATHS = ['/login', '/api/auth/login', '/health', '/style.css'];
+
+app.addHook('onRequest', async (request, reply) => {
+  // 비동기로 사용자 조회 + 캐시
+  const user = await resolveUser(request);
   if (user) {
     request.user = user;
+  }
+
+  // 로그인 체크: 공개 경로 + 정적 파일 제외
+  const urlPath = request.url.split('?')[0];
+  const isPublic = PUBLIC_PATHS.some(p => urlPath === p)
+    || urlPath.startsWith('/style.css')
+    || urlPath.endsWith('.js')
+    || urlPath.endsWith('.css')
+    || urlPath.endsWith('.ico')
+    || urlPath.endsWith('.png')
+    || urlPath.endsWith('.jpg')
+    || urlPath.endsWith('.svg');
+
+  if (!isPublic && !user) {
+    // API 요청은 401, 페이지 요청은 /login 리다이렉트
+    if (urlPath.startsWith('/api/')) {
+      return reply.status(401).send({ error: '로그인이 필요합니다.' });
+    }
+    return reply.redirect('/login');
   }
 });
 
@@ -80,6 +111,9 @@ app.get('/api/img-proxy', async (request, reply) => {
   }
 });
 
+// 인증
+app.register(authRoutes);
+
 // API
 app.register(productRoutes, { prefix: '/api' });
 app.register(uploadRoutes, { prefix: '/api' });
@@ -87,42 +121,59 @@ app.register(crawlResultRoutes, { prefix: '/api' });
 app.register(listingRoutes, { prefix: '/api' });
 app.register(assignRoutes, { prefix: '/api' });
 
+
 // 페이지
 app.register(pageRoutes);
 app.register(settingsRoutes);
-
-// ─── 스케줄러 상태 API ───────────────────────────
-app.get('/api/scheduler/status', async () => {
-  return { jobs: getSchedulerStatus() };
-});
+app.register(tokenRoutes);
+app.register(backupRoutes);
 
 // ─── 서버 시작 ──────────────────────────────────
 async function start() {
   try {
+    // Admin 시드
+    await seedAdminUser();
+
     await app.listen({ port: env.PORT, host: '0.0.0.0' });
     logger.info(`Server running on http://localhost:${env.PORT}`);
     logger.info(`Dashboard: http://localhost:${env.PORT}/`);
 
-    startScheduler();
+    // eBay 토큰 자동 갱신: 시작 즉시 + 90분 간격
+    startTokenRefreshScheduler();
+
+    // 재고 자동추적: 30분마다 동기화
+    const SYNC_INTERVAL = 30 * 60 * 1000;
+    setInterval(async () => {
+      try {
+        logger.info('[인벤토리] 자동 동기화 시작...');
+        const results = await syncAllInventory();
+        const changed = results.filter(r => r.changed).length;
+        logger.info(`[인벤토리] 자동 동기화 완료: ${results.length}개 확인, ${changed}개 변경`);
+      } catch (e) {
+        logger.error(e, '[인벤토리] 자동 동기화 실패');
+      }
+    }, SYNC_INTERVAL);
+    logger.info('[인벤토리] 자동추적 활성화 (30분 간격)');
+
+    // 멈춘 리스팅 자동 정리: 1시간 이상 draft/pending → error
+    setInterval(async () => {
+      try {
+        const cutoff = new Date(Date.now() - 5 * 60 * 1000);
+        const fixed = await db.update(platformListings)
+          .set({ status: 'error' })
+          .where(sql`${platformListings.status} IN ('draft', 'pending') AND ${platformListings.createdAt} < ${cutoff}`)
+          .returning({ id: platformListings.id });
+        if (fixed.length > 0) {
+          logger.info(`[리스팅 정리] ${fixed.length}개 stuck 리스팅 → error`);
+        }
+      } catch (e) {
+        logger.error(e, '[리스팅 정리] 실패');
+      }
+    }, SYNC_INTERVAL);
   } catch (err) {
     logger.error(err, 'Failed to start server');
     process.exit(1);
   }
 }
-
-// ─── Graceful Shutdown ───────────────────────────
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM 수신 — graceful shutdown 시작');
-  stopScheduler();
-  await app.close();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  logger.info('SIGINT 수신 — graceful shutdown 시작');
-  stopScheduler();
-  await app.close();
-  process.exit(0);
-});
 
 start();

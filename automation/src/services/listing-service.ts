@@ -7,11 +7,13 @@ import { eq, and, sql, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { crawlResults, products, platformListings, productImages } from '../db/schema.js';
 import { calculateListingPrice, calculatePriceSimple } from './pricing.js';
+import { translateProduct } from './translate.js';
 import { EbayClient } from '../platforms/ebay/EbayClient.js';
 import { ShopifyClient } from '../platforms/shopify/ShopifyClient.js';
 import { AlibabaClient } from '../platforms/alibaba/AlibabaClient.js';
 import { ShopeeClient } from '../platforms/shopee/ShopeeClient.js';
 import type { PlatformAdapter, ListingInput } from '../platforms/index.js';
+import { getDescriptionTemplate, buildPlatformDescription } from './description.js';
 
 function getAdapter(platform: string): PlatformAdapter {
   switch (platform) {
@@ -45,15 +47,23 @@ export async function importFromCrawl(crawlResultId: number): Promise<number> {
   const sku = await generateSku();
   const rawData = (crawlResult.rawData || {}) as Record<string, any>;
 
+  // Gemini 영문 번역 (이미 번역된 titleEn이 있으면 활용)
+  const translated = crawlResult.titleEn
+    ? { ...(await translateProduct(crawlResult.title, rawData)), title: crawlResult.titleEn }
+    : await translateProduct(crawlResult.title, rawData);
+
   // products 생성 (소유자 정보 계승)
   const [product] = await db.insert(products).values({
     sku,
-    title: crawlResult.title,           // TODO: 영문 번역 필요
-    titleKo: crawlResult.title,
+    title: translated.title,             // 영문 번역
+    titleKo: crawlResult.title,          // 한글 원본 보존
+    description: translated.description,  // 영문 상품 설명
+    productType: translated.productType,  // 영문 카테고리
+    tags: translated.tags.length > 0 ? translated.tags : undefined,
     costPrice: crawlResult.price || '0',
     sourceUrl: crawlResult.url,
     sourcePlatform: 'coupang',           // TODO: source에서 가져오기
-    brand: rawData.vendor || rawData.mallName || '',
+    brand: rawData.brand || rawData.vendor || rawData.mallName || '',
     condition: 'new',
     status: 'active',
     metadata: { importedFrom: crawlResultId },
@@ -101,13 +111,23 @@ export async function createListing(
   const costKRW = parseFloat(String(product.costPrice)) || 0;
   const pricing = await calculatePriceSimple(costKRW, { platform });
 
-  // 기존 ended/error 리스팅이 있으면 삭제 (unique 제약 충돌 방지)
-  await db.delete(platformListings)
-    .where(and(
+  // 기존 리스팅 확인 (unique 제약: productId + platform)
+  const existingListing = await db.query.platformListings.findFirst({
+    where: and(
       eq(platformListings.productId, productId),
       eq(platformListings.platform, platform),
-      inArray(platformListings.status, ['ended', 'error']),
-    ));
+    ),
+  });
+
+  if (existingListing) {
+    if (existingListing.status === 'active') {
+      console.log(`[리스팅] 이미 active 리스팅 존재: #${existingListing.id} — 건너뜀`);
+      return { listingId: existingListing.id, itemId: existingListing.platformItemId || undefined, url: existingListing.listingUrl || undefined };
+    }
+    // ended/error/draft/pending → 삭제 후 새로 생성
+    await db.delete(platformListings)
+      .where(eq(platformListings.id, existingListing.id));
+  }
 
   // platform_listings 행 생성 (draft 상태)
   const [listing] = await db.insert(platformListings).values({
@@ -132,9 +152,14 @@ export async function createListing(
   // API 호출
   const adapter = getAdapter(platform);
 
+  // 상품 description + 공통 템플릿 결합
+  const template = await getDescriptionTemplate(platform);
+  const productDesc = product.description || `<p>${product.title}</p>`;
+  const fullDescription = buildPlatformDescription(productDesc, template, platform);
+
   const input: ListingInput = {
     title: product.title,
-    description: product.description || `<p>${product.title}</p>`,
+    description: fullDescription,
     price: pricing.salePrice,
     shippingCost: pricing.shippingCost,
     quantity: 5,
@@ -168,6 +193,7 @@ export async function createListing(
     return { listingId: listing.id, itemId: result.itemId, url: result.url };
 
   } catch (e) {
+    console.error(`[리스팅] 에러 (product #${productId}, ${platform}):`, (e as Error).message, (e as Error).stack);
     // error 상태로 변경
     await db.update(platformListings)
       .set({
@@ -225,9 +251,14 @@ export async function retryListing(
 
   const adapter = getAdapter(listing.platform);
 
+  // 상품 description + 공통 템플릿 결합
+  const retryTemplate = await getDescriptionTemplate(listing.platform);
+  const retryProductDesc = product.description || `<p>${product.title}</p>`;
+  const retryFullDescription = buildPlatformDescription(retryProductDesc, retryTemplate, listing.platform);
+
   const input: ListingInput = {
     title: product.title,
-    description: product.description || `<p>${product.title}</p>`,
+    description: retryFullDescription,
     price: pricing.salePrice,
     shippingCost: pricing.shippingCost,
     quantity: listing.quantity || 5,
@@ -370,9 +401,14 @@ export async function relistListing(
 
   const adapter = getAdapter(listing.platform);
 
+  // 상품 description + 공통 템플릿 결합
+  const relistTemplate = await getDescriptionTemplate(listing.platform);
+  const relistProductDesc = product.description || `<p>${product.title}</p>`;
+  const relistFullDescription = buildPlatformDescription(relistProductDesc, relistTemplate, listing.platform);
+
   const input: ListingInput = {
     title: product.title,
-    description: product.description || `<p>${product.title}</p>`,
+    description: relistFullDescription,
     price: pricing.salePrice,
     shippingCost: pricing.shippingCost,
     quantity: listing.quantity || 5,

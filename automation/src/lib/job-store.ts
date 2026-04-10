@@ -4,7 +4,7 @@
  */
 import { db } from '../db/index.js';
 import { uploadJobs } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 
 export interface JobResult {
   crawlResultId: number;
@@ -93,5 +93,17 @@ export const jobStore = {
   async entries(): Promise<[string, JobState][]> {
     const rows = await db.select().from(uploadJobs);
     return rows.map(row => [row.id, rowToJobState(row)]);
+  },
+
+  /** running 상태인 job만 조회 (대시보드용 — 전체 로드 방지) */
+  async getRunning(): Promise<{ id: string; job: JobState }[]> {
+    const rows = await db.select().from(uploadJobs).where(eq(uploadJobs.status, 'running'));
+    return rows.map(row => ({ id: row.id, job: rowToJobState(row) }));
+  },
+
+  /** 최근 N개 job 조회 (히스토리용 — 정렬 + 제한) */
+  async recent(limit: number = 50): Promise<{ id: string; job: JobState }[]> {
+    const rows = await db.select().from(uploadJobs).orderBy(desc(uploadJobs.createdAt)).limit(limit);
+    return rows.map(row => ({ id: row.id, job: rowToJobState(row) }));
   },
 };

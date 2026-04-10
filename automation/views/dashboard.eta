@@ -1,6 +1,6 @@
 <%/* ── 상단: 타이틀 ── */%>
 <div class="page-header">
-  <h1 class="page-title">대시보드</h1>
+  <h1 class="page-title">상품 관리</h1>
 </div>
 
 <%/* ── 진행중 잡 배너 ── */%>
@@ -50,6 +50,18 @@
   <div class="section-header">
     <h2><i class="ti ti-box"></i> 상품 파이프라인</h2>
     <div style="display: flex; align-items: center; gap: 8px;">
+      <button class="btn btn-sm" id="btn-translate-batch" onclick="translateBatch()" title="미번역 상품 일괄 번역">
+        <i class="ti ti-language"></i> 일괄 번역
+      </button>
+      <button class="btn btn-sm" id="btn-gen-desc-batch" onclick="genDescBatch()" title="Description 없는 상품 일괄 생성">
+        <i class="ti ti-file-text"></i> Desc 생성
+      </button>
+      <label class="lang-toggle" title="영문/한글 전환">
+        <input type="checkbox" id="lang-toggle" onchange="toggleLang(this.checked)" checked>
+        <span class="lang-toggle-label-left lang-kr">KR</span>
+        <span class="lang-toggle-track"></span>
+        <span class="lang-toggle-label-right lang-en">EN</span>
+      </label>
       <a href="/upload-csv" class="btn btn-primary btn-sm">
         <i class="ti ti-file-upload"></i> CSV 업로드
       </a>
@@ -67,8 +79,8 @@
 
   <%/* ════════ 업로드 대기 탭 ════════ */%>
   <div id="tab-pending" class="tab-panel" style="display: none;">
-    <div class="action-bar" id="pending-action-bar" style="display: none;">
-      <span class="action-bar-count"><span id="pending-selected-count">0</span>개 선택</span>
+    <div class="action-bar action-bar-disabled" id="pending-action-bar">
+      <span class="action-bar-count">상품을 선택하세요</span>
       <div style="display: flex; gap: 8px; align-items: center;">
         <div class="platform-checks" id="pending-platform-checks">
           <label class="platform-check-label"><input type="checkbox" value="ebay" checked> <span class="pf-dot" style="background:#e53238"></span>eBay</label>
@@ -78,6 +90,9 @@
         </div>
         <button class="btn btn-primary btn-sm" onclick="uploadSelected('pending')">
           <i class="ti ti-upload"></i> 업로드
+        </button>
+        <button class="btn btn-danger btn-sm" onclick="deleteSelected('pending')">
+          <i class="ti ti-trash"></i> 삭제
         </button>
       </div>
     </div>
@@ -94,6 +109,7 @@
           <th>Shopify</th>
           <th>Alibaba</th>
           <th>Shopee</th>
+          <th title="구매자가 상품가 외 별도 부담하는 배송비 (USD)">배송비 <span class="text-muted">(별도)</span></th>
           <th>임포트일</th>
           <th>업로드</th>
         </tr>
@@ -108,11 +124,13 @@
         %>
         <tr class="<%= !canCheck ? 'row-locked' : '' %>">
           <td class="td-check">
-            <input type="checkbox" class="row-check pending-check" value="<%= c.id %>" onchange="updateActionBar('pending')"<%= !canCheck ? ' disabled' : '' %>>
+            <input type="checkbox" class="row-check pending-check" value="<%= c.id %>" data-type="crawl" onchange="updateActionBar('pending')"<%= !canCheck ? ' disabled' : '' %>>
           </td>
           <td class="td-thumb"><% if (c.imageUrl) { %><img class="thumb" src="<%= imgProxy(c.imageUrl) %>" alt=""><% } else { %><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div><% } %></td>
-          <td>
-            <span class="truncate"><% if (c.sourceUrl) { %><a href="<%= c.sourceUrl %>" target="_blank" rel="noopener"><%= c.title %></a><% } else { %><%= c.title %><% } %></span>
+          <td class="td-title td-editable" data-title-ko="<%= c.titleKo %>" data-title-en="<%= c.titleEn || '' %>" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="title" data-edit-value="<%= c.titleKo %>" onclick="startEdit(this)">
+            <% const crawlDisplayTitle = it.langMode === 'en' && c.titleEn ? c.titleEn : c.titleKo; %>
+            <span class="truncate"><% if (c.sourceUrl) { %><a href="<%= c.sourceUrl %>" target="_blank" rel="noopener" class="title-text"><%= crawlDisplayTitle %></a><% } else { %><span class="title-text"><%= crawlDisplayTitle %></span><% } %></span>
+            <button class="btn-desc-preview" onclick="event.stopPropagation(); previewDescCrawl(<%= c.id %>)" title="Description 미리보기"><i class="ti ti-notes"></i></button>
             <% if (c.ownerName) { %>
               <span class="owner-badge <%= isMine ? 'mine' : 'others' %>"><i class="ti ti-user"></i> <%= c.ownerName %></span>
             <% } else { %>
@@ -120,11 +138,12 @@
             <% } %>
           </td>
           <td class="nowrap"><%= c.sourceLabel %></td>
-          <td class="tabular-nums nowrap"><%= c.costKrw ? '₩' + Number(c.costKrw).toLocaleString() : '—' %></td>
-          <td class="tabular-nums nowrap text-green">$<%= c.ebayPrice ? c.ebayPrice.toFixed(2) : '—' %></td>
-          <td class="tabular-nums nowrap text-accent">$<%= c.shopifyPrice ? c.shopifyPrice.toFixed(2) : '—' %></td>
-          <td class="tabular-nums nowrap" style="color:var(--warning);">$<%= c.alibabaPrice ? c.alibabaPrice.toFixed(2) : '—' %></td>
-          <td class="tabular-nums nowrap" style="color:var(--info);">$<%= c.shopeePrice ? c.shopeePrice.toFixed(2) : '—' %></td>
+          <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="price" data-edit-value="<%= c.costKrw || '' %>" onclick="startEdit(this)"><%= c.costKrw ? '₩' + Number(c.costKrw).toLocaleString() : '—' %></td>
+          <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="ebayPrice" data-edit-value="<%= c.ebayPrice ? c.ebayPrice.toFixed(2) : '' %>" onclick="startEdit(this)"><%= c.ebayPrice ? '$' + c.ebayPrice.toFixed(2) : '—' %></td>
+          <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="shopifyPrice" data-edit-value="<%= c.shopifyPrice ? c.shopifyPrice.toFixed(2) : '' %>" onclick="startEdit(this)"><%= c.shopifyPrice ? '$' + c.shopifyPrice.toFixed(2) : '—' %></td>
+          <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="alibabaPrice" data-edit-value="<%= c.alibabaPrice ? c.alibabaPrice.toFixed(2) : '' %>" onclick="startEdit(this)"><%= c.alibabaPrice ? '$' + c.alibabaPrice.toFixed(2) : '—' %></td>
+          <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="shopeePrice" data-edit-value="<%= c.shopeePrice ? c.shopeePrice.toFixed(2) : '' %>" onclick="startEdit(this)"><%= c.shopeePrice ? '$' + c.shopeePrice.toFixed(2) : '—' %></td>
+          <td class="tabular-nums nowrap text-muted"><%= c.shippingCost ? '$' + Number(c.shippingCost).toFixed(2) : '—' %></td>
           <td class="text-muted nowrap"><%= c.createdAt ? new Date(c.createdAt).toLocaleDateString('ko-KR') : '—' %></td>
           <td class="nowrap">
             <div class="inline-upload">
@@ -140,7 +159,7 @@
                   <label><input type="checkbox" value="shopee" onchange="updateMsLabel(<%= c.id %>)"> Shopee</label>
                 </div>
               </div>
-              <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= c.id %>, this)"<%= !canCheck ? ' disabled' : '' %>>
+              <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= c.id %>, 'crawl', this)"<%= !canCheck ? ' disabled' : '' %>>
                 <i class="ti ti-upload"></i>
               </button>
             </div>
@@ -228,8 +247,8 @@
 
   <%/* ════════ 전체 탭 ════════ */%>
   <div id="tab-all" class="tab-panel">
-    <div class="action-bar" id="all-action-bar" style="display: none;">
-      <span class="action-bar-count"><span id="all-selected-count">0</span>개 선택</span>
+    <div class="action-bar action-bar-disabled" id="all-action-bar">
+      <span class="action-bar-count">상품을 선택하세요</span>
       <div style="display: flex; gap: 8px; align-items: center;">
         <div class="platform-checks" id="all-platform-checks">
           <label class="platform-check-label"><input type="checkbox" value="ebay" checked> <span class="pf-dot" style="background:#e53238"></span>eBay</label>
@@ -240,7 +259,7 @@
         <button class="btn btn-primary btn-sm" onclick="uploadSelected('all')">
           <i class="ti ti-upload"></i> 업로드
         </button>
-        <button class="btn btn-error btn-sm" onclick="deleteSelected('all')">
+        <button class="btn btn-danger btn-sm" onclick="deleteSelected('all')">
           <i class="ti ti-trash"></i> 삭제
         </button>
       </div>
@@ -255,12 +274,14 @@
           <th class="th-thumb">이미지</th>
           <th class="td-title">상품명</th>
           <th>소싱처</th>
+          <th>원가</th>
           <th>eBay</th>
           <th>Shopify</th>
           <th>Alibaba</th>
           <th>Shopee</th>
+          <th title="구매자가 상품가 외 별도 부담하는 배송비 (USD)">배송비 <span class="text-muted">(별도)</span></th>
           <th>상태</th>
-          <th>액션</th>
+          <th>업로드</th>
         </tr>
       </thead>
       <tbody>
@@ -288,17 +309,19 @@
           </td>
           <td class="font-mono"><% if (item.sku) { %><%= item.sku %><% } else { %><span class="text-muted">—</span><% } %></td>
           <td class="td-thumb"><% if (item.imageUrl) { %><img class="thumb" src="<%= imgProxy(item.imageUrl) %>" alt=""><% } else { %><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div><% } %></td>
-          <td class="td-title"><span class="truncate"><% if (item.sourceUrl) { %><a href="<%= item.sourceUrl %>" target="_blank" rel="noopener"><%= item.title %></a><% } else { %><%= item.title %><% } %></span></td>
+          <td class="td-title td-editable" data-title-ko="<%= item.titleKo || item.title %>" data-title-en="<%= item.titleEn || '' %>" data-edit-type="product" data-edit-id="<%= item.id %>" data-edit-field="title" data-edit-value="<%= item.titleKo || item.title %>" onclick="startEdit(this)"><span class="truncate"><% if (item.sourceUrl) { %><a href="<%= item.sourceUrl %>" target="_blank" rel="noopener" class="title-text"><%= item.title %></a><% } else { %><span class="title-text"><%= item.title %></span><% } %></span><% if (item.type === 'product') { %><button class="btn-desc-preview" onclick="event.stopPropagation(); previewDesc(<%= item.id %>)" title="Description 미리보기"><i class="ti ti-notes"></i></button><% } %></td>
           <td class="nowrap"><%= item.sourceLabel %></td>
+          <td class="tabular-nums nowrap td-editable" data-edit-type="product" data-edit-id="<%= item.id %>" data-edit-field="costPrice" data-edit-value="<%= item.costKrw || '' %>" onclick="startEdit(this)"><%= item.costKrw ? '₩' + Number(item.costKrw).toLocaleString() : '—' %></td>
           <% platforms.forEach((pf) => { %>
             <% const li = listingMap[pf]; %>
+            <% if (li) { %>
             <td class="tabular-nums nowrap">
-              <% if (li) { %>
                 <%
                   const isActive = li.status === 'active';
                   const badgeClass = li.status === 'error' ? 'badge-error'
                     : li.status === 'pending' ? 'badge-pending'
-                    : (li.status === 'draft' || li.status === 'ended') ? 'badge-draft'
+                    : li.status === 'ended' ? 'badge-ended'
+                    : li.status === 'draft' ? 'badge-draft'
                     : ('badge-' + pf);
                   const label = isActive
                     ? '$' + Number(li.price).toFixed(2)
@@ -320,32 +343,37 @@
                 <% } else { %>
                   <span class="badge <%= badgeClass %>"><%= label %></span>
                 <% } %>
-              <% } else if (priceMap[pf]) { %>
-                <span class="text-muted">$<%= priceMap[pf].toFixed(2) %></span>
+            </td>
+            <% } else { %>
+            <td class="tabular-nums nowrap td-editable" data-edit-type="<%= item.type %>" data-edit-id="<%= item.id %>" data-edit-field="<%= pf %>Price" data-edit-value="<%= priceMap[pf] ? priceMap[pf].toFixed(2) : '' %>" onclick="startEdit(this)">
+              <% if (priceMap[pf]) { %>
+                $<%= priceMap[pf].toFixed(2) %>
               <% } else { %>
                 <span class="text-muted">—</span>
               <% } %>
             </td>
+            <% } %>
           <% }) %>
+          <td class="tabular-nums nowrap text-muted"><%= item.shippingCost ? '$' + Number(item.shippingCost).toFixed(2) : '—' %></td>
           <td>
             <%
               const successCount = listings.filter(l => l.status === 'active').length;
               const totalListings = listings.length;
             %>
-            <% if (totalListings === 0) { %>
-              <span class="badge badge-draft">미등록</span>
+            <% if (item.type === 'crawl' || totalListings === 0) { %>
+              <span class="badge badge-draft"><i class="ti ti-clock"></i> 업로드 대기</span>
             <% } else if (allEnded) { %>
-              <span class="badge badge-draft">판매종료</span>
+              <span class="badge badge-ended"><i class="ti ti-player-stop"></i> 판매 취소</span>
             <% } else if (allActive) { %>
-              <span class="badge badge-success"><%= totalListings > 1 ? successCount + '/' + totalListings + ' ' : '' %>판매중</span>
-            <% } else if (successCount > 0) { %>
-              <span class="badge badge-pending"><%= successCount %>/<%= totalListings %> 성공</span>
+              <span class="badge badge-success"><i class="ti ti-check"></i> <%= totalListings > 1 ? successCount + '/' + totalListings + ' ' : '' %>판매중</span>
             <% } else if (hasError && activeListings_.every(l => l.status === 'error')) { %>
-              <span class="badge badge-error">실패</span>
-            <% } else if (hasError) { %>
-              <span class="badge badge-pending"><%= successCount %>/<%= activeListings_.length %> 성공</span>
+              <span class="badge badge-error"><i class="ti ti-alert-circle"></i> 업로드 실패</span>
+            <% } else if (successCount > 0 && hasError) { %>
+              <span class="badge badge-pending"><%= successCount %>/<%= activeListings_.length %> 판매중 (일부 실패)</span>
+            <% } else if (successCount > 0) { %>
+              <span class="badge badge-pending"><%= successCount %>/<%= activeListings_.length %> 판매중</span>
             <% } else { %>
-              <span class="badge badge-pending">처리중</span>
+              <span class="badge badge-pending"><i class="ti ti-loader"></i> 업로드중</span>
             <% } %>
           </td>
           <td class="nowrap">
@@ -386,7 +414,7 @@
                     <label><input type="checkbox" value="shopee" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Shopee</label>
                   </div>
                 </div>
-                <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= item.id %>, this)">
+                <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= item.id %>, '<%= item.type %>', this)">
                   <i class="ti ti-upload"></i>
                 </button>
               </div>
@@ -406,7 +434,219 @@
   </div>
 </div>
 
+<style>
+.lang-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.lang-toggle input { display: none; }
+.lang-toggle-track { width: 44px; height: 24px; background: #d1d5db; border-radius: 12px; position: relative; transition: background .2s; flex-shrink: 0; }
+.lang-toggle-track::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+.lang-toggle input:checked ~ .lang-toggle-track { background: #22c55e; }
+.lang-toggle input:checked ~ .lang-toggle-track::after { transform: translateX(20px); }
+.lang-toggle input:not(:checked) ~ .lang-toggle-track { background: #ef4444; }
+.lang-toggle-label-left, .lang-toggle-label-right { font-size: 13px; font-weight: 700; min-width: 20px; transition: opacity .2s; }
+.lang-toggle-label-left { color: #ef4444; }
+.lang-toggle-label-right { color: #22c55e; }
+.lang-toggle input:checked ~ .lang-toggle-label-left { opacity: 0.35; }
+.lang-toggle input:not(:checked) ~ .lang-toggle-label-right { opacity: 0.35; }
+.title-untranslated { opacity: 0.5; font-style: italic; }
+
+/* 번역 진행 모달 */
+.translate-modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.translate-modal-card { background: var(--card-bg, #fff); border-radius: 16px; padding: 1.75rem; width: 90%; max-width: 560px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
+.translate-modal-header { display: flex; align-items: center; gap: 8px; font-size: 1.15rem; font-weight: 700; margin-bottom: 1.25rem; }
+.translate-modal-header i { font-size: 1.3rem; color: var(--primary, #6366f1); }
+.translate-modal-progress { margin-bottom: 1rem; }
+.translate-progress-bar { width: 100%; height: 8px; background: var(--border-color, #e5e7eb); border-radius: 4px; overflow: hidden; margin-bottom: 0.5rem; }
+.translate-progress-fill { height: 100%; background: var(--primary, #6366f1); border-radius: 4px; transition: width 0.3s; width: 0%; }
+.translate-progress-text { font-size: 0.85rem; color: var(--text-muted, #6b7280); font-variant-numeric: tabular-nums; }
+.translate-modal-current { min-height: 1.5rem; font-size: 0.85rem; margin-bottom: 0.75rem; color: var(--text-muted, #6b7280); display: flex; align-items: center; gap: 6px; }
+.translate-modal-current .spinner-icon { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.translate-modal-log { flex: 1; overflow-y: auto; max-height: 320px; display: flex; flex-direction: column; gap: 4px; }
+.tr-log-item { font-size: 0.8rem; padding: 6px 8px; border-radius: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tr-ok { background: #f0fdf4; color: #166534; }
+.tr-fail { background: #fef2f2; color: #991b1b; }
+.tr-ko { font-weight: 500; }
+.tr-en { color: #1d4ed8; }
+.tr-err { font-size: 0.75rem; opacity: 0.7; }
+.translate-modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+.btn-danger { background: #ef4444; color: #fff; border: none; padding: 8px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 0.875rem; transition: background 0.15s; }
+.btn-danger:hover:not(:disabled) { background: #dc2626; }
+.btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-success { background: #22c55e; color: #fff; border: none; padding: 8px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 0.875rem; transition: background 0.15s; }
+.btn-success:hover { background: #16a34a; }
+</style>
+
 <script>
+// 영문/한글 토글
+function toggleLang(showEn) {
+  document.querySelectorAll('.td-title[data-title-ko]').forEach(td => {
+    const titleText = td.querySelector('.title-text');
+    if (!titleText) return;
+    const en = td.dataset.titleEn;
+    const ko = td.dataset.titleKo;
+    if (showEn && en) {
+      titleText.textContent = en;
+      titleText.classList.remove('title-untranslated');
+    } else if (showEn && !en) {
+      titleText.textContent = ko;
+      titleText.classList.add('title-untranslated');
+    } else {
+      titleText.textContent = ko;
+      titleText.classList.remove('title-untranslated');
+    }
+  });
+}
+
+// 초기 로드 시 영문 표시
+document.addEventListener('DOMContentLoaded', () => toggleLang(true));
+
+// 일괄 번역 (SSE 스트리밍 + 진행 모달 + Play/Stop)
+let _trEs = null; // 현재 EventSource
+let _trSessionId = null; // 서버 세션 ID (중단용)
+
+function translateBatch() {
+  const btn = document.getElementById('btn-translate-batch');
+  const origHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> 번역 중...';
+
+  // 모달 생성
+  let modal = document.getElementById('translate-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'translate-modal';
+    modal.innerHTML = `
+      <div class="translate-modal-overlay">
+        <div class="translate-modal-card">
+          <div class="translate-modal-header">
+            <i class="ti ti-language"></i>
+            <span id="tr-header-text">일괄 번역 진행 중</span>
+          </div>
+          <div class="translate-modal-progress">
+            <div class="translate-progress-bar"><div class="translate-progress-fill" id="tr-progress-fill"></div></div>
+            <div class="translate-progress-text" id="tr-progress-text">준비 중...</div>
+          </div>
+          <div class="translate-modal-current" id="tr-current"></div>
+          <div class="translate-modal-log" id="tr-log"></div>
+          <div class="translate-modal-footer" id="tr-footer">
+            <button class="btn btn-danger" id="tr-stop-btn" onclick="stopTranslation()">
+              <i class="ti ti-player-stop-filled"></i> 중단
+            </button>
+            <button class="btn btn-primary" id="tr-close-btn" onclick="closeTranslateModal()" style="display:none;">확인</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'block';
+  document.getElementById('tr-log').innerHTML = '';
+  document.getElementById('tr-current').innerHTML = '';
+  document.getElementById('tr-stop-btn').style.display = '';
+  document.getElementById('tr-stop-btn').disabled = false;
+  document.getElementById('tr-stop-btn').innerHTML = '<i class="ti ti-player-stop-filled"></i> 중단';
+  document.getElementById('tr-close-btn').style.display = 'none';
+  document.getElementById('tr-progress-fill').style.width = '0%';
+  document.getElementById('tr-progress-text').textContent = '준비 중...';
+  document.getElementById('tr-header-text').textContent = '일괄 번역 진행 중';
+
+  const log = document.getElementById('tr-log');
+
+  const es = new EventSource('/api/products/translate-batch');
+  _trEs = es;
+  _trSessionId = null;
+
+  es.addEventListener('session', (e) => {
+    const d = JSON.parse(e.data);
+    _trSessionId = d.sessionId;
+  });
+
+  function finishUI(text, showPlay) {
+    document.getElementById('tr-current').innerHTML = '';
+    document.getElementById('tr-progress-text').textContent = text;
+    document.getElementById('tr-stop-btn').style.display = 'none';
+    document.getElementById('tr-close-btn').style.display = '';
+    if (showPlay) {
+      // 중단 시: 닫기 옆에 "이어서 번역" 버튼 추가
+      document.getElementById('tr-close-btn').insertAdjacentHTML('beforebegin',
+        '<button class="btn btn-success" id="tr-resume-btn" onclick="closeTranslateModal(); translateBatch();"><i class="ti ti-player-play-filled"></i> 이어서 번역</button>');
+    }
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
+  }
+
+  es.addEventListener('start', (e) => {
+    const d = JSON.parse(e.data);
+    document.getElementById('tr-progress-text').textContent = '0 / ' + d.total + '건';
+  });
+
+  es.addEventListener('progress', (e) => {
+    const d = JSON.parse(e.data);
+    const pct = Math.round((d.current / d.total) * 100);
+    document.getElementById('tr-progress-fill').style.width = pct + '%';
+    document.getElementById('tr-progress-text').textContent = d.current + ' / ' + d.total + '건 (' + (d.translated || 0) + '성공, ' + (d.failed || 0) + '실패)';
+
+    if (d.status === 'translating') {
+      document.getElementById('tr-current').innerHTML =
+        '<i class="ti ti-loader spinner-icon"></i> <span class="tr-ko">' + escHtml(d.titleKo) + '</span>';
+    } else if (d.status === 'ok') {
+      document.getElementById('tr-current').innerHTML = '';
+      log.innerHTML = '<div class="tr-log-item tr-ok"><i class="ti ti-check"></i> <span class="tr-ko">' +
+        escHtml(d.titleKo) + '</span> <i class="ti ti-arrow-right"></i> <span class="tr-en">' +
+        escHtml(d.titleEn) + '</span></div>' + log.innerHTML;
+    } else {
+      document.getElementById('tr-current').innerHTML = '';
+      log.innerHTML = '<div class="tr-log-item tr-fail"><i class="ti ti-x"></i> <span class="tr-ko">' +
+        escHtml(d.titleKo) + '</span> <span class="tr-err">' +
+        escHtml(d.error || '번역 실패') + '</span></div>' + log.innerHTML;
+    }
+  });
+
+  es.addEventListener('done', (e) => {
+    es.close(); _trEs = null; _trSessionId = null;
+    const d = JSON.parse(e.data);
+    document.getElementById('tr-progress-fill').style.width = '100%';
+    document.getElementById('tr-header-text').textContent = '번역 완료';
+    finishUI('완료! ' + d.translated + '건 성공, ' + d.failed + '건 실패 (총 ' + d.total + '건)', false);
+  });
+
+  es.addEventListener('stopped', (e) => {
+    es.close(); _trEs = null; _trSessionId = null;
+    const d = JSON.parse(e.data);
+    document.getElementById('tr-header-text').textContent = '번역 중단됨';
+    finishUI('중단됨 — ' + d.translated + '건 성공, ' + d.failed + '건 실패 (총 ' + d.total + '건)', true);
+  });
+
+  es.onerror = () => {
+    // 즉시 close하여 EventSource 자동 재연결 방지
+    if (_trEs) { _trEs.close(); _trEs = null; }
+    _trSessionId = null;
+    finishUI('연결 오류 발생', true);
+  };
+}
+
+async function stopTranslation() {
+  if (_trSessionId) {
+    const stopBtn = document.getElementById('tr-stop-btn');
+    stopBtn.disabled = true;
+    stopBtn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> 중단 중...';
+    // 서버에 중단 신호 POST → 서버가 stopped 이벤트 보내고 ES 닫음
+    await fetch('/api/products/translate-stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: _trSessionId }),
+    });
+  }
+}
+
+function escHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+function closeTranslateModal() {
+  const resumeBtn = document.getElementById('tr-resume-btn');
+  if (resumeBtn) resumeBtn.remove();
+  document.getElementById('translate-modal').style.display = 'none';
+  location.reload();
+}
+
 // 탭 전환
 document.querySelectorAll('.tab-item').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -442,8 +682,14 @@ function updateActionBar(group) {
   const bar = document.getElementById(group + '-action-bar');
   const countEl = document.getElementById(group + '-selected-count');
   if (bar) {
-    bar.style.display = checks.length > 0 ? 'flex' : 'none';
-    if (countEl) countEl.textContent = checks.length;
+    const countSpan = bar.querySelector('.action-bar-count');
+    if (checks.length > 0) {
+      bar.classList.remove('action-bar-disabled');
+      if (countSpan) countSpan.innerHTML = '<span id="' + group + '-selected-count">' + checks.length + '</span>개 선택';
+    } else {
+      bar.classList.add('action-bar-disabled');
+      if (countSpan) countSpan.textContent = '상품을 선택하세요';
+    }
   }
 }
 
@@ -453,16 +699,28 @@ async function uploadSelected(group) {
   const checks = panel.querySelectorAll('.row-check:checked');
   const platformChecks = document.querySelectorAll('#' + group + '-platform-checks input:checked');
   const platforms = Array.from(platformChecks).map(cb => cb.value);
-  const ids = Array.from(checks).map(cb => Number(cb.value));
 
-  if (ids.length === 0) return;
+  const crawlResultIds = [];
+  const productIds = [];
+  Array.from(checks).forEach(cb => {
+    const type = cb.dataset.type;
+    const id = Number(cb.value);
+    if (type === 'product') productIds.push(id);
+    else crawlResultIds.push(id);
+  });
+
+  if (crawlResultIds.length === 0 && productIds.length === 0) return;
   if (platforms.length === 0) { alert('플랫폼을 1개 이상 선택하세요.'); return; }
+
+  const body = { platforms, dryRun: false };
+  if (crawlResultIds.length > 0) body.crawlResultIds = crawlResultIds;
+  if (productIds.length > 0) body.productIds = productIds;
 
   try {
     const res = await fetch('/api/listings/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ crawlResultIds: ids, platforms, dryRun: false }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (data.jobId) {
@@ -539,7 +797,7 @@ document.addEventListener('click', (e) => {
 });
 
 // 단건 업로드 (복수 플랫폼)
-async function uploadSingle(id, btn) {
+async function uploadSingle(id, type, btn) {
   // 버튼의 가장 가까운 inline-upload 내 multi-select에서 체크된 플랫폼 찾기
   const container = btn.closest('.inline-upload');
   const ms = container ? container.querySelector('.multi-select') : null;
@@ -548,13 +806,17 @@ async function uploadSingle(id, btn) {
 
   if (platforms.length === 0) { alert('플랫폼을 1개 이상 선택하세요.'); return; }
 
+  const body = type === 'product'
+    ? { productIds: [id], platforms, dryRun: false }
+    : { crawlResultIds: [id], platforms, dryRun: false };
+
   btn.disabled = true;
   btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
   try {
     const res = await fetch('/api/listings/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ crawlResultIds: [id], platforms, dryRun: false }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (data.jobId) {
@@ -605,7 +867,7 @@ async function endListings(listingIds, btn) {
     const statusCell = row.querySelector('td:nth-last-child(2)'); // 상태 열
     if (statusCell) {
       statusCell.dataset.prevHtml = statusCell.innerHTML;
-      statusCell.innerHTML = '<span class="badge badge-draft">종료</span>';
+      statusCell.innerHTML = '<span class="badge badge-ended">종료</span>';
     }
     row.style.transition = 'opacity 0.3s';
     row.style.opacity = '0.5';
@@ -641,14 +903,14 @@ async function endListings(listingIds, btn) {
           badges.forEach(badge => {
             const xBtn = badge.querySelector('.badge-action');
             if (xBtn && xBtn.getAttribute('onclick') && xBtn.getAttribute('onclick').includes('[' + id + ']')) {
-              badge.className = 'badge badge-draft';
+              badge.className = 'badge badge-ended';
               badge.innerHTML = '종료';
             }
           });
         });
         // 상태 열 업데이트
         const statusCell = row.querySelector('td:nth-last-child(2)');
-        if (statusCell) statusCell.innerHTML = '<span class="badge badge-draft">판매종료</span>';
+        if (statusCell) statusCell.innerHTML = '<span class="badge badge-ended">판매종료</span>';
         // 판매 내리기 버튼 숨기기
         const endBtn = btn.closest('div')?.querySelector('.btn-error');
         if (endBtn) endBtn.remove();
@@ -793,8 +1055,11 @@ function renderCompletedTable(items, pagination) {
 
   items.forEach(p => {
     const listings = typeof p.listings === 'string' ? JSON.parse(p.listings) : (p.listings || []);
-    const hasError = listings.some(l => l.status === 'error');
-    const allActive = listings.length > 0 && listings.every(l => l.status === 'active');
+    const activeListings = listings.filter(l => l.status !== 'ended');
+    const hasActiveListing = activeListings.length > 0;
+    const hasError = activeListings.some(l => l.status === 'error');
+    const allActive = activeListings.every(l => l.status === 'active') && hasActiveListing;
+    const allEnded = !hasActiveListing && listings.length > 0;
     const isSoldout = p.status === 'soldout';
 
     html += '<tr class="' + (isSoldout ? 'row-soldout' : '') + '">';
@@ -807,12 +1072,16 @@ function renderCompletedTable(items, pagination) {
       html += '<td class="td-thumb"><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div></td>';
     }
 
-    // 상품명
-    const name = esc(p.titleKo || p.title);
+    // 상품명 (토글 대응)
+    const isEn = document.getElementById('lang-toggle')?.checked;
+    const titleEn = esc(p.title || '');
+    const titleKo = esc(p.titleKo || p.title || '');
+    const showTitle = isEn && p.titleKo && p.title !== p.titleKo ? titleEn : titleKo;
+    const untranslated = isEn && (!p.titleKo || p.title === p.titleKo) ? ' title-untranslated' : '';
     if (p.sourceUrl) {
-      html += '<td><span class="truncate"><a href="' + esc(p.sourceUrl) + '" target="_blank" rel="noopener">' + name + '</a></span></td>';
+      html += '<td class="td-title" data-title-ko="' + titleKo + '" data-title-en="' + titleEn + '"><span class="truncate"><a href="' + esc(p.sourceUrl) + '" target="_blank" rel="noopener" class="title-text' + untranslated + '">' + showTitle + '</a></span></td>';
     } else {
-      html += '<td><span class="truncate">' + name + '</span></td>';
+      html += '<td class="td-title" data-title-ko="' + titleKo + '" data-title-en="' + titleEn + '"><span class="truncate"><span class="title-text' + untranslated + '">' + showTitle + '</span></span></td>';
     }
 
     // 소싱처
@@ -824,7 +1093,8 @@ function renderCompletedTable(items, pagination) {
       const isActive = l.status === 'active';
       const badgeClass = l.status === 'error' ? 'badge-error'
         : l.status === 'pending' ? 'badge-pending'
-        : (l.status === 'draft' || l.status === 'ended') ? 'badge-draft'
+        : l.status === 'ended' ? 'badge-ended'
+        : l.status === 'draft' ? 'badge-draft'
         : 'badge-' + l.platform;
       const label = isActive
         ? l.platform + ' $' + Number(l.price).toFixed(2)
@@ -842,21 +1112,24 @@ function renderCompletedTable(items, pagination) {
     html += '</div></td>';
 
     // 상태
-    const successCount = listings.filter(l => l.status === 'active').length;
-    const totalListings = listings.length;
+    const successCount = activeListings.filter(l => l.status === 'active').length;
+    const totalListings = activeListings.length;
     if (isSoldout) {
       html += '<td><span class="badge badge-error">품절</span></td>';
+    } else if (totalListings === 0) {
+      html += '<td><span class="badge badge-unregistered">미등록</span></td>';
+    } else if (allEnded) {
+      html += '<td><span class="badge badge-ended">판매종료</span></td>';
     } else if (allActive) {
       html += '<td><span class="badge badge-success">' + (totalListings > 1 ? successCount + '/' + totalListings + ' ' : '') + '판매중</span></td>';
+    } else if (hasError && activeListings.every(l => l.status === 'error')) {
+      html += '<td><span class="badge badge-error">업로드 실패</span></td>';
+    } else if (successCount > 0 && hasError) {
+      html += '<td><span class="badge badge-pending">' + successCount + '/' + activeListings.length + ' 판매중 (일부 실패)</span></td>';
     } else if (successCount > 0) {
-      html += '<td><span class="badge badge-pending">' + successCount + '/' + totalListings + ' 성공</span></td>';
-    } else if (hasError && listings.every(l => l.status === 'error')) {
-      html += '<td><span class="badge badge-error">실패</span></td>';
-    } else if (hasError) {
-      const nonEnded = listings.filter(l => l.status !== 'ended');
-      html += '<td><span class="badge badge-pending">' + successCount + '/' + nonEnded.length + ' 성공</span></td>';
+      html += '<td><span class="badge badge-pending">' + successCount + '/' + activeListings.length + ' 판매중</span></td>';
     } else {
-      html += '<td><span class="badge badge-pending">처리중</span></td>';
+      html += '<td><span class="badge badge-pending">업로드 대기</span></td>';
     }
 
     // 등록일
@@ -1009,19 +1282,23 @@ function renderEndedTable(items, pagination) {
       html += '<td class="td-thumb"><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div></td>';
     }
 
-    // 상품명
-    const name = esc(p.titleKo || p.title);
+    // 상품명 (토글 대응)
+    const isEn2 = document.getElementById('lang-toggle')?.checked;
+    const titleEn2 = esc(p.title || '');
+    const titleKo2 = esc(p.titleKo || p.title || '');
+    const showTitle2 = isEn2 && p.titleKo && p.title !== p.titleKo ? titleEn2 : titleKo2;
+    const untranslated2 = isEn2 && (!p.titleKo || p.title === p.titleKo) ? ' title-untranslated' : '';
     if (p.sourceUrl) {
-      html += '<td><span class="truncate"><a href="' + esc(p.sourceUrl) + '" target="_blank" rel="noopener">' + name + '</a></span></td>';
+      html += '<td class="td-title" data-title-ko="' + titleKo2 + '" data-title-en="' + titleEn2 + '"><span class="truncate"><a href="' + esc(p.sourceUrl) + '" target="_blank" rel="noopener" class="title-text' + untranslated2 + '">' + showTitle2 + '</a></span></td>';
     } else {
-      html += '<td><span class="truncate">' + name + '</span></td>';
+      html += '<td class="td-title" data-title-ko="' + titleKo2 + '" data-title-en="' + titleEn2 + '"><span class="truncate"><span class="title-text' + untranslated2 + '">' + showTitle2 + '</span></span></td>';
     }
 
     // 소싱처
     html += '<td class="nowrap">' + (sourceLabelsJS[p.sourcePlatform] || p.sourcePlatform || '—') + '</td>';
 
     // 판매처
-    html += '<td><span class="badge badge-draft">' + esc(p.listingPlatform) + ' 종료</span></td>';
+    html += '<td><span class="badge badge-ended">' + esc(p.listingPlatform) + ' 종료</span></td>';
 
     // 판매가
     html += '<td class="tabular-nums nowrap">$' + (p.listingPrice ? Number(p.listingPrice).toFixed(2) : '—') + '</td>';
@@ -1128,4 +1405,580 @@ async function deleteProducts(productIds, btn) {
     alert('요청 실패: ' + e.message);
   }
 }
+
+// ── 인라인 편집 ──
+let _editingTd = null; // 현재 편집 중인 셀
+
+function startEdit(td) {
+  if (td.classList.contains('td-editing')) return;
+  // 이미 다른 셀 편집 중이면 취소
+  if (_editingTd && _editingTd !== td) cancelEdit(_editingTd);
+
+  const { editType, editId, editField, editValue } = td.dataset;
+  const isPrice = editField === 'price' || editField === 'costPrice';
+
+  // 상품명: 현재 언어 모드에 따라 편집할 값 결정
+  let actualValue = editValue;
+  if (editField === 'title') {
+    const isEnMode = document.getElementById('lang-toggle')?.checked;
+    const titleEn = td.dataset.titleEn || '';
+    const titleKo = td.dataset.titleKo || '';
+    actualValue = isEnMode && titleEn ? titleEn : titleKo;
+  }
+
+  // 원래 HTML 보존
+  td._origHtml = td.innerHTML;
+  td._origValue = actualValue;
+  td.classList.add('td-editing');
+
+  const input = document.createElement('input');
+  input.type = isPrice ? 'number' : 'text';
+  input.value = actualValue || '';
+  input.className = 'inline-edit-input' + (isPrice ? ' inline-edit-input-price' : '');
+  if (isPrice) { input.min = '0'; input.step = '1'; input.placeholder = '₩ 원가'; }
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'inline-edit-btn inline-edit-btn-save';
+  saveBtn.innerHTML = '<i class="ti ti-check"></i>';
+  saveBtn.title = '저장 (Enter)';
+  saveBtn.onclick = (e) => { e.stopPropagation(); saveEdit(td); };
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'inline-edit-btn inline-edit-btn-cancel';
+  cancelBtn.innerHTML = '<i class="ti ti-x"></i>';
+  cancelBtn.title = '취소 (Esc)';
+  cancelBtn.onclick = (e) => { e.stopPropagation(); cancelEdit(td); };
+
+  const actions = document.createElement('span');
+  actions.className = 'inline-edit-actions';
+  actions.appendChild(saveBtn);
+  actions.appendChild(cancelBtn);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'inline-edit-wrap';
+  wrap.appendChild(input);
+  wrap.appendChild(actions);
+
+  td.innerHTML = '';
+  td.appendChild(wrap);
+  input.focus();
+  input.select();
+  _editingTd = td;
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveEdit(td); }
+    if (e.key === 'Escape') { e.preventDefault(); cancelEdit(td); }
+  });
+  // 링크 클릭 방지
+  input.addEventListener('click', (e) => e.stopPropagation());
+}
+
+async function saveEdit(td) {
+  const { editType, editId, editField } = td.dataset;
+  const input = td.querySelector('.inline-edit-input');
+  const newValue = input.value.trim();
+  const oldValue = td._origValue || '';
+
+  if (newValue === oldValue) { cancelEdit(td); return; }
+  if (!newValue) { cancelEdit(td); return; }
+
+  const isPlatformPrice = editField.endsWith('Price') && editField !== 'costPrice';
+  const isPrice = editField === 'price' || editField === 'costPrice' || isPlatformPrice;
+
+  // API 호출
+  const url = editType === 'crawl'
+    ? `/api/crawl-results/${editId}`
+    : `/api/products/${editId}`;
+
+  const isEnMode = document.getElementById('lang-toggle')?.checked;
+  const body = {};
+  if (isPlatformPrice) {
+    // 플랫폼 가격 override (ebayPrice, shopifyPrice 등)
+    body[editField] = newValue;
+  } else if (editType === 'crawl') {
+    if (editField === 'title') {
+      if (isEnMode) { body.titleEn = newValue; } else { body.title = newValue; }
+    } else {
+      body[editField] = newValue;
+    }
+  } else {
+    // product: 영문 모드면 title(영문), 한글 모드면 titleKo
+    if (editField === 'title') {
+      if (isEnMode) { body.title = newValue; } else { body.titleKo = newValue; body.title = newValue; }
+    } else if (editField === 'costPrice') { body.costPrice = newValue; }
+  }
+
+  // 저장 중 표시
+  input.disabled = true;
+  td.querySelectorAll('.inline-edit-btn').forEach(b => b.disabled = true);
+
+  try {
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error('서버 오류');
+    const result = await res.json();
+
+    // 셀 복원 + 새 값 반영
+    td.dataset.editValue = newValue;
+    if (editField === 'title') {
+      // 상품명: data 속성 업데이트 + 텍스트 반영
+      if (isEnMode) {
+        td.dataset.titleEn = newValue;
+      } else {
+        td.dataset.titleKo = newValue;
+      }
+      td.innerHTML = td._origHtml;
+      const titleText = td.querySelector('.title-text');
+      if (titleText) {
+        titleText.textContent = newValue;
+        titleText.classList.remove('title-untranslated');
+      }
+    } else if (isPlatformPrice) {
+      // 플랫폼 달러 가격
+      const val = parseFloat(newValue) || 0;
+      td.innerHTML = val > 0 ? '$' + val.toFixed(2) : '—';
+    } else {
+      // 원가: 포맷팅해서 표시
+      const cost = parseFloat(newValue) || 0;
+      td.innerHTML = cost > 0 ? '₩' + cost.toLocaleString() : '—';
+    }
+
+    // 원가 변경 시 같은 행의 플랫폼 판매가도 업데이트
+    if (!isPlatformPrice && isPrice && result.prices) {
+      const row = td.closest('tr');
+      updateRowPrices(row, result.prices, editType);
+    }
+
+    td.classList.remove('td-editing');
+    _editingTd = null;
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+    input.disabled = false;
+    td.querySelectorAll('.inline-edit-btn').forEach(b => b.disabled = false);
+  }
+}
+
+function cancelEdit(td) {
+  if (!td || !td._origHtml) return;
+  td.innerHTML = td._origHtml;
+  td.classList.remove('td-editing');
+  _editingTd = null;
+}
+
+function updateRowPrices(row, prices, editType) {
+  if (!row || !prices) return;
+  const platformOrder = ['ebay', 'shopify', 'alibaba', 'shopee'];
+  const priceKeys = ['ebayPrice', 'shopifyPrice', 'alibabaPrice', 'shopeePrice'];
+
+  if (editType === 'crawl') {
+    // 업로드 대기 탭: 원가 뒤 4개 셀이 eBay/Shopify/Alibaba/Shopee
+    const cells = row.querySelectorAll('td');
+    // 원가 셀의 인덱스를 찾고 그 뒤 4개
+    const costTd = row.querySelector('[data-edit-field="price"]');
+    if (!costTd) return;
+    let startIdx = Array.from(cells).indexOf(costTd) + 1;
+    priceKeys.forEach((key, i) => {
+      const cell = cells[startIdx + i];
+      if (cell && prices[key]) {
+        cell.textContent = '$' + prices[key].toFixed(2);
+      }
+    });
+  } else {
+    // 전체 탭: 원가 셀 뒤 4개
+    const costTd = row.querySelector('[data-edit-field="costPrice"]');
+    if (!costTd) return;
+    const cells = row.querySelectorAll('td');
+    let startIdx = Array.from(cells).indexOf(costTd) + 1;
+    priceKeys.forEach((key, i) => {
+      const cell = cells[startIdx + i];
+      if (!cell) return;
+      // 리스팅이 있는 셀(뱃지)은 건드리지 않음
+      if (cell.querySelector('.badge')) return;
+      if (prices[key]) {
+        cell.innerHTML = '$' + prices[key].toFixed(2);
+      }
+    });
+  }
+}
+
+// 편집 중일 때 셀 외부 클릭 시 취소
+document.addEventListener('click', (e) => {
+  if (_editingTd && !_editingTd.contains(e.target)) {
+    cancelEdit(_editingTd);
+  }
+});
+
+// ── Description 미리보기 + AI 생성 + 저장 ──
+let _generatedDesc = null; // AI 생성된 description (저장 전 임시)
+
+async function previewDesc(productId) {
+  _generatedDesc = null;
+  let modal = document.getElementById('desc-preview-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'desc-preview-modal';
+    modal.innerHTML = `
+      <div class="desc-modal-overlay" onclick="closeDescPreview()">
+        <div class="desc-modal-card" onclick="event.stopPropagation()">
+          <div class="desc-modal-header">
+            <i class="ti ti-file-text"></i>
+            <span>Description 미리보기</span>
+            <select id="desc-preview-platform" class="select-sm" onchange="reloadDescPreview()" style="margin-left:auto;">
+              <option value="ebay">eBay</option>
+              <option value="shopify">Shopify</option>
+              <option value="alibaba">Alibaba</option>
+              <option value="shopee">Shopee (플레인)</option>
+            </select>
+            <button class="desc-modal-close" onclick="closeDescPreview()"><i class="ti ti-x"></i></button>
+          </div>
+          <div class="desc-modal-body" id="desc-modal-body"></div>
+          <div class="desc-modal-footer" id="desc-modal-footer">
+            <button class="btn btn-secondary btn-sm" id="desc-gen-btn" onclick="generateDesc()">
+              <i class="ti ti-sparkles"></i> AI 생성
+            </button>
+            <button class="btn btn-primary btn-sm" id="desc-save-btn" onclick="saveDesc()" style="display:none;">
+              <i class="ti ti-device-floppy"></i> DB에 저장
+            </button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'block';
+  modal.dataset.productId = productId;
+  document.getElementById('desc-preview-platform').value = 'ebay';
+  document.getElementById('desc-save-btn').style.display = 'none';
+  await loadDescPreview(productId, 'ebay');
+}
+
+async function reloadDescPreview() {
+  const modal = document.getElementById('desc-preview-modal');
+  const productId = modal?.dataset.productId;
+  const platform = document.getElementById('desc-preview-platform').value;
+  if (productId) await loadDescPreview(productId, platform);
+}
+
+async function loadDescPreview(productId, platform) {
+  const body = document.getElementById('desc-modal-body');
+  body.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted);"><i class="ti ti-loader spinner-icon"></i> 로딩 중...</div>';
+  try {
+    const res = await fetch('/api/products/' + productId + '/description-preview?platform=' + platform);
+    const data = await res.json();
+
+    const hasDesc = data.productDescription && !data.productDescription.startsWith('<p>') || data.productDescription.length > 100;
+    const statusHtml = hasDesc
+      ? '<div class="desc-status desc-status-ok"><i class="ti ti-check"></i> 개별 description 있음</div>'
+      : '<div class="desc-status desc-status-empty"><i class="ti ti-alert-triangle"></i> 개별 description 없음 — AI 생성 필요</div>';
+
+    if (platform === 'shopee') {
+      body.innerHTML = statusHtml +
+        '<div class="desc-preview-label">최종 Description (플레인 텍스트)</div>' +
+        '<pre class="desc-preview-plain">' + escHtml(data.fullDescription) + '</pre>';
+    } else {
+      body.innerHTML = statusHtml +
+        '<div class="desc-preview-label">최종 Description (HTML)</div>' +
+        '<div class="desc-preview-rendered">' + data.fullDescription + '</div>';
+    }
+  } catch {
+    body.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--error);">로드 실패</div>';
+  }
+}
+
+async function generateDesc() {
+  const modal = document.getElementById('desc-preview-modal');
+  const productId = modal?.dataset.productId;
+  if (!productId) return;
+
+  const btn = document.getElementById('desc-gen-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> AI 생성 중...';
+
+  try {
+    const res = await fetch('/api/products/' + productId + '/generate-description', { method: 'POST' });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'AI 생성 실패', 'error');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ti ti-sparkles"></i> AI 생성';
+      return;
+    }
+
+    _generatedDesc = data.description;
+
+    // 모달에 생성 결과 표시
+    const body = document.getElementById('desc-modal-body');
+    body.innerHTML =
+      '<div class="desc-status desc-status-new"><i class="ti ti-sparkles"></i> AI 생성 완료 — 확인 후 저장하세요</div>' +
+      '<div class="desc-preview-label">생성된 개별 Description</div>' +
+      '<div class="desc-preview-rendered" style="border-color: var(--accent);">' + (data.description || '') + '</div>';
+
+    // 저장 버튼 표시
+    document.getElementById('desc-save-btn').style.display = '';
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-sparkles"></i> 다시 생성';
+  } catch (e) {
+    showToast('AI 생성 실패: ' + e.message, 'error');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-sparkles"></i> AI 생성';
+  }
+}
+
+async function saveDesc() {
+  const modal = document.getElementById('desc-preview-modal');
+  const productId = modal?.dataset.productId;
+  if (!productId || !_generatedDesc) return;
+
+  const btn = document.getElementById('desc-save-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> 저장 중...';
+
+  try {
+    const res = await fetch('/api/products/' + productId + '/save-description', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: _generatedDesc }),
+    });
+
+    if (res.ok) {
+      showToast('Description 저장 완료', 'success');
+      _generatedDesc = null;
+      btn.style.display = 'none';
+      // 최종 미리보기로 새로고침
+      const platform = document.getElementById('desc-preview-platform').value;
+      await loadDescPreview(productId, platform);
+    } else {
+      const data = await res.json();
+      showToast(data.error || '저장 실패', 'error');
+    }
+  } catch (e) {
+    showToast('저장 실패: ' + e.message, 'error');
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = '<i class="ti ti-device-floppy"></i> DB에 저장';
+}
+
+function closeDescPreview() {
+  _generatedDesc = null;
+  const modal = document.getElementById('desc-preview-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+// ── crawl_results용 description 미리보기 (업로드 대기 탭) ──
+async function previewDescCrawl(crawlId) {
+  _generatedDesc = null;
+  let modal = document.getElementById('desc-preview-modal');
+  if (!modal) {
+    // 모달 DOM 직접 생성
+    modal = document.createElement('div');
+    modal.id = 'desc-preview-modal';
+    modal.innerHTML = `
+      <div class="desc-modal-overlay" onclick="closeDescPreview()">
+        <div class="desc-modal-card" onclick="event.stopPropagation()">
+          <div class="desc-modal-header">
+            <i class="ti ti-file-text"></i>
+            <span>Description 미리보기</span>
+            <select id="desc-preview-platform" class="select-sm" onchange="reloadDescPreview()" style="margin-left:auto;">
+              <option value="ebay">eBay</option>
+              <option value="shopify">Shopify</option>
+              <option value="alibaba">Alibaba</option>
+              <option value="shopee">Shopee (플레인)</option>
+            </select>
+            <button class="desc-modal-close" onclick="closeDescPreview()"><i class="ti ti-x"></i></button>
+          </div>
+          <div class="desc-modal-body" id="desc-modal-body"></div>
+          <div class="desc-modal-footer" id="desc-modal-footer">
+            <button class="btn btn-secondary btn-sm" id="desc-gen-btn" onclick="generateDesc()">
+              <i class="ti ti-sparkles"></i> AI 생성
+            </button>
+            <button class="btn btn-primary btn-sm" id="desc-save-btn" onclick="saveDesc()" style="display:none;">
+              <i class="ti ti-device-floppy"></i> DB에 저장
+            </button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+
+  modal.style.display = 'block';
+  modal.dataset.productId = '';
+  modal.dataset.crawlId = crawlId;
+  document.getElementById('desc-preview-platform').value = 'ebay';
+  document.getElementById('desc-save-btn').style.display = 'none';
+
+  const body = document.getElementById('desc-modal-body');
+  body.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-muted);"><i class="ti ti-loader spinner-icon"></i> AI가 Description 생성 중...</div>';
+
+  const genBtn = document.getElementById('desc-gen-btn');
+  genBtn.disabled = true;
+  genBtn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> 생성 중...';
+
+  try {
+    const platform = document.getElementById('desc-preview-platform').value;
+    const res = await fetch('/api/crawl-results/' + crawlId + '/generate-description?platform=' + platform, { method: 'POST' });
+    const data = await res.json();
+
+    if (!res.ok) {
+      body.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--error);">' + escHtml(data.error || 'AI 생성 실패') + '</div>';
+    } else {
+      body.innerHTML =
+        '<div class="desc-status desc-status-new"><i class="ti ti-sparkles"></i> AI 생성 완료 — 업로드 시 이 형태로 등록됩니다</div>' +
+        '<div class="desc-preview-label">최종 Description (개별 + 공통 템플릿)</div>' +
+        '<div class="desc-preview-rendered">' + (data.fullDescription || '') + '</div>';
+    }
+  } catch (e) {
+    body.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--error);">생성 실패</div>';
+  }
+
+  genBtn.disabled = false;
+  genBtn.innerHTML = '<i class="ti ti-sparkles"></i> 다시 생성';
+  genBtn.onclick = () => previewDescCrawl(crawlId);
+}
+
+// ── Description 일괄 생성 (SSE) ──
+function genDescBatch() {
+  const btn = document.getElementById('btn-gen-desc-batch');
+  const origHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> 생성 중...';
+
+  // 번역 모달 재사용
+  let modal = document.getElementById('translate-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'translate-modal';
+    modal.innerHTML = `
+      <div class="translate-modal-overlay">
+        <div class="translate-modal-card">
+          <div class="translate-modal-header">
+            <i class="ti ti-file-text"></i>
+            <span id="tr-header-text">Description 일괄 생성 중</span>
+          </div>
+          <div class="translate-modal-progress">
+            <div class="translate-progress-bar"><div class="translate-progress-fill" id="tr-progress-fill"></div></div>
+            <div class="translate-progress-text" id="tr-progress-text">준비 중...</div>
+          </div>
+          <div class="translate-modal-current" id="tr-current"></div>
+          <div class="translate-modal-log" id="tr-log"></div>
+          <div class="translate-modal-footer" id="tr-footer">
+            <button class="btn btn-primary" id="tr-close-btn" onclick="closeTranslateModal()" style="display:none;">확인</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  modal.style.display = 'block';
+  document.getElementById('tr-log').innerHTML = '';
+  document.getElementById('tr-current').innerHTML = '';
+  const stopBtn = document.getElementById('tr-stop-btn');
+  if (stopBtn) stopBtn.style.display = 'none';
+  document.getElementById('tr-close-btn').style.display = 'none';
+  document.getElementById('tr-progress-fill').style.width = '0%';
+  document.getElementById('tr-progress-text').textContent = '준비 중...';
+  document.getElementById('tr-header-text').textContent = 'Description 일괄 생성 중';
+
+  const log = document.getElementById('tr-log');
+
+  const es = new EventSource('/api/products/generate-descriptions?mode=missing');
+
+  es.addEventListener('start', (e) => {
+    const d = JSON.parse(e.data);
+    document.getElementById('tr-progress-text').textContent = '0 / ' + d.total + '건';
+  });
+
+  es.addEventListener('progress', (e) => {
+    const d = JSON.parse(e.data);
+    const pct = Math.round((d.current / d.total) * 100);
+    document.getElementById('tr-progress-fill').style.width = pct + '%';
+    document.getElementById('tr-progress-text').textContent = d.current + ' / ' + d.total + '건 (' + (d.generated || 0) + '성공, ' + (d.failed || 0) + '실패)';
+
+    if (d.status === 'generating') {
+      document.getElementById('tr-current').innerHTML = '<i class="ti ti-loader spinner-icon"></i> <span class="tr-ko">' + escHtml(d.titleKo) + '</span>';
+    } else if (d.status === 'ok') {
+      document.getElementById('tr-current').innerHTML = '';
+      log.innerHTML = '<div class="tr-log-item tr-ok"><i class="ti ti-check"></i> ' + escHtml(d.titleKo) + '</div>' + log.innerHTML;
+    } else {
+      document.getElementById('tr-current').innerHTML = '';
+      log.innerHTML = '<div class="tr-log-item tr-fail"><i class="ti ti-x"></i> ' + escHtml(d.titleKo) + '</div>' + log.innerHTML;
+    }
+  });
+
+  es.addEventListener('done', (e) => {
+    es.close();
+    const d = JSON.parse(e.data);
+    document.getElementById('tr-progress-fill').style.width = '100%';
+    document.getElementById('tr-header-text').textContent = 'Description 생성 완료';
+    document.getElementById('tr-progress-text').textContent = '완료! ' + d.generated + '건 성공, ' + d.failed + '건 실패 (총 ' + d.total + '건)';
+    document.getElementById('tr-current').innerHTML = '';
+    document.getElementById('tr-close-btn').style.display = '';
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
+  });
+
+  es.onerror = () => {
+    es.close();
+    document.getElementById('tr-header-text').textContent = '연결 오류';
+    document.getElementById('tr-close-btn').style.display = '';
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
+  };
+}
+
+// Client-side pagination
+function setupPagination(tabId, perPage) {
+  var panel = document.getElementById('tab-' + tabId);
+  if (!panel) return;
+  var tbody = panel.querySelector('tbody');
+  if (!tbody) return;
+  var rows = Array.from(tbody.querySelectorAll('tr'));
+  var totalPages = Math.ceil(rows.length / perPage);
+  if (totalPages <= 1) return;
+
+  var state = { page: 1 };
+  var pagDiv = document.createElement('div');
+  pagDiv.className = 'pagination';
+  pagDiv.style.marginTop = '16px';
+  panel.appendChild(pagDiv);
+
+  function render() {
+    var cp = state.page;
+    rows.forEach(function(row, i) {
+      row.style.display = (i >= (cp-1)*perPage && i < cp*perPage) ? '' : 'none';
+    });
+    var html = '';
+    html += '<button class="page-btn' + (cp <= 1 ? ' disabled' : '') + '" onclick="paginate(\'' + tabId + '\',' + (cp-1) + ')"><i class="ti ti-chevron-left"></i></button>';
+    for (var p = 1; p <= totalPages; p++) {
+      if (p === 1 || p === totalPages || Math.abs(p - cp) <= 2) {
+        html += '<button class="page-btn' + (p === cp ? ' active' : '') + '" onclick="paginate(\'' + tabId + '\',' + p + ')">' + p + '</button>';
+      } else if (Math.abs(p - cp) === 3) {
+        html += '<span class="page-info">...</span>';
+      }
+    }
+    html += '<button class="page-btn' + (cp >= totalPages ? ' disabled' : '') + '" onclick="paginate(\'' + tabId + '\',' + (cp+1) + ')"><i class="ti ti-chevron-right"></i></button>';
+    pagDiv.innerHTML = html;
+  }
+
+  panel._pagState = { state: state, totalPages: totalPages, render: render };
+  render();
+}
+
+function paginate(tabId, page) {
+  var panel = document.getElementById('tab-' + tabId);
+  if (!panel || !panel._pagState) return;
+  var s = panel._pagState;
+  if (page < 1 || page > s.totalPages) return;
+  s.state.page = page;
+  s.render();
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// Initialize on load
+document.addEventListener('DOMContentLoaded', function() {
+  setupPagination('all', 200);
+  setupPagination('pending', 200);
+});
 </script>

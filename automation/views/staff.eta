@@ -1,0 +1,318 @@
+<div class="page-header">
+  <h1><i class="ti ti-users-group"></i> 직원 관리</h1>
+  <p class="text-muted">직원 계정을 추가, 수정, 삭제할 수 있습니다.</p>
+</div>
+
+<!-- 직원 추가 카드 -->
+<div class="card" style="margin-bottom: var(--space-6);">
+  <div class="card-header">
+    <h3><i class="ti ti-user-plus"></i> 새 직원 추가</h3>
+  </div>
+  <div class="card-body">
+    <form id="add-staff-form" onsubmit="return addStaff(event)" autocomplete="off">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-4);">
+        <div class="form-group">
+          <label>아이디</label>
+          <input type="text" id="new-username" class="form-input" placeholder="로그인 아이디" required minlength="2" maxlength="50" autocomplete="new-username">
+        </div>
+        <div class="form-group">
+          <label>이름 <span class="text-muted">(선택 — 직원이 첫 로그인 시 직접 입력)</span></label>
+          <input type="text" id="new-displayname" class="form-input" placeholder="비워두면 첫 로그인 시 입력" maxlength="100">
+        </div>
+        <div class="form-group">
+          <label>비밀번호</label>
+          <input type="password" id="new-password" class="form-input" placeholder="비밀번호" required minlength="4" autocomplete="new-password">
+        </div>
+        <div class="form-group">
+          <label>권한</label>
+          <select id="new-role" class="form-input">
+            <option value="staff">직원 (Staff)</option>
+            <option value="admin">관리자 (Admin)</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top: var(--space-4);">
+        <button type="submit" class="btn btn-primary" id="add-staff-btn">
+          <i class="ti ti-user-plus"></i> 추가
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- 직원 목록 -->
+<div class="card">
+  <div class="card-header">
+    <h3><i class="ti ti-list"></i> 직원 목록 (<%= it.staffList.length %>명)</h3>
+  </div>
+  <div class="card-body" style="padding: 0;">
+    <div class="table-container">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>아이디</th>
+            <th>이름</th>
+            <th>권한</th>
+            <th>상태</th>
+            <th>마지막 로그인</th>
+            <th>생성일</th>
+            <th>관리</th>
+          </tr>
+        </thead>
+        <tbody id="staff-tbody">
+          <% for (const s of it.staffList) { %>
+          <tr id="staff-row-<%= s.id %>" data-id="<%= s.id %>">
+            <td><code><%= s.username %></code></td>
+            <td><%= s.displayName %></td>
+            <td>
+              <% if (s.role === 'admin') { %>
+                <span class="badge badge-admin">Admin</span>
+              <% } else { %>
+                <span class="badge badge-staff">Staff</span>
+              <% } %>
+            </td>
+            <td>
+              <% if (s.isActive) { %>
+                <span class="badge badge-success">활성</span>
+              <% } else { %>
+                <span class="badge badge-muted">비활성</span>
+              <% } %>
+            </td>
+            <td class="text-muted">
+              <%= s.lastLoginAt ? new Date(s.lastLoginAt).toLocaleString('ko-KR') : '—' %>
+            </td>
+            <td class="text-muted">
+              <%= new Date(s.createdAt).toLocaleDateString('ko-KR') %>
+            </td>
+            <td>
+              <div style="display: flex; gap: var(--space-1);">
+                <button class="btn btn-sm btn-secondary" onclick="editStaff(<%= s.id %>, '<%= s.displayName %>', '<%= s.role %>', <%= s.isActive %>)" title="수정">
+                  <i class="ti ti-edit"></i>
+                </button>
+                <button class="btn btn-sm btn-secondary" onclick="resetPassword(<%= s.id %>, '<%= s.username %>')" title="비밀번호 초기화">
+                  <i class="ti ti-key"></i>
+                </button>
+                <% if (s.id !== it.user.id) { %>
+                <button class="btn btn-sm btn-secondary" onclick="toggleActive(<%= s.id %>, <%= !s.isActive %>)" title="<%= s.isActive ? '비활성화' : '활성화' %>">
+                  <i class="ti ti-<%= s.isActive ? 'ban' : 'check' %>"></i>
+                </button>
+                <button class="btn btn-sm btn-danger" onclick="deleteStaff(<%= s.id %>, '<%= s.username %>')" title="삭제">
+                  <i class="ti ti-trash"></i>
+                </button>
+                <% } %>
+              </div>
+            </td>
+          </tr>
+          <% } %>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- 수정 모달 -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal-card">
+    <h3 class="modal-title"><i class="ti ti-edit"></i> 직원 수정</h3>
+    <input type="hidden" id="edit-id">
+    <div class="form-group">
+      <label>이름</label>
+      <input type="text" id="edit-displayname" class="modal-input" maxlength="100">
+    </div>
+    <div class="form-group">
+      <label>권한</label>
+      <select id="edit-role" class="modal-input">
+        <option value="staff">직원 (Staff)</option>
+        <option value="admin">관리자 (Admin)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>새 비밀번호 (변경 시에만 입력)</label>
+      <input type="password" id="edit-password" class="modal-input" placeholder="변경하지 않으려면 비워두세요" minlength="4">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeEditModal()">취소</button>
+      <button class="btn btn-primary" onclick="saveEdit()"><i class="ti ti-check"></i> 저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- 비밀번호 초기화 모달 -->
+<div class="modal-overlay" id="reset-pw-modal">
+  <div class="modal-card">
+    <h3 class="modal-title"><i class="ti ti-key"></i> 비밀번호 초기화</h3>
+    <input type="hidden" id="reset-pw-id">
+    <p class="text-muted" style="margin-bottom: var(--space-4);">
+      <code id="reset-pw-username"></code> 계정의 비밀번호를 초기화합니다.
+    </p>
+    <div class="form-group">
+      <label>새 비밀번호</label>
+      <input type="password" id="reset-pw-value" class="modal-input" placeholder="새 비밀번호 (4자 이상)" minlength="4">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeResetPwModal()">취소</button>
+      <button class="btn btn-primary" onclick="submitResetPassword()"><i class="ti ti-check"></i> 초기화</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function resetPassword(id, username) {
+  document.getElementById('reset-pw-id').value = id;
+  document.getElementById('reset-pw-username').textContent = username;
+  document.getElementById('reset-pw-value').value = '';
+  document.getElementById('reset-pw-modal').classList.add('visible');
+  setTimeout(() => document.getElementById('reset-pw-value').focus(), 100);
+}
+
+function closeResetPwModal() {
+  document.getElementById('reset-pw-modal').classList.remove('visible');
+}
+
+async function submitResetPassword() {
+  const id = document.getElementById('reset-pw-id').value;
+  const newPassword = document.getElementById('reset-pw-value').value;
+  const username = document.getElementById('reset-pw-username').textContent;
+
+  if (!newPassword || newPassword.length < 4) {
+    showToast('비밀번호는 4자 이상이어야 합니다.', 'error');
+    document.getElementById('reset-pw-value').focus();
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/staff/' + id + '/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newPassword }),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      showToast(username + ' 비밀번호가 초기화되었습니다.', 'success');
+      closeResetPwModal();
+    } else {
+      showToast(data.error || '초기화 실패', 'error');
+    }
+  } catch {
+    showToast('서버 연결 오류', 'error');
+  }
+}
+
+async function addStaff(e) {
+  e.preventDefault();
+  const btn = document.getElementById('add-staff-btn');
+  btn.disabled = true;
+
+  const body = {
+    username: document.getElementById('new-username').value.trim(),
+    displayName: document.getElementById('new-displayname').value.trim(),
+    password: document.getElementById('new-password').value,
+    role: document.getElementById('new-role').value,
+  };
+
+  try {
+    const res = await fetch('/api/staff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      showToast(body.displayName + ' 계정이 생성되었습니다.', 'success');
+      window.location.reload();
+    } else {
+      showToast(data.error || '생성 실패', 'error');
+    }
+  } catch {
+    showToast('서버 연결 오류', 'error');
+  } finally {
+    btn.disabled = false;
+  }
+
+  return false;
+}
+
+function editStaff(id, name, role, isActive) {
+  document.getElementById('edit-id').value = id;
+  document.getElementById('edit-displayname').value = name;
+  document.getElementById('edit-role').value = role;
+  document.getElementById('edit-password').value = '';
+  document.getElementById('edit-modal').classList.add('visible');
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.remove('visible');
+}
+
+async function saveEdit() {
+  const id = document.getElementById('edit-id').value;
+  const body = {
+    displayName: document.getElementById('edit-displayname').value.trim(),
+    role: document.getElementById('edit-role').value,
+  };
+  const pw = document.getElementById('edit-password').value;
+  if (pw) body.password = pw;
+
+  try {
+    const res = await fetch('/api/staff/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      showToast('수정되었습니다.', 'success');
+      closeEditModal();
+      window.location.reload();
+    } else {
+      showToast(data.error || '수정 실패', 'error');
+    }
+  } catch {
+    showToast('서버 연결 오류', 'error');
+  }
+}
+
+async function toggleActive(id, newState) {
+  const action = newState ? '활성화' : '비활성화';
+  if (!confirm('이 계정을 ' + action + '하시겠습니까?')) return;
+
+  try {
+    const res = await fetch('/api/staff/' + id, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: newState }),
+    });
+
+    if (res.ok) {
+      showToast(action + '되었습니다.', 'success');
+      window.location.reload();
+    } else {
+      const data = await res.json();
+      showToast(data.error || action + ' 실패', 'error');
+    }
+  } catch {
+    showToast('서버 연결 오류', 'error');
+  }
+}
+
+async function deleteStaff(id, username) {
+  if (!confirm(username + ' 계정을 완전히 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.')) return;
+
+  try {
+    const res = await fetch('/api/staff/' + id, { method: 'DELETE' });
+
+    if (res.ok) {
+      showToast('삭제되었습니다.', 'success');
+      document.getElementById('staff-row-' + id)?.remove();
+    } else {
+      const data = await res.json();
+      showToast(data.error || '삭제 실패', 'error');
+    }
+  } catch {
+    showToast('서버 연결 오류', 'error');
+  }
+}
+</script>
