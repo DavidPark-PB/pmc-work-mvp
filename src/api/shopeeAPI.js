@@ -123,31 +123,46 @@ class ShopeeAPI {
       console.error('Shopee merchant token refresh failed:', e.response?.data || e.message);
     }
 
-    // Refresh shop token
-    if (this.shopRefreshToken && this.shopIds[0]) {
+    // Refresh each shop token individually (each shop has independent refresh_token)
+    for (const shopId of this.shopIds) {
+      const shopToken = this.shopTokens[shopId];
+      if (!shopToken?.refreshToken) continue;
       try {
         const ts2 = Math.floor(Date.now() / 1000);
         const sign2 = this._signPublic(refreshPath, ts2);
         const r2 = await axios.post(`${this.baseUrl}${refreshPath}`, {
-          refresh_token: this.shopRefreshToken,
-          shop_id: this.shopIds[0],
+          refresh_token: shopToken.refreshToken,
+          shop_id: shopId,
           partner_id: this.partnerId,
         }, { params: { partner_id: this.partnerId, timestamp: ts2, sign: sign2 } });
-        this.shopAccessToken = r2.data.access_token;
-        this.shopRefreshToken = r2.data.refresh_token;
-        process.env.SHOPEE_SHOP_ACCESS_TOKEN = this.shopAccessToken;
-        process.env.SHOPEE_SHOP_REFRESH_TOKEN = this.shopRefreshToken;
 
-        await saveToken('shopee_shop', {
-          accessToken: this.shopAccessToken,
-          refreshToken: this.shopRefreshToken,
-          expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
-        });
+        if (r2.data.error) {
+          console.error(`Shopee shop ${shopId} refresh failed:`, r2.data.message);
+          continue;
+        }
+
+        this.shopTokens[shopId] = { accessToken: r2.data.access_token, refreshToken: r2.data.refresh_token };
+        process.env[`SHOPEE_SHOP_${shopId}_ACCESS_TOKEN`] = r2.data.access_token;
+        process.env[`SHOPEE_SHOP_${shopId}_REFRESH_TOKEN`] = r2.data.refresh_token;
       } catch (e) {
-        console.error('Shopee shop token refresh failed:', e.response?.data || e.message);
+        console.error(`Shopee shop ${shopId} refresh error:`, e.response?.data?.message || e.message);
       }
     }
-    console.log('✅ Shopee tokens auto-refreshed');
+
+    // Save first shop token as default
+    const firstShop = this.shopTokens[this.shopIds[0]];
+    if (firstShop) {
+      this.shopAccessToken = firstShop.accessToken;
+      this.shopRefreshToken = firstShop.refreshToken;
+      process.env.SHOPEE_SHOP_ACCESS_TOKEN = firstShop.accessToken;
+      process.env.SHOPEE_SHOP_REFRESH_TOKEN = firstShop.refreshToken;
+      await saveToken('shopee_shop', {
+        accessToken: firstShop.accessToken,
+        refreshToken: firstShop.refreshToken,
+        expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+      });
+    }
+    console.log('✅ Shopee tokens auto-refreshed (' + this.shopIds.length + ' shops)');
   }
 
   async _exec(method, url, params, data, _retried = false) {
