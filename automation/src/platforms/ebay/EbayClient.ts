@@ -238,19 +238,28 @@ export class EbayClient implements PlatformAdapter {
     const response = await this.callTradingAPI('AddItem', requestBody);
     const ack = this.extractXmlValue(response, 'Ack');
 
+    // Extract ALL errors/warnings from response
+    const allErrors: string[] = [];
+    const errorMatches = response.matchAll(/<LongMessage>([\s\S]*?)<\/LongMessage>/g);
+    for (const m of errorMatches) allErrors.push(m[1]);
+
     if (ack !== 'Success' && ack !== 'Warning') {
-      const errorMsg = this.extractXmlValue(response, 'LongMessage')
-        || this.extractXmlValue(response, 'ShortMessage')
-        || 'Unknown error';
-      // "renamed as per eBay recommendations" is a warning, not a real error
-      if (errorMsg.includes('renamed as per eBay recommendations')) {
-        console.log(`[eBay] Item specifics renamed (non-fatal warning), continuing...`);
-      } else {
-        throw new Error(`eBay AddItem 실패: ${errorMsg}`);
+      // Filter out "renamed" warnings — check if there are real errors
+      const realErrors = allErrors.filter(msg => !msg.includes('renamed as per eBay recommendations'));
+      if (realErrors.length > 0) {
+        console.error(`[eBay] AddItem failed (Ack=${ack}):`, realErrors.join(' | '));
+        throw new Error(`eBay AddItem 실패: ${realErrors[0]}`);
       }
+      // Only "renamed" warnings — log and continue
+      console.log(`[eBay] Item specifics renamed (non-fatal warning), Ack=${ack}`);
     }
 
     const itemId = this.extractXmlValue(response, 'ItemID');
+    if (!itemId) {
+      console.error(`[eBay] AddItem: no ItemID returned. Ack=${ack}. Errors:`, allErrors.join(' | '));
+      console.error(`[eBay] Response snippet:`, response.slice(0, 500));
+      throw new Error(`eBay AddItem 실패: ItemID 없음 (${allErrors[0] || 'unknown'})`);
+    }
     return {
       itemId,
       url: `https://www.ebay.com/itm/${itemId}`,
