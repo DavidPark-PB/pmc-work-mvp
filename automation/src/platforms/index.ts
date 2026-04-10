@@ -16,6 +16,7 @@ export interface ListingInput {
   productType?: string;
   brand?: string;
   weight?: number;        // grams
+  itemSpecifics?: Record<string, string>;  // eBay Item Specifics (카테고리별 템플릿)
 }
 
 export interface ListingResult {

@@ -157,6 +157,25 @@ export async function createListing(
   const productDesc = product.description || `<p>${product.title}</p>`;
   const fullDescription = buildPlatformDescription(productDesc, template, platform);
 
+  // Load item specifics: product-level → category template → fallback
+  let itemSpecifics: Record<string, string> = {};
+  const productSpecs = (product as any).itemSpecifics || (product as any).item_specifics;
+  if (productSpecs && typeof productSpecs === 'object' && Object.keys(productSpecs).length > 0) {
+    itemSpecifics = productSpecs;
+  } else if (platform === 'ebay') {
+    // Try category template
+    try {
+      const templateRows = await db.execute(
+        `SELECT specifics FROM item_specifics_templates ORDER BY created_at LIMIT 1`
+      );
+      if (templateRows.rows && templateRows.rows.length > 0) {
+        const tmpl = templateRows.rows[0] as any;
+        itemSpecifics = typeof tmpl.specifics === 'string' ? JSON.parse(tmpl.specifics) : tmpl.specifics;
+        console.log(`[리스팅] Item Specifics 템플릿 적용: ${Object.keys(itemSpecifics).length}개 속성`);
+      }
+    } catch (e) { /* template table might not exist */ }
+  }
+
   const input: ListingInput = {
     title: product.title,
     description: fullDescription,
@@ -169,6 +188,7 @@ export async function createListing(
     productType: product.productType || '',
     brand: product.brand || '',
     weight: weightG,
+    itemSpecifics,
   };
 
   try {

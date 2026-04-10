@@ -191,19 +191,14 @@ export class EbayClient implements PlatformAdapter {
     const categoryKeyword = input.productType || input.title;
     const categoryId = await this.suggestCategoryId(categoryKeyword);
 
-    // ItemSpecifics: Brand + Type (카테고리 필수 항목 대응)
-    const brandValue = this.escapeXml(input.brand || 'Unbranded');
-    const typeValue = this.escapeXml(input.productType || 'See Description');
+    // ItemSpecifics: 동적 생성 (템플릿 또는 상품별 커스텀)
+    const specs: Record<string, string> = input.itemSpecifics && Object.keys(input.itemSpecifics).length > 0
+      ? input.itemSpecifics
+      : { Brand: input.brand || 'Unbranded', Type: input.productType || 'See Description' };
     const itemSpecificsXml = `
-    <ItemSpecifics>
-      <NameValueList>
-        <Name>Brand</Name>
-        <Value>${brandValue}</Value>
-      </NameValueList>
-      <NameValueList>
-        <Name>Type</Name>
-        <Value>${typeValue}</Value>
-      </NameValueList>
+    <ItemSpecifics>${Object.entries(specs).map(([k, v]) =>
+      `\n      <NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(String(v))}</Value></NameValueList>`
+    ).join('')}
     </ItemSpecifics>`;
 
     const requestBody = `
