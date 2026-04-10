@@ -169,7 +169,7 @@ export async function createListing(
     // Try category template
     try {
       const templateRows = await db.execute(
-        `SELECT specifics FROM item_specifics_templates ORDER BY created_at LIMIT 1`
+        `SELECT specifics FROM item_specifics_templates ORDER BY created_at DESC LIMIT 1`
       );
       if (templateRows.rows && templateRows.rows.length > 0) {
         const tmpl = templateRows.rows[0] as any;
