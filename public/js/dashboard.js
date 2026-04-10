@@ -63,7 +63,7 @@ function navigateTo(page) {
     case 'sync': loadSyncPage(); break;
     case 'b2b': setupB2BPage(); break;
     case 'register': setupRegisterForm(); break;
-    case 'master-products': loadMasterProducts(); break;
+    // case 'master-products': removed — merged into 상품검색/관리
     case 'ebay-trends': loadEbayTrends(); break;
     case 'battle': loadBattle(); break;
     case 'remarker': setupRemarker(); break;
@@ -3366,6 +3366,11 @@ function renderBattleTable(items) {
     item.myTotal = +myTotal.toFixed(2);
     item.cheapestTotal = cheapestTotal;
 
+    // Raise price: 내가 $5 이상 싸면 경쟁사 - $2로 올리기 추천
+    const winning = diff !== null && diff < -5;
+    const raisePrice = winning ? +Math.max(item.myPrice, cheapestTotal - 2.00 - (item.myShipping || 0)).toFixed(2) : null;
+    item.raisePrice = raisePrice;
+
     const rowClass = losing ? 'battle-row-losing' : (hasComp ? 'battle-row-winning' : '');
 
     const diffClass = diff > 0 ? 'positive' : (diff < 0 ? 'negative' : 'neutral');
@@ -3432,8 +3437,12 @@ function renderBattleTable(items) {
         ${item.losing && item.killPrice > 0
           ? `<div style="font-weight:700;color:#c62828">$${item.killPrice.toFixed(2)}</div>
              <button class="kill-price-btn" onclick="applyKillPrice('${esc(item.itemId)}', ${item.killPrice}, '${esc(item.sku)}')"
-                     id="kill-${esc(item.itemId || item.sku)}">적용</button>`
-          : (hasComp ? '<span style="color:#2e7d32;font-size:11px">불필요</span>' : '-')
+                     id="kill-${esc(item.itemId || item.sku)}">↓내리기</button>`
+          : (item.raisePrice && item.raisePrice > item.myPrice
+            ? `<div style="font-weight:700;color:#2e7d32">$${item.raisePrice.toFixed(2)}</div>
+               <button class="kill-price-btn" style="background:#2e7d32" onclick="applyKillPrice('${esc(item.itemId)}', ${item.raisePrice}, '${esc(item.sku)}')"
+                       id="raise-${esc(item.itemId || item.sku)}">↑올리기</button>`
+            : (hasComp ? '<span style="color:#888;font-size:11px">적정</span>' : '-'))
         }
       </td>
     </tr>`;
