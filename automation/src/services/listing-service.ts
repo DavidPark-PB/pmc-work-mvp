@@ -120,11 +120,14 @@ export async function createListing(
   });
 
   if (existingListing) {
-    if (existingListing.status === 'active') {
+    if (existingListing.status === 'active' && existingListing.platformItemId) {
+      // 실제 활성 리스팅 (ItemID 있음) — 건너뜀
       console.log(`[리스팅] 이미 active 리스팅 존재: #${existingListing.id} — 건너뜀`);
       return { listingId: existingListing.id, itemId: existingListing.platformItemId || undefined, url: existingListing.listingUrl || undefined };
     }
-    // ended/error/draft/pending → 삭제 후 새로 생성
+    // active인데 platformItemId 없음 = 유령 리스팅 → 삭제
+    // 또는 ended/error/draft/pending → 삭제 후 새로 생성
+    console.log(`[리스팅] 기존 리스팅 삭제: #${existingListing.id} (status=${existingListing.status}, itemId=${existingListing.platformItemId || 'none'})`);
     await db.delete(platformListings)
       .where(eq(platformListings.id, existingListing.id));
   }
