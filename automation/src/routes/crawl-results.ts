@@ -75,7 +75,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
     for (let i = 0; i < rows.length; i += BATCH_SIZE) {
       const batch = rows.slice(i, i + BATCH_SIZE);
       const results = await Promise.allSettled(batch.map(async (row) => {
-        const externalId = extractProductId(row.url);
+        const externalId = extractProductId(row.url) || `name_${row.name.replace(/\s+/g, '_').slice(0, 50)}_${row.price}`;
         const rawData: Record<string, any> = {
           rating: row.rating,
           reviewCount: row.reviewCount,
