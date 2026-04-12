@@ -81,7 +81,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
           reviewCount: row.reviewCount,
           discountRate: row.discountRate,
           originalPrice: row.originalPrice,
-          images: [row.image],
+          images: row.image ? row.image.split('|||').filter((u: string) => u.trim()) : [],
         };
         if (row.category) rawData.category = row.category;
         if (row.brand) rawData.brand = row.brand;
@@ -99,7 +99,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
               title: row.name,
               price: String(row.price),
               url: row.url,
-              imageUrl: row.image,
+              imageUrl: row.image ? row.image.split('|||')[0] : '',
               rawData,
               status: 'new',
               crawledAt: new Date(),
@@ -114,7 +114,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
             price: String(row.price),
             currency: 'KRW',
             url: row.url,
-            imageUrl: row.image,
+            imageUrl: row.image ? row.image.split('|||')[0] : '',
             rawData,
             status: 'new',
             ownerId: user.id,

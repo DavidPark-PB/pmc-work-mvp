@@ -531,8 +531,26 @@ export function applyMapping(rawFields: string[][], mapping: Record<string, numb
     const name = get(fields, 'name');
     if (!name) continue;
 
+    // Collect all image URLs from mapped + unmapped columns
+    const allImages: string[] = [];
+    const mainImage = get(fields, 'image');
+    if (mainImage) allImages.push(mainImage);
+    for (let imgIdx = 2; imgIdx <= 10; imgIdx++) {
+      const extra = get(fields, `image${imgIdx}`);
+      if (extra && /\.(jpg|jpeg|png|gif|webp)/i.test(extra)) allImages.push(extra);
+    }
+    if (allImages.length <= 1) {
+      for (let c = 0; c < fields.length; c++) {
+        const v = fields[c]?.trim() || '';
+        if (v && !allImages.includes(v) && /^https?:\/\/.+\.(jpg|jpeg|png|gif|webp|PNG|JPEG)/i.test(v)) {
+          allImages.push(v);
+          if (allImages.length >= 5) break;
+        }
+      }
+    }
+
     const row: CsvRow = {
-      image: get(fields, 'image'),
+      image: allImages.join('|||'),
       url: get(fields, 'url'),
       name,
       price: parsePrice(get(fields, 'price')),
