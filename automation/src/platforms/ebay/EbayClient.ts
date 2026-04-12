@@ -185,21 +185,44 @@ export class EbayClient implements PlatformAdapter {
       .map(url => `<PictureURL>${this.escapeXml(url)}</PictureURL>`)
       .join('\n      ');
 
-    // Condition: ungraded(4000) for cards, new(1000) for others, used(3000)
-    const conditionMap: Record<string, string> = { 'used': '3000', 'new': '1000', 'ungraded': '4000' };
-    const conditionId = conditionMap[input.condition] || '4000'; // default: ungraded
-
     // 동적 카테고리 매핑: productType 또는 title 기반
     const categoryKeyword = input.productType || input.title;
     const categoryId = await this.suggestCategoryId(categoryKeyword);
 
-    // ItemSpecifics: 동적 생성 (템플릿 또는 상품별 커스텀)
-    const rawSpecs: Record<string, string> = input.itemSpecifics && Object.keys(input.itemSpecifics).length > 0
-      ? { ...input.itemSpecifics }
-      : { Brand: input.brand || 'Unbranded', Type: input.productType || 'See Description' };
+    // 카드 카테고리 자동 감지
+    const CARD_CATEGORIES = ['183454', '183456', '261328', '183050'];
+    const isCardCategory = CARD_CATEGORIES.includes(categoryId);
+
+    // Condition: 카드면 ungraded(4000), 그 외 new(1000)
+    const conditionId = input.condition === 'used' ? '3000' : (isCardCategory ? '4000' : '1000');
+
+    // ItemSpecifics: 카테고리 기반 템플릿 로드 (DB)
+    let specs: Record<string, string> = {};
+    if (input.itemSpecifics && Object.keys(input.itemSpecifics).length > 0) {
+      specs = { ...input.itemSpecifics };
+    } else {
+      // DB에서 카테고리 매칭 템플릿 로드
+      try {
+        const { Pool } = require('pg');
+        const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+        const tmplResult = await pool.query(
+          'SELECT specifics FROM item_specifics_templates WHERE category_id = $1 LIMIT 1',
+          [categoryId]
+        );
+        if (tmplResult.rows[0]) {
+          specs = typeof tmplResult.rows[0].specifics === 'string'
+            ? JSON.parse(tmplResult.rows[0].specifics)
+            : tmplResult.rows[0].specifics;
+          console.log(`[eBay] 카테고리 ${categoryId} 템플릿 적용: ${Object.keys(specs).length}개 속성`);
+        }
+        await pool.end();
+      } catch (e) { /* template not found — use fallback */ }
+      if (Object.keys(specs).length === 0) {
+        specs = { Brand: input.brand || 'Unbranded', Type: input.productType || 'See Description' };
+      }
+    }
     // Card Condition은 ConditionDescriptors로 처리 — ItemSpecifics에서 제거
-    delete rawSpecs['Card Condition'];
-    const specs = rawSpecs;
+    delete specs['Card Condition'];
     const itemSpecificsXml = `
     <ItemSpecifics>${Object.entries(specs).map(([k, v]) =>
       `\n      <NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(String(v))}</Value></NameValueList>`
@@ -214,7 +237,7 @@ export class EbayClient implements PlatformAdapter {
       <CategoryID>${categoryId}</CategoryID>
     </PrimaryCategory>
     <StartPrice currencyID="USD">${input.price.toFixed(2)}</StartPrice>
-    <ConditionID>${conditionId}</ConditionID>${conditionId === '4000' ? `
+    <ConditionID>${conditionId}</ConditionID>${isCardCategory ? `
     <ConditionDescriptors>
       <ConditionDescriptor>
         <Name>40001</Name>
