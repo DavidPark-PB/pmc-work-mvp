@@ -85,6 +85,11 @@ app.use('/api/notifications', require('./src/web/routes/notifications'));
 // ── 발주 관리 (Phase 2) ──
 app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));
 
+// ── 출퇴근 + 급여 + Shopee 보너스 (Phase 3) ──
+app.use('/api/attendance', require('./src/web/routes/attendance'));
+app.use('/api/payroll', require('./src/web/routes/payroll'));
+app.use('/api/bonuses', require('./src/web/routes/bonuses'));
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
