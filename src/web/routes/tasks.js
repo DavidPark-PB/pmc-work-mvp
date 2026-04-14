@@ -2,8 +2,14 @@
  * 업무 관리 API (/api/tasks, /api/tasks/stats)
  *
  * 권한:
- *   owner: 전체 조회/등록/수정/삭제
- *   staff: 본인 할당 + 전체 공지만 조회, 상태 변경 가능
+ *   owner: 전체 조회/등록/수정/삭제. 수신자 상태 force-complete 가능.
+ *   staff: 본인 recipient 있는 task만. 본인 상태만 변경.
+ *
+ * PATCH body:
+ *   - 메타데이터 변경 (title/assigneeId/assigneeScope/dueDate/priority/memo) — admin only
+ *   - 상태 변경 (status/completionNote/userId?) — recipient 기준
+ *     - userId 생략 시 req.user.id (본인) 대상
+ *     - userId 지정은 admin만 허용 (직원 대신 완료 처리)
  */
 const express = require('express');
 const { requireAdmin } = require('../../middleware/auth');
@@ -26,7 +32,7 @@ router.get('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/tasks/stats (owner only)
+// GET /api/tasks/stats
 router.get('/stats', requireAdmin, async (req, res) => {
   try {
     const stats = await repo.getTodayStats();
@@ -38,9 +44,7 @@ router.get('/stats', requireAdmin, async (req, res) => {
 router.post('/', requireAdmin, async (req, res) => {
   try {
     const { title, assigneeId, assigneeScope, dueDate, priority, memo } = req.body || {};
-    if (!title || !title.trim()) {
-      return res.status(400).json({ error: '업무 내용을 입력하세요' });
-    }
+    if (!title || !title.trim()) return res.status(400).json({ error: '업무 내용을 입력하세요' });
 
     const scope = assigneeScope === 'all' ? 'all' : 'specific';
     const assignee = scope === 'all' ? null : (assigneeId ? parseInt(assigneeId, 10) : null);
@@ -48,7 +52,7 @@ router.post('/', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: '담당자를 선택하거나 전체 공지로 지정하세요' });
     }
 
-    const created = await repo.createTask({
+    const { task, recipientCount } = await repo.createTask({
       title: title.trim(),
       assignee_id: assignee,
       assignee_scope: scope,
@@ -59,94 +63,116 @@ router.post('/', requireAdmin, async (req, res) => {
     });
 
     // 알림
-    if (assignee && assignee !== req.user.id) {
+    if (scope === 'specific' && assignee && assignee !== req.user.id) {
       await notify({
         recipientId: assignee,
         type: 'task_assigned',
         title: priority === 'urgent' ? '[긴급] 새 업무 지시' : '새 업무 지시',
-        body: created.title,
+        body: task.title,
         linkUrl: '/?page=tasks',
         relatedType: 'task',
-        relatedId: created.id,
+        relatedId: task.id,
       });
     } else if (scope === 'all') {
       const staffIds = await getStaffIds();
       await notifyMany(staffIds, {
         type: 'task_assigned',
         title: '전체 공지 업무',
-        body: created.title,
+        body: task.title,
         linkUrl: '/?page=tasks',
         relatedType: 'task',
-        relatedId: created.id,
+        relatedId: task.id,
       });
     }
 
-    res.json({ data: created });
+    res.json({ data: task, recipientCount });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// PATCH /api/tasks/:id — 상태 변경 등
+// PATCH /api/tasks/:id
+// 2가지 모드 자동 분기:
+//   메타 필드 (title/due/priority/memo/assigneeId/assigneeScope) → admin만, team_tasks update
+//   status/completionNote → recipient 업데이트
 router.patch('/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const existing = await repo.getTask(id);
-    if (!existing) return res.status(404).json({ error: '업무를 찾을 수 없습니다' });
+    const task = await repo.getTask(id);
+    if (!task) return res.status(404).json({ error: '업무를 찾을 수 없습니다' });
 
-    const isOwner = req.user.isAdmin;
-    const isAssignee = existing.assignee_id === req.user.id;
-    const isBroadcast = existing.assignee_scope === 'all';
-    if (!isOwner && !isAssignee && !isBroadcast) {
-      return res.status(403).json({ error: '권한이 없습니다' });
-    }
+    const body = req.body || {};
+    const isMetaUpdate = body.title !== undefined || body.assigneeScope !== undefined ||
+                         body.assigneeId !== undefined || body.dueDate !== undefined ||
+                         body.priority !== undefined || body.memo !== undefined;
+    const isStatusUpdate = body.status !== undefined || body.completionNote !== undefined;
 
-    const { title, assigneeId, assigneeScope, dueDate, priority, memo, status, completionNote } = req.body || {};
-    const updates = {};
-
-    if (isOwner) {
-      if (title !== undefined) updates.title = title.trim();
-      if (assigneeScope !== undefined) updates.assignee_scope = assigneeScope;
-      if (assigneeId !== undefined) updates.assignee_id = assigneeId;
-      if (dueDate !== undefined) updates.due_date = dueDate ? new Date(dueDate).toISOString() : null;
-      if (priority !== undefined) updates.priority = priority;
-      if (memo !== undefined) updates.memo = memo?.trim() || null;
-    }
-
-    if (status !== undefined && ['pending', 'in_progress', 'done'].includes(status)) {
-      updates.status = status;
-      if (status === 'done') {
-        updates.completed_at = new Date().toISOString();
-        if (!isOwner && (!completionNote || !completionNote.trim())) {
-          return res.status(400).json({ error: '완료 코멘트를 입력하세요' });
-        }
-        if (completionNote !== undefined) updates.completion_note = completionNote.trim();
-      } else {
-        updates.completed_at = null;
+    // 메타 업데이트
+    if (isMetaUpdate) {
+      if (!req.user.isAdmin) return res.status(403).json({ error: '메타데이터 수정은 사장만 가능합니다' });
+      const metaUpdates = {};
+      if (body.title !== undefined) metaUpdates.title = body.title.trim();
+      if (body.dueDate !== undefined) metaUpdates.due_date = body.dueDate ? new Date(body.dueDate).toISOString() : null;
+      if (body.priority !== undefined) metaUpdates.priority = body.priority;
+      if (body.memo !== undefined) metaUpdates.memo = body.memo?.trim() || null;
+      // assignee 재배정은 지금은 비활성 (recipient 재구성 필요 — 추후)
+      if (Object.keys(metaUpdates).length === 0 && !isStatusUpdate) {
+        return res.status(400).json({ error: '변경할 내용이 없습니다' });
+      }
+      if (Object.keys(metaUpdates).length > 0) {
+        await repo.updateTaskMeta(id, metaUpdates);
       }
     }
 
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: '변경할 내용이 없습니다' });
-    }
+    // 상태 업데이트 (recipient 기준)
+    if (isStatusUpdate) {
+      const targetUserId = req.user.isAdmin && body.userId ? parseInt(body.userId, 10) : req.user.id;
 
-    const updated = await repo.updateTask(id, updates);
+      // 본인이 아닌 recipient 대상은 admin만 가능
+      if (targetUserId !== req.user.id && !req.user.isAdmin) {
+        return res.status(403).json({ error: '타인 상태 변경은 사장만 가능합니다' });
+      }
 
-    // 직원이 완료 시 → 사장에게
-    if (status === 'done' && !isOwner) {
-      await notifyAdmins({
-        type: 'task_completed',
-        title: `${req.user.displayName} 업무 완료`,
-        body: `${existing.title}${updated.completion_note ? ' — ' + updated.completion_note : ''}`,
-        linkUrl: '/?page=tasks',
-        relatedType: 'task',
-        relatedId: id,
+      // recipient 존재 확인
+      const rec = await repo.getRecipient(id, targetUserId);
+      if (!rec) return res.status(404).json({ error: '해당 직원의 업무 수신 기록이 없습니다' });
+
+      // 상태 validation
+      const newStatus = body.status;
+      if (newStatus !== undefined && !['pending', 'in_progress', 'done'].includes(newStatus)) {
+        return res.status(400).json({ error: '올바른 상태가 아닙니다' });
+      }
+
+      // done인데 본인 완료 + 사장 아님 → 코멘트 필수
+      if (newStatus === 'done' && targetUserId === req.user.id && !req.user.isAdmin) {
+        const note = body.completionNote;
+        if (!note || !String(note).trim()) {
+          return res.status(400).json({ error: '완료 코멘트를 입력하세요' });
+        }
+      }
+
+      await repo.updateRecipient(id, targetUserId, {
+        status: newStatus,
+        completionNote: body.completionNote !== undefined ? (body.completionNote?.trim() || null) : undefined,
       });
+
+      // 직원이 본인 완료 → 사장에게 알림
+      if (newStatus === 'done' && !req.user.isAdmin) {
+        await notifyAdmins({
+          type: 'task_completed',
+          title: `${req.user.displayName} 업무 완료`,
+          body: `${task.title}${body.completionNote ? ' — ' + body.completionNote : ''}`,
+          linkUrl: '/?page=tasks',
+          relatedType: 'task',
+          relatedId: id,
+        });
+      }
     }
 
+    const updated = await repo.getTask(id);
     res.json({ data: updated });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// DELETE /api/tasks/:id (owner only)
+// DELETE /api/tasks/:id (owner only) — CASCADE로 recipients 함께 삭제
 router.delete('/:id', requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);

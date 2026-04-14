@@ -171,6 +171,9 @@
     }
   }
 
+  const STATUS_LABELS = { pending: '대기중', in_progress: '진행중', done: '완료' };
+  const STATUS_COLORS = { pending: '#888', in_progress: '#7c4dff', done: '#4caf50' };
+
   function renderList(items) {
     const c = document.getElementById('task-list');
     if (!c) return;
@@ -178,39 +181,116 @@
       c.innerHTML = '<div style="padding:40px;text-align:center;color:#888;">업무가 없습니다.</div>';
       return;
     }
-    const statusLabels = { pending: '대기중', in_progress: '진행중', done: '완료' };
-    const statusColors = { pending: '#888', in_progress: '#7c4dff', done: '#4caf50' };
-    c.innerHTML = items.map(t => {
-      const overdue = isOverdue(t.due_date, t.status);
-      const canToggle = user.isAdmin || t.assignee_id === user.id || t.assignee_scope === 'all';
-      const assigneeLabel = t.assignee_scope === 'all' ? '🔔 전체 공지' : (t.assignee?.display_name || '-');
-      return html`
-        <div style="padding:16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:flex-start;${t.status === 'done' ? 'opacity:0.55;' : ''}">
+    c.innerHTML = items.map(t => user.isAdmin ? renderOwnerRow(t) : renderStaffRow(t)).join('');
+  }
+
+  // 직원용: 본인 recipient 상태만 보여줌
+  function renderStaffRow(t) {
+    const myStatus = t.myStatus || 'pending';
+    const overdue = isOverdue(t.due_date, myStatus);
+    const canToggle = myStatus !== 'done';
+    return `
+      <div style="padding:16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:flex-start;${myStatus === 'done' ? 'opacity:0.55;' : ''}">
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;flex-wrap:wrap;">
+            ${t.priority === 'urgent' ? '<span style="color:#e94560;font-weight:700;">🚨 긴급</span>' : ''}
+            <span style="font-weight:600;font-size:15px;color:#fff;${myStatus === 'done' ? 'text-decoration:line-through;' : ''}">${escapeHtml(t.title)}</span>
+            <span style="padding:2px 8px;background:${STATUS_COLORS[myStatus]};color:#fff;border-radius:10px;font-size:11px;">${STATUS_LABELS[myStatus]}</span>
+            ${t.assignee_scope === 'all' ? '<span style="padding:2px 8px;background:#0288d1;color:#fff;border-radius:10px;font-size:11px;">🔔 전체 공지</span>' : ''}
+            ${overdue ? '<span style="padding:2px 8px;background:#e94560;color:#fff;border-radius:10px;font-size:11px;">마감 초과</span>' : ''}
+          </div>
+          <div style="font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap;">
+            ${t.due_date ? `<span style="${overdue ? 'color:#ff8a80;font-weight:600;' : ''}">⏰ ${formatDate(t.due_date)}</span>` : ''}
+          </div>
+          ${t.memo ? `<div style="margin-top:6px;font-size:12px;color:#b0b0b0;white-space:pre-wrap;">${escapeHtml(t.memo)}</div>` : ''}
+          ${t.myCompletionNote ? `<div style="margin-top:6px;padding:6px 10px;background:#1a3a2e;border-radius:6px;font-size:12px;color:#81c784;"><strong>완료:</strong> ${escapeHtml(t.myCompletionNote)}</div>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">
+          ${canToggle ? `
+            ${myStatus === 'pending' ? `<button onclick="pmcTasks.setStatus(${t.id}, 'in_progress')" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">▶ 시작</button>` : ''}
+            <button onclick="pmcTasks.markDone(${t.id})" style="padding:4px 10px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">✓ 완료</button>
+          ` : `<button onclick="pmcTasks.setStatus(${t.id}, 'pending')" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">↶ 재개</button>`}
+        </div>
+      </div>
+    `;
+  }
+
+  // 사장용: 집계 + 수신자 진행률. 브로드캐스트는 펼쳐보기.
+  function renderOwnerRow(t) {
+    const overdue = isOverdue(t.due_date, t.status);
+    const agg = t.aggregate || { total: 0, pending: 0, in_progress: 0, done: 0 };
+    const isBroadcast = t.assignee_scope === 'all';
+    const progressPct = agg.total > 0 ? Math.round((agg.done / agg.total) * 100) : 0;
+    const progressColor = progressPct === 100 ? '#4caf50' : progressPct >= 50 ? '#7c4dff' : '#ff9800';
+    const titleStyle = t.status === 'done' ? 'text-decoration:line-through;opacity:0.7;' : '';
+
+    // 특정 담당자 경우 대표 이름, broadcast면 '전체 공지'
+    const assigneeLabel = isBroadcast
+      ? `🔔 전체 공지 · ${agg.done}/${agg.total} 완료`
+      : (t.recipients?.[0]?.userName || '-');
+
+    return `
+      <div style="border-bottom:1px solid #2a2a4a;">
+        <div style="padding:16px;display:flex;gap:12px;align-items:flex-start;">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;flex-wrap:wrap;">
               ${t.priority === 'urgent' ? '<span style="color:#e94560;font-weight:700;">🚨 긴급</span>' : ''}
-              <span style="font-weight:600;font-size:15px;color:#fff;${t.status === 'done' ? 'text-decoration:line-through;' : ''}">${escapeHtml(t.title)}</span>
-              <span style="padding:2px 8px;background:${statusColors[t.status]};color:#fff;border-radius:10px;font-size:11px;">${statusLabels[t.status]}</span>
+              <span style="font-weight:600;font-size:15px;color:#fff;${titleStyle}">${escapeHtml(t.title)}</span>
+              <span style="padding:2px 8px;background:${STATUS_COLORS[t.status]};color:#fff;border-radius:10px;font-size:11px;">${STATUS_LABELS[t.status]}</span>
               ${overdue ? '<span style="padding:2px 8px;background:#e94560;color:#fff;border-radius:10px;font-size:11px;">마감 초과</span>' : ''}
             </div>
-            <div style="font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap;">
-              ${user.isAdmin ? `<span>👤 ${escapeHtml(assigneeLabel)}</span>` : ''}
+            <div style="font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+              <span>👤 ${escapeHtml(assigneeLabel)}</span>
               ${t.due_date ? `<span style="${overdue ? 'color:#ff8a80;font-weight:600;' : ''}">⏰ ${formatDate(t.due_date)}</span>` : ''}
             </div>
+            ${isBroadcast ? `
+              <div style="margin-top:8px;height:6px;background:#2a2a4a;border-radius:3px;overflow:hidden;">
+                <div style="height:100%;width:${progressPct}%;background:${progressColor};transition:width 0.3s;"></div>
+              </div>
+              <button onclick="pmcTasks.toggleExpand(${t.id}, event)" id="expand-btn-${t.id}" style="margin-top:6px;background:transparent;border:0;color:#888;cursor:pointer;font-size:11px;padding:0;">▼ 수신자 상세 (${agg.total}명)</button>
+            ` : ''}
             ${t.memo ? `<div style="margin-top:6px;font-size:12px;color:#b0b0b0;white-space:pre-wrap;">${escapeHtml(t.memo)}</div>` : ''}
-            ${t.completion_note ? `<div style="margin-top:6px;padding:6px 10px;background:#1a3a2e;border-radius:6px;font-size:12px;color:#81c784;"><strong>완료:</strong> ${escapeHtml(t.completion_note)}</div>` : ''}
           </div>
           <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">
-            ${canToggle && t.status !== 'done' ? `
-              ${t.status === 'pending' ? `<button onclick="pmcTasks.setStatus(${t.id}, 'in_progress')" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">▶ 시작</button>` : ''}
-              <button onclick="pmcTasks.markDone(${t.id})" style="padding:4px 10px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">✓ 완료</button>
-            ` : ''}
-            ${canToggle && t.status === 'done' ? `<button onclick="pmcTasks.setStatus(${t.id}, 'pending')" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">↶ 재개</button>` : ''}
-            ${user.isAdmin ? `<button onclick="pmcTasks.deleteTask(${t.id})" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>` : ''}
+            <button onclick="pmcTasks.deleteTask(${t.id})" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>
           </div>
         </div>
-      `;
-    }).join('');
+        <div id="recipients-${t.id}" style="display:none;padding:0 16px 12px 16px;">
+          ${(t.recipients || []).map(r => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:#0f0f23;border-radius:6px;margin-bottom:4px;">
+              <div style="display:flex;gap:8px;align-items:center;flex:1;min-width:0;">
+                <span style="color:#fff;font-size:13px;">${escapeHtml(r.userName)}</span>
+                <span style="padding:1px 6px;background:${STATUS_COLORS[r.status]};color:#fff;border-radius:8px;font-size:10px;">${STATUS_LABELS[r.status]}</span>
+                ${r.completionNote ? `<span style="color:#81c784;font-size:11px;">— ${escapeHtml(r.completionNote)}</span>` : ''}
+              </div>
+              <div style="display:flex;gap:4px;flex-shrink:0;">
+                ${r.status !== 'done'
+                  ? `<button onclick="pmcTasks.setStatusFor(${t.id}, ${r.userId}, 'done')" style="padding:2px 8px;background:#7c4dff;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">✓ 완료처리</button>`
+                  : `<button onclick="pmcTasks.setStatusFor(${t.id}, ${r.userId}, 'pending')" style="padding:2px 8px;background:#2a2a4a;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">↶ 재개</button>`
+                }
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  function toggleExpand(taskId, e) {
+    if (e) e.stopPropagation();
+    const el = document.getElementById('recipients-' + taskId);
+    const btn = document.getElementById('expand-btn-' + taskId);
+    if (!el) return;
+    if (el.style.display === 'none') {
+      el.style.display = 'block';
+      if (btn) btn.innerHTML = '▲ 접기';
+    } else {
+      el.style.display = 'none';
+      if (btn) {
+        const count = (el.children || []).length;
+        btn.innerHTML = `▼ 수신자 상세 (${count}명)`;
+      }
+    }
   }
 
   function renderStats(stats) {
@@ -286,6 +366,7 @@
     }
   }
 
+  // 본인 상태 변경
   async function setStatus(id, status) {
     const res = await fetch('/api/tasks/' + id, {
       method: 'PATCH',
@@ -296,6 +377,7 @@
     refresh();
   }
 
+  // 본인 완료 처리 (코멘트 필수)
   async function markDone(id) {
     const note = user.isAdmin ? (prompt('완료 코멘트 (선택):') || '') : (prompt('완료 코멘트를 입력하세요:') || '');
     if (!user.isAdmin && !note.trim()) { alert('완료 코멘트는 필수입니다.'); return; }
@@ -308,6 +390,22 @@
     refresh();
   }
 
+  // 사장이 특정 직원 대신 상태 변경 (강제)
+  async function setStatusFor(taskId, userId, status) {
+    const payload = { status, userId };
+    if (status === 'done') {
+      const note = prompt('완료 코멘트 (선택, 강제 완료 처리):') || '';
+      if (note) payload.completionNote = note;
+    }
+    const res = await fetch('/api/tasks/' + taskId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+    refresh();
+  }
+
   async function deleteTask(id) {
     if (!confirm('이 업무를 삭제하시겠습니까?')) return;
     const res = await fetch('/api/tasks/' + id, { method: 'DELETE' });
@@ -315,5 +413,5 @@
     refresh();
   }
 
-  window.pmcTasks = { load, refresh, setStatus, markDone, deleteTask };
+  window.pmcTasks = { load, refresh, setStatus, markDone, setStatusFor, deleteTask, toggleExpand };
 })();
