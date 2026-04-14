@@ -194,6 +194,34 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+/**
+ * 레거시 관리자 계정(공유 비번 로그인, userId=0)으로는 쓰기 작업 차단.
+ * 업무관리 DB 작업은 users 테이블에 있는 실제 id가 필요함 (FK 제약).
+ * 적용 대상: /api/tasks, /api/purchase-requests, /api/attendance, /api/payroll,
+ *          /api/bonuses, /api/feedback, /api/users, /api/admin, /api/notifications
+ */
+const WRITE_PATHS_FOR_REAL_USER = [
+  '/api/tasks',
+  '/api/purchase-requests',
+  '/api/attendance',
+  '/api/payroll',
+  '/api/bonuses',
+  '/api/feedback',
+  '/api/users',
+  '/api/admin',
+  '/api/notifications',
+];
+function blockLegacyWrites(req, res, next) {
+  if (!req.user?.isLegacy) return next();
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  const p = req.path;
+  const matches = WRITE_PATHS_FOR_REAL_USER.some(w => p === w || p.startsWith(w + '/'));
+  if (!matches) return next();
+  return res.status(400).json({
+    error: '레거시 관리자 계정으로는 업무관리 작업을 할 수 없습니다. 본인 계정(예: owner)으로 로그인하세요.',
+  });
+}
+
 /** 로그인만 요구 (가드에 이미 체크되어 있지만 명시적으로 쓰고 싶을 때) */
 function requireAuth(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
@@ -347,6 +375,7 @@ module.exports = {
   authGuard,
   requireAdmin,
   requireAuth,
+  blockLegacyWrites,
   getCurrentUser,
   // 핸들러
   loginHandler,

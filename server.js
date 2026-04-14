@@ -17,6 +17,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const {
   authGuard,
+  blockLegacyWrites,
   loginHandler,
   logoutHandler,
   meHandler,
@@ -50,6 +51,9 @@ app.post('/api/auth/logout', logoutHandler);
 
 // Auth guard — protects everything below
 app.use(authGuard);
+
+// 레거시 관리자 계정은 업무관리 쓰기 차단 (users FK 제약)
+app.use(blockLegacyWrites);
 
 // Auth routes (guard 이후 — req.user 필요)
 app.get('/api/auth/me', meHandler);
