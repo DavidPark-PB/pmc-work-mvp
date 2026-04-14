@@ -90,6 +90,9 @@ app.use('/api/attendance', require('./src/web/routes/attendance'));
 app.use('/api/payroll', require('./src/web/routes/payroll'));
 app.use('/api/bonuses', require('./src/web/routes/bonuses'));
 
+// ── 피드백 게시판 (Phase 4) ──
+app.use('/api/feedback', require('./src/web/routes/feedback'));
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
