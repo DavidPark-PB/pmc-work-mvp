@@ -101,6 +101,9 @@ app.listen(PORT, () => {
   console.log(`\nPMC 대시보드 서버: http://localhost:${PORT}`);
   console.log(`API: http://localhost:${PORT}/api\n`);
 
+  // 업무관리 알림 스케줄러 (Phase 5 — 매일 오전 9시, 오후 5시)
+  require('./src/services/scheduler').start();
+
   // Load tokens from DB into process.env on startup
   const { loadToken } = require('./src/services/tokenStore');
   (async () => {

@@ -15,6 +15,21 @@
       <button class="refresh-btn" id="syncProductsBtn" style="background:#0288d1;margin-left:8px" onclick="syncAllProducts()">상품 동기화</button>
       <button class="refresh-btn" style="background:#d84315;margin-left:8px" onclick="clearAllSKU(this)">SKU 일괄 초기화</button>
       <button class="refresh-btn" id="syncMasterBtn" style="background:#6a1b9a;margin-left:8px" onclick="syncToMaster()">마스터 동기화</button>
+      <!-- 알림 벨 (Phase 5) -->
+      <div id="notifWrap" style="position:relative;margin-left:8px;display:inline-block;">
+        <button id="notifBtn" onclick="toggleNotif(event)" style="background:#2a2a4a;color:#fff;border:0;padding:8px 12px;border-radius:6px;cursor:pointer;position:relative;font-size:14px;">
+          🔔
+          <span id="notifCount" style="display:none;position:absolute;top:-4px;right:-4px;background:#e94560;color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;min-width:18px;"></span>
+        </button>
+        <div id="notifDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#1a1a2e;border:1px solid #333;border-radius:8px;width:360px;max-height:480px;overflow:auto;z-index:1000;box-shadow:0 4px 12px rgba(0,0,0,0.3);">
+          <div style="padding:10px 14px;border-bottom:1px solid #2a2a4a;display:flex;justify-content:space-between;align-items:center;">
+            <span style="color:#fff;font-weight:600;font-size:13px;">알림</span>
+            <button onclick="markAllRead(event)" style="background:transparent;color:#888;border:0;cursor:pointer;font-size:11px;">모두 읽음</button>
+          </div>
+          <div id="notifList"></div>
+        </div>
+      </div>
+
       <div id="userMenuWrap" style="position:relative;margin-left:8px;display:inline-block;">
         <button class="refresh-btn" id="userMenuBtn" style="background:#2a2a4a;display:flex;align-items:center;gap:6px;" onclick="toggleUserMenu(event)">
           <span id="userMenuName">로딩…</span>
@@ -145,6 +160,117 @@
     if (!confirm('로그아웃 하시겠습니까?')) return;
     fetch('/api/auth/logout', { method: 'POST' }).finally(() => location.href = '/login.html');
   }
+
+  // ── 🔔 알림 벨 (Phase 5) ──
+  function fmtNotifTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const diff = Math.floor((Date.now() - d.getTime()) / 60000);
+    if (diff < 1) return '방금';
+    if (diff < 60) return diff + '분 전';
+    if (diff < 60 * 24) return Math.floor(diff / 60) + '시간 전';
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getMonth()+1)}/${pad(d.getDate())}`;
+  }
+  function notifEsc(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  async function updateNotifBadge() {
+    try {
+      const r = await fetch('/api/notifications/unread-count');
+      if (!r.ok) return;
+      const { count } = await r.json();
+      const badge = document.getElementById('notifCount');
+      const navBadge = document.getElementById('nav-notif-badge');
+      if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : String(count);
+        badge.style.display = 'inline-block';
+        if (navBadge) { navBadge.textContent = count > 99 ? '99+' : String(count); navBadge.style.display = 'inline-block'; }
+      } else {
+        badge.style.display = 'none';
+        if (navBadge) navBadge.style.display = 'none';
+      }
+    } catch {}
+  }
+
+  async function updateOrdersBadge() {
+    try {
+      const r = await fetch('/api/purchase-requests/stats');
+      if (!r.ok) return; // staff면 403
+      const s = await r.json();
+      const navBadge = document.getElementById('nav-orders-badge');
+      if (!navBadge) return;
+      if (s.pending > 0) {
+        navBadge.textContent = s.pending;
+        navBadge.style.display = 'inline-block';
+        if (s.pendingUrgent > 0) navBadge.style.background = '#e94560';
+      } else {
+        navBadge.style.display = 'none';
+      }
+    } catch {}
+  }
+
+  async function loadNotifList() {
+    const r = await fetch('/api/notifications');
+    if (!r.ok) return;
+    const { data } = await r.json();
+    const el = document.getElementById('notifList');
+    if (!data || data.length === 0) {
+      el.innerHTML = '<div style="padding:30px;text-align:center;color:#888;font-size:12px;">알림이 없습니다</div>';
+      return;
+    }
+    el.innerHTML = data.map(n => `
+      <div onclick="openNotif(${n.id}, '${notifEsc(n.link_url || '')}')" style="padding:12px 14px;border-bottom:1px solid #2a2a4a;cursor:pointer;${n.is_read ? '' : 'background:rgba(124,77,255,0.08);'}">
+        <div style="color:${n.is_read ? '#aaa' : '#fff'};font-weight:${n.is_read ? '400' : '600'};font-size:13px;margin-bottom:2px;">${notifEsc(n.title)}</div>
+        ${n.body ? `<div style="color:#888;font-size:12px;margin-bottom:2px;">${notifEsc(n.body)}</div>` : ''}
+        <div style="color:#555;font-size:11px;">${fmtNotifTime(n.created_at)}</div>
+      </div>
+    `).join('');
+  }
+
+  async function toggleNotif(e) {
+    e.stopPropagation();
+    const dd = document.getElementById('notifDropdown');
+    if (dd.style.display === 'none') {
+      await loadNotifList();
+      dd.style.display = 'block';
+    } else {
+      dd.style.display = 'none';
+    }
+  }
+
+  async function openNotif(id, linkUrl) {
+    fetch(`/api/notifications/${id}/read`, { method: 'PATCH' }).catch(()=>{});
+    updateNotifBadge();
+    if (linkUrl) {
+      if (linkUrl.startsWith('/?page=')) {
+        const page = linkUrl.split('page=')[1];
+        document.getElementById('notifDropdown').style.display = 'none';
+        if (typeof showPage === 'function') showPage(page);
+      } else {
+        location.href = linkUrl;
+      }
+    }
+  }
+
+  async function markAllRead(e) {
+    e.stopPropagation();
+    await fetch('/api/notifications/read-all', { method: 'PATCH' });
+    updateNotifBadge();
+    loadNotifList();
+  }
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#notifWrap')) {
+      const dd = document.getElementById('notifDropdown');
+      if (dd) dd.style.display = 'none';
+    }
+  });
+
+  setInterval(() => { updateNotifBadge(); updateOrdersBadge(); }, 30000);
+  setTimeout(() => { updateNotifBadge(); updateOrdersBadge(); }, 1000);
   </script>
 
   <div class="sidebar">
