@@ -15,7 +15,14 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { authGuard, loginHandler, logoutHandler } = require('./src/middleware/auth');
+const {
+  authGuard,
+  loginHandler,
+  logoutHandler,
+  meHandler,
+  changePasswordHandler,
+  adminResetPasswordHandler,
+} = require('./src/middleware/auth');
 
 const app = express();
 app.set('trust proxy', 1); // Railway runs behind a reverse proxy
@@ -43,6 +50,11 @@ app.post('/api/auth/logout', logoutHandler);
 
 // Auth guard — protects everything below
 app.use(authGuard);
+
+// Auth routes (guard 이후 — req.user 필요)
+app.get('/api/auth/me', meHandler);
+app.patch('/api/auth/change-password', changePasswordHandler);
+app.patch('/api/admin/reset-password/:userId', adminResetPasswordHandler);
 
 app.use(express.static(path.join(__dirname, 'public')));
 

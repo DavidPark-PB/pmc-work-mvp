@@ -76,38 +76,75 @@
 <body>
 <div class="login-box">
   <h1>PMC Dashboard</h1>
-  <p>접근하려면 비밀번호를 입력하세요</p>
+  <p id="modeDesc">아이디와 비밀번호를 입력하세요</p>
   <form id="loginForm">
+    <div class="input-group" id="usernameGroup">
+      <input type="text" id="username" placeholder="아이디" autocomplete="username" autofocus>
+    </div>
     <div class="input-group">
-      <input type="password" id="password" placeholder="비밀번호" autocomplete="current-password" autofocus>
+      <input type="password" id="password" placeholder="비밀번호" autocomplete="current-password">
     </div>
     <button type="submit" class="btn-login" id="btnLogin">로그인</button>
   </form>
   <div class="error-msg" id="errorMsg"></div>
+  <div style="margin-top:16px;font-size:12px;">
+    <a href="#" id="toggleMode" style="color:#888;text-decoration:none;">관리자 전용 로그인 (레거시)</a>
+  </div>
 </div>
 <script>
+var legacyMode = false;
+
+document.getElementById('toggleMode').addEventListener('click', function(e) {
+  e.preventDefault();
+  legacyMode = !legacyMode;
+  var ug = document.getElementById('usernameGroup');
+  var desc = document.getElementById('modeDesc');
+  var toggle = document.getElementById('toggleMode');
+  var unameInput = document.getElementById('username');
+  var pwInput = document.getElementById('password');
+  if (legacyMode) {
+    ug.style.display = 'none';
+    unameInput.value = '';
+    desc.textContent = '관리자 비밀번호를 입력하세요';
+    toggle.textContent = '← 아이디로 로그인';
+    pwInput.focus();
+  } else {
+    ug.style.display = '';
+    desc.textContent = '아이디와 비밀번호를 입력하세요';
+    toggle.textContent = '관리자 전용 로그인 (레거시)';
+    unameInput.focus();
+  }
+});
+
 document.getElementById('loginForm').addEventListener('submit', async function(e) {
   e.preventDefault();
   var btn = document.getElementById('btnLogin');
   var errEl = document.getElementById('errorMsg');
+  var username = document.getElementById('username').value.trim();
   var pw = document.getElementById('password').value;
   if (!pw) return;
+  if (!legacyMode && !username) {
+    errEl.textContent = '아이디를 입력하세요';
+    errEl.style.display = 'block';
+    return;
+  }
 
   btn.disabled = true;
   btn.textContent = '확인 중...';
   errEl.style.display = 'none';
 
   try {
+    var payload = legacyMode ? { password: pw } : { username: username, password: pw };
     var res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pw }),
+      body: JSON.stringify(payload),
     });
     var data = await res.json();
     if (res.ok && data.success) {
       window.location.href = '/';
     } else {
-      errEl.textContent = data.error || '비밀번호가 올바르지 않습니다';
+      errEl.textContent = data.error || '로그인에 실패했습니다';
       errEl.style.display = 'block';
     }
   } catch (err) {
