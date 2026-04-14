@@ -159,8 +159,11 @@ setInterval(async () => {
   }
 }, 6 * 60 * 60 * 1000);
 
-// ===== AI Agent Team Scheduling =====
-// Agents use Supabase + eBay API only (no Google Sheets dependency)
+// ===== AI Agent Scheduling (margin / sourcing / operations) =====
+// 2026-04 정리: 8개 → 3개. 나머지 5개는 실질 가치 부족으로 제거.
+// - margin-agent:     eBay 가격 자동 조정 (auto-approved는 즉시 eBay 반영)
+// - sourcing-agent:   경쟁사 배틀 리포트 (텔레그램 알림)
+// - operations-agent: 재고/단종 탐지 → team_tasks 자동 생성 (업무관리 화면에 노출)
 
 // Margin Agent — every 4 hours
 setInterval(async () => {
@@ -170,26 +173,6 @@ setInterval(async () => {
     console.log(`[MarginAgent] ${recs.length} recommendations`);
   } catch (e) { console.error('[MarginAgent] error:', e.message); }
 }, 4 * 60 * 60 * 1000);
-
-// Profit Brain — every 4 hours, offset 30min
-setTimeout(() => {
-  setInterval(async () => {
-    try {
-      const { ProfitBrainAgent } = require('./src/agents/profit-brain');
-      const recs = await new ProfitBrainAgent().run();
-      console.log(`[ProfitBrain] ${recs.length} recommendations`);
-    } catch (e) { console.error('[ProfitBrain] error:', e.message); }
-  }, 4 * 60 * 60 * 1000);
-}, 30 * 60 * 1000);
-
-// CS Agent — every 30 minutes
-setInterval(async () => {
-  try {
-    const { CSAgent } = require('./src/agents/cs-agent');
-    const recs = await new CSAgent().run();
-    if (recs.length > 0) console.log(`[CSAgent] ${recs.length} drafts ready`);
-  } catch (e) { console.error('[CSAgent] error:', e.message); }
-}, 30 * 60 * 1000);
 
 // Daily agents
 const scheduleDaily = (hour, name, factory) => {
@@ -206,8 +189,6 @@ const scheduleDaily = (hour, name, factory) => {
 
 scheduleDaily(3, 'SourcingAgent', async () => { const { SourcingAgent } = require('./src/agents/sourcing-agent'); await new SourcingAgent().run(); });
 scheduleDaily(6, 'OperationsAgent', async () => { const { OperationsAgent } = require('./src/agents/operations-agent'); await new OperationsAgent().run(); });
-scheduleDaily(8, 'StrategyAgent', async () => { const { StrategyAgent } = require('./src/agents/strategy-agent'); await new StrategyAgent().run(); });
-scheduleDaily(9, 'SalesAgent', async () => { const { SalesAgent } = require('./src/agents/sales-agent'); await new SalesAgent().run(); });
 
-console.log('[Agents] All AI agents active (Supabase + eBay API only, no Google Sheets)');
+console.log('[Agents] active: margin-agent (4h), sourcing-agent (03:00), operations-agent (06:00)');
 

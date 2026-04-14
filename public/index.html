@@ -316,8 +316,6 @@
     <div class="menu-title">자동화</div>
     <a href="https://ccorea-auto.fly.dev" target="_blank" class="menu-item" style="color:#ff5722;font-weight:600;text-decoration:none;display:block">리스팅 자동화 ↗</a>
     <div class="menu-item" data-page="crawl-results">크롤링 결과</div>
-    <div class="menu-title" style="color:#ff9800;margin-top:8px">AI 에이전트</div>
-    <div class="menu-item" data-page="agent-dashboard" style="color:#ff9800;font-weight:600">AI 권장사항</div>
     <div class="menu-title" style="color:#64b5f6;margin-top:8px">── 운영 관리 ──</div>
     <div class="menu-item ops-menu" data-page="ops-products" style="color:#81d4fa;font-weight:600">상품 검색/관리</div>
     <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">재고 관리</div>
@@ -347,22 +345,6 @@
 
     <!-- ===== 대시보드 페이지 ===== -->
     <div id="page-dashboard" class="page active">
-      <!-- AI 에이전트 요약 배너 -->
-      <div id="agentSummaryBanner" class="stats" style="display:none;">
-        <div class="stat-card" style="background:linear-gradient(135deg,#ff9800,#f57c00);color:#fff;cursor:pointer" onclick="showPage('agent-dashboard')">
-          <div style="font-size:14px;opacity:0.9">AI 대기중 제안</div>
-          <div style="font-size:28px;font-weight:700" id="agentPendingCount">-</div>
-        </div>
-        <div class="stat-card" style="background:linear-gradient(135deg,#f44336,#d32f2f);color:#fff;cursor:pointer" onclick="showPage('agent-dashboard')">
-          <div style="font-size:14px;opacity:0.9">긴급 알림</div>
-          <div style="font-size:28px;font-weight:700" id="agentCriticalCount">-</div>
-        </div>
-        <div class="stat-card" style="background:linear-gradient(135deg,#4caf50,#388e3c);color:#fff">
-          <div style="font-size:14px;opacity:0.9">오늘 실행</div>
-          <div style="font-size:28px;font-weight:700" id="agentExecutedCount">-</div>
-        </div>
-      </div>
-
       <!-- 플랫폼 카드 -->
       <div class="stats" id="platformCards"></div>
 
@@ -422,88 +404,6 @@
             <button class="sync-btn" data-platform="alibaba">Alibaba</button>
             <button class="sync-btn" data-platform="shopee">Shopee</button>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ===== AI 에이전트 대시보드 ===== -->
-    <div id="page-agent-dashboard" class="page">
-      <div class="card">
-        <div class="card-header">
-          <h3 style="color:#ff9800">AI 에이전트 권장사항</h3>
-          <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <select id="agentSelector" style="padding:6px 12px;border-radius:4px;border:1px solid #555;background:#222;color:#fff">
-              <option value="margin-agent">Margin Agent</option>
-              <option value="profit-brain">Profit Brain</option>
-              <option value="sourcing-agent">Sourcing Agent</option>
-              <option value="cs-agent">CS Agent</option>
-              <option value="sales-agent">Sales Agent</option>
-              <option value="operations-agent">Operations Agent</option>
-              <option value="marketing-agent">Marketing Agent</option>
-              <option value="strategy-agent">Strategy Agent</option>
-            </select>
-            <button onclick="agentRunNow(document.getElementById('agentSelector').value)" style="background:#ff9800;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer">실행</button>
-            <button onclick="loadAgentDashboard()" style="background:#333;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer">새로고침</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Alert Banner -->
-      <div id="agentAlertBanner" style="display:none"></div>
-
-      <!-- Summary Cards -->
-      <div class="stats" id="agentSummaryCards">
-        <div class="stat-card"><div style="font-size:13px;color:#999">대기중</div><div style="font-size:24px;font-weight:700" id="adPending">-</div></div>
-        <div class="stat-card"><div style="font-size:13px;color:#999">긴급 알림</div><div style="font-size:24px;font-weight:700;color:#f44336" id="adCritical">-</div></div>
-        <div class="stat-card"><div style="font-size:13px;color:#999">오늘 실행</div><div style="font-size:24px;font-weight:700;color:#4caf50" id="adExecuted">-</div></div>
-        <div class="stat-card"><div style="font-size:13px;color:#999">마지막 실행</div><div style="font-size:13px;font-weight:600" id="adLastRun">-</div></div>
-      </div>
-
-      <!-- Filter Tabs -->
-      <div class="card" style="padding:8px 16px">
-        <div style="display:flex;gap:8px">
-          <button class="agent-filter-btn active" data-filter="">전체</button>
-          <button class="agent-filter-btn" data-filter="pending">대기</button>
-          <button class="agent-filter-btn" data-filter="approved">승인됨</button>
-          <button class="agent-filter-btn" data-filter="auto_approved">자동승인</button>
-          <button class="agent-filter-btn" data-filter="executed">실행됨</button>
-          <button class="agent-filter-btn" data-filter="dismissed">기각</button>
-        </div>
-      </div>
-
-      <!-- Recommendations Table -->
-      <div class="card">
-        <table class="data-table" style="width:100%">
-          <thead>
-            <tr>
-              <th style="width:30px"></th>
-              <th>SKU</th>
-              <th>상품명</th>
-              <th>유형</th>
-              <th>현재가</th>
-              <th>제안가</th>
-              <th>마진</th>
-              <th>사유</th>
-              <th>상태</th>
-              <th>액션</th>
-            </tr>
-          </thead>
-          <tbody id="agentRecsTable"></tbody>
-        </table>
-        <div id="agentRecsPagination" style="text-align:center;padding:12px"></div>
-      </div>
-
-      <!-- Audit Log (collapsible) -->
-      <div class="card">
-        <div class="card-header" style="cursor:pointer" onclick="document.getElementById('auditLogBody').style.display=document.getElementById('auditLogBody').style.display==='none'?'block':'none'">
-          <h3>감사 로그</h3>
-          <span style="color:#999;font-size:13px">클릭하여 펼치기/접기</span>
-        </div>
-        <div id="auditLogBody" style="display:none">
-          <table class="data-table" style="width:100%">
-            <thead><tr><th>시각</th><th>에이전트</th><th>액션</th><th>SKU</th><th>결정</th><th>결과</th></tr></thead>
-            <tbody id="auditLogTable"></tbody>
-          </table>
         </div>
       </div>
     </div>
@@ -2908,7 +2808,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="/js/dashboard.js?v=20260402a"></script>
   <script src="/js/operations.js?v=20260315e"></script>
-  <script src="/js/agent-dashboard.js?v=20260324a"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->
   <script src="/js/tasks.js?v=1"></script>
   <script src="/js/orders.js?v=1"></script>

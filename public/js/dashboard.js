@@ -80,7 +80,6 @@ function navigateTo(page) {
     case 'ops-profit':    if (window.opsProfit)     opsProfit.load();    break;
     case 'ops-competitor':if (window.opsCompetitor) opsCompetitor.load();break;
     case 'ops-logs':      if (window.opsLogs)       opsLogs.load();      break;
-    case 'agent-dashboard': if (window.loadAgentDashboard) loadAgentDashboard(); break;
     // ── 업무관리 (Phase 1~5) ──
     case 'tasks':        if (window.pmcTasks)      pmcTasks.load();      break;
     case 'orders':       if (window.pmcOrders)     pmcOrders.load();     break;
@@ -282,10 +281,9 @@ async function loadDashboard() {
     updateLastUpdated(data.timestamp);
     loadProducts();
 
-    // 매출 요약 + 마스터 상품 로드 + AI 에이전트 요약
+    // 매출 요약 + 마스터 상품 로드
     loadSummaryCards();
     loadDashboardMasterProducts();
-    if (window.loadAgentSummary) loadAgentSummary();
   } catch (err) {
     console.error('Dashboard load failed:', err);
   } finally {

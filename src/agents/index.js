@@ -1,39 +1,25 @@
 /**
- * Agent System — PMC AI Executive Team
+ * Agent System — PMC
  *
- * v1 (Monitoring):
- * - margin-agent:      eBay repricing recommendations (every 4h)
- * - profit-brain:      Net profit analysis + margin defense (every 4h)
- * - sourcing-agent:    Competitor price battle report (daily 03:00)
+ * 유지 중인 에이전트 (3개):
+ * - margin-agent:     eBay 가격 자동 조정 (4h)
+ * - sourcing-agent:   경쟁사 배틀 리포트 (일 03:00, 텔레그램 알림)
+ * - operations-agent: 재고/단종 탐지 + team_tasks 자동 생성 (일 06:00)
  *
- * v2 (Action):
- * - cs-agent:          Read buyer messages → draft replies → send on approve (every 30min)
- * - sales-agent:       B2B pipeline: detect leads, cold email, follow-up (daily 09:00)
- * - operations-agent:  Keywords, inventory, task management (daily 06:00)
- * - marketing-agent:   Title optimization, ads, cross-platform gaps (weekly Mon 07:00)
- * - strategy-agent:    Morning briefing aggregating all agents (daily 08:00)
+ * 제거됨: profit-brain, strategy-agent, marketing-agent, cs-agent, sales-agent
+ * (중복·비실행·LLM 미사용으로 실질 가치 낮아 2026-04 정리)
  */
 const { MarginAgent } = require('./margin-agent');
-const { ProfitBrainAgent } = require('./profit-brain');
 const { SourcingAgent } = require('./sourcing-agent');
-const { CSAgent } = require('./cs-agent');
-const { SalesAgent } = require('./sales-agent');
 const { OperationsAgent } = require('./operations-agent');
-const { MarketingAgent } = require('./marketing-agent');
-const { StrategyAgent } = require('./strategy-agent');
 const { AgentBase } = require('./core/agent-base');
 const { AuditLogger } = require('./core/audit-logger');
 const { ProfitCalculator } = require('./core/profit-calculator');
 
 const agents = {
   'margin-agent': MarginAgent,
-  'profit-brain': ProfitBrainAgent,
   'sourcing-agent': SourcingAgent,
-  'cs-agent': CSAgent,
-  'sales-agent': SalesAgent,
   'operations-agent': OperationsAgent,
-  'marketing-agent': MarketingAgent,
-  'strategy-agent': StrategyAgent,
 };
 
 async function runAgent(name) {
@@ -52,8 +38,7 @@ async function runAll() {
 }
 
 module.exports = {
-  MarginAgent, ProfitBrainAgent, SourcingAgent, CSAgent,
-  SalesAgent, OperationsAgent, MarketingAgent, StrategyAgent,
+  MarginAgent, SourcingAgent, OperationsAgent,
   AgentBase, AuditLogger, ProfitCalculator,
   agents, runAgent, runAll,
 };
