@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Credentials - NEVER commit these!
+config/credentials.json
+config/.env
+
+# Data files (contains sensitive/large data)
+data/
+!data/.gitkeep
+
+# Uploaded files
+public/uploads/
+
+# Backups
+backups/
+
+# Example files to keep
+!config/credentials.example.json
+!config/.env.example
+
+# Logs
+*.log
+npm-debug.log*
+data/sync-logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+nul
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Archive (old versions)
+archive/
+
+# Next.js / webapp specific
+pmc-nextjs/.next/
+pmc-nextjs/node_modules/
+webapp/__pycache__/
+
+# Automation server (ccorea-auto)
+automation/node_modules/
+automation/.env
+automation/.env 2
+automation/.env.sample
+automation/.DS_Store
+automation/data/
