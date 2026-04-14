@@ -141,6 +141,37 @@ router.get('/products', async (req, res) => {
     const pg = parseInt(page) || 1;
     const offset = (pg - 1) * lim;
 
+    // naver/alibaba/shopee → platform_listings 공통 분기
+    if (platform === 'naver' || platform === 'alibaba' || platform === 'shopee') {
+      const sortBy = req.query.sort || 'updated_at';
+      const sortDir = req.query.dir === 'asc' ? true : false;
+      const sortCol = { price: 'price', stock: 'quantity', title: 'title', updated: 'updated_at' }[sortBy] || 'updated_at';
+      let q = db.from('platform_listings')
+        .select('*', { count: 'exact' })
+        .eq('platform', platform)
+        .order(sortCol, { ascending: sortDir });
+      if (search) q = q.or(`sku.ilike.%${search}%,title.ilike.%${search}%,platform_item_id.ilike.%${search}%`);
+      q = q.range(offset, offset + lim - 1);
+      const { data, count } = await q;
+      const platformLabel = { naver: '네이버', alibaba: 'Alibaba', shopee: 'Shopee' }[platform];
+      return res.json({
+        products: (data || []).map(r => ({
+          sku: r.sku || r.platform_sku || '',
+          itemId: r.platform_item_id || '',
+          title: r.title || '',
+          price: String(r.price || ''),
+          shipping: String(r.shipping_cost || 0),
+          platform: platformLabel,
+          imageUrl: r.image_url || '',
+          editId: r.platform_item_id || r.sku || '',
+          quantity: String(r.quantity || ''),
+        })),
+        total: count || 0,
+        page: pg,
+        totalPages: Math.ceil((count || 0) / lim),
+      });
+    }
+
     // Platform-specific DB query with pagination
     if (platform === 'ebay') {
       const sortBy = req.query.sort || 'updated_at';

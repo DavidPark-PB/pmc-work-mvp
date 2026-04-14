@@ -109,18 +109,44 @@ let scheduled = false;
 function start() {
   if (scheduled) { console.log('[scheduler] 이미 시작됨'); return; }
 
-  // 매일 오전 9시 정각
+  // 매일 오전 9시 정각 — 오늘 할 일 다이제스트
   cron.schedule('0 9 * * *', () => {
     sendMorningDigest().catch(e => console.error('[scheduler] morning error:', e));
   }, { timezone: TZ });
 
-  // 매일 오후 5시 정각
+  // 매일 오후 5시 정각 — 사장 미완료 요약
   cron.schedule('0 17 * * *', () => {
     sendEveningOwnerSummary().catch(e => console.error('[scheduler] evening error:', e));
   }, { timezone: TZ });
 
+  // 매일 새벽 4시 — 네이버/쇼피/알리바바 상품 동기화
+  cron.schedule('0 4 * * *', async () => {
+    const sync = require('./platformSync');
+    const results = {};
+    try { results.naver = await sync.syncNaverList(); }
+    catch (e) { results.naver = { error: e.message }; }
+    try { results.shopee = await sync.syncShopeeAll(); }
+    catch (e) { results.shopee = { error: e.message }; }
+    try { results.alibaba = await sync.syncAlibabaAll(); }
+    catch (e) { results.alibaba = { error: e.message }; }
+    console.log('[scheduler] 4am platform sync done:', JSON.stringify(results));
+  }, { timezone: TZ });
+
+  // 매시 정각 (09~21시 사이) — 네이버 detail 보강 (배치 100)
+  cron.schedule('0 9-21 * * *', async () => {
+    try {
+      const sync = require('./platformSync');
+      const r = await sync.enrichNaverDetails(100);
+      if (r.synced > 0 || r.remaining > 0) {
+        console.log(`[scheduler] naver enrich: ${r.synced} synced, ${r.remaining} remaining`);
+      }
+    } catch (e) {
+      console.error('[scheduler] naver enrich error:', e.message);
+    }
+  }, { timezone: TZ });
+
   scheduled = true;
-  console.log('[scheduler] 알림 스케줄러 활성화 (오전 9시, 오후 5시, KST)');
+  console.log('[scheduler] 활성화 — 9시(digest)·17시(summary)·4시(platform sync)·매시(naver enrich)');
 }
 
 module.exports = { start, sendMorningDigest, sendEveningOwnerSummary };
