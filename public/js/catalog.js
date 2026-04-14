@@ -117,6 +117,7 @@
           <thead>
             <tr style="background:#0f0f23;">
               <th style="padding:10px;text-align:center;">#</th>
+              <th style="padding:10px;text-align:center;">이미지</th>
               <th style="padding:10px;text-align:left;">상품명</th>
               <th style="padding:10px;text-align:left;">세트 코드</th>
               <th style="padding:10px;text-align:right;">USD (편집)</th>
@@ -135,9 +136,13 @@
 
   function renderRow(it) {
     const rowKey = `${it.rowIndex}-${it.side}`;
+    const imgCell = it.image
+      ? `<img src="/api/img-proxy?url=${encodeURIComponent(it.image)}" onerror="this.src='${esc(it.image)}';this.onerror=null;" style="width:52px;height:52px;object-fit:contain;background:#fff;border-radius:4px;">`
+      : '<div style="width:52px;height:52px;background:#0f0f23;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#555;font-size:10px;">없음</div>';
     return `
       <tr style="border-bottom:1px solid #2a2a4a;">
         <td style="padding:8px;text-align:center;color:#888;font-size:12px;">${esc(it.num)}</td>
+        <td style="padding:8px;text-align:center;">${imgCell}</td>
         <td style="padding:8px;white-space:pre-wrap;">${esc(it.name)}</td>
         <td style="padding:8px;color:#81d4fa;"><code>${esc(it.setCode)}</code></td>
         <td style="padding:8px;text-align:right;white-space:nowrap;">

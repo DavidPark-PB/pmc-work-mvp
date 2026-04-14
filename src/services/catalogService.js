@@ -143,8 +143,62 @@ async function parseTab(tabName) {
   return items;
 }
 
+// ── 이미지 매칭: platform_listings에서 SET CODE로 검색 (1h 캐시) ──
+const _imgCache = new Map(); // key: setCode (lowercase) → { at, url }
+const IMG_TTL = 60 * 60 * 1000;
+
+async function findImageForCode(code) {
+  if (!code) return '';
+  const key = String(code).toLowerCase().trim();
+  const cached = _imgCache.get(key);
+  if (cached && Date.now() - cached.at < IMG_TTL) return cached.url;
+
+  try {
+    const { getClient } = require('../db/supabaseClient');
+    const db = getClient();
+    // ILIKE + 여러 우선순위: 정확 SKU 매칭 → title 포함
+    const { data } = await db
+      .from('platform_listings')
+      .select('image_url, sku, title, platform')
+      .or(`sku.ilike.%${key}%,title.ilike.%${key}%`)
+      .not('image_url', 'is', null)
+      .neq('image_url', '')
+      .limit(1);
+
+    const url = data?.[0]?.image_url || '';
+    _imgCache.set(key, { at: Date.now(), url });
+    return url;
+  } catch (e) {
+    return '';
+  }
+}
+
+async function attachImages(items) {
+  // 중복 제거된 set code 목록
+  const uniqueCodes = [...new Set(items.map(it => it.setCode).filter(Boolean))];
+  // 병렬로 조회 (캐시 히트는 즉시)
+  const pairs = await Promise.all(uniqueCodes.map(async c => [c.toLowerCase(), await findImageForCode(c)]));
+  const map = new Map(pairs);
+
+  // setCode 없는 경우: 상품명 앞 20자로 검색 시도
+  for (const it of items) {
+    const codeKey = (it.setCode || '').toLowerCase();
+    if (map.has(codeKey) && map.get(codeKey)) {
+      it.image = map.get(codeKey);
+    } else if (!it.image && it.name) {
+      // name 기반 fallback — 처음 한 번만
+      const nameKey = it.name.split(/\s+/).slice(0, 3).join(' ').toLowerCase();
+      if (nameKey.length > 5) {
+        const byName = await findImageForCode(nameKey);
+        if (byName) it.image = byName;
+      }
+    }
+  }
+  return items;
+}
+
 /**
- * 카탈로그 전체 조회 — 탭별 아이템 + 환율 + 계산된 KRW/EUR
+ * 카탈로그 전체 조회 — 탭별 아이템 + 환율 + 계산된 KRW/EUR + 이미지 매칭
  */
 async function getCatalog(tabName) {
   const tabs = await listTabs();
@@ -152,6 +206,7 @@ async function getCatalog(tabName) {
   const tab = tabName || defaultTab;
 
   const [items, rates] = await Promise.all([parseTab(tab), getRates()]);
+  await attachImages(items);
 
   const enriched = items.map(it => ({
     ...it,
