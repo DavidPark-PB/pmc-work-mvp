@@ -37,4 +37,38 @@ router.put('/prices', requireAdmin, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ── 수동 환율 편집 ──
+// PUT /api/catalog/rates  body: { usdToKrw?, usdToEur? }  (null 보내면 자동 모드로 복원)
+router.put('/rates', requireAdmin, async (req, res) => {
+  try {
+    const { usdToKrw, usdToEur } = req.body || {};
+    const payload = { userId: req.user.id };
+    if (usdToKrw !== undefined) payload.usdToKrw = usdToKrw;
+    if (usdToEur !== undefined) payload.usdToEur = usdToEur;
+    await service.setManualRates(payload);
+    const rates = await service.getRates();
+    res.json({ ok: true, rates });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ── 이미지 수동 지정 ──
+// PUT /api/catalog/image  body: { tab, rowIndex, side, imageUrl }
+// imageUrl이 빈 문자열/null이면 override 삭제 (자동 매칭으로 복원)
+router.put('/image', requireAdmin, async (req, res) => {
+  try {
+    const { tab, rowIndex, side, imageUrl } = req.body || {};
+    if (!tab || !rowIndex || !['left', 'right'].includes(side)) {
+      return res.status(400).json({ error: 'tab, rowIndex, side 필수' });
+    }
+    const result = await service.setImageOverride({
+      tab,
+      rowIndex: parseInt(rowIndex, 10),
+      side,
+      imageUrl: imageUrl ? String(imageUrl).trim() : null,
+      userId: req.user.id,
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 module.exports = router;

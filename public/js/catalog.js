@@ -24,8 +24,11 @@
           <h1 style="font-size:22px;color:#fff;margin:0;">📗 카탈로그 가격 관리</h1>
           <p style="color:#888;font-size:13px;margin:4px 0 0;">USD 편집 시 KRW/EURO 시트 자동 동기화</p>
         </div>
-        <div style="background:#1a1a2e;padding:10px 14px;border-radius:8px;border:1px solid #2a2a4a;min-width:240px;">
-          <div style="font-size:11px;color:#888;margin-bottom:2px;">적용 환율 (시장환율 - 마진)</div>
+        <div style="background:#1a1a2e;padding:10px 14px;border-radius:8px;border:1px solid #2a2a4a;min-width:260px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+            <span style="font-size:11px;color:#888;">적용 환율 <span id="cat-rates-mode" style="color:#81c784;"></span></span>
+            <button onclick="pmcCatalog.openFxModal()" style="background:#7c4dff;color:#fff;border:0;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;">편집</button>
+          </div>
           <div id="cat-rates" style="font-size:13px;color:#fff;font-weight:600;">로딩…</div>
           <div id="cat-rates-market" style="font-size:10px;color:#666;margin-top:2px;"></div>
         </div>
@@ -76,11 +79,16 @@
     const r = state.rates;
     const el = document.getElementById('cat-rates');
     const mkt = document.getElementById('cat-rates-market');
+    const mode = document.getElementById('cat-rates-mode');
     if (!el || !r) return;
     el.textContent = `1 USD = ₩${Math.round(r.usdToKrw).toLocaleString()} · €${r.usdToEur.toFixed(3)}`;
     if (mkt && r.marketKrw != null) {
-      mkt.textContent = `시장: ₩${Math.round(r.marketKrw).toLocaleString()} · €${r.marketEur.toFixed(3)}  (마진 -${r.marginKrw}원 / -${r.marginEur}€)`;
+      const manual = r.mode === 'manual';
+      mkt.textContent = manual
+        ? `시장: ₩${Math.round(r.marketKrw).toLocaleString()} · €${r.marketEur.toFixed(3)}  (수동 입력값 사용 중)`
+        : `시장: ₩${Math.round(r.marketKrw).toLocaleString()} · €${r.marketEur.toFixed(3)}  (마진 -${r.marginKrw}원 / -${r.marginEur}€)`;
     }
+    if (mode) mode.textContent = r.mode === 'manual' ? '· 수동' : '· 자동';
   }
 
   function renderTabSelector() {
@@ -141,9 +149,16 @@
 
   function renderRow(it) {
     const rowKey = `${it.rowIndex}-${it.side}`;
-    const imgCell = it.image
+    const manualBadge = it.imageSource === 'manual' ? '<div style="position:absolute;top:-4px;right:-4px;background:#7c4dff;color:#fff;font-size:9px;padding:1px 4px;border-radius:6px;" title="수동 지정">M</div>' : '';
+    const imgInner = it.image
       ? `<img src="/api/img-proxy?url=${encodeURIComponent(it.image)}" onerror="this.src='${esc(it.image)}';this.onerror=null;" style="width:52px;height:52px;object-fit:contain;background:#fff;border-radius:4px;">`
       : '<div style="width:52px;height:52px;background:#0f0f23;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#555;font-size:10px;">없음</div>';
+    const imgCell = `
+      <div style="position:relative;display:inline-block;">
+        ${imgInner}
+        ${manualBadge}
+        <button onclick="pmcCatalog.editImage(${it.rowIndex}, '${it.side}')" title="이미지 URL 수정" style="display:block;margin-top:2px;padding:1px 6px;background:#2a2a4a;color:#aaa;border:0;border-radius:3px;cursor:pointer;font-size:10px;width:100%;">수정</button>
+      </div>`;
     return `
       <tr style="border-bottom:1px solid #2a2a4a;">
         <td style="padding:8px;text-align:center;color:#888;font-size:12px;">${esc(it.num)}</td>
@@ -214,5 +229,82 @@
     setTimeout(() => t.remove(), 2500);
   }
 
-  window.pmcCatalog = { load, refresh, onTabChange, setCategory, savePrice };
+  // ── 환율 편집 모달 ──
+  function openFxModal() {
+    const r = state.rates || {};
+    const curKrw = Math.round(r.usdToKrw || 0);
+    const curEur = (r.usdToEur || 0).toFixed(3);
+    const html = `
+      <div id="fx-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:var(--space-4);">
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;width:420px;max-width:90vw;">
+          <h2 style="color:#fff;font-size:17px;margin:0 0 12px;">환율 편집</h2>
+          <p style="color:#888;font-size:12px;margin:0 0 16px;">숫자를 입력하면 수동 모드. 비워두면 자동(시장환율 - 마진)로 복원됩니다.</p>
+
+          <div style="background:#0f0f23;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-size:12px;color:#aaa;">
+            시장 환율: ₩${Math.round(r.marketKrw||0).toLocaleString()} · €${(r.marketEur||0).toFixed(3)}
+          </div>
+
+          <div style="margin-bottom:10px;">
+            <label style="display:block;color:#888;font-size:12px;margin-bottom:4px;">USD → KRW (원)</label>
+            <input id="fx-krw" type="number" step="0.01" min="0" placeholder="예: 1440" value="${curKrw || ''}" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+          </div>
+          <div style="margin-bottom:16px;">
+            <label style="display:block;color:#888;font-size:12px;margin-bottom:4px;">USD → EUR</label>
+            <input id="fx-eur" type="number" step="0.001" min="0" placeholder="예: 0.820" value="${curEur || ''}" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+          </div>
+
+          <div style="display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap;">
+            <button onclick="pmcCatalog.closeFxModal()" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
+            <button onclick="pmcCatalog.resetFxAuto()" style="padding:8px 14px;background:#555;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">자동(시장환율)으로 복원</button>
+            <button onclick="pmcCatalog.saveFx()" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">저장</button>
+          </div>
+        </div>
+      </div>`;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    document.body.appendChild(wrap.firstElementChild);
+  }
+  function closeFxModal() { document.getElementById('fx-modal')?.remove(); }
+
+  async function saveFx() {
+    const krw = document.getElementById('fx-krw').value.trim();
+    const eur = document.getElementById('fx-eur').value.trim();
+    const body = {};
+    body.usdToKrw = krw === '' ? null : Number(krw);
+    body.usdToEur = eur === '' ? null : Number(eur);
+    const res = await fetch('/api/catalog/rates', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) { alert('저장 실패: ' + (await res.json()).error); return; }
+    closeFxModal();
+    refresh();
+  }
+
+  async function resetFxAuto() {
+    const res = await fetch('/api/catalog/rates', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ usdToKrw: null, usdToEur: null }),
+    });
+    if (!res.ok) { alert('복원 실패'); return; }
+    closeFxModal();
+    refresh();
+  }
+
+  // ── 이미지 수동 지정 ──
+  async function editImage(rowIndex, side) {
+    const current = (state.items.find(it => it.rowIndex === rowIndex && it.side === side) || {}).image || '';
+    const url = prompt('이미지 URL을 입력하세요 (빈 값 = 자동 매칭으로 복원):', current);
+    if (url === null) return; // cancel
+    const res = await fetch('/api/catalog/image', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tab: state.tab, rowIndex, side, imageUrl: url.trim() }),
+    });
+    if (!res.ok) { alert('저장 실패: ' + (await res.json()).error); return; }
+    refresh();
+  }
+
+  window.pmcCatalog = {
+    load, refresh, onTabChange, setCategory, savePrice,
+    openFxModal, closeFxModal, saveFx, resetFxAuto, editImage,
+  };
 })();

@@ -46,29 +46,115 @@ function getMargins() {
 
 let _fxCache = { at: 0 };
 async function getRates() {
-  if (Date.now() - _fxCache.at < 60 * 60 * 1000 && _fxCache.usdToKrw) return _fxCache;
-
+  // DB 수동 환율이 있으면 최우선 (캐시 우회)
+  const manual = await getManualRates();
   let market = { krw: 1380, eur: 0.92 };
-  try {
-    const r = await axios.get('https://api.frankfurter.app/latest?from=USD&to=KRW,EUR', { timeout: 8000 });
-    market.krw = Number(r.data?.rates?.KRW) || market.krw;
-    market.eur = Number(r.data?.rates?.EUR) || market.eur;
-  } catch (e) {
-    // 실패 시 직전 마켓 유지 (없으면 폴백)
-    if (_fxCache.marketKrw) { market.krw = _fxCache.marketKrw; market.eur = _fxCache.marketEur; }
+
+  // 시장 환율은 캐시 (수동/자동 어느쪽이든 UI에 표시용으로 필요)
+  if (Date.now() - _fxCache.at < 60 * 60 * 1000 && _fxCache.marketKrw) {
+    market.krw = _fxCache.marketKrw;
+    market.eur = _fxCache.marketEur;
+  } else {
+    try {
+      const r = await axios.get('https://api.frankfurter.app/latest?from=USD&to=KRW,EUR', { timeout: 8000 });
+      market.krw = Number(r.data?.rates?.KRW) || market.krw;
+      market.eur = Number(r.data?.rates?.EUR) || market.eur;
+    } catch (e) {
+      if (_fxCache.marketKrw) { market.krw = _fxCache.marketKrw; market.eur = _fxCache.marketEur; }
+    }
   }
 
   const m = getMargins();
+  const mode = manual.usdToKrw != null || manual.usdToEur != null ? 'manual' : 'auto';
+  const usdToKrw = manual.usdToKrw != null ? manual.usdToKrw : Math.max(0, market.krw - m.krw);
+  const usdToEur = manual.usdToEur != null ? manual.usdToEur : Math.max(0, market.eur - m.eur);
+
   _fxCache = {
     at: Date.now(),
     marketKrw: market.krw,
     marketEur: market.eur,
     marginKrw: m.krw,
     marginEur: m.eur,
-    usdToKrw: Math.max(0, market.krw - m.krw),   // 적용 환율 (지정환율)
-    usdToEur: Math.max(0, market.eur - m.eur),
+    usdToKrw,
+    usdToEur,
+    mode,
   };
   return _fxCache;
+}
+
+// ── DB 기반 수동 환율/이미지 ─────────────────────
+async function getManualRates() {
+  try {
+    const { getClient } = require('../db/supabaseClient');
+    const { data } = await getClient()
+      .from('catalog_settings')
+      .select('key, value')
+      .in('key', ['usd_to_krw', 'usd_to_eur']);
+    const map = {};
+    (data || []).forEach(r => { map[r.key] = r.value; });
+    const toNum = v => {
+      if (v == null || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    return {
+      usdToKrw: toNum(map.usd_to_krw),
+      usdToEur: toNum(map.usd_to_eur),
+    };
+  } catch (e) {
+    return { usdToKrw: null, usdToEur: null };
+  }
+}
+
+async function setManualRates({ usdToKrw, usdToEur, userId }) {
+  const { getClient } = require('../db/supabaseClient');
+  const db = getClient();
+  const rows = [];
+  if (usdToKrw !== undefined) rows.push({ key: 'usd_to_krw', value: usdToKrw === null ? null : String(usdToKrw), updated_at: new Date().toISOString(), updated_by: userId });
+  if (usdToEur !== undefined) rows.push({ key: 'usd_to_eur', value: usdToEur === null ? null : String(usdToEur), updated_at: new Date().toISOString(), updated_by: userId });
+  for (const r of rows) {
+    const { error } = await db.from('catalog_settings').upsert(r, { onConflict: 'key' });
+    if (error) throw error;
+  }
+  // fxCache 즉시 무효화
+  _fxCache = { at: 0 };
+}
+
+async function getImageOverrides(tab) {
+  try {
+    const { getClient } = require('../db/supabaseClient');
+    const { data } = await getClient()
+      .from('catalog_image_overrides')
+      .select('row_index, side, image_url')
+      .eq('tab', tab);
+    const map = new Map();
+    for (const r of data || []) {
+      map.set(`${r.row_index}-${r.side}`, r.image_url);
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
+async function setImageOverride({ tab, rowIndex, side, imageUrl, userId }) {
+  const { getClient } = require('../db/supabaseClient');
+  const db = getClient();
+  if (!imageUrl) {
+    const { error } = await db
+      .from('catalog_image_overrides')
+      .delete()
+      .eq('tab', tab).eq('row_index', rowIndex).eq('side', side);
+    if (error) throw error;
+    return { deleted: true };
+  }
+  const { error } = await db.from('catalog_image_overrides').upsert({
+    tab, row_index: rowIndex, side, image_url: imageUrl,
+    updated_at: new Date().toISOString(),
+    updated_by: userId,
+  }, { onConflict: 'tab,row_index,side' });
+  if (error) throw error;
+  return { saved: true };
 }
 
 // ── 탭 목록 조회 ──
@@ -193,24 +279,32 @@ async function findImageForCode(code) {
   }
 }
 
-async function attachImages(items) {
-  // 중복 제거된 set code 목록
-  const uniqueCodes = [...new Set(items.map(it => it.setCode).filter(Boolean))];
-  // 병렬로 조회 (캐시 히트는 즉시)
-  const pairs = await Promise.all(uniqueCodes.map(async c => [c.toLowerCase(), await findImageForCode(c)]));
-  const map = new Map(pairs);
+async function attachImages(items, tab) {
+  // 1) 수동 override 우선 적용
+  const overrides = await getImageOverrides(tab);
 
-  // setCode 없는 경우: 상품명 앞 20자로 검색 시도
+  // 2) SET CODE 기반 매칭 (override 없는 것만)
+  const needMatching = items.filter(it => !overrides.has(`${it.rowIndex}-${it.side}`));
+  const uniqueCodes = [...new Set(needMatching.map(it => it.setCode).filter(Boolean))];
+  const pairs = await Promise.all(uniqueCodes.map(async c => [c.toLowerCase(), await findImageForCode(c)]));
+  const codeMap = new Map(pairs);
+
   for (const it of items) {
-    const codeKey = (it.setCode || '').toLowerCase();
-    if (map.has(codeKey) && map.get(codeKey)) {
-      it.image = map.get(codeKey);
-    } else if (!it.image && it.name) {
-      // name 기반 fallback — 처음 한 번만
-      const nameKey = it.name.split(/\s+/).slice(0, 3).join(' ').toLowerCase();
-      if (nameKey.length > 5) {
-        const byName = await findImageForCode(nameKey);
-        if (byName) it.image = byName;
+    const ovKey = `${it.rowIndex}-${it.side}`;
+    if (overrides.has(ovKey)) {
+      it.image = overrides.get(ovKey);
+      it.imageSource = 'manual';
+    } else {
+      const codeKey = (it.setCode || '').toLowerCase();
+      if (codeMap.has(codeKey) && codeMap.get(codeKey)) {
+        it.image = codeMap.get(codeKey);
+        it.imageSource = 'auto';
+      } else if (!it.image && it.name) {
+        const nameKey = it.name.split(/\s+/).slice(0, 3).join(' ').toLowerCase();
+        if (nameKey.length > 5) {
+          const byName = await findImageForCode(nameKey);
+          if (byName) { it.image = byName; it.imageSource = 'auto'; }
+        }
       }
     }
   }
@@ -226,7 +320,7 @@ async function getCatalog(tabName) {
   const tab = tabName || defaultTab;
 
   const [items, rates] = await Promise.all([parseTab(tab), getRates()]);
-  await attachImages(items);
+  await attachImages(items, tab);
 
   const enriched = items.map(it => ({
     ...it,
@@ -244,6 +338,7 @@ async function getCatalog(tabName) {
       marketEur: rates.marketEur,
       marginKrw: rates.marginKrw,
       marginEur: rates.marginEur,
+      mode: rates.mode,
       at: rates.at,
     },
     items: enriched,
@@ -291,4 +386,8 @@ async function updatePrice({ tab, rowIndex, side, usdPrice }) {
   };
 }
 
-module.exports = { getCatalog, updatePrice, listTabs, getRates, SHEET_IDS };
+module.exports = {
+  getCatalog, updatePrice, listTabs, getRates, SHEET_IDS,
+  getManualRates, setManualRates,
+  setImageOverride,
+};
