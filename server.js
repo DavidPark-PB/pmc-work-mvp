@@ -77,6 +77,11 @@ app.use('/api', apiRoutes);
 const opsRoutes = require('./src/web/routes/operations');
 app.use('/api/ops', opsRoutes);
 
+// ── 업무관리 모듈 (Phase 1) ──
+app.use('/api/users', require('./src/web/routes/users'));
+app.use('/api/tasks', require('./src/web/routes/tasks'));
+app.use('/api/notifications', require('./src/web/routes/notifications'));
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
