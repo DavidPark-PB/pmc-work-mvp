@@ -97,6 +97,7 @@ app.use('/api/bonuses', require('./src/web/routes/bonuses'));
 // ── 피드백 게시판 (Phase 4) ──
 app.use('/api/feedback', require('./src/web/routes/feedback'));
 app.use('/api/sync', require('./src/web/routes/platformSync'));
+app.use('/api/catalog', require('./src/web/routes/catalog'));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

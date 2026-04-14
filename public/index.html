@@ -291,6 +291,7 @@
     <div class="menu-item active" data-page="dashboard">대시보드</div>
     <div class="menu-title">상품 관리</div>
     <!-- 마스터 상품 메뉴 제거 — 상품검색/관리로 통합 -->
+    <div class="menu-item" data-page="catalog" style="color:#4db6ac;font-weight:600">📗 카탈로그 가격</div>
     <div class="menu-item" data-page="products">전체 상품</div>
     <!-- 상품 등록 메뉴 제거 — automation에서 처리 -->
     <div class="menu-item" data-page="remarker" style="color:#7c4dff;font-weight:600">AI 리메이커</div>
@@ -334,6 +335,9 @@
       <div class="spinner"></div>
       <p>데이터 로딩 중...</p>
     </div>
+
+    <!-- ===== 카탈로그 가격 (Google Sheets) ===== -->
+    <div id="page-catalog" class="page"></div>
 
     <!-- ===== 업무 관리 (Phase 1~5) ===== -->
     <div id="page-tasks" class="page"></div>
@@ -2808,6 +2812,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="/js/dashboard.js?v=20260402a"></script>
   <script src="/js/operations.js?v=20260315e"></script>
+  <script src="/js/catalog.js?v=1"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->
   <script src="/js/tasks.js?v=1"></script>
   <script src="/js/orders.js?v=1"></script>

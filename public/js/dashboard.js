@@ -80,6 +80,8 @@ function navigateTo(page) {
     case 'ops-profit':    if (window.opsProfit)     opsProfit.load();    break;
     case 'ops-competitor':if (window.opsCompetitor) opsCompetitor.load();break;
     case 'ops-logs':      if (window.opsLogs)       opsLogs.load();      break;
+    // ── 카탈로그 가격 (Google Sheets) ──
+    case 'catalog':      if (window.pmcCatalog)    pmcCatalog.load();    break;
     // ── 업무관리 (Phase 1~5) ──
     case 'tasks':        if (window.pmcTasks)      pmcTasks.load();      break;
     case 'orders':       if (window.pmcOrders)     pmcOrders.load();     break;
