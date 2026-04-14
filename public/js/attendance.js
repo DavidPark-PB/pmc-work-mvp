@@ -37,13 +37,24 @@
         <form id="att-form">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:10px;">
             <input type="date" id="att-date" required style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+            <select id="att-status" onchange="pmcAttendance.onStatusChange()" style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+              <option value="regular">✅ 정상</option>
+              <option value="late">⏰ 지각</option>
+              <option value="early_leave">🏃 조퇴</option>
+              <option value="day_off">🌴 휴무</option>
+              <option value="absence">❌ 결근</option>
+            </select>
             <input type="time" id="att-in" placeholder="출근" style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
             <input type="time" id="att-out" placeholder="퇴근" style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
           </div>
-          <input type="text" id="att-note" placeholder="메모 (휴무, 조퇴 등)" maxlength="500" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:10px;">
-          <div style="display:flex;gap:8px;">
+          <input type="text" id="att-note" placeholder="메모 / 사유" maxlength="500" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:6px;">
+          <div id="att-note-hint" style="font-size:11px;color:#888;margin-bottom:10px;display:none;">지각/조퇴/결근은 사유를 반드시 입력해야 합니다.</div>
+          <div id="att-time-buttons" style="display:flex;gap:8px;">
             <button type="button" onclick="pmcAttendance.fillNow('att-in')" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">▶ 출근 지금</button>
             <button type="button" onclick="pmcAttendance.fillNow('att-out')" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">■ 퇴근 지금</button>
+            <button type="submit" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">✓ 기록</button>
+          </div>
+          <div id="att-submit-only" style="display:none;">
             <button type="submit" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">✓ 기록</button>
           </div>
         </form>
@@ -84,11 +95,12 @@
             <tr style="background:#0f0f23;">
               ${user.isAdmin ? '<th style="padding:10px;text-align:left;">직원</th>' : ''}
               <th style="padding:10px;text-align:left;">날짜</th>
+              <th style="padding:10px;">근태</th>
               <th style="padding:10px;">출근</th>
               <th style="padding:10px;">퇴근</th>
               <th style="padding:10px;">근무</th>
               <th style="padding:10px;text-align:right;">일급</th>
-              <th style="padding:10px;text-align:left;">메모</th>
+              <th style="padding:10px;text-align:left;">메모 / 사유</th>
               ${user.isAdmin ? '<th></th>' : ''}
             </tr>
           </thead>
@@ -119,14 +131,23 @@
 
   function renderRows(items) {
     const tbody = document.getElementById('att-tbody');
+    const cols = user.isAdmin ? 9 : 7;
     if (!items || items.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="${user.isAdmin ? 8 : 6}" style="padding:30px;text-align:center;color:#888;">기록이 없습니다.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="${cols}" style="padding:30px;text-align:center;color:#888;">기록이 없습니다.</td></tr>`;
       return;
     }
+    const statusBadge = {
+      regular: '<span style="padding:2px 6px;background:#4caf50;color:#fff;border-radius:8px;font-size:10px;">정상</span>',
+      late: '<span style="padding:2px 6px;background:#ff9800;color:#fff;border-radius:8px;font-size:10px;">지각</span>',
+      early_leave: '<span style="padding:2px 6px;background:#ffa726;color:#fff;border-radius:8px;font-size:10px;">조퇴</span>',
+      day_off: '<span style="padding:2px 6px;background:#0288d1;color:#fff;border-radius:8px;font-size:10px;">휴무</span>',
+      absence: '<span style="padding:2px 6px;background:#e94560;color:#fff;border-radius:8px;font-size:10px;">결근</span>',
+    };
     tbody.innerHTML = items.map(r => `
       <tr style="border-bottom:1px solid #2a2a4a;">
         ${user.isAdmin ? `<td style="padding:10px;">${esc(r.employee?.display_name || '-')}</td>` : ''}
         <td style="padding:10px;"><code>${r.date}</code></td>
+        <td style="padding:10px;text-align:center;">${statusBadge[r.status] || statusBadge.regular}</td>
         <td style="padding:10px;text-align:center;">${r.clock_in || '-'}</td>
         <td style="padding:10px;text-align:center;">${r.clock_out || '-'}</td>
         <td style="padding:10px;text-align:center;">${r.work_hours ? Number(r.work_hours).toFixed(2) + 'h' : '-'}</td>
@@ -162,10 +183,13 @@
 
   async function submitAtt(e) {
     e.preventDefault();
+    const status = document.getElementById('att-status').value;
+    const noTimes = status === 'day_off' || status === 'absence';
     const payload = {
       date: document.getElementById('att-date').value,
-      clockIn: document.getElementById('att-in').value || undefined,
-      clockOut: document.getElementById('att-out').value || undefined,
+      status,
+      clockIn: noTimes ? undefined : (document.getElementById('att-in').value || undefined),
+      clockOut: noTimes ? undefined : (document.getElementById('att-out').value || undefined),
       note: document.getElementById('att-note').value.trim() || undefined,
     };
     const res = await fetch('/api/attendance', {
@@ -174,7 +198,33 @@
     if (!res.ok) { alert((await res.json()).error || '저장 실패'); return; }
     document.getElementById('att-form').reset();
     document.getElementById('att-date').value = todayStr();
+    onStatusChange();
     refresh();
+  }
+
+  function onStatusChange() {
+    const st = document.getElementById('att-status').value;
+    const noTimes = st === 'day_off' || st === 'absence';
+    const reasonRequired = st === 'late' || st === 'early_leave' || st === 'absence';
+    const timeIn = document.getElementById('att-in');
+    const timeOut = document.getElementById('att-out');
+    const noteHint = document.getElementById('att-note-hint');
+    const timeButtons = document.getElementById('att-time-buttons');
+    const submitOnly = document.getElementById('att-submit-only');
+    if (noTimes) {
+      timeIn.style.display = 'none';
+      timeOut.style.display = 'none';
+      timeIn.value = '';
+      timeOut.value = '';
+      timeButtons.style.display = 'none';
+      submitOnly.style.display = 'block';
+    } else {
+      timeIn.style.display = '';
+      timeOut.style.display = '';
+      timeButtons.style.display = 'flex';
+      submitOnly.style.display = 'none';
+    }
+    noteHint.style.display = reasonRequired ? 'block' : 'none';
   }
 
   async function del(id) {
@@ -212,5 +262,5 @@
     alert('시급이 저장되었습니다.');
   }
 
-  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate };
+  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange };
 })();

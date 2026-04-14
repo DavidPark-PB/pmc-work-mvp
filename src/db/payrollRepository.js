@@ -10,7 +10,7 @@ async function getMonthlySummary(month) {
   const c = getClient();
   const [attRes, bonusRes, staffRes] = await Promise.all([
     c.from('attendance')
-      .select('employee_id, work_hours, daily_pay')
+      .select('employee_id, work_hours, daily_pay, status')
       .gte('date', `${month}-01`)
       .lte('date', `${month}-31`),
     c.from('shopee_bonuses')
@@ -28,16 +28,27 @@ async function getMonthlySummary(month) {
 
   const attMap = new Map();
   for (const a of attRes.data || []) {
-    const cur = attMap.get(a.employee_id) || { totalHours: 0, totalBase: 0, workDays: 0 };
+    const cur = attMap.get(a.employee_id) || {
+      totalHours: 0, totalBase: 0, workDays: 0,
+      late: 0, earlyLeave: 0, dayOff: 0, absence: 0,
+    };
     cur.totalHours += Number(a.work_hours || 0);
     cur.totalBase += Number(a.daily_pay || 0);
-    cur.workDays += 1;
+    // 실근무일 = 시각이 찍힌 날 (regular/late/early_leave)
+    if (a.status !== 'day_off' && a.status !== 'absence') cur.workDays += 1;
+    if (a.status === 'late') cur.late += 1;
+    else if (a.status === 'early_leave') cur.earlyLeave += 1;
+    else if (a.status === 'day_off') cur.dayOff += 1;
+    else if (a.status === 'absence') cur.absence += 1;
     attMap.set(a.employee_id, cur);
   }
   const bonusMap = new Map((bonusRes.data || []).map(b => [b.employee_id, Number(b.bonus_amount)]));
 
   const summary = (staffRes.data || []).map(s => {
-    const att = attMap.get(s.id) || { totalHours: 0, totalBase: 0, workDays: 0 };
+    const att = attMap.get(s.id) || {
+      totalHours: 0, totalBase: 0, workDays: 0,
+      late: 0, earlyLeave: 0, dayOff: 0, absence: 0,
+    };
     const bonus = bonusMap.get(s.id) || 0;
     return {
       id: s.id,
@@ -49,6 +60,10 @@ async function getMonthlySummary(month) {
       basePay: att.totalBase,
       shopeeBonus: bonus,
       totalPay: att.totalBase + bonus,
+      late: att.late,
+      earlyLeave: att.earlyLeave,
+      dayOff: att.dayOff,
+      absence: att.absence,
     };
   });
   const grandTotal = summary.reduce((a, s) => a + s.totalPay, 0);

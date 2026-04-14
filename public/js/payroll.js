@@ -47,6 +47,7 @@
               <th style="padding:10px;text-align:right;">시급</th>
               <th style="padding:10px;text-align:center;">근무일</th>
               <th style="padding:10px;text-align:center;">총시간</th>
+              <th style="padding:10px;text-align:center;" title="지각/조퇴/결근/휴무">근태</th>
               <th style="padding:10px;text-align:right;">기본급</th>
               <th style="padding:10px;text-align:center;">Shopee 매출</th>
               <th style="padding:10px;text-align:right;">보너스</th>
@@ -85,13 +86,21 @@
       return { ...s, isShopee, revenue };
     }));
 
-    tbody.innerHTML = enriched.map(s => `
+    tbody.innerHTML = enriched.map(s => {
+      const badges = [];
+      if (s.late > 0) badges.push(`<span title="지각" style="padding:1px 5px;background:#ff9800;color:#fff;border-radius:6px;font-size:10px;">⏰${s.late}</span>`);
+      if (s.earlyLeave > 0) badges.push(`<span title="조퇴" style="padding:1px 5px;background:#ffa726;color:#fff;border-radius:6px;font-size:10px;">🏃${s.earlyLeave}</span>`);
+      if (s.absence > 0) badges.push(`<span title="결근" style="padding:1px 5px;background:#e94560;color:#fff;border-radius:6px;font-size:10px;">❌${s.absence}</span>`);
+      if (s.dayOff > 0) badges.push(`<span title="휴무" style="padding:1px 5px;background:#0288d1;color:#fff;border-radius:6px;font-size:10px;">🌴${s.dayOff}</span>`);
+      const attCell = badges.length ? badges.join(' ') : '<span style="color:#555;">-</span>';
+      return `
       <tr style="border-bottom:1px solid #2a2a4a;">
         <td style="padding:10px;"><strong>${esc(s.displayName)}</strong></td>
         <td style="padding:10px;color:#aaa;font-size:12px;">${esc(s.platform || '-')}</td>
         <td style="padding:10px;text-align:right;">${money(s.hourlyRate)}</td>
         <td style="padding:10px;text-align:center;">${s.workDays}일</td>
         <td style="padding:10px;text-align:center;">${s.totalHours.toFixed(2)}h</td>
+        <td style="padding:10px;text-align:center;white-space:nowrap;">${attCell}</td>
         <td style="padding:10px;text-align:right;">${money(s.basePay)}</td>
         <td style="padding:10px;text-align:center;">
           ${s.isShopee ? `
@@ -104,7 +113,8 @@
         <td style="padding:10px;text-align:right;color:#81c784;font-weight:600;">${s.shopeeBonus > 0 ? money(s.shopeeBonus) : '-'}</td>
         <td style="padding:10px;text-align:right;font-weight:700;">${money(s.totalPay)}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   }
 
   async function saveBonus(employeeId) {

@@ -28,12 +28,28 @@ function todayDateStr() {
 
 function isValidDateStr(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s); }
 
+/** 근태 유형 */
+const VALID_STATUSES = ['regular', 'late', 'early_leave', 'day_off', 'absence'];
+const STATUS_LABELS = {
+  regular: '정상',
+  late: '지각',
+  early_leave: '조퇴',
+  day_off: '휴무',
+  absence: '결근',
+};
+/** 사유(note) 필수인 상태 */
+const REASON_REQUIRED = ['late', 'early_leave', 'absence'];
+/** 시각 입력 없이 기록 가능한 상태 (clock_in/out 없음) */
+const NO_TIMES = ['day_off', 'absence'];
+/** 일급 0원인 상태 */
+const ZERO_PAY = ['day_off', 'absence'];
+
 async function listAttendance({ user, employeeId, month, from, to }) {
   let q = getClient()
     .from('attendance')
     .select(`
       id, employee_id, date, clock_in, clock_out, work_hours,
-      hourly_rate_snapshot, daily_pay, note, created_at, updated_at,
+      hourly_rate_snapshot, daily_pay, note, status, created_at, updated_at,
       employee:users!attendance_employee_id_users_id_fk ( id, display_name )
     `);
 
@@ -64,37 +80,50 @@ async function getUserHourlyRate(userId) {
   return Number(data?.hourly_rate || 0);
 }
 
-async function createAttendance({ employeeId, date, clockIn, clockOut, note, hourlyRateSnapshot }) {
-  const workHours = calcWorkHours(clockIn, clockOut);
+async function createAttendance({ employeeId, date, clockIn, clockOut, note, status, hourlyRateSnapshot }) {
+  const st = VALID_STATUSES.includes(status) ? status : 'regular';
+
+  // day_off/absence는 시각 무시, 일급 0원
+  const actualIn = NO_TIMES.includes(st) ? null : (clockIn || null);
+  const actualOut = NO_TIMES.includes(st) ? null : (clockOut || null);
+
   const rate = hourlyRateSnapshot != null ? hourlyRateSnapshot : await getUserHourlyRate(employeeId);
-  const dailyPay = workHours != null ? Math.round(workHours * rate * 100) / 100 : null;
+  const workHours = ZERO_PAY.includes(st) ? null : calcWorkHours(actualIn, actualOut);
+  const dailyPay = ZERO_PAY.includes(st) ? 0 : (workHours != null ? Math.round(workHours * rate * 100) / 100 : null);
 
   const { data, error } = await getClient().from('attendance').insert({
     employee_id: employeeId,
     date,
-    clock_in: clockIn || null,
-    clock_out: clockOut || null,
+    clock_in: actualIn,
+    clock_out: actualOut,
     work_hours: workHours != null ? String(workHours) : null,
     hourly_rate_snapshot: String(rate),
     daily_pay: dailyPay != null ? String(dailyPay) : null,
     note: note || null,
+    status: st,
   }).select().single();
 
   if (error) throw error;
   return data;
 }
 
-async function updateAttendance(id, existing, { clockIn, clockOut, note }) {
-  const newIn = clockIn !== undefined ? clockIn : existing.clock_in;
-  const newOut = clockOut !== undefined ? clockOut : existing.clock_out;
-  const workHours = calcWorkHours(newIn, newOut);
+async function updateAttendance(id, existing, { clockIn, clockOut, note, status }) {
+  const st = status !== undefined && VALID_STATUSES.includes(status) ? status : existing.status || 'regular';
   const rate = Number(existing.hourly_rate_snapshot || 0);
-  const dailyPay = workHours != null ? Math.round(workHours * rate * 100) / 100 : null;
+
+  // 새 status가 NO_TIMES면 시각을 null로 강제
+  let newIn = clockIn !== undefined ? (clockIn || null) : existing.clock_in;
+  let newOut = clockOut !== undefined ? (clockOut || null) : existing.clock_out;
+  if (NO_TIMES.includes(st)) { newIn = null; newOut = null; }
+
+  const workHours = ZERO_PAY.includes(st) ? null : calcWorkHours(newIn, newOut);
+  const dailyPay = ZERO_PAY.includes(st) ? 0 : (workHours != null ? Math.round(workHours * rate * 100) / 100 : null);
 
   const updates = { updated_at: new Date().toISOString() };
-  if (clockIn !== undefined) updates.clock_in = clockIn || null;
-  if (clockOut !== undefined) updates.clock_out = clockOut || null;
+  updates.clock_in = newIn;
+  updates.clock_out = newOut;
   if (note !== undefined) updates.note = note || null;
+  if (status !== undefined) updates.status = st;
   updates.work_hours = workHours != null ? String(workHours) : null;
   updates.daily_pay = dailyPay != null ? String(dailyPay) : null;
 
@@ -111,4 +140,5 @@ async function deleteAttendance(id) {
 module.exports = {
   listAttendance, getById, createAttendance, updateAttendance, deleteAttendance,
   calcWorkHours, todayDateStr, isValidDateStr, getUserHourlyRate,
+  VALID_STATUSES, STATUS_LABELS, REASON_REQUIRED, NO_TIMES, ZERO_PAY,
 };
