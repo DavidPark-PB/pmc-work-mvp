@@ -34,20 +34,40 @@ async function getSheets() {
 }
 
 // ── 환율 (frankfurter.app) — 메모리 캐시 1시간 ──
-let _fxCache = { at: 0, usdToKrw: null, usdToEur: null };
+// 환차익 보호용 마진: 시장환율에서 일정액 차감 → 지정환율로 사용
+//   KRW: 기본 -50원   (FX_MARGIN_KRW 로 덮어쓰기)
+//   EUR: 기본 -0.03€  (FX_MARGIN_EUR 로 덮어쓰기)  ≈ KRW 50원과 비슷한 3%대 쿠션
+function getMargins() {
+  return {
+    krw: Number(process.env.FX_MARGIN_KRW || 50),
+    eur: Number(process.env.FX_MARGIN_EUR || 0.03),
+  };
+}
+
+let _fxCache = { at: 0 };
 async function getRates() {
   if (Date.now() - _fxCache.at < 60 * 60 * 1000 && _fxCache.usdToKrw) return _fxCache;
+
+  let market = { krw: 1380, eur: 0.92 };
   try {
     const r = await axios.get('https://api.frankfurter.app/latest?from=USD&to=KRW,EUR', { timeout: 8000 });
-    _fxCache = {
-      at: Date.now(),
-      usdToKrw: Number(r.data?.rates?.KRW) || 1380,
-      usdToEur: Number(r.data?.rates?.EUR) || 0.92,
-    };
+    market.krw = Number(r.data?.rates?.KRW) || market.krw;
+    market.eur = Number(r.data?.rates?.EUR) || market.eur;
   } catch (e) {
-    // 실패 시 직전 캐시 유지 (없으면 폴백)
-    if (!_fxCache.usdToKrw) _fxCache = { at: Date.now(), usdToKrw: 1380, usdToEur: 0.92 };
+    // 실패 시 직전 마켓 유지 (없으면 폴백)
+    if (_fxCache.marketKrw) { market.krw = _fxCache.marketKrw; market.eur = _fxCache.marketEur; }
   }
+
+  const m = getMargins();
+  _fxCache = {
+    at: Date.now(),
+    marketKrw: market.krw,
+    marketEur: market.eur,
+    marginKrw: m.krw,
+    marginEur: m.eur,
+    usdToKrw: Math.max(0, market.krw - m.krw),   // 적용 환율 (지정환율)
+    usdToEur: Math.max(0, market.eur - m.eur),
+  };
   return _fxCache;
 }
 
@@ -217,7 +237,15 @@ async function getCatalog(tabName) {
   return {
     tab,
     tabs,
-    rates: { usdToKrw: rates.usdToKrw, usdToEur: rates.usdToEur, at: rates.at },
+    rates: {
+      usdToKrw: rates.usdToKrw,
+      usdToEur: rates.usdToEur,
+      marketKrw: rates.marketKrw,
+      marketEur: rates.marketEur,
+      marginKrw: rates.marginKrw,
+      marginEur: rates.marginEur,
+      at: rates.at,
+    },
     items: enriched,
   };
 }

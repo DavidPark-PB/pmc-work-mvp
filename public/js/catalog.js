@@ -24,9 +24,10 @@
           <h1 style="font-size:22px;color:#fff;margin:0;">📗 카탈로그 가격 관리</h1>
           <p style="color:#888;font-size:13px;margin:4px 0 0;">USD 편집 시 KRW/EURO 시트 자동 동기화</p>
         </div>
-        <div style="background:#1a1a2e;padding:10px 14px;border-radius:8px;border:1px solid #2a2a4a;">
-          <div style="font-size:11px;color:#888;">실시간 환율 (frankfurter.app)</div>
+        <div style="background:#1a1a2e;padding:10px 14px;border-radius:8px;border:1px solid #2a2a4a;min-width:240px;">
+          <div style="font-size:11px;color:#888;margin-bottom:2px;">적용 환율 (시장환율 - 마진)</div>
           <div id="cat-rates" style="font-size:13px;color:#fff;font-weight:600;">로딩…</div>
+          <div id="cat-rates-market" style="font-size:10px;color:#666;margin-top:2px;"></div>
         </div>
       </div>
 
@@ -74,8 +75,12 @@
   function renderRates() {
     const r = state.rates;
     const el = document.getElementById('cat-rates');
+    const mkt = document.getElementById('cat-rates-market');
     if (!el || !r) return;
     el.textContent = `1 USD = ₩${Math.round(r.usdToKrw).toLocaleString()} · €${r.usdToEur.toFixed(3)}`;
+    if (mkt && r.marketKrw != null) {
+      mkt.textContent = `시장: ₩${Math.round(r.marketKrw).toLocaleString()} · €${r.marketEur.toFixed(3)}  (마진 -${r.marginKrw}원 / -${r.marginEur}€)`;
+    }
   }
 
   function renderTabSelector() {
