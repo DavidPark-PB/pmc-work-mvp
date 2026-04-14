@@ -82,6 +82,9 @@ app.use('/api/users', require('./src/web/routes/users'));
 app.use('/api/tasks', require('./src/web/routes/tasks'));
 app.use('/api/notifications', require('./src/web/routes/notifications'));
 
+// ── 발주 관리 (Phase 2) ──
+app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
