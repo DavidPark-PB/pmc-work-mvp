@@ -92,6 +92,21 @@ async function createPost({ authorId, title, content, parentId }) {
   return data;
 }
 
+async function updatePost(id, { title, content }) {
+  const updates = {};
+  if (title !== undefined) updates.title = title;
+  if (content !== undefined) updates.content = content;
+  if (Object.keys(updates).length === 0) return null;
+  const { data, error } = await getClient()
+    .from('feedback')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 async function togglePin(id, nextValue) {
   const { data, error } = await getClient().from('feedback').update({ is_pinned: nextValue }).eq('id', id).select().single();
   if (error) throw error;
@@ -104,4 +119,4 @@ async function deletePost(id) {
   if (error) throw error;
 }
 
-module.exports = { listPosts, getPostWithReplies, getById, createPost, togglePin, deletePost };
+module.exports = { listPosts, getPostWithReplies, getById, createPost, updatePost, togglePin, deletePost };

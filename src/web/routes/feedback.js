@@ -49,6 +49,37 @@ router.post('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// PATCH /api/feedback/:id — 제목/내용 수정 (작성자 본인 또는 admin)
+router.patch('/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = await repo.getById(id);
+    if (!existing) return res.status(404).json({ error: '글을 찾을 수 없습니다' });
+
+    const isOwner = existing.author_id === req.user.id;
+    if (!isOwner && !req.user.isAdmin) {
+      return res.status(403).json({ error: '본인 글만 수정할 수 있습니다' });
+    }
+
+    const { title, content } = req.body || {};
+    const isReply = !!existing.parent_id;
+
+    const updates = {};
+    if (content !== undefined) {
+      if (!String(content).trim()) return res.status(400).json({ error: '내용을 입력하세요' });
+      updates.content = String(content).trim();
+    }
+    if (title !== undefined && !isReply) {
+      if (!String(title).trim()) return res.status(400).json({ error: '제목을 입력하세요' });
+      updates.title = String(title).trim();
+    }
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: '변경할 내용이 없습니다' });
+
+    const updated = await repo.updatePost(id, updates);
+    res.json({ data: updated });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // PATCH /api/feedback/:id/pin — admin only, 토글
 router.patch('/:id/pin', requireAdmin, async (req, res) => {
   try {
@@ -61,12 +92,18 @@ router.patch('/:id/pin', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// DELETE /api/feedback/:id — admin only
-router.delete('/:id', requireAdmin, async (req, res) => {
+// DELETE /api/feedback/:id — 작성자 본인 또는 admin (CASCADE로 답글 함께 삭제)
+router.delete('/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const existing = await repo.getById(id);
     if (!existing) return res.status(404).json({ error: '글을 찾을 수 없습니다' });
+
+    const isOwner = existing.author_id === req.user.id;
+    if (!isOwner && !req.user.isAdmin) {
+      return res.status(403).json({ error: '본인 글만 삭제할 수 있습니다' });
+    }
+
     await repo.deletePost(id);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }

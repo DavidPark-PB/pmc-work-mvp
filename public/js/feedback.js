@@ -56,7 +56,11 @@
         <div style="padding:16px;border-bottom:1px solid #2a2a4a;"><h3 style="color:#fff;">📋 전체 글 (${items.length})</h3></div>
         <div id="fb-list">
           ${items.length === 0 ? '<div style="padding:40px;text-align:center;color:#888;">첫 글을 남겨보세요.</div>' :
-            items.map(p => `
+            items.map(p => {
+              const isOwner = p.authorId === user.id;
+              const canEdit = isOwner || user.isAdmin;
+              const canDelete = isOwner || user.isAdmin;
+              return `
               <div onclick="pmcFeedback.showDetail(${p.id})" style="padding:16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:flex-start;cursor:pointer;${p.isPinned ? 'background:rgba(124,77,255,0.08);' : ''}">
                 <div style="flex:1;min-width:0;">
                   <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;flex-wrap:wrap;">
@@ -70,13 +74,13 @@
                     <span>⏰ ${dt(p.createdAt)}</span>
                   </div>
                 </div>
-                ${user.isAdmin ? `
-                  <div onclick="event.stopPropagation();" style="display:flex;gap:4px;flex-shrink:0;">
-                    <button onclick="pmcFeedback.togglePin(${p.id})" title="${p.isPinned ? '고정 해제' : '고정'}" style="padding:4px 8px;background:${p.isPinned ? '#7c4dff' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:13px;">📌</button>
-                    <button onclick="pmcFeedback.del(${p.id})" title="삭제" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>
-                  </div>` : ''}
+                <div onclick="event.stopPropagation();" style="display:flex;gap:4px;flex-shrink:0;">
+                  ${user.isAdmin ? `<button onclick="pmcFeedback.togglePin(${p.id})" title="${p.isPinned ? '고정 해제' : '고정'}" style="padding:4px 8px;background:${p.isPinned ? '#7c4dff' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:13px;">📌</button>` : ''}
+                  ${canEdit ? `<button onclick="pmcFeedback.editPost(${p.id})" title="수정" style="padding:4px 8px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">✏️</button>` : ''}
+                  ${canDelete ? `<button onclick="pmcFeedback.del(${p.id})" title="삭제" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>` : ''}
+                </div>
               </div>
-            `).join('')
+            `;}).join('')
           }
         </div>
       </div>
@@ -107,11 +111,11 @@
           ${roleBadge(post.authorRole)}
           <span>👤 ${esc(post.authorName)}</span>
           <span>⏰ ${dt(post.createdAt)}</span>
-          ${user.isAdmin ? `
-            <span style="margin-left:auto;display:flex;gap:4px;">
-              <button onclick="pmcFeedback.togglePin(${post.id})" style="padding:4px 10px;background:${post.isPinned ? '#7c4dff' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">📌 ${post.isPinned ? '고정 해제' : '고정'}</button>
-              <button onclick="pmcFeedback.del(${post.id})" style="padding:4px 10px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">🗑 삭제</button>
-            </span>` : ''}
+          <span style="margin-left:auto;display:flex;gap:4px;">
+            ${user.isAdmin ? `<button onclick="pmcFeedback.togglePin(${post.id})" style="padding:4px 10px;background:${post.isPinned ? '#7c4dff' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">📌 ${post.isPinned ? '고정 해제' : '고정'}</button>` : ''}
+            ${(post.authorId === user.id || user.isAdmin) ? `<button onclick="pmcFeedback.editPost(${post.id})" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">✏️ 수정</button>` : ''}
+            ${(post.authorId === user.id || user.isAdmin) ? `<button onclick="pmcFeedback.del(${post.id})" style="padding:4px 10px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">🗑 삭제</button>` : ''}
+          </span>
         </div>
         <div style="white-space:pre-wrap;line-height:1.7;color:#e0e0e0;">${esc(post.content)}</div>
       </div>
@@ -120,17 +124,22 @@
         <div style="padding:16px;border-bottom:1px solid #2a2a4a;"><h3 style="color:#fff;">💬 답글 ${replies.length}</h3></div>
         ${replies.length === 0
           ? '<div style="padding:30px;text-align:center;color:#888;">아직 답글이 없습니다.</div>'
-          : replies.map(r => `
+          : replies.map(r => {
+            const canMod = r.authorId === user.id || user.isAdmin;
+            return `
               <div style="padding:16px;border-bottom:1px solid #2a2a4a;">
                 <div style="font-size:12px;color:#888;display:flex;gap:10px;margin-bottom:6px;align-items:center;flex-wrap:wrap;">
                   ${roleBadge(r.authorRole)}
                   <span>👤 ${esc(r.authorName)}</span>
                   <span>⏰ ${dt(r.createdAt)}</span>
-                  ${user.isAdmin ? `<button onclick="pmcFeedback.del(${r.id})" style="margin-left:auto;padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>` : ''}
+                  ${canMod ? `<span style="margin-left:auto;display:flex;gap:4px;">
+                    <button onclick="pmcFeedback.editReply(${r.id}, ${post.id})" style="padding:4px 8px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">✏️</button>
+                    <button onclick="pmcFeedback.del(${r.id})" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>
+                  </span>` : ''}
                 </div>
                 <div style="white-space:pre-wrap;line-height:1.6;color:#e0e0e0;">${esc(r.content)}</div>
               </div>
-          `).join('')}
+          `;}).join('')}
       </div>
 
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;">
@@ -185,5 +194,81 @@
     else renderList();
   }
 
-  window.pmcFeedback = { load, renderList, showDetail, togglePin, del };
+  // ── 수정 모달 ──
+  async function editPost(id) {
+    // 제목 + 내용 모두 수정 (원글)
+    const res = await fetch('/api/feedback/' + id);
+    if (!res.ok) { alert('조회 실패'); return; }
+    const { post } = await res.json();
+    openEditModal({ id, type: 'post', title: post.title, content: post.content });
+  }
+
+  async function editReply(id, parentId) {
+    // 답글: content만 수정
+    const res = await fetch('/api/feedback/' + parentId);
+    if (!res.ok) { alert('조회 실패'); return; }
+    const { replies } = await res.json();
+    const r = (replies || []).find(x => x.id === id);
+    if (!r) { alert('답글을 찾을 수 없습니다'); return; }
+    openEditModal({ id, type: 'reply', title: null, content: r.content, parentId });
+  }
+
+  function openEditModal({ id, type, title, content, parentId }) {
+    const titleField = type === 'post' ? `
+      <div style="margin-bottom:10px;">
+        <label style="display:block;color:#888;font-size:12px;margin-bottom:4px;">제목</label>
+        <input id="edit-fb-title" type="text" maxlength="200" value="${esc(title || '')}" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+      </div>` : '';
+
+    const html = `
+      <div id="edit-fb-modal" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;">
+        <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;width:520px;max-width:95vw;">
+          <h2 style="color:#fff;font-size:17px;margin:0 0 16px;">${type === 'post' ? '글 수정' : '답글 수정'}</h2>
+          ${titleField}
+          <div style="margin-bottom:12px;">
+            <label style="display:block;color:#888;font-size:12px;margin-bottom:4px;">내용</label>
+            <textarea id="edit-fb-content" rows="6" maxlength="5000" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">${esc(content || '')}</textarea>
+          </div>
+          <div style="display:flex;gap:6px;justify-content:flex-end;">
+            <button onclick="pmcFeedback.closeEditModal()" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
+            <button onclick="pmcFeedback.saveEdit(${id}, '${type}', ${parentId || 'null'})" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">저장</button>
+          </div>
+        </div>
+      </div>`;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = html;
+    document.body.appendChild(wrap.firstElementChild);
+    setTimeout(() => {
+      const first = document.getElementById('edit-fb-title') || document.getElementById('edit-fb-content');
+      if (first) first.focus();
+    }, 50);
+  }
+
+  function closeEditModal() {
+    document.getElementById('edit-fb-modal')?.remove();
+  }
+
+  async function saveEdit(id, type, parentId) {
+    const body = {};
+    const content = document.getElementById('edit-fb-content').value.trim();
+    if (!content) { alert('내용을 입력하세요'); return; }
+    body.content = content;
+    if (type === 'post') {
+      const title = document.getElementById('edit-fb-title').value.trim();
+      if (!title) { alert('제목을 입력하세요'); return; }
+      body.title = title;
+    }
+    const res = await fetch('/api/feedback/' + id, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { alert('수정 실패: ' + (await res.json()).error); return; }
+    closeEditModal();
+    // 새로고침
+    if (viewMode === 'detail' && detailId) showDetail(detailId);
+    else if (viewMode === 'detail' && parentId) showDetail(parentId);
+    else renderList();
+  }
+
+  window.pmcFeedback = { load, renderList, showDetail, togglePin, del, editPost, editReply, openEditModal, closeEditModal, saveEdit };
 })();
