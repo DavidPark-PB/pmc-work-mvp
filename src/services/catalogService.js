@@ -358,9 +358,17 @@ async function updatePrice({ tab, rowIndex, side, usdPrice }) {
   if (!Number.isFinite(usd) || usd < 0) throw new Error('usdPrice는 0 이상의 숫자');
 
   const col = side === 'left' ? 'F' : 'M';
+  // USD 탭 → 각 통화별 대응 탭으로 매핑 (예: [POKEMON] TCG LIST_USD → LIST_KRW / LIST_EURO)
+  const tabUSD = tab;
+  const tabKRW = tab.replace(/_USD$/i, '_KRW');
+  const tabEURO = tab.replace(/_USD$/i, '_EURO');
+
   // 시트명에 공백/괄호 등 특수문자 있으면 단따옴표 필수 (내부 ' 는 '' 로 이스케이프)
-  const safeTab = `'${tab.replace(/'/g, "''")}'`;
-  const range = `${safeTab}!${col}${rowIndex}`;
+  const q = t => `'${t.replace(/'/g, "''")}'`;
+  const rangeUSD = `${q(tabUSD)}!${col}${rowIndex}`;
+  const rangeKRW = `${q(tabKRW)}!${col}${rowIndex}`;
+  const rangeEURO = `${q(tabEURO)}!${col}${rowIndex}`;
+
   const s = await getSheets();
   const rates = await getRates();
 
@@ -373,15 +381,16 @@ async function updatePrice({ tab, rowIndex, side, usdPrice }) {
     EURO: `€${eur}`,
   };
 
-  // 3개 시트 병렬 업데이트
-  const results = await Promise.all([
-    s.writeData(SHEET_IDS.USD, range, [[fmt.USD]]),
-    s.writeData(SHEET_IDS.KRW, range, [[fmt.KRW]]),
-    s.writeData(SHEET_IDS.EURO, range, [[fmt.EURO]]),
+  // 3개 시트 병렬 업데이트 (각 통화 전용 탭에 기록)
+  await Promise.all([
+    s.writeData(SHEET_IDS.USD, rangeUSD, [[fmt.USD]]),
+    s.writeData(SHEET_IDS.KRW, rangeKRW, [[fmt.KRW]]),
+    s.writeData(SHEET_IDS.EURO, rangeEURO, [[fmt.EURO]]),
   ]);
 
   return {
-    tab, rowIndex, side, range,
+    tab, rowIndex, side,
+    ranges: { USD: rangeUSD, KRW: rangeKRW, EURO: rangeEURO },
     updated: { usd, krw, eur },
     formatted: fmt,
     rates: { usdToKrw: rates.usdToKrw, usdToEur: rates.usdToEur },
