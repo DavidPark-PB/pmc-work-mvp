@@ -1193,9 +1193,10 @@
             </label>
             <div id="thumbBgOptions" style="display:none;margin-top:6px;display:flex;flex-direction:column;gap:4px;">
               <select id="thumbProvider" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-                <option value="gemini" selected>Gemini (무료, 기본)</option>
+                <option value="local" selected>로컬 (@imgly, 완전 무료·무제한)</option>
                 <option value="removebg">remove.bg (월 50장 무료)</option>
-                <option value="auto">자동 (Gemini 실패 시 remove.bg)</option>
+                <option value="gemini">Gemini (유료 결제 필요)</option>
+                <option value="auto">자동 (local→gemini→removebg 순서)</option>
               </select>
               <select id="thumbOutputBg" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
                 <option value="transparent">투명 배경 PNG</option>

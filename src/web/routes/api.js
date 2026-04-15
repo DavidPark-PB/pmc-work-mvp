@@ -3886,18 +3886,24 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
     const padding = parseInt(req.body.padding) || preset.padding;
     const removeBg = req.body.removeBg === 'true' || req.body.removeBg === true;
     const outputBg = req.body.outputBg || 'transparent'; // 'transparent' | 'white'
-    // 'gemini' | 'removebg' | 'auto' (gemini 우선 → 실패 시 removebg)
-    const provider = req.body.provider || 'gemini';
+    // 'local' | 'gemini' | 'removebg' | 'auto'
+    // auto: local 우선 → gemini → removebg
+    const provider = req.body.provider || 'local';
 
     const geminiKey = process.env.GEMINI_API_KEY;
     const rembgKey = process.env.REMOVE_BG_API_KEY;
 
-    if (removeBg) {
-      const haveGemini = !!geminiKey;
-      const haveRembg = !!rembgKey;
-      if (provider === 'gemini' && !haveGemini) return res.status(400).json({ success: false, error: 'GEMINI_API_KEY 미설정' });
-      if (provider === 'removebg' && !haveRembg) return res.status(400).json({ success: false, error: 'REMOVE_BG_API_KEY 미설정' });
-      if (provider === 'auto' && !haveGemini && !haveRembg) return res.status(400).json({ success: false, error: '누끼 API key가 하나도 설정되지 않았습니다' });
+    // 로컬 누끼 (@imgly/background-removal-node — rembg U2Net 모델)
+    // 첫 호출 시 모델 로드 (~50MB), 이후 빠름. Fly 머신에서 실행.
+    async function callLocalBgRemove(buffer, mimeType) {
+      const imgly = require('@imgly/background-removal-node');
+      // Blob 생성 → removeBackground → Blob → Buffer
+      const blob = new Blob([buffer], { type: mimeType || 'image/png' });
+      const resultBlob = await imgly.removeBackground(blob, {
+        output: { format: 'image/png', quality: 0.9 },
+      });
+      const arr = new Uint8Array(await resultBlob.arrayBuffer());
+      return Buffer.from(arr);
     }
 
     // Gemini 2.5 Flash Image ("Nano Banana") — 이미지 편집 API
@@ -3954,13 +3960,20 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
 
     async function doBgRemove(file) {
       const order = provider === 'auto'
-        ? (geminiKey ? ['gemini', ...(rembgKey ? ['removebg'] : [])] : ['removebg'])
+        ? ['local', ...(geminiKey ? ['gemini'] : []), ...(rembgKey ? ['removebg'] : [])]
         : [provider];
       let lastErr;
       for (const p of order) {
         try {
-          if (p === 'gemini') return { buffer: await callGeminiBgRemove(file.buffer, file.mimetype), provider: 'gemini' };
-          if (p === 'removebg') return { buffer: await callRemoveBg(file.buffer, file.originalname), provider: 'removebg' };
+          if (p === 'local') return { buffer: await callLocalBgRemove(file.buffer, file.mimetype), provider: 'local' };
+          if (p === 'gemini') {
+            if (!geminiKey) throw new Error('GEMINI_API_KEY 미설정');
+            return { buffer: await callGeminiBgRemove(file.buffer, file.mimetype), provider: 'gemini' };
+          }
+          if (p === 'removebg') {
+            if (!rembgKey) throw new Error('REMOVE_BG_API_KEY 미설정');
+            return { buffer: await callRemoveBg(file.buffer, file.originalname), provider: 'removebg' };
+          }
         } catch (e) {
           lastErr = e;
           console.warn(`[thumbnail] ${p} 누끼 실패:`, e.message);

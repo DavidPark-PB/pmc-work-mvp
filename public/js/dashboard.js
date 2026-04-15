@@ -251,7 +251,7 @@ async function thumbGenerate() {
   var size = document.getElementById('thumbSize').value || '45';
   var removeBg = document.getElementById('thumbRemoveBg').checked;
   var outputBg = document.getElementById('thumbOutputBg').value || 'transparent';
-  var provider = document.getElementById('thumbProvider')?.value || 'gemini';
+  var provider = document.getElementById('thumbProvider')?.value || 'local';
 
   var btn = document.getElementById('thumbGenBtn');
   btn.disabled = true;
