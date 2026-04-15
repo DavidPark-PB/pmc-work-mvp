@@ -19,19 +19,19 @@ router.get('/:employeeId', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/bonuses (admin only) — 월별 매출 입력 → 보너스 자동 계산
+// POST /api/bonuses (admin only) — 상여/인센티브 금액 직접 입력
 router.post('/', requireAdmin, async (req, res) => {
   try {
-    const { employeeId, month, monthlyRevenue } = req.body || {};
+    const { employeeId, month, bonusAmount } = req.body || {};
     if (!employeeId) return res.status(400).json({ error: 'employeeId가 필요합니다' });
     if (!month || !repo.isValidMonth(month)) return res.status(400).json({ error: 'month 형식 오류 (YYYY-MM)' });
-    const rev = Number(monthlyRevenue);
-    if (!Number.isFinite(rev) || rev < 0) return res.status(400).json({ error: '매출은 0 이상의 숫자여야 합니다' });
+    const amount = Number(bonusAmount);
+    if (!Number.isFinite(amount) || amount < 0) return res.status(400).json({ error: '상여 금액은 0 이상의 숫자여야 합니다' });
 
-    const data = await repo.upsertShopeeBonus({
+    const data = await repo.upsertBonus({
       employeeId: parseInt(employeeId, 10),
       month,
-      monthlyRevenue: rev,
+      bonusAmount: amount,
       enteredBy: req.user.id,
     });
     res.json({ data });

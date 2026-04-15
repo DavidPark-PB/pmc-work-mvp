@@ -24,7 +24,7 @@
     el.innerHTML = `
       <div style="margin-bottom:16px;">
         <h1 style="font-size:22px;color:#fff;">💰 급여 요약</h1>
-        <p style="color:#888;font-size:13px;">직원별 월 급여 집계 · Shopee 보너스 관리</p>
+        <p style="color:#888;font-size:13px;">직원별 월 급여 집계 · 상여/인센티브 관리</p>
       </div>
 
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
@@ -49,8 +49,7 @@
               <th style="padding:10px;text-align:center;">총시간</th>
               <th style="padding:10px;text-align:center;" title="지각/조퇴/결근/휴무">근태</th>
               <th style="padding:10px;text-align:right;">기본급</th>
-              <th style="padding:10px;text-align:center;">Shopee 매출</th>
-              <th style="padding:10px;text-align:right;">보너스</th>
+              <th style="padding:10px;text-align:center;">상여/인센티브</th>
               <th style="padding:10px;text-align:right;">총 지급액</th>
             </tr>
           </thead>
@@ -71,19 +70,16 @@
     document.getElementById('grand-total').textContent = money(grandTotal);
     const tbody = document.getElementById('pay-tbody');
 
-    // Shopee 매출 입력 UI는 platform에 'shopee' 포함된 직원만
+    // 모든 직원에게 상여/인센티브 입력 UI 제공 (bonus_amount 직접 입력)
     const enriched = await Promise.all(summary.map(async s => {
-      const isShopee = s.platform && s.platform.includes('shopee');
-      let revenue = null;
-      if (isShopee) {
-        const r = await fetch(`/api/bonuses/${s.id}`);
-        if (r.ok) {
-          const { data } = await r.json();
-          const cur = (data || []).find(b => b.month === month);
-          if (cur) revenue = Number(cur.monthly_revenue);
-        }
+      let bonusInput = null;
+      const r = await fetch(`/api/bonuses/${s.id}`);
+      if (r.ok) {
+        const { data } = await r.json();
+        const cur = (data || []).find(b => b.month === month);
+        if (cur) bonusInput = Number(cur.bonus_amount);
       }
-      return { ...s, isShopee, revenue };
+      return { ...s, bonusInput };
     }));
 
     tbody.innerHTML = enriched.map(s => {
@@ -103,14 +99,11 @@
         <td style="padding:10px;text-align:center;white-space:nowrap;">${attCell}</td>
         <td style="padding:10px;text-align:right;">${money(s.basePay)}</td>
         <td style="padding:10px;text-align:center;">
-          ${s.isShopee ? `
-            <div style="display:flex;gap:4px;align-items:center;justify-content:center;">
-              <input type="number" value="${s.revenue || ''}" placeholder="매출액" id="rev-${s.id}" style="width:110px;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
-              <button onclick="pmcPayroll.saveBonus(${s.id})" style="padding:6px 10px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">✓</button>
-            </div>
-          ` : '<span style="color:#555;">-</span>'}
+          <div style="display:flex;gap:4px;align-items:center;justify-content:center;">
+            <input type="number" value="${s.bonusInput || ''}" placeholder="금액" id="bonus-${s.id}" style="width:120px;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+            <button onclick="pmcPayroll.saveBonus(${s.id})" style="padding:6px 10px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">✓</button>
+          </div>
         </td>
-        <td style="padding:10px;text-align:right;color:#81c784;font-weight:600;">${s.shopeeBonus > 0 ? money(s.shopeeBonus) : '-'}</td>
         <td style="padding:10px;text-align:right;font-weight:700;">${money(s.totalPay)}</td>
       </tr>
     `;
@@ -119,12 +112,12 @@
 
   async function saveBonus(employeeId) {
     const month = document.getElementById('pay-month').value;
-    const input = document.getElementById('rev-' + employeeId);
-    const revenue = Number(input.value);
-    if (!Number.isFinite(revenue) || revenue < 0) { alert('매출 금액을 입력하세요.'); return; }
+    const input = document.getElementById('bonus-' + employeeId);
+    const amount = Number(input.value);
+    if (!Number.isFinite(amount) || amount < 0) { alert('상여 금액을 입력하세요.'); return; }
     const res = await fetch('/api/bonuses', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ employeeId, month, monthlyRevenue: revenue }),
+      body: JSON.stringify({ employeeId, month, bonusAmount: amount }),
     });
     if (!res.ok) { alert((await res.json()).error || '실패'); return; }
     refresh();

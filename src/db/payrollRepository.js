@@ -116,16 +116,11 @@ async function setHourlyRate(employeeId, rate) {
   return data;
 }
 
-/** Shopee 보너스 upsert */
-async function upsertShopeeBonus({ employeeId, month, monthlyRevenue, enteredBy }) {
+/** 인센티브/상여 upsert — bonusAmount 직접 입력 */
+async function upsertBonus({ employeeId, month, bonusAmount, enteredBy }) {
   const c = getClient();
-  const { data: emp, error: e1 } = await c.from('users').select('shopee_bonus_rate, display_name').eq('id', employeeId).maybeSingle();
-  if (e1) throw e1;
-  if (!emp) throw new Error('직원을 찾을 수 없습니다');
-  if (!emp.shopee_bonus_rate) throw new Error('해당 직원은 Shopee 보너스 대상이 아닙니다 (bonusRate 미설정)');
-
-  const bonusRate = Number(emp.shopee_bonus_rate);
-  const bonusAmount = Math.round(Number(monthlyRevenue) * bonusRate * 100) / 100;
+  const amount = Number(bonusAmount);
+  if (!Number.isFinite(amount) || amount < 0) throw new Error('상여 금액은 0 이상의 숫자여야 합니다');
 
   const { data: existing, error: e2 } = await c
     .from('shopee_bonuses')
@@ -137,9 +132,9 @@ async function upsertShopeeBonus({ employeeId, month, monthlyRevenue, enteredBy 
   const payload = {
     employee_id: employeeId,
     month,
-    monthly_revenue: String(monthlyRevenue),
-    bonus_rate: String(bonusRate),
-    bonus_amount: String(bonusAmount),
+    monthly_revenue: '0',
+    bonus_rate: '0',
+    bonus_amount: String(amount),
     entered_by: enteredBy,
   };
 
@@ -169,6 +164,6 @@ module.exports = {
   getMonthlySummary,
   getEmployeeMonthly,
   setHourlyRate,
-  upsertShopeeBonus,
+  upsertBonus,
   listBonusesByEmployee,
 };
