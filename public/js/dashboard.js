@@ -251,6 +251,7 @@ async function thumbGenerate() {
   var size = document.getElementById('thumbSize').value || '45';
   var removeBg = document.getElementById('thumbRemoveBg').checked;
   var outputBg = document.getElementById('thumbOutputBg').value || 'transparent';
+  var provider = document.getElementById('thumbProvider')?.value || 'gemini';
 
   var btn = document.getElementById('thumbGenBtn');
   btn.disabled = true;
@@ -264,6 +265,7 @@ async function thumbGenerate() {
   formData.append('size', size);
   formData.append('removeBg', removeBg ? 'true' : 'false');
   formData.append('outputBg', outputBg);
+  formData.append('provider', provider);
   for (var i = 0; i < files.length; i++) formData.append('images', files[i]);
 
   try {
@@ -282,7 +284,8 @@ async function thumbGenerate() {
         var ext = img.data.startsWith('data:image/png') ? 'png' : 'jpg';
         var base = img.filename.replace(/\.[^.]+$/, '');
         var bgCls = img.bgRemoved ? 'background:repeating-conic-gradient(#333 0 25%,#444 0 50%) 50%/16px 16px;' : '';
-        area.innerHTML += '<div style="text-align:center"><img src="' + img.data + '" style="width:160px;height:160px;object-fit:contain;border-radius:6px;border:2px solid #ff9800;' + bgCls + '"><div style="font-size:10px;color:#888;margin-top:4px">' + img.filename + '</div><a href="' + img.data + '" download="thumb_' + base + '.' + ext + '" style="font-size:10px;color:#1565c0">다운로드 .' + ext + '</a></div>';
+        var providerTag = img.provider ? '<div style="font-size:9px;color:#81c784;margin-top:1px">누끼: ' + img.provider + '</div>' : '';
+        area.innerHTML += '<div style="text-align:center"><img src="' + img.data + '" style="width:160px;height:160px;object-fit:contain;border-radius:6px;border:2px solid #ff9800;' + bgCls + '"><div style="font-size:10px;color:#888;margin-top:4px">' + img.filename + '</div>' + providerTag + '<a href="' + img.data + '" download="thumb_' + base + '.' + ext + '" style="font-size:10px;color:#1565c0">다운로드 .' + ext + '</a></div>';
       }
     });
     document.getElementById('thumbDlBtn').style.display = 'inline-block';

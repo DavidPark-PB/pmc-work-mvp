@@ -3886,14 +3886,51 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
     const padding = parseInt(req.body.padding) || preset.padding;
     const removeBg = req.body.removeBg === 'true' || req.body.removeBg === true;
     const outputBg = req.body.outputBg || 'transparent'; // 'transparent' | 'white'
+    // 'gemini' | 'removebg' | 'auto' (gemini 우선 → 실패 시 removebg)
+    const provider = req.body.provider || 'gemini';
 
-    // remove.bg API key (optional — 누끼 쓰려면 필요)
+    const geminiKey = process.env.GEMINI_API_KEY;
     const rembgKey = process.env.REMOVE_BG_API_KEY;
-    if (removeBg && !rembgKey) {
-      return res.status(400).json({
-        success: false,
-        error: '배경 제거 기능을 쓰려면 REMOVE_BG_API_KEY 설정이 필요합니다. (remove.bg 무료 월 50장)',
+
+    if (removeBg) {
+      const haveGemini = !!geminiKey;
+      const haveRembg = !!rembgKey;
+      if (provider === 'gemini' && !haveGemini) return res.status(400).json({ success: false, error: 'GEMINI_API_KEY 미설정' });
+      if (provider === 'removebg' && !haveRembg) return res.status(400).json({ success: false, error: 'REMOVE_BG_API_KEY 미설정' });
+      if (provider === 'auto' && !haveGemini && !haveRembg) return res.status(400).json({ success: false, error: '누끼 API key가 하나도 설정되지 않았습니다' });
+    }
+
+    // Gemini 2.5 Flash Image ("Nano Banana") — 이미지 편집 API
+    async function callGeminiBgRemove(buffer, mimeType) {
+      const base64 = buffer.toString('base64');
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${geminiKey}`;
+      const r = await axios.post(url, {
+        contents: [{
+          parts: [
+            { text: 'Remove the background from this image completely. Return the subject with a fully transparent background. Do not alter, recolor, or add anything to the subject itself — keep it pixel-perfect. Output format: PNG with transparency.' },
+            { inlineData: { mimeType: mimeType || 'image/jpeg', data: base64 } },
+          ],
+        }],
+        generationConfig: { responseModalities: ['IMAGE'] },
+      }, {
+        timeout: 90000,
+        validateStatus: () => true,
       });
+      if (r.status !== 200) {
+        let msg = r.data?.error?.message || `Gemini error ${r.status}`;
+        if (r.status === 429 && /free_tier_requests/i.test(msg)) {
+          msg = 'Gemini 이미지 API는 Google Cloud 결제 계정 연결이 필요합니다 (무료 한도 0). Billing 연결 후 다시 시도하거나 remove.bg를 사용하세요.';
+        }
+        throw new Error(msg);
+      }
+      // 응답 parts에서 이미지 추출
+      const parts = r.data?.candidates?.[0]?.content?.parts || [];
+      const img = parts.find(p => p.inlineData?.data);
+      if (!img) {
+        const textPart = parts.find(p => p.text)?.text || '';
+        throw new Error('Gemini가 이미지를 반환하지 않음' + (textPart ? ': ' + textPart.slice(0, 120) : ''));
+      }
+      return Buffer.from(img.inlineData.data, 'base64');
     }
 
     async function callRemoveBg(buffer, filename) {
@@ -3915,15 +3952,35 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
       return Buffer.from(r.data);
     }
 
+    async function doBgRemove(file) {
+      const order = provider === 'auto'
+        ? (geminiKey ? ['gemini', ...(rembgKey ? ['removebg'] : [])] : ['removebg'])
+        : [provider];
+      let lastErr;
+      for (const p of order) {
+        try {
+          if (p === 'gemini') return { buffer: await callGeminiBgRemove(file.buffer, file.mimetype), provider: 'gemini' };
+          if (p === 'removebg') return { buffer: await callRemoveBg(file.buffer, file.originalname), provider: 'removebg' };
+        } catch (e) {
+          lastErr = e;
+          console.warn(`[thumbnail] ${p} 누끼 실패:`, e.message);
+        }
+      }
+      throw lastErr || new Error('모든 누끼 제공자 실패');
+    }
+
     const results = [];
     for (const file of files) {
       try {
         let workingBuffer = file.buffer;
 
-        // 1) 누끼 따기 (원격 API)
+        // 1) 누끼 따기 (Gemini nano banana 우선 / remove.bg 폴백)
+        let usedProvider = null;
         if (removeBg) {
           try {
-            workingBuffer = await callRemoveBg(file.buffer, file.originalname);
+            const out = await doBgRemove(file);
+            workingBuffer = out.buffer;
+            usedProvider = out.provider;
           } catch (e) {
             results.push({ filename: file.originalname, error: '누끼 실패: ' + e.message });
             continue;
@@ -3979,6 +4036,7 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
           data: `data:${mime};base64,${output.toString('base64')}`,
           size: output.length,
           bgRemoved: removeBg,
+          provider: usedProvider,
         });
       } catch (e) {
         results.push({ filename: file.originalname, error: e.message });
