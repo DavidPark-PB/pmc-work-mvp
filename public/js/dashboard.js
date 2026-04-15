@@ -88,6 +88,7 @@ function navigateTo(page) {
     case 'attendance':   if (window.pmcAttendance) pmcAttendance.load(); break;
     case 'payroll':      if (window.pmcPayroll)    pmcPayroll.load();    break;
     case 'feedback':     if (window.pmcFeedback)   pmcFeedback.load();   break;
+    case 'workspace':    if (window.pmcWorkspace)  pmcWorkspace.load();  break;
     case 'staff-admin':  if (window.pmcStaffAdmin) pmcStaffAdmin.load(); break;
   }
 }
@@ -2578,6 +2579,11 @@ async function saveInline(input) {
       body = { sku };
       if (changes.price) body.price = changes.price;
       if (changes.quantity) body.quantity = changes.quantity;
+    } else if (platform === 'Shopee') {
+      url = `${API}/products/shopee/${editId}`;
+      body = { sku };
+      if (changes.price) body.price = parseFloat(changes.price);
+      if (changes.quantity) body.quantity = parseInt(changes.quantity);
     } else {
       statusEl.textContent = '미지원';
       statusEl.className = 'save-status error';

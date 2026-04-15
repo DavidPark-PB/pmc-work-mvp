@@ -99,6 +99,7 @@ app.use('/api/feedback', require('./src/web/routes/feedback'));
 app.use('/api/sync', require('./src/web/routes/platformSync'));
 app.use('/api/catalog', require('./src/web/routes/catalog'));
 app.use('/api/events', require('./src/web/routes/events'));
+app.use('/api/workspace', require('./src/web/routes/workspace'));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
