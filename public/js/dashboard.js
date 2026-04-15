@@ -141,6 +141,14 @@ async function clearAllSKU(btn) {
 }
 
 async function syncToMaster() {
+  // admin 전용 + 파괴적 작업(플랫폼별 판매가가 마스터에 덮어써질 수 있음) → 이중 확인
+  if (!window.__pmcUser?.isAdmin) {
+    alert('관리자 전용 기능입니다.');
+    return;
+  }
+  if (!confirm('⚠️ 마스터 동기화 경고\n\neBay/Shopify 상품 정보를 마스터 DB에 병합합니다.\n플랫폼별로 판매가가 다른 상품은 가격이 덮어써질 수 있습니다.\n\n정말 실행하시겠습니까?')) return;
+  if (!confirm('한 번 더 확인합니다.\n\n실제로 가격이 변경될 수 있습니다. 계속하시겠어요?')) return;
+
   var btn = document.getElementById('syncMasterBtn');
   if (btn) { btn.disabled = true; btn.textContent = '마스터 동기화 중...'; }
   try {

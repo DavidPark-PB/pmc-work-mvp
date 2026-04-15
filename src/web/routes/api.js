@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
+const { requireAdmin } = require('../../middleware/auth');
 
 const multer = require('multer');
 
@@ -3645,10 +3646,12 @@ router.post('/sync/products', async (req, res) => {
 });
 
 // POST /api/sync/master — ebay_products + shopify_products → products 마스터 동기화
-router.post('/sync/master', async (req, res) => {
+// 플랫폼별로 판매가가 다른데 이걸 일괄 마스터에 병합하면 가격이 덮어써질 수 있어 위험.
+// admin 전용으로 제한.
+router.post('/sync/master', requireAdmin, async (req, res) => {
   try {
     const { syncToMaster } = require('../../services/productSync');
-    console.log('[MasterSync] Starting master table sync...');
+    console.log(`[MasterSync] 시작 by ${req.user?.displayName || 'unknown'}`);
     const results = await syncToMaster();
     console.log('[MasterSync] Done:', JSON.stringify(results));
     res.json({ success: true, results });

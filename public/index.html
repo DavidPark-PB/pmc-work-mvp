@@ -14,7 +14,7 @@
       <button class="refresh-btn" id="refreshBtn">새로고침</button>
       <button class="refresh-btn" id="syncProductsBtn" style="background:#0288d1;margin-left:8px" onclick="syncAllProducts()">상품 동기화</button>
       <button class="refresh-btn" style="background:#d84315;margin-left:8px" onclick="clearAllSKU(this)">SKU 일괄 초기화</button>
-      <button class="refresh-btn" id="syncMasterBtn" style="background:#6a1b9a;margin-left:8px" onclick="syncToMaster()">마스터 동기화</button>
+      <button class="refresh-btn" id="syncMasterBtn" data-admin-only title="마스터 DB에 eBay/Shopify 상품 일괄 동기화 (관리자 전용)" style="background:#6a1b9a;margin-left:8px" onclick="syncToMaster()">마스터 동기화</button>
       <!-- 알림 벨 (Phase 5) -->
       <div id="notifWrap" style="position:relative;margin-left:8px;display:inline-block;">
         <button id="notifBtn" onclick="toggleNotif(event)" style="background:#2a2a4a;color:#fff;border:0;padding:8px 12px;border-radius:6px;cursor:pointer;position:relative;font-size:14px;">
