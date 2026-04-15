@@ -296,6 +296,139 @@
 
   setInterval(() => { updateNotifBadge(); updateOrdersBadge(); }, 30000);
   setTimeout(() => { updateNotifBadge(); updateOrdersBadge(); }, 1000);
+
+  // ── 📡 실시간 이벤트 스트림 (SSE) + 데스크탑 알림 + 알림음 + 탭 타이틀 ──
+  (function setupRealtime() {
+    const ORIG_TITLE = document.title;
+    let notifCount = 0;
+    let audioCtx = null;
+    let audioUnlocked = false;
+    let eventSource = null;
+
+    // 1) 사운드: 첫 사용자 클릭으로 AudioContext 해제 (autoplay policy)
+    function unlockAudio() {
+      if (audioUnlocked) return;
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        // 무음 버퍼 한 번 재생 → 이후 beep 가능
+        const buf = audioCtx.createBuffer(1, 1, 22050);
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(audioCtx.destination);
+        src.start(0);
+        audioUnlocked = true;
+      } catch {}
+    }
+    document.addEventListener('click', unlockAudio, { once: true });
+    document.addEventListener('keydown', unlockAudio, { once: true });
+
+    function playBeep(urgent) {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        // 긴급은 3번, 일반은 2번 beep
+        const beeps = urgent ? 3 : 2;
+        const freq = urgent ? 1100 : 880;
+        for (let i = 0; i < beeps; i++) {
+          const t = now + i * 0.22;
+          gain.gain.setValueAtTime(0.0, t);
+          gain.gain.exponentialRampToValueAtTime(0.15, t + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+        }
+        osc.frequency.value = freq;
+        osc.start(now);
+        osc.stop(now + beeps * 0.22);
+      } catch (e) { console.warn('[beep]', e.message); }
+    }
+
+    // 2) 데스크탑 알림 권한
+    function ensureNotificationPermission() {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'default') {
+        // 첫 클릭 이후에만 요청 (UX)
+        const once = () => {
+          Notification.requestPermission().catch(()=>{});
+          document.removeEventListener('click', once);
+        };
+        document.addEventListener('click', once);
+      }
+    }
+
+    function showDesktop(title, body, linkUrl) {
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      try {
+        const n = new Notification(title, {
+          body: body || '',
+          icon: '/images/pmc_logo.png',
+          badge: '/images/pmc_logo.png',
+          tag: 'pmc-task',
+          renotify: true,
+        });
+        n.onclick = () => {
+          window.focus();
+          if (linkUrl && linkUrl.startsWith('/?page=')) {
+            const page = linkUrl.split('page=')[1];
+            if (typeof showPage === 'function') showPage(page);
+          }
+          n.close();
+        };
+        setTimeout(() => { try { n.close(); } catch {} }, 8000);
+      } catch (e) { console.warn('[notif]', e.message); }
+    }
+
+    // 3) 탭 타이틀 카운터
+    function bumpTitle() {
+      notifCount++;
+      document.title = '(🔴' + notifCount + ') ' + ORIG_TITLE;
+    }
+    function resetTitle() {
+      notifCount = 0;
+      document.title = ORIG_TITLE;
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) resetTitle();
+    });
+
+    // 4) 이벤트 처리기
+    function handleEvent(ev) {
+      if (!ev || !ev.type) return;
+      if (ev.type === 'connected') { console.log('[SSE] connected'); return; }
+      if (ev.type === 'task_assigned') {
+        const title = ev.urgent ? '🚨 [긴급] 새 업무 지시' : '📋 새 업무 지시';
+        const body = ev.title || '업무가 할당되었습니다';
+        // 탭이 숨겨져 있으면 타이틀 + 알림; 열려있으면 beep + 토스트 느낌
+        if (document.hidden) bumpTitle();
+        playBeep(ev.urgent);
+        showDesktop(title, body, ev.linkUrl || '/?page=tasks');
+        // 기존 알림 배지/목록도 새로고침
+        if (typeof updateNotifBadge === 'function') updateNotifBadge();
+      }
+    }
+
+    // 5) SSE 연결
+    function connect() {
+      if (eventSource) return;
+      eventSource = new EventSource('/api/events/stream');
+      eventSource.onmessage = (e) => {
+        try { handleEvent(JSON.parse(e.data)); } catch {}
+      };
+      eventSource.onerror = (e) => {
+        console.warn('[SSE] error, 자동 재연결 대기');
+        // EventSource는 자동 재연결함
+      };
+    }
+
+    // 유저 확인 후 시작
+    fetch('/api/auth/me').then(r => r.json()).then(({ user }) => {
+      if (!user) return;
+      ensureNotificationPermission();
+      connect();
+    }).catch(()=>{});
+  })();
   </script>
 
   <div class="sidebar">

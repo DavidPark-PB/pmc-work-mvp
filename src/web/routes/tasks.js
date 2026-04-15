@@ -15,6 +15,7 @@ const express = require('express');
 const { requireAdmin } = require('../../middleware/auth');
 const repo = require('../../db/teamTaskRepository');
 const { notify, notifyMany, notifyAdmins, getStaffIds } = require('../../services/notificationService');
+const sseHub = require('../../services/sseHub');
 
 const router = express.Router();
 
@@ -62,7 +63,17 @@ router.post('/', requireAdmin, async (req, res) => {
       created_by: req.user.id,
     });
 
-    // 알림
+    // 알림 (DB) + SSE 실시간 이벤트
+    const ssePayload = {
+      type: 'task_assigned',
+      taskId: task.id,
+      title: task.title,
+      priority: task.priority,
+      urgent: task.priority === 'urgent',
+      scope,
+      linkUrl: '/?page=tasks',
+    };
+
     if (scope === 'specific' && assignee && assignee !== req.user.id) {
       await notify({
         recipientId: assignee,
@@ -73,6 +84,7 @@ router.post('/', requireAdmin, async (req, res) => {
         relatedType: 'task',
         relatedId: task.id,
       });
+      sseHub.sendTo(assignee, ssePayload);
     } else if (scope === 'all') {
       const staffIds = await getStaffIds();
       await notifyMany(staffIds, {
@@ -83,6 +95,7 @@ router.post('/', requireAdmin, async (req, res) => {
         relatedType: 'task',
         relatedId: task.id,
       });
+      sseHub.sendToMany(staffIds, ssePayload);
     }
 
     res.json({ data: task, recipientCount });
