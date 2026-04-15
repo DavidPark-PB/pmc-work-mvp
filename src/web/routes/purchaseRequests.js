@@ -139,4 +139,15 @@ router.patch('/:id/reject', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// DELETE /api/purchase-requests/:id — admin only
+router.delete('/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = await repo.getRequest(id);
+    if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+    await repo.deleteRequest(id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;

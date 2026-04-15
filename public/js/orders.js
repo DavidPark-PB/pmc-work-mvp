@@ -205,10 +205,13 @@
             ${o.status === 'rejected' ? `<div style="margin-top:6px;padding:6px 10px;background:#2a1a1a;border-radius:6px;font-size:12px;"><strong style="color:#ff8a80;">반려:</strong> ${REJECT_LABELS[o.rejection_reason] || o.rejection_reason || '-'}${o.rejection_note ? ' — ' + esc(o.rejection_note) : ''}</div>` : ''}
             ${o.status === 'approved' ? `<div style="margin-top:4px;font-size:12px;color:#81c784;">✓ ${dt(o.decision_at)} 승인</div>` : ''}
           </div>
-          ${user.isAdmin && o.status === 'pending' ? `
+          ${user.isAdmin ? `
             <div style="display:flex;flex-direction:column;gap:6px;">
-              <button onclick="pmcOrders.approve(${o.id})" style="padding:6px 12px;background:#4caf50;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">✓ 승인</button>
-              <button onclick="pmcOrders.openReject(${o.id})" style="padding:6px 12px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">✗ 반려</button>
+              ${o.status === 'pending' ? `
+                <button onclick="pmcOrders.approve(${o.id})" style="padding:6px 12px;background:#4caf50;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">✓ 승인</button>
+                <button onclick="pmcOrders.openReject(${o.id})" style="padding:6px 12px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">✗ 반려</button>
+              ` : ''}
+              <button onclick="pmcOrders.del(${o.id})" title="삭제" style="padding:6px 12px;background:#2a2a4a;border:0;border-radius:4px;color:#aaa;cursor:pointer;font-size:12px;">🗑 삭제</button>
             </div>` : ''}
         </div>
       `;
@@ -257,5 +260,12 @@
     refresh();
   }
 
-  window.pmcOrders = { load, refresh, approve, openReject, toggleInsights };
+  async function del(id) {
+    if (!confirm('이 발주 내역을 삭제하시겠습니까? 되돌릴 수 없습니다.')) return;
+    const res = await fetch(`/api/purchase-requests/${id}`, { method: 'DELETE' });
+    if (!res.ok) { alert((await res.json()).error || '삭제 실패'); return; }
+    refresh();
+  }
+
+  window.pmcOrders = { load, refresh, approve, openReject, del, toggleInsights };
 })();

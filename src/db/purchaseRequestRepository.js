@@ -175,4 +175,12 @@ async function getStats() {
   return counts;
 }
 
-module.exports = { listRequests, getRequest, createRequest, updateRequest, getStats, getRecommendations };
+async function deleteRequest(id) {
+  const { error } = await getClient()
+    .from('purchase_requests')
+    .delete()
+    .eq('id', id);
+  if (error) throw error;
+}
+
+module.exports = { listRequests, getRequest, createRequest, updateRequest, deleteRequest, getStats, getRecommendations };
