@@ -358,7 +358,9 @@ async function updatePrice({ tab, rowIndex, side, usdPrice }) {
   if (!Number.isFinite(usd) || usd < 0) throw new Error('usdPrice는 0 이상의 숫자');
 
   const col = side === 'left' ? 'F' : 'M';
-  const range = `${tab}!${col}${rowIndex}`;
+  // 시트명에 공백/괄호 등 특수문자 있으면 단따옴표 필수 (내부 ' 는 '' 로 이스케이프)
+  const safeTab = `'${tab.replace(/'/g, "''")}'`;
+  const range = `${safeTab}!${col}${rowIndex}`;
   const s = await getSheets();
   const rates = await getRates();
 
