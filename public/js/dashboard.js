@@ -293,11 +293,20 @@ async function loadDashboard() {
   }
 }
 
+// 대시보드 매출 기간 선택 (기본 month = 이번달 1일~오늘)
+var dashboardRevenuePeriod = localStorage.getItem('pmc.revenuePeriod') || 'month';
+
+function pmcChangeRevenuePeriod(v) {
+  dashboardRevenuePeriod = v;
+  try { localStorage.setItem('pmc.revenuePeriod', v); } catch {}
+  loadSummaryCards();
+}
+
 async function loadSummaryCards() {
   try {
     // API 기반 실제 매출 + 시트 기반 분석 병렬 로드
     const [revenueRes, analysisRes] = await Promise.all([
-      fetch(`${API}/revenue/summary`).catch(() => null),
+      fetch(`${API}/revenue/summary?period=${dashboardRevenuePeriod}`).catch(() => null),
       fetch(`${API}/analysis/summary`).catch(() => null),
     ]);
 
@@ -329,11 +338,29 @@ function renderRevenueSummaryCards(data) {
   let failCount = 0;
   pNames.forEach(p => platforms[p].source === 'api' ? successCount++ : failCount++);
 
+  const periodOpts = [
+    { v: 'today',   t: '오늘' },
+    { v: 'week',    t: '이번 주' },
+    { v: 'month',   t: '이번 달 (월초~)' },
+    { v: '30d',     t: '최근 30일' },
+    { v: '60d',     t: '최근 60일' },
+    { v: '90d',     t: '최근 90일' },
+    { v: 'year',    t: '올해 누적' },
+  ];
+  const selectHtml = `
+    <select id="revenuePeriodSelect" onchange="pmcChangeRevenuePeriod(this.value)" style="margin-top:6px;padding:3px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;cursor:pointer;">
+      ${periodOpts.map(o => `<option value="${o.v}" ${o.v === dashboardRevenuePeriod ? 'selected' : ''}>${o.t}</option>`).join('')}
+    </select>
+  `;
+
   container.innerHTML = `
     <div class="stat-card summary" style="border-color:#2196f3">
-      <div class="label">총 매출 (API 기반)</div>
+      <div class="label" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>총 매출</span>
+        <span style="font-size:10px;color:#81d4fa;">${data.periodLabel || data.period || ''}</span>
+      </div>
       <div class="number">${krw(data.totalRevenueKRW)}</div>
-      <div class="sub">${data.totalOrders}건 주문 / ${data.period}</div>
+      <div class="sub">${data.totalOrders}건 주문 ${selectHtml}</div>
     </div>
     ${pNames.map(name => {
       const p = platforms[name];
@@ -473,7 +500,7 @@ async function loadAnalysis() {
     const [summaryRes, productsRes, revenueRes] = await Promise.all([
       fetch(`${API}/analysis/summary`),
       fetch(`${API}/analysis/products?sort=${document.getElementById('analysisSortBy')?.value || 'margin'}&limit=50`),
-      fetch(`${API}/revenue/summary`).catch(() => null)
+      fetch(`${API}/revenue/summary?period=${dashboardRevenuePeriod}`).catch(() => null)
     ]);
     const summary = await summaryRes.json();
     const products = await productsRes.json();

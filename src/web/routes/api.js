@@ -296,19 +296,59 @@ router.post('/sync/trigger/:platform', async (req, res) => {
 // 매출 API 엔드포인트 (플랫폼 API 기반)
 // ===========================
 
-// 매출 캐시
-let revenueCache = null;
-let revenueCacheTime = 0;
+// 매출 캐시 — period별로 별도 캐싱
+const revenueCaches = new Map(); // cacheKey(period:days) → { data, time }
 const REVENUE_CACHE_TTL = 300000; // 5분
+
+/**
+ * period → days 변환
+ *  today   : 오늘 1일
+ *  week    : 이번 주 (월요일~오늘)
+ *  month   : 이번 달 1일~오늘 (default)  ← 월초 0원으로 리셋
+ *  30d     : 최근 30일 (슬라이딩)
+ *  60d     : 최근 60일
+ *  90d     : 최근 90일
+ *  year    : 올해 1월 1일~오늘
+ */
+function resolvePeriod(period, fallbackDays) {
+  const now = new Date();
+  const p = String(period || '').toLowerCase();
+  if (p === 'today') return { days: 1, label: '오늘', key: 'today' };
+  if (p === 'week') {
+    const dow = now.getDay(); // 0=일, 1=월...
+    const monOffset = dow === 0 ? 6 : dow - 1;
+    return { days: monOffset + 1, label: '이번 주', key: 'week' };
+  }
+  if (p === 'month') {
+    return { days: now.getDate(), label: `${now.getMonth() + 1}월 누적`, key: 'month' };
+  }
+  if (p === '30d') return { days: 30, label: '최근 30일', key: '30d' };
+  if (p === '60d') return { days: 60, label: '최근 60일', key: '60d' };
+  if (p === '90d') return { days: 90, label: '최근 90일', key: '90d' };
+  if (p === 'year') {
+    const start = new Date(now.getFullYear(), 0, 1);
+    const d = Math.max(1, Math.ceil((now - start) / 86400000) + 1);
+    return { days: d, label: `${now.getFullYear()}년 누적`, key: 'year' };
+  }
+  // fallback: ?days=N
+  const n = parseInt(fallbackDays) || 30;
+  return { days: n, label: `최근 ${n}일`, key: `d${n}` };
+}
 
 // GET /api/revenue/summary — 전체 플랫폼 API 기반 실제 매출
 router.get('/revenue/summary', async (req, res) => {
   try {
-    const days = parseInt(req.query.days) || 30;
+    // period 우선, 없으면 days fallback, 기본값은 'month'
+    const { days, label: periodLabel, key: periodKey } = resolvePeriod(
+      req.query.period || (req.query.days ? null : 'month'),
+      req.query.days
+    );
     const forceRefresh = req.query.refresh === 'true';
+    const cacheKey = `${periodKey}:${days}`;
 
-    if (revenueCache && !forceRefresh && Date.now() - revenueCacheTime < REVENUE_CACHE_TTL) {
-      return res.json(revenueCache);
+    const cached = revenueCaches.get(cacheKey);
+    if (cached && !forceRefresh && Date.now() - cached.time < REVENUE_CACHE_TTL) {
+      return res.json(cached.data);
     }
 
     const results = await Promise.allSettled([
@@ -391,11 +431,12 @@ router.get('/revenue/summary', async (req, res) => {
       platforms,
       exchangeRate,
       period: `${days}days`,
+      periodKey,
+      periodLabel,
       timestamp: new Date().toISOString(),
     };
 
-    revenueCache = response;
-    revenueCacheTime = Date.now();
+    revenueCaches.set(cacheKey, { data: response, time: Date.now() });
 
     res.json(response);
   } catch (error) {
