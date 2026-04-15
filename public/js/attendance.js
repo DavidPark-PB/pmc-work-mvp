@@ -49,13 +49,15 @@
           </div>
           <input type="text" id="att-note" placeholder="메모 / 사유" maxlength="500" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:6px;">
           <div id="att-note-hint" style="font-size:11px;color:#888;margin-bottom:10px;display:none;">지각/조퇴/결근은 사유를 반드시 입력해야 합니다.</div>
-          <div id="att-time-buttons" style="display:flex;gap:8px;">
+          <div id="att-time-buttons" style="display:flex;gap:8px;flex-wrap:wrap;">
             <button type="button" onclick="pmcAttendance.fillNow('att-in')" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">▶ 출근 지금</button>
             <button type="button" onclick="pmcAttendance.fillNow('att-out')" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">■ 퇴근 지금</button>
             <button type="submit" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">✓ 기록</button>
+            <button type="button" onclick="pmcAttendance.togglePayroll()" style="padding:8px 14px;background:#0a3a2a;border:1px solid #1a6a4a;border-radius:6px;color:#81c784;cursor:pointer;font-size:13px;margin-left:auto;">💰 급여 보기</button>
           </div>
-          <div id="att-submit-only" style="display:none;">
+          <div id="att-submit-only" style="display:none;gap:8px;">
             <button type="submit" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">✓ 기록</button>
+            <button type="button" onclick="pmcAttendance.togglePayroll()" style="padding:8px 14px;background:#0a3a2a;border:1px solid #1a6a4a;border-radius:6px;color:#81c784;cursor:pointer;font-size:13px;margin-left:auto;">💰 급여 보기</button>
           </div>
         </form>
       </div>
@@ -79,7 +81,11 @@
         <input type="month" id="filter-month" value="${currentMonth()}" style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
       </div>`}
 
-      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
+      <div id="payroll-summary" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="color:#fff;font-size:14px;margin:0;">💰 급여 합계</h3>
+          <button type="button" onclick="pmcAttendance.togglePayroll()" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">닫기</button>
+        </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;">
           <div><div style="font-size:11px;color:#888;">근무일수</div><div id="sum-days" style="font-size:18px;font-weight:700;color:#fff;">-</div></div>
           <div><div style="font-size:11px;color:#888;">총 근무시간</div><div id="sum-hours" style="font-size:18px;font-weight:700;color:#fff;">-</div></div>
@@ -262,5 +268,36 @@
     alert('시급이 저장되었습니다.');
   }
 
-  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange };
+  function togglePayroll() {
+    const el = document.getElementById('payroll-summary');
+    if (!el) return;
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+
+  // time/date/month picker 아이콘이 어두운 배경에서 안 보이는 문제 해결
+  // (페이지 로드 시 한 번만 <style> 주입 — 모든 페이지 커버)
+  (function ensureDarkPickerStyle() {
+    if (document.getElementById('pmc-dark-picker-style')) return;
+    const st = document.createElement('style');
+    st.id = 'pmc-dark-picker-style';
+    st.textContent = `
+      input[type="time"]::-webkit-calendar-picker-indicator,
+      input[type="date"]::-webkit-calendar-picker-indicator,
+      input[type="month"]::-webkit-calendar-picker-indicator,
+      input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+        filter: invert(0.9) brightness(1.2);
+        cursor: pointer;
+        opacity: 0.9;
+      }
+      input[type="time"],
+      input[type="date"],
+      input[type="month"],
+      input[type="datetime-local"] {
+        color-scheme: dark;
+      }
+    `;
+    document.head.appendChild(st);
+  })();
+
+  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll };
 })();
