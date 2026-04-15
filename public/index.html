@@ -50,17 +50,25 @@
     <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:32px;width:400px;max-width:90vw;">
       <h2 style="color:#fff;margin-bottom:8px;font-size:18px;">비밀번호 변경</h2>
       <p style="color:#888;font-size:12px;margin-bottom:20px;">새 비밀번호는 6자 이상이어야 합니다.</p>
-      <form id="passwordForm" onsubmit="return submitPasswordChange(event)">
-        <div style="margin-bottom:12px;">
-          <input type="password" id="pw-current" placeholder="현재 비밀번호" autocomplete="current-password" required style="width:100%;padding:10px 14px;background:#0f0f23;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px;">
+      <form id="passwordForm" onsubmit="return submitPasswordChange(event)" autocomplete="off" spellcheck="false">
+        <!-- honeypot: 브라우저 자동채움이 실제 필드 대신 여기 들어가도록 유도 -->
+        <div style="position:absolute;left:-9999px;height:0;overflow:hidden;" aria-hidden="true">
+          <input type="text" name="fake_u" tabindex="-1" autocomplete="off">
+          <input type="password" name="fake_p" tabindex="-1" autocomplete="new-password">
         </div>
         <div style="margin-bottom:12px;">
-          <input type="password" id="pw-new" placeholder="새 비밀번호 (6자 이상)" autocomplete="new-password" minlength="6" required style="width:100%;padding:10px 14px;background:#0f0f23;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px;">
+          <input type="password" id="pw-current" placeholder="현재 비밀번호" autocomplete="off" required readonly style="width:100%;padding:10px 14px;background:#0f0f23;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px;">
+        </div>
+        <div style="margin-bottom:12px;">
+          <input type="password" id="pw-new" placeholder="새 비밀번호 (6자 이상)" autocomplete="new-password" minlength="6" required readonly style="width:100%;padding:10px 14px;background:#0f0f23;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px;">
         </div>
         <div style="margin-bottom:16px;">
-          <input type="password" id="pw-confirm" placeholder="새 비밀번호 확인" autocomplete="new-password" minlength="6" required style="width:100%;padding:10px 14px;background:#0f0f23;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px;">
+          <input type="password" id="pw-confirm" placeholder="새 비밀번호 확인" autocomplete="new-password" minlength="6" required readonly style="width:100%;padding:10px 14px;background:#0f0f23;border:1px solid #333;border-radius:8px;color:#fff;font-size:13px;">
         </div>
         <div id="pw-error" style="color:#ff5252;font-size:12px;margin-bottom:12px;display:none;"></div>
+        <div style="padding:8px 10px;background:#231a00;border:1px solid #3a2a00;border-radius:6px;font-size:11px;color:#d4a02c;line-height:1.5;margin-bottom:12px;">
+          ⚠️ 크롬이 "비밀번호 저장" 제안하면 <strong>사용 안 함</strong>을 선택하세요. 공유 PC에서 저장하면 다른 직원 비번과 섞입니다.
+        </div>
         <div style="display:flex;gap:8px;justify-content:flex-end;">
           <button type="button" onclick="closePasswordModal()" style="padding:10px 16px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;font-size:13px;cursor:pointer;">취소</button>
           <button type="submit" id="pw-submit" style="padding:10px 16px;background:#7c4dff;border:0;border-radius:6px;color:#fff;font-size:13px;cursor:pointer;font-weight:600;">변경</button>
@@ -109,9 +117,26 @@
 
   function openPasswordModal() {
     document.getElementById('passwordModal').style.display = 'flex';
-    document.getElementById('pw-current').focus();
     document.getElementById('pw-error').style.display = 'none';
     document.getElementById('passwordForm').reset();
+
+    // 자동완성·비번저장 방어: name 랜덤화 + readonly 트릭
+    var rand = Math.random().toString(36).slice(2, 10);
+    ['pw-current', 'pw-new', 'pw-confirm'].forEach(function(id, i) {
+      var el = document.getElementById(id);
+      el.name = 'f_' + i + '_' + rand;
+      el.value = '';
+      el.setAttribute('readonly', 'readonly');
+      var unlock = function() { el.removeAttribute('readonly'); };
+      el.addEventListener('focus', unlock, { once: true });
+      el.addEventListener('mousedown', unlock, { once: true });
+    });
+    // 포커스는 약간 지연 (자동채움 타이밍 회피)
+    setTimeout(function() {
+      var cur = document.getElementById('pw-current');
+      cur.removeAttribute('readonly');
+      cur.focus();
+    }, 200);
   }
   function closePasswordModal() {
     document.getElementById('passwordModal').style.display = 'none';

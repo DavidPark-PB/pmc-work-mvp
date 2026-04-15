@@ -77,12 +77,18 @@
 <div class="login-box">
   <h1>PMC Dashboard</h1>
   <p id="modeDesc">아이디와 비밀번호를 입력하세요</p>
-  <form id="loginForm">
+  <form id="loginForm" autocomplete="off" spellcheck="false">
+    <!-- honeypot: 브라우저 자동채움이 실제 필드 대신 여기 들어가도록 유도 -->
+    <div style="position:absolute;left:-9999px;height:0;overflow:hidden;" aria-hidden="true">
+      <input type="text" name="fake_user" tabindex="-1" autocomplete="off">
+      <input type="password" name="fake_pw" tabindex="-1" autocomplete="new-password">
+    </div>
+
     <div class="input-group" id="usernameGroup">
-      <input type="text" id="username" placeholder="아이디" autocomplete="username" autofocus>
+      <input type="text" id="username" placeholder="아이디" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" readonly>
     </div>
     <div class="input-group">
-      <input type="password" id="password" placeholder="비밀번호" autocomplete="current-password">
+      <input type="password" id="password" placeholder="비밀번호" autocomplete="new-password" readonly>
     </div>
     <button type="submit" class="btn-login" id="btnLogin">로그인</button>
   </form>
@@ -90,9 +96,40 @@
   <div style="margin-top:16px;font-size:12px;">
     <a href="#" id="toggleMode" style="color:#888;text-decoration:none;">관리자 전용 로그인 (레거시)</a>
   </div>
+  <div style="margin-top:20px;padding:10px 12px;background:#231a00;border:1px solid #3a2a00;border-radius:6px;font-size:11px;color:#d4a02c;line-height:1.5;">
+    ⚠️ <strong>여러 직원이 같은 PC를 쓰는 경우</strong>: 크롬이 "비밀번호 저장" 제안을 띄우면 반드시 <strong>"사용 안 함"</strong>을 눌러 주세요. 저장해두면 다른 직원 비번이 덮어써집니다. 기존에 저장된 비번은 <code style="color:#ffc14d;">chrome://settings/passwords</code> 에서 삭제.
+  </div>
 </div>
 <script>
 var legacyMode = false;
+
+// ── 자동완성·비번저장 차단 유틸 ──────────────────
+(function preventAutofill() {
+  var rand = Math.random().toString(36).slice(2, 10);
+  var u = document.getElementById('username');
+  var p = document.getElementById('password');
+  // 예측 불가한 name으로 매번 변경
+  u.name = 'u_' + rand;
+  p.name = 'p_' + rand;
+  // focus/click 시 readonly 제거 (자동채움 스캔 시점엔 readonly라 제외됨)
+  var unlock = function(el) {
+    el.removeAttribute('readonly');
+    el.removeEventListener('focus', onFocusU);
+    el.removeEventListener('focus', onFocusP);
+    el.removeEventListener('mousedown', onMouseU);
+    el.removeEventListener('mousedown', onMouseP);
+  };
+  var onFocusU = function() { unlock(u); };
+  var onFocusP = function() { unlock(p); };
+  var onMouseU = function() { unlock(u); };
+  var onMouseP = function() { unlock(p); };
+  u.addEventListener('focus', onFocusU);
+  u.addEventListener('mousedown', onMouseU);
+  p.addEventListener('focus', onFocusP);
+  p.addEventListener('mousedown', onMouseP);
+  // 초기 포커스(autofocus)는 자동채움을 유발하므로 약간 지연 + readonly가 풀린 뒤 포커스
+  setTimeout(function() { unlock(u); u.focus(); }, 250);
+})();
 
 document.getElementById('toggleMode').addEventListener('click', function(e) {
   e.preventDefault();
@@ -142,7 +179,11 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
     });
     var data = await res.json();
     if (res.ok && data.success) {
-      window.location.href = '/';
+      // 필드 비워서 브라우저 "비번 저장" 제안 트리거 최소화 + history 안 남기게 replace
+      document.getElementById('username').value = '';
+      document.getElementById('password').value = '';
+      window.location.replace('/');
+      return;
     } else {
       errEl.textContent = data.error || '로그인에 실패했습니다';
       errEl.style.display = 'block';
