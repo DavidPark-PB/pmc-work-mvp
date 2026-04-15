@@ -17,10 +17,14 @@ const REJECT_LABELS = {
   other: '기타',
 };
 
-// GET /api/purchase-requests
+// GET /api/purchase-requests — 전 직원 조회 (scope=mine 시 본인 요청만)
 router.get('/', async (req, res) => {
   try {
-    const data = await repo.listRequests({ user: req.user, status: req.query.status });
+    const data = await repo.listRequests({
+      user: req.user,
+      status: req.query.status,
+      scope: req.query.scope,
+    });
     res.json({ data });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -29,6 +33,15 @@ router.get('/', async (req, res) => {
 router.get('/stats', requireAdmin, async (req, res) => {
   try { res.json(await repo.getStats()); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/purchase-requests/insights — 재고 추천 (전 직원 열람)
+router.get('/insights', async (req, res) => {
+  try {
+    const days = parseInt(req.query.days, 10) || 90;
+    const data = await repo.getRecommendations({ days });
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // POST /api/purchase-requests

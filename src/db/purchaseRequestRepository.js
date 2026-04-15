@@ -3,17 +3,21 @@
  */
 const { getClient } = require('./supabaseClient');
 
-async function listRequests({ user, status }) {
+/**
+ * 발주 목록 조회 — 모든 직원이 전체 목록 열람 가능 (중복 구매 방지 목적).
+ * scope='mine' 파라미터로 본인 요청만 필터 가능.
+ */
+async function listRequests({ user, status, scope }) {
   let q = getClient()
     .from('purchase_requests')
     .select(`
       id, product_name, quantity, estimated_price, priority, reason,
       requested_by, requested_at, status, decision_by, decision_at,
       rejection_reason, rejection_note,
-      requester:users!purchase_requests_requested_by_users_id_fk ( id, display_name )
+      requester:users!purchase_requests_requested_by_users_id_fk ( id, display_name, platform )
     `);
 
-  if (!user.isAdmin) q = q.eq('requested_by', user.id);
+  if (scope === 'mine') q = q.eq('requested_by', user.id);
   if (status) q = q.eq('status', status);
 
   const { data, error } = await q.order('requested_at', { ascending: false });
@@ -28,6 +32,100 @@ async function listRequests({ user, status }) {
     if (aUrg !== bUrg) return aUrg - bUrg;
     return new Date(b.requested_at) - new Date(a.requested_at);
   });
+}
+
+/**
+ * 발주 이력 기반 재고 추천
+ *  - 최근 90일 데이터 집계 (rejected 제외)
+ *  - 상품명(lowercase+trim) 기준 그룹
+ *  - 산출: 요청횟수, 총수량, 평균수량, 마지막 요청일, 평균 요청간격, 권장재고
+ *  - 권장재고 공식:
+ *      월평균수량(=60일 총수량/2) × 1.5 (안전 재고 버퍼)
+ *      최소 3개
+ *      실제 최근 평균수량보다는 크게
+ */
+async function getRecommendations({ days = 90 } = {}) {
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+  const { data, error } = await getClient()
+    .from('purchase_requests')
+    .select('product_name, quantity, estimated_price, requested_at, status, priority')
+    .gte('requested_at', since)
+    .neq('status', 'rejected');
+  if (error) throw error;
+
+  // 상품명 정규화 키로 그룹
+  const groups = new Map();
+  for (const r of data || []) {
+    const key = String(r.product_name || '').toLowerCase().trim().replace(/\s+/g, ' ');
+    if (!key) continue;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        name: r.product_name.trim(),
+        key,
+        requestCount: 0,
+        totalQty: 0,
+        urgentCount: 0,
+        approvedCount: 0,
+        pendingCount: 0,
+        dates: [],
+        avgPriceKrw: 0,
+        _priceSum: 0,
+        _priceCount: 0,
+      });
+    }
+    const g = groups.get(key);
+    g.requestCount++;
+    g.totalQty += Number(r.quantity) || 0;
+    if (r.priority === 'urgent') g.urgentCount++;
+    if (r.status === 'approved') g.approvedCount++;
+    else if (r.status === 'pending') g.pendingCount++;
+    g.dates.push(new Date(r.requested_at));
+    if (r.estimated_price) {
+      g._priceSum += Number(r.estimated_price);
+      g._priceCount++;
+    }
+  }
+
+  const items = [];
+  for (const g of groups.values()) {
+    g.dates.sort((a, b) => a - b);
+    const lastAt = g.dates[g.dates.length - 1];
+    const firstAt = g.dates[0];
+    const spanDays = Math.max(1, (lastAt - firstAt) / 86400000);
+    const avgIntervalDays = g.dates.length > 1 ? Math.round(spanDays / (g.dates.length - 1)) : null;
+    const avgQty = g.totalQty / g.requestCount;
+
+    // 최근 60일 집계 → 월평균
+    const sixtyDaysAgo = Date.now() - 60 * 86400000;
+    const recent = g.dates.filter(d => d.getTime() >= sixtyDaysAgo);
+    const recentQty = recent.length > 0
+      ? (g.totalQty * (recent.length / g.dates.length)) // 근사: 기간 내 비율
+      : g.totalQty;
+    const monthlyAvg = recent.length > 0 ? recentQty / 2 : avgQty; // 60일 / 2 = 월평균
+    const suggestedStock = Math.max(3, Math.ceil(monthlyAvg * 1.5));
+
+    items.push({
+      name: g.name,
+      requestCount: g.requestCount,
+      totalQty: g.totalQty,
+      avgQty: Math.round(avgQty * 10) / 10,
+      lastRequestedAt: lastAt.toISOString(),
+      avgIntervalDays,
+      urgentCount: g.urgentCount,
+      approvedCount: g.approvedCount,
+      pendingCount: g.pendingCount,
+      avgPrice: g._priceCount > 0 ? Math.round(g._priceSum / g._priceCount) : null,
+      suggestedStock,
+    });
+  }
+
+  // 정렬: 요청횟수 많은 순, 동률이면 총수량
+  items.sort((a, b) => {
+    if (b.requestCount !== a.requestCount) return b.requestCount - a.requestCount;
+    return b.totalQty - a.totalQty;
+  });
+
+  return { windowDays: days, products: items };
 }
 
 async function getRequest(id) {
@@ -77,4 +175,4 @@ async function getStats() {
   return counts;
 }
 
-module.exports = { listRequests, getRequest, createRequest, updateRequest, getStats };
+module.exports = { listRequests, getRequest, createRequest, updateRequest, getStats, getRecommendations };
