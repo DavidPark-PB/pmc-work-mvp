@@ -67,6 +67,10 @@
             <button type="button" onclick="pmcAttendance.togglePayroll()" style="padding:8px 14px;background:#0a3a2a;border:1px solid #1a6a4a;border-radius:6px;color:#81c784;cursor:pointer;font-size:13px;margin-left:auto;">💰 급여 보기</button>
           </div>
         </form>
+        ${!user.isAdmin ? `
+        <div style="margin-top:12px;padding:10px 12px;background:#2a1e00;border:1px solid #4a3600;border-radius:6px;color:#ffb74d;font-size:11px;line-height:1.5;">
+          ⚠️ 출퇴근 기록은 <strong>한 번 입력하면 본인이 수정할 수 없습니다</strong>. 출/퇴근을 잘못 찍었거나 빠뜨린 경우 <strong>사장님께 수정 요청</strong>하세요. (입력 후 피드백 게시판으로 요청 권장)
+        </div>` : ''}
       </div>
 
       ${user.isAdmin ? `
@@ -148,9 +152,9 @@
 
   function autoEnterEditIfExists() {
     if (editingId) return; // 이미 편집 중이면 유지
+    if (!user.isAdmin) return; // 직원은 수정 불가 — 자동 편집 모드 진입 안 함
     const selDate = document.getElementById('att-date')?.value;
     if (!selDate) return;
-    // 본인 기록 우선; admin도 본인 기록 위주 (다른 직원 수정은 행의 "수정" 버튼으로)
     const myRec = cachedItems.find(r => r.employee_id === user.id && r.date === selDate);
     if (myRec) startEdit(myRec);
   }
@@ -201,10 +205,9 @@
       day_off: '<span style="padding:2px 6px;background:#0288d1;color:#fff;border-radius:8px;font-size:10px;">휴무</span>',
       absence: '<span style="padding:2px 6px;background:#e94560;color:#fff;border-radius:8px;font-size:10px;">결근</span>',
     };
-    const today = todayStr();
     tbody.innerHTML = items.map(r => {
-      // 본인 기록이며 당일인 경우, 또는 admin인 경우 수정 가능 (서버 정책과 일치)
-      const canEdit = user.isAdmin || (r.employee_id === user.id && r.date === today);
+      // 수정은 admin만. 직원은 실수 시 사장님께 요청.
+      const canEdit = user.isAdmin;
       return `
       <tr style="border-bottom:1px solid #2a2a4a;">
         ${user.isAdmin ? `<td style="padding:10px;">${esc(r.employee?.display_name || '-')}</td>` : ''}
@@ -281,7 +284,7 @@
       const err = await res.json();
       // 날짜 중복 에러 → 자동 편집 모드 진입 유도
       if (res.status === 409) {
-        alert(err.error + '\n\n행의 "수정" 버튼을 누르거나 동일 날짜로 다시 조회하면 수정 모드로 전환됩니다.');
+        alert(err.error || '해당 날짜에 이미 기록이 있습니다.\n수정이 필요하면 사장님께 요청하세요.');
       } else {
         alert(err.error || '저장 실패');
       }

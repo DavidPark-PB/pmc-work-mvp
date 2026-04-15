@@ -50,23 +50,22 @@ router.post('/', async (req, res) => {
       res.json({ data: created });
     } catch (e) {
       if (String(e.message).includes('attendance_employee_date_idx') || String(e.message).includes('duplicate')) {
-        return res.status(409).json({ error: '해당 날짜에 이미 기록이 있습니다. 수정을 사용하세요' });
+        return res.status(409).json({ error: '해당 날짜에 이미 기록이 있습니다. 수정이 필요하면 사장님께 요청하세요' });
       }
       throw e;
     }
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 수정은 admin만 — 직원 자신이 실수한 경우 사장님께 요청해서 변경
 router.patch('/:id', async (req, res) => {
   try {
+    if (!req.user?.isAdmin) {
+      return res.status(403).json({ error: '출퇴근 기록 수정은 관리자만 가능합니다. 사장님께 요청하세요.' });
+    }
     const id = parseInt(req.params.id, 10);
     const existing = await repo.getById(id);
     if (!existing) return res.status(404).json({ error: '기록을 찾을 수 없습니다' });
-
-    if (!req.user.isAdmin) {
-      if (existing.employee_id !== req.user.id) return res.status(403).json({ error: '본인 기록만 수정 가능합니다' });
-      if (existing.date !== repo.todayDateStr()) return res.status(403).json({ error: '당일 기록만 수정 가능합니다' });
-    }
 
     const { clockIn, clockOut, note, status } = req.body || {};
     if (status !== undefined && !repo.VALID_STATUSES.includes(status)) {
