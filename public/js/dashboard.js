@@ -188,6 +188,49 @@ async function scanInventory(type) {
 var barcodeStream = null;
 // ===== 썸네일 만들기 =====
 var thumbResults = [];
+var thumbPosition = 'top-left'; // default
+
+function thumbSetPosition(pos) {
+  thumbPosition = pos;
+  document.querySelectorAll('#thumbPositionBtns button').forEach(b => {
+    b.style.background = b.dataset.pos === pos ? '#ff9800' : '#2a2a4a';
+    b.style.fontWeight = b.dataset.pos === pos ? '600' : '400';
+  });
+  // 프리셋이 "custom"이 아니면 자동으로 custom으로 전환 (사용자가 직접 건드린 것)
+  var plat = document.getElementById('thumbPlatform');
+  if (plat && plat.value !== 'custom') plat.value = 'custom';
+}
+
+function thumbUpdateSizeLabel() {
+  var v = document.getElementById('thumbSize').value;
+  document.getElementById('thumbSizeLabel').textContent = v + '%';
+  var plat = document.getElementById('thumbPlatform');
+  if (plat && plat.value !== 'custom') plat.value = 'custom';
+}
+
+function thumbUpdateBgOptions() {
+  var on = document.getElementById('thumbRemoveBg').checked;
+  document.getElementById('thumbBgOptions').style.display = on ? 'block' : 'none';
+}
+
+function thumbApplyPreset() {
+  var plat = document.getElementById('thumbPlatform').value;
+  if (plat === 'custom') return;
+  // 서버와 동일한 프리셋 — 사용자 UX용
+  var presets = {
+    ebay:    { position: 'top-left', size: 45 },
+    alibaba: { position: 'top-left', size: 45 },
+    shopify: { position: 'top-left', size: 40 },
+    shopee:  { position: 'top-left', size: 45 },
+    qoo10:   { position: 'top-left', size: 45 },
+  };
+  var p = presets[plat] || presets.ebay;
+  thumbSetPosition(p.position);
+  document.getElementById('thumbSize').value = p.size;
+  document.getElementById('thumbSizeLabel').textContent = p.size + '%';
+  // preset 다시 복원 (thumbSetPosition/사이즈가 'custom'으로 바꾸니까)
+  document.getElementById('thumbPlatform').value = plat;
+}
 
 function thumbPreview() {
   var files = document.getElementById('thumbFiles').files;
@@ -204,13 +247,23 @@ function thumbPreview() {
 async function thumbGenerate() {
   var files = document.getElementById('thumbFiles').files;
   if (!files || files.length === 0) { alert('이미지를 선택하세요'); return; }
-  var platform = document.getElementById('thumbPlatform').value;
+  var platform = document.getElementById('thumbPlatform').value || 'custom';
+  var size = document.getElementById('thumbSize').value || '45';
+  var removeBg = document.getElementById('thumbRemoveBg').checked;
+  var outputBg = document.getElementById('thumbOutputBg').value || 'transparent';
+
   var btn = document.getElementById('thumbGenBtn');
   btn.disabled = true;
-  btn.textContent = '생성 중... (' + files.length + '장)';
+  btn.textContent = removeBg
+    ? '누끼+합성 중... (' + files.length + '장, 최대 ' + (files.length * 10) + '초)'
+    : '합성 중... (' + files.length + '장)';
 
   var formData = new FormData();
   formData.append('platform', platform);
+  formData.append('position', thumbPosition);
+  formData.append('size', size);
+  formData.append('removeBg', removeBg ? 'true' : 'false');
+  formData.append('outputBg', outputBg);
   for (var i = 0; i < files.length; i++) formData.append('images', files[i]);
 
   try {
@@ -220,12 +273,16 @@ async function thumbGenerate() {
 
     thumbResults = d.images || [];
     var area = document.getElementById('thumbResultArea');
-    area.innerHTML = '<h4 style="width:100%;margin:0 0 8px;color:#ff9800">' + d.count + '/' + d.images.length + ' 생성 완료 (' + platform + ')</h4>';
-    thumbResults.forEach(function(img, idx) {
+    var meta = `위치: ${d.position}, 크기: ${d.size}%, 배경제거: ${d.removeBg ? 'ON' : 'OFF'}`;
+    area.innerHTML = '<h4 style="width:100%;margin:0 0 8px;color:#ff9800">' + d.count + '/' + d.images.length + ' 생성 완료 — ' + meta + '</h4>';
+    thumbResults.forEach(function(img) {
       if (img.error) {
-        area.innerHTML += '<div style="color:#c62828;font-size:11px">' + img.filename + ': ' + img.error + '</div>';
+        area.innerHTML += '<div style="color:#c62828;font-size:11px;flex-basis:100%">' + img.filename + ': ' + img.error + '</div>';
       } else {
-        area.innerHTML += '<div style="text-align:center"><img src="' + img.data + '" style="width:150px;height:150px;object-fit:cover;border-radius:6px;border:2px solid #ff9800"><div style="font-size:10px;color:#888;margin-top:4px">' + img.filename + '</div><a href="' + img.data + '" download="thumb_' + img.filename + '" style="font-size:10px;color:#1565c0">다운로드</a></div>';
+        var ext = img.data.startsWith('data:image/png') ? 'png' : 'jpg';
+        var base = img.filename.replace(/\.[^.]+$/, '');
+        var bgCls = img.bgRemoved ? 'background:repeating-conic-gradient(#333 0 25%,#444 0 50%) 50%/16px 16px;' : '';
+        area.innerHTML += '<div style="text-align:center"><img src="' + img.data + '" style="width:160px;height:160px;object-fit:contain;border-radius:6px;border:2px solid #ff9800;' + bgCls + '"><div style="font-size:10px;color:#888;margin-top:4px">' + img.filename + '</div><a href="' + img.data + '" download="thumb_' + base + '.' + ext + '" style="font-size:10px;color:#1565c0">다운로드 .' + ext + '</a></div>';
       }
     });
     document.getElementById('thumbDlBtn').style.display = 'inline-block';
@@ -233,16 +290,18 @@ async function thumbGenerate() {
     alert('생성 실패: ' + e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = '생성';
+    btn.textContent = '✨ 생성';
   }
 }
 
 function thumbDownloadAll() {
   thumbResults.forEach(function(img) {
     if (img.data && !img.error) {
+      var ext = img.data.startsWith('data:image/png') ? 'png' : 'jpg';
+      var base = img.filename.replace(/\.[^.]+$/, '');
       var a = document.createElement('a');
       a.href = img.data;
-      a.download = 'thumb_' + img.filename;
+      a.download = 'thumb_' + base + '.' + ext;
       a.click();
     }
   });

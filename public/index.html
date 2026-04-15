@@ -1158,21 +1158,68 @@
     <!-- ===== 썸네일 만들기 페이지 ===== -->
     <div id="page-thumbnail" class="page">
       <div class="card">
-        <h3 style="margin-bottom:8px">썸네일 만들기 <span style="font-size:12px;color:#ff9800;font-weight:400">상품 이미지에 PMC 로고 자동 합성</span></h3>
-        <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
-          <select id="thumbPlatform" style="padding:8px 12px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:6px">
-            <option value="alibaba">Alibaba (우하단)</option>
-            <option value="ebay">eBay (좌하단)</option>
-            <option value="shopify">Shopify (우하단 작게)</option>
-            <option value="shopee">Shopee (우상단)</option>
-            <option value="qoo10">Qoo10 (우하단)</option>
-          </select>
-          <label style="padding:8px 20px;background:#ff9800;color:#fff;border-radius:6px;cursor:pointer;font-weight:600">
-            이미지 선택 (최대 20장)
+        <h3 style="margin-bottom:8px">썸네일 만들기 <span style="font-size:12px;color:#ff9800;font-weight:400">누끼 따기 → PMC 로고 합성</span></h3>
+        <p style="font-size:12px;color:#888;margin-bottom:16px">①배경 제거(선택) → ②로고 위치/크기 지정 → ③생성</p>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-bottom:16px;">
+
+          <!-- 로고 위치 -->
+          <div>
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;color:#aaa">로고 위치</label>
+            <div id="thumbPositionBtns" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+              <button type="button" data-pos="top-left"     onclick="thumbSetPosition('top-left')"     style="padding:10px;background:#ff9800;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;">↖ 좌상단</button>
+              <button type="button" data-pos="top-right"    onclick="thumbSetPosition('top-right')"    style="padding:10px;background:#2a2a4a;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;">↗ 우상단</button>
+              <button type="button" data-pos="bottom-left"  onclick="thumbSetPosition('bottom-left')"  style="padding:10px;background:#2a2a4a;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;">↙ 좌하단</button>
+              <button type="button" data-pos="bottom-right" onclick="thumbSetPosition('bottom-right')" style="padding:10px;background:#2a2a4a;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;">↘ 우하단</button>
+            </div>
+          </div>
+
+          <!-- 로고 크기 -->
+          <div>
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;color:#aaa">로고 크기 (이미지 너비 대비 %)</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input type="range" id="thumbSize" min="20" max="70" value="45" step="5" oninput="thumbUpdateSizeLabel()" style="flex:1;">
+              <span id="thumbSizeLabel" style="font-weight:700;color:#ff9800;min-width:40px;text-align:right;">45%</span>
+            </div>
+            <div style="font-size:10px;color:#666;margin-top:4px;">기본 45% (이전 25~35%보다 훨씬 크게)</div>
+          </div>
+
+          <!-- 누끼 옵션 -->
+          <div>
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;color:#aaa">🪄 배경 처리</label>
+            <label style="display:flex;gap:8px;align-items:center;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;cursor:pointer;font-size:12px;">
+              <input type="checkbox" id="thumbRemoveBg" onchange="thumbUpdateBgOptions()">
+              <span>누끼 따기 (remove.bg)</span>
+            </label>
+            <div id="thumbBgOptions" style="display:none;margin-top:6px;">
+              <select id="thumbOutputBg" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+                <option value="transparent">투명 배경 PNG</option>
+                <option value="white">흰색 배경 JPEG</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- 프리셋 -->
+          <div>
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;color:#aaa">프리셋 (기본값 세팅용)</label>
+            <select id="thumbPlatform" onchange="thumbApplyPreset()" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;color:#e0e0e0;border-radius:6px;font-size:12px;">
+              <option value="custom">직접 설정</option>
+              <option value="ebay" selected>eBay</option>
+              <option value="alibaba">Alibaba</option>
+              <option value="shopify">Shopify</option>
+              <option value="shopee">Shopee</option>
+              <option value="qoo10">Qoo10</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap;padding-top:12px;border-top:1px solid #2a2a4a;">
+          <label style="padding:10px 20px;background:#ff9800;color:#fff;border-radius:6px;cursor:pointer;font-weight:600">
+            📁 이미지 선택 (최대 20장)
             <input type="file" id="thumbFiles" multiple accept="image/*" style="display:none" onchange="thumbPreview()">
           </label>
-          <button onclick="thumbGenerate()" id="thumbGenBtn" style="padding:8px 20px;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">생성</button>
-          <button onclick="thumbDownloadAll()" id="thumbDlBtn" style="padding:8px 20px;background:#1565c0;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;display:none">전체 다운로드</button>
+          <button onclick="thumbGenerate()" id="thumbGenBtn" style="padding:10px 20px;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">✨ 생성</button>
+          <button onclick="thumbDownloadAll()" id="thumbDlBtn" style="padding:10px 20px;background:#1565c0;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600;display:none">⬇ 전체 다운로드</button>
         </div>
         <div id="thumbPreviewArea" style="display:flex;flex-wrap:wrap;gap:12px"></div>
         <div id="thumbResultArea" style="display:flex;flex-wrap:wrap;gap:12px;margin-top:16px"></div>

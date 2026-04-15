@@ -3862,6 +3862,7 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
     const sharp = require('sharp');
     const path = require('path');
     const fs = require('fs');
+    const axios = require('axios');
 
     const platform = req.body.platform || 'ebay';
     const files = req.files;
@@ -3871,26 +3872,77 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
     const logoPath = path.join(__dirname, '../../..', 'public/images/pmc_logo.png');
     if (!fs.existsSync(logoPath)) return res.status(400).json({ success: false, error: 'Logo file not found. Upload pmc_logo.png to public/images/' });
 
-    // Platform-specific settings
-    const settings = {
-      alibaba: { position: 'bottom-right', size: 35, padding: 20 },
-      ebay: { position: 'bottom-left', size: 30, padding: 15 },
-      shopify: { position: 'bottom-right', size: 25, padding: 10 },
-      shopee: { position: 'top-right', size: 30, padding: 15 },
-      qoo10: { position: 'bottom-right', size: 30, padding: 15 },
+    // 사용자 지정 > 플랫폼 프리셋 > 기본값
+    const platformPresets = {
+      alibaba: { position: 'top-left',     size: 45, padding: 24 },
+      ebay:    { position: 'top-left',     size: 45, padding: 20 },
+      shopify: { position: 'top-left',     size: 40, padding: 20 },
+      shopee:  { position: 'top-left',     size: 45, padding: 20 },
+      qoo10:   { position: 'top-left',     size: 45, padding: 20 },
     };
-    const cfg = settings[platform] || settings.ebay;
+    const preset = platformPresets[platform] || platformPresets.ebay;
+    const position = req.body.position || preset.position;
+    const size = Math.max(10, Math.min(80, parseInt(req.body.size) || preset.size));
+    const padding = parseInt(req.body.padding) || preset.padding;
+    const removeBg = req.body.removeBg === 'true' || req.body.removeBg === true;
+    const outputBg = req.body.outputBg || 'transparent'; // 'transparent' | 'white'
+
+    // remove.bg API key (optional — 누끼 쓰려면 필요)
+    const rembgKey = process.env.REMOVE_BG_API_KEY;
+    if (removeBg && !rembgKey) {
+      return res.status(400).json({
+        success: false,
+        error: '배경 제거 기능을 쓰려면 REMOVE_BG_API_KEY 설정이 필요합니다. (remove.bg 무료 월 50장)',
+      });
+    }
+
+    async function callRemoveBg(buffer, filename) {
+      const FormData = require('form-data');
+      const fd = new FormData();
+      fd.append('image_file', buffer, { filename });
+      fd.append('size', 'auto');
+      const r = await axios.post('https://api.remove.bg/v1.0/removebg', fd, {
+        headers: { ...fd.getHeaders(), 'X-Api-Key': rembgKey },
+        responseType: 'arraybuffer',
+        timeout: 60000,
+        validateStatus: () => true,
+      });
+      if (r.status !== 200) {
+        let msg = `remove.bg error ${r.status}`;
+        try { const j = JSON.parse(Buffer.from(r.data).toString('utf-8')); msg = j.errors?.[0]?.title || msg; } catch {}
+        throw new Error(msg);
+      }
+      return Buffer.from(r.data);
+    }
 
     const results = [];
     for (const file of files) {
       try {
-        const img = sharp(file.buffer);
-        const meta = await img.metadata();
+        let workingBuffer = file.buffer;
+
+        // 1) 누끼 따기 (원격 API)
+        if (removeBg) {
+          try {
+            workingBuffer = await callRemoveBg(file.buffer, file.originalname);
+          } catch (e) {
+            results.push({ filename: file.originalname, error: '누끼 실패: ' + e.message });
+            continue;
+          }
+        }
+
+        // 2) 배경 처리: PNG 투명 유지 or 흰 배경 플래튼
+        let base = sharp(workingBuffer);
+        const meta = await base.metadata();
         const imgW = meta.width || 800;
         const imgH = meta.height || 800;
 
-        // Resize logo to percentage of image width
-        const logoW = Math.round(imgW * cfg.size / 100);
+        if (removeBg && outputBg === 'white') {
+          // 투명 배경 → 흰 배경으로 플래튼
+          base = base.flatten({ background: { r: 255, g: 255, b: 255 } });
+        }
+
+        // 3) 로고 리사이즈 (이미지 너비의 size% 기준)
+        const logoW = Math.round(imgW * size / 100);
         const resizedLogo = await sharp(logoPath)
           .resize(logoW, null, { fit: 'inside' })
           .png()
@@ -3898,32 +3950,50 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
         const logoMeta = await sharp(resizedLogo).metadata();
         const logoH = logoMeta.height || logoW;
 
-        // Calculate position
+        // 4) 위치 계산
         let left, top;
-        switch (cfg.position) {
-          case 'bottom-right': left = imgW - logoW - cfg.padding; top = imgH - logoH - cfg.padding; break;
-          case 'bottom-left': left = cfg.padding; top = imgH - logoH - cfg.padding; break;
-          case 'top-right': left = imgW - logoW - cfg.padding; top = cfg.padding; break;
-          case 'top-left': left = cfg.padding; top = cfg.padding; break;
-          default: left = imgW - logoW - cfg.padding; top = imgH - logoH - cfg.padding;
+        switch (position) {
+          case 'bottom-right': left = imgW - logoW - padding; top = imgH - logoH - padding; break;
+          case 'bottom-left':  left = padding;                 top = imgH - logoH - padding; break;
+          case 'top-right':    left = imgW - logoW - padding; top = padding;                 break;
+          case 'top-left':     left = padding;                 top = padding;                 break;
+          default:             left = padding;                 top = padding;
         }
 
-        const output = await img
-          .composite([{ input: resizedLogo, left: Math.max(0, left), top: Math.max(0, top) }])
-          .jpeg({ quality: 90 })
-          .toBuffer();
+        // 5) 합성 + 출력 포맷 결정
+        const composited = base.composite([{
+          input: resizedLogo,
+          left: Math.max(0, left),
+          top: Math.max(0, top),
+        }]);
+
+        const outputAsPng = removeBg && outputBg === 'transparent';
+        const output = outputAsPng
+          ? await composited.png({ quality: 90 }).toBuffer()
+          : await composited.jpeg({ quality: 92 }).toBuffer();
+
+        const mime = outputAsPng ? 'image/png' : 'image/jpeg';
 
         results.push({
           filename: file.originalname,
-          data: 'data:image/jpeg;base64,' + output.toString('base64'),
+          data: `data:${mime};base64,${output.toString('base64')}`,
           size: output.length,
+          bgRemoved: removeBg,
         });
       } catch (e) {
         results.push({ filename: file.originalname, error: e.message });
       }
     }
 
-    res.json({ success: true, platform, images: results, count: results.filter(r => !r.error).length });
+    res.json({
+      success: true,
+      platform,
+      position,
+      size,
+      removeBg,
+      images: results,
+      count: results.filter(r => !r.error).length,
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
