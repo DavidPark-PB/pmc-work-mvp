@@ -4,6 +4,8 @@
 (function() {
   let user = null;
   let staffList = [];
+  let cachedItems = []; // 최근 refresh 결과 (edit 모드 전환용)
+  let editingId = null; // 수정 중인 기록 id (null이면 신규 입력)
 
   function esc(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function pad(n) { return String(n).padStart(2, '0'); }
@@ -49,14 +51,19 @@
           </div>
           <input type="text" id="att-note" placeholder="메모 / 사유" maxlength="500" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:6px;">
           <div id="att-note-hint" style="font-size:11px;color:#888;margin-bottom:10px;display:none;">지각/조퇴/결근은 사유를 반드시 입력해야 합니다.</div>
+          <div id="att-edit-banner" style="display:none;padding:8px 12px;background:#1a3a5a;border:1px solid #2a5a8a;border-radius:6px;color:#81d4fa;font-size:12px;margin-bottom:8px;">
+            ✏️ <strong id="att-edit-date"></strong> 기록 수정 모드
+          </div>
           <div id="att-time-buttons" style="display:flex;gap:8px;flex-wrap:wrap;">
             <button type="button" onclick="pmcAttendance.fillNow('att-in')" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">▶ 출근 지금</button>
             <button type="button" onclick="pmcAttendance.fillNow('att-out')" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">■ 퇴근 지금</button>
-            <button type="submit" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">✓ 기록</button>
+            <button type="submit" id="att-submit-btn" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">✓ 기록</button>
+            <button type="button" id="att-cancel-btn" onclick="pmcAttendance.cancelEdit()" style="display:none;padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
             <button type="button" onclick="pmcAttendance.togglePayroll()" style="padding:8px 14px;background:#0a3a2a;border:1px solid #1a6a4a;border-radius:6px;color:#81c784;cursor:pointer;font-size:13px;margin-left:auto;">💰 급여 보기</button>
           </div>
-          <div id="att-submit-only" style="display:none;gap:8px;">
-            <button type="submit" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">✓ 기록</button>
+          <div id="att-submit-only" style="display:none;gap:8px;flex-wrap:wrap;">
+            <button type="submit" id="att-submit-btn-2" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">✓ 기록</button>
+            <button type="button" id="att-cancel-btn-2" onclick="pmcAttendance.cancelEdit()" style="display:none;padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
             <button type="button" onclick="pmcAttendance.togglePayroll()" style="padding:8px 14px;background:#0a3a2a;border:1px solid #1a6a4a;border-radius:6px;color:#81c784;cursor:pointer;font-size:13px;margin-left:auto;">💰 급여 보기</button>
           </div>
         </form>
@@ -107,7 +114,7 @@
               <th style="padding:10px;">근무</th>
               <th style="padding:10px;text-align:right;">일급</th>
               <th style="padding:10px;text-align:left;">메모 / 사유</th>
-              ${user.isAdmin ? '<th></th>' : ''}
+              <th style="padding:10px;text-align:center;">관리</th>
             </tr>
           </thead>
           <tbody id="att-tbody"></tbody>
@@ -129,15 +136,60 @@
 
     const res = await fetch('/api/attendance?' + params);
     const { data } = await res.json();
-    renderRows(data);
+    cachedItems = data || [];
+    renderRows(cachedItems);
+
+    // 내가 선택한 날짜에 본인 기록이 있으면 자동으로 수정 모드 진입 (편의)
+    autoEnterEditIfExists();
 
     if (empId && month) await loadSummary(empId, month);
     else clearSummary();
   }
 
+  function autoEnterEditIfExists() {
+    if (editingId) return; // 이미 편집 중이면 유지
+    const selDate = document.getElementById('att-date')?.value;
+    if (!selDate) return;
+    // 본인 기록 우선; admin도 본인 기록 위주 (다른 직원 수정은 행의 "수정" 버튼으로)
+    const myRec = cachedItems.find(r => r.employee_id === user.id && r.date === selDate);
+    if (myRec) startEdit(myRec);
+  }
+
+  function startEdit(rec) {
+    editingId = rec.id;
+    document.getElementById('att-date').value = rec.date;
+    document.getElementById('att-status').value = rec.status || 'regular';
+    document.getElementById('att-in').value = rec.clock_in || '';
+    document.getElementById('att-out').value = rec.clock_out || '';
+    document.getElementById('att-note').value = rec.note || '';
+    onStatusChange();
+    // banner / button text
+    const b = document.getElementById('att-edit-banner');
+    if (b) {
+      b.style.display = 'block';
+      document.getElementById('att-edit-date').textContent = rec.date + (rec.employee?.display_name ? ' (' + rec.employee.display_name + ')' : '');
+    }
+    ['att-submit-btn', 'att-submit-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '✓ 수정 저장'; });
+    ['att-cancel-btn', 'att-cancel-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = ''; });
+    // 화면 상단으로 스크롤
+    document.getElementById('att-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function cancelEdit() {
+    editingId = null;
+    document.getElementById('att-form').reset();
+    document.getElementById('att-date').value = todayStr();
+    document.getElementById('att-status').value = 'regular';
+    onStatusChange();
+    const b = document.getElementById('att-edit-banner');
+    if (b) b.style.display = 'none';
+    ['att-submit-btn', 'att-submit-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '✓ 기록'; });
+    ['att-cancel-btn', 'att-cancel-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  }
+
   function renderRows(items) {
     const tbody = document.getElementById('att-tbody');
-    const cols = user.isAdmin ? 9 : 7;
+    const cols = user.isAdmin ? 9 : 8; // staff도 '관리' 컬럼 추가됨
     if (!items || items.length === 0) {
       tbody.innerHTML = `<tr><td colspan="${cols}" style="padding:30px;text-align:center;color:#888;">기록이 없습니다.</td></tr>`;
       return;
@@ -149,7 +201,11 @@
       day_off: '<span style="padding:2px 6px;background:#0288d1;color:#fff;border-radius:8px;font-size:10px;">휴무</span>',
       absence: '<span style="padding:2px 6px;background:#e94560;color:#fff;border-radius:8px;font-size:10px;">결근</span>',
     };
-    tbody.innerHTML = items.map(r => `
+    const today = todayStr();
+    tbody.innerHTML = items.map(r => {
+      // 본인 기록이며 당일인 경우, 또는 admin인 경우 수정 가능 (서버 정책과 일치)
+      const canEdit = user.isAdmin || (r.employee_id === user.id && r.date === today);
+      return `
       <tr style="border-bottom:1px solid #2a2a4a;">
         ${user.isAdmin ? `<td style="padding:10px;">${esc(r.employee?.display_name || '-')}</td>` : ''}
         <td style="padding:10px;"><code>${r.date}</code></td>
@@ -159,9 +215,18 @@
         <td style="padding:10px;text-align:center;">${r.work_hours ? Number(r.work_hours).toFixed(2) + 'h' : '-'}</td>
         <td style="padding:10px;text-align:right;">${money(r.daily_pay)}</td>
         <td style="padding:10px;color:#aaa;font-size:12px;">${esc(r.note || '')}</td>
-        ${user.isAdmin ? `<td style="padding:10px;text-align:center;"><button onclick="pmcAttendance.del(${r.id})" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button></td>` : ''}
+        <td style="padding:10px;text-align:center;white-space:nowrap;">
+          ${canEdit ? `<button onclick="pmcAttendance.editRow(${r.id})" title="수정" style="padding:4px 8px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;margin-right:4px;">✏️ 수정</button>` : ''}
+          ${user.isAdmin ? `<button onclick="pmcAttendance.del(${r.id})" title="삭제" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>` : ''}
+        </td>
       </tr>
-    `).join('');
+    `;}).join('');
+  }
+
+  function editRow(id) {
+    const rec = cachedItems.find(r => r.id === id);
+    if (!rec) { alert('기록을 찾을 수 없습니다'); return; }
+    startEdit(rec);
   }
 
   async function loadSummary(empId, month) {
@@ -192,19 +257,44 @@
     const status = document.getElementById('att-status').value;
     const noTimes = status === 'day_off' || status === 'absence';
     const payload = {
-      date: document.getElementById('att-date').value,
       status,
-      clockIn: noTimes ? undefined : (document.getElementById('att-in').value || undefined),
-      clockOut: noTimes ? undefined : (document.getElementById('att-out').value || undefined),
-      note: document.getElementById('att-note').value.trim() || undefined,
+      clockIn: noTimes ? '' : (document.getElementById('att-in').value || ''),
+      clockOut: noTimes ? '' : (document.getElementById('att-out').value || ''),
+      note: document.getElementById('att-note').value.trim(),
     };
-    const res = await fetch('/api/attendance', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+
+    let url, method;
+    if (editingId) {
+      url = '/api/attendance/' + editingId;
+      method = 'PATCH';
+      // PATCH는 date 변경 안 함
+    } else {
+      url = '/api/attendance';
+      method = 'POST';
+      payload.date = document.getElementById('att-date').value;
+    }
+
+    const res = await fetch(url, {
+      method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     });
-    if (!res.ok) { alert((await res.json()).error || '저장 실패'); return; }
+    if (!res.ok) {
+      const err = await res.json();
+      // 날짜 중복 에러 → 자동 편집 모드 진입 유도
+      if (res.status === 409) {
+        alert(err.error + '\n\n행의 "수정" 버튼을 누르거나 동일 날짜로 다시 조회하면 수정 모드로 전환됩니다.');
+      } else {
+        alert(err.error || '저장 실패');
+      }
+      return;
+    }
+    editingId = null;
     document.getElementById('att-form').reset();
     document.getElementById('att-date').value = todayStr();
     onStatusChange();
+    const b = document.getElementById('att-edit-banner');
+    if (b) b.style.display = 'none';
+    ['att-submit-btn', 'att-submit-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '✓ 기록'; });
+    ['att-cancel-btn', 'att-cancel-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
     refresh();
   }
 
@@ -299,5 +389,5 @@
     document.head.appendChild(st);
   })();
 
-  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll };
+  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll, editRow, cancelEdit };
 })();
