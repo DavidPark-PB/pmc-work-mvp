@@ -5742,8 +5742,10 @@ async function shippingLoadRecent() {
       link.href = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(data.sheetUrl || '')}`;
     }
 
-    _shippingOrders = data.orders;
-    const total = data.total || data.orders.length;
+    _shippingOrders = data.orders.filter(o => {
+      const s = (o.status || o['상태'] || '').toString().toUpperCase();
+      return s === 'NEW' || s === 'AWAITING_SHIPMENT' || s === 'AWAITING SHIPMENT';
+    });
 
     // 검색바 + 테이블
     let html = `<div style="margin-bottom:10px;display:flex;align-items:center;gap:8px">
@@ -5754,7 +5756,7 @@ async function shippingLoadRecent() {
 
     html += shippingRenderTable(_shippingOrders);
     tableEl.innerHTML = html;
-    countEl.textContent = `배송 대기 주문 ${data.orders.length}건`;
+    countEl.textContent = `배송 대기 주문 ${_shippingOrders.length}건`;
   } catch (err) {
     tableEl.innerHTML = `<p style="color:#c62828;text-align:center;padding:20px">로딩 실패: ${esc(err.message)}</p>`;
   }
