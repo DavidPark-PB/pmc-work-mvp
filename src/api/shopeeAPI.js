@@ -2,6 +2,11 @@ require('dotenv').config({ path: '../../config/.env' });
 const axios = require('axios');
 const crypto = require('crypto');
 
+function _isInvalidToken(result) {
+  const err = result?.error;
+  return err === 'invalid_access_token' || err === 'invalid_acceess_token';
+}
+
 /**
  * Shopee Open Platform API 클래스 (CB 셀러용)
  * Shopee Partner API를 사용하여 동남아 시장 상품 관리
@@ -76,16 +81,21 @@ class ShopeeAPI {
     return this._shopRequest(method, path, data, shopId || this.shopIds[0]);
   }
 
-  async _merchantRequest(method, path, data) {
+  async _merchantRequest(method, path, data, _retried = false) {
     const timestamp = Math.floor(Date.now() / 1000);
     const sign = this._signMerchant(path, timestamp);
     const url = `${this.baseUrl}${path}`;
     const params = { partner_id: this.partnerId, timestamp, sign, access_token: this.accessToken, merchant_id: this.merchantId };
 
-    return this._exec(method, url, params, data);
+    const result = await this._exec(method, url, params, data);
+    if (!_retried && _isInvalidToken(result)) {
+      await this._refreshTokens();
+      return this._merchantRequest(method, path, data, true);
+    }
+    return result;
   }
 
-  async _shopRequest(method, path, data, shopId) {
+  async _shopRequest(method, path, data, shopId, _retried = false) {
     const token = this.shopTokens[shopId]?.accessToken || this.shopAccessToken;
     const timestamp = Math.floor(Date.now() / 1000);
     const sign = crypto.createHmac('sha256', this.partnerKey)
@@ -93,7 +103,12 @@ class ShopeeAPI {
       .digest('hex');
     const url = `${this.baseUrl}${path}`;
     const params = { partner_id: this.partnerId, timestamp, sign, access_token: token, shop_id: shopId };
-    return this._exec(method, url, params, data);
+    const result = await this._exec(method, url, params, data);
+    if (!_retried && _isInvalidToken(result)) {
+      await this._refreshTokens();
+      return this._shopRequest(method, path, data, shopId, true);
+    }
+    return result;
   }
 
   async _refreshTokens() {
@@ -165,7 +180,7 @@ class ShopeeAPI {
     console.log('✅ Shopee tokens auto-refreshed (' + this.shopIds.length + ' shops)');
   }
 
-  async _exec(method, url, params, data, _retried = false) {
+  async _exec(method, url, params, data) {
     try {
       const config = { method, url, params, timeout: 15000 };
       if (data && method === 'GET') {
@@ -175,15 +190,6 @@ class ShopeeAPI {
         config.headers = { 'Content-Type': 'application/json' };
       }
       const response = await axios(config);
-      // Auto-refresh on invalid_access_token
-      if (response.data?.error === 'invalid_acceess_token' || response.data?.error === 'invalid_access_token') {
-        if (_retried) throw new Error('Shopee token refresh failed — still invalid after refresh');
-        await this._refreshTokens();
-        // Rebuild params with new token
-        if (params.merchant_id) params.access_token = this.accessToken;
-        else if (params.shop_id) params.access_token = this.shopAccessToken;
-        return this._exec(method, url, params, data, true);
-      }
       return response.data;
     } catch (error) {
       console.error(`Shopee API 오류 [${url}]:`, error.response?.data || error.message);
