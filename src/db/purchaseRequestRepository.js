@@ -8,25 +8,38 @@ const { getClient } = require('./supabaseClient');
  * scope='mine' 파라미터로 본인 요청만 필터 가능.
  */
 async function listRequests({ user, status, scope }) {
-  let q = getClient()
-    .from('purchase_requests')
-    .select(`
-      id, product_name, quantity, estimated_price, priority, reason,
-      requested_by, requested_at, status, decision_by, decision_at,
-      rejection_reason, rejection_note,
-      requester:users!purchase_requests_requested_by_users_id_fk ( id, display_name, platform )
-    `);
+  const baseCols = `
+    id, product_name, quantity, estimated_price, priority, reason,
+    requested_by, requested_at, status, decision_by, decision_at,
+    rejection_reason, rejection_note, ordered_by, ordered_at,
+    requester:users!purchase_requests_requested_by_users_id_fk ( id, display_name, platform ),
+    orderer:users!purchase_requests_ordered_by_fk ( id, display_name )
+  `;
+  const legacyCols = `
+    id, product_name, quantity, estimated_price, priority, reason,
+    requested_by, requested_at, status, decision_by, decision_at,
+    rejection_reason, rejection_note,
+    requester:users!purchase_requests_requested_by_users_id_fk ( id, display_name, platform )
+  `;
 
-  if (scope === 'mine') q = q.eq('requested_by', user.id);
-  if (status) q = q.eq('status', status);
+  async function runQuery(cols) {
+    let q = getClient().from('purchase_requests').select(cols);
+    if (scope === 'mine') q = q.eq('requested_by', user.id);
+    if (status) q = q.eq('status', status);
+    return q.order('requested_at', { ascending: false });
+  }
 
-  const { data, error } = await q.order('requested_at', { ascending: false });
+  let { data, error } = await runQuery(baseCols);
+  // Migration 010 not applied yet → retry with legacy columns
+  if (error && (error.code === '42703' || error.code === 'PGRST200')) {
+    ({ data, error } = await runQuery(legacyCols));
+  }
   if (error) throw error;
 
   return (data || []).sort((a, b) => {
-    const aPen = a.status === 'pending' ? 0 : 1;
-    const bPen = b.status === 'pending' ? 0 : 1;
-    if (aPen !== bPen) return aPen - bPen;
+    const rank = s => (s === 'pending' ? 0 : s === 'approved' ? 1 : s === 'ordered' ? 2 : 3);
+    const ar = rank(a.status); const br = rank(b.status);
+    if (ar !== br) return ar - br;
     const aUrg = a.priority === 'urgent' ? 0 : 1;
     const bUrg = b.priority === 'urgent' ? 0 : 1;
     if (aUrg !== bUrg) return aUrg - bUrg;
@@ -164,12 +177,13 @@ async function getStats() {
     .from('purchase_requests')
     .select('status, priority');
   if (error) throw error;
-  const counts = { pending: 0, pendingUrgent: 0, approved: 0, rejected: 0 };
+  const counts = { pending: 0, pendingUrgent: 0, approved: 0, ordered: 0, rejected: 0 };
   for (const r of data || []) {
     if (r.status === 'pending') {
       counts.pending++;
       if (r.priority === 'urgent') counts.pendingUrgent++;
     } else if (r.status === 'approved') counts.approved++;
+    else if (r.status === 'ordered') counts.ordered++;
     else if (r.status === 'rejected') counts.rejected++;
   }
   return counts;

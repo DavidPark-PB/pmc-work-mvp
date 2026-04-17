@@ -37,6 +37,10 @@
           <div style="font-size:12px;color:#888;">승인됨</div>
           <div id="po-approved" style="font-size:24px;font-weight:700;color:#81c784;">-</div>
         </div>
+        <div style="background:#1a1a2e;border-left:3px solid #1565c0;padding:16px;border-radius:12px;">
+          <div style="font-size:12px;color:#888;">주문완료</div>
+          <div id="po-ordered" style="font-size:24px;font-weight:700;color:#64b5f6;">-</div>
+        </div>
         <div style="background:#1a1a2e;border-left:3px solid #555;padding:16px;border-radius:12px;">
           <div style="font-size:12px;color:#888;">반려됨</div>
           <div id="po-rejected" style="font-size:24px;font-weight:700;color:#aaa;">-</div>
@@ -88,6 +92,7 @@
               <option value="">전체 상태</option>
               <option value="pending">대기중</option>
               <option value="approved">승인됨</option>
+              <option value="ordered">주문완료</option>
               <option value="rejected">반려됨</option>
             </select>
           </div>
@@ -116,6 +121,7 @@
       set('po-urgent', s.pendingUrgent);
       set('po-pending', s.pending);
       set('po-approved', s.approved);
+      set('po-ordered', s.ordered ?? 0);
       set('po-rejected', s.rejected);
     }
     // insights 패널 열려 있으면 갱신
@@ -186,15 +192,21 @@
   function renderList(items) {
     const c = document.getElementById('po-list');
     if (items.length === 0) { c.innerHTML = '<div style="padding:40px;text-align:center;color:#888;">발주 요청이 없습니다.</div>'; return; }
-    const statusBadge = { pending: '<span style="padding:2px 8px;background:#ffa726;color:#fff;border-radius:10px;font-size:11px;">대기중</span>', approved: '<span style="padding:2px 8px;background:#4caf50;color:#fff;border-radius:10px;font-size:11px;">승인</span>', rejected: '<span style="padding:2px 8px;background:#555;color:#fff;border-radius:10px;font-size:11px;">반려</span>' };
+    const statusBadge = {
+      pending: '<span style="padding:2px 8px;background:#ffa726;color:#fff;border-radius:10px;font-size:11px;">대기중</span>',
+      approved: '<span style="padding:2px 8px;background:#4caf50;color:#fff;border-radius:10px;font-size:11px;">승인</span>',
+      ordered: '<span style="padding:2px 8px;background:#1565c0;color:#fff;border-radius:10px;font-size:11px;">주문완료</span>',
+      rejected: '<span style="padding:2px 8px;background:#555;color:#fff;border-radius:10px;font-size:11px;">반려</span>',
+    };
     c.innerHTML = items.map(o => {
       const urgent = o.priority === 'urgent' ? '<span style="color:#e94560;font-weight:700;margin-right:6px;">🚨 긴급</span>' : '';
+      const canUnorder = o.status === 'ordered' && (user.isAdmin || o.ordered_by === user.id);
       return `
         <div style="padding:16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
           <div style="flex:1;min-width:200px;">
             <div style="font-weight:600;font-size:15px;color:#fff;margin-bottom:4px;">
               ${urgent}${esc(o.product_name)} <span style="color:#888;font-weight:400;">× ${o.quantity}</span>
-              ${statusBadge[o.status]}
+              ${statusBadge[o.status] || ''}
             </div>
             <div style="font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap;">
               <span style="color:#81d4fa;">👤 ${esc(o.requester?.display_name || '-')}${o.requester?.platform ? ' · ' + esc(o.requester.platform) : ''}</span>
@@ -204,15 +216,23 @@
             ${o.reason ? `<div style="margin-top:6px;font-size:12px;color:#b0b0b0;white-space:pre-wrap;">${esc(o.reason)}</div>` : ''}
             ${o.status === 'rejected' ? `<div style="margin-top:6px;padding:6px 10px;background:#2a1a1a;border-radius:6px;font-size:12px;"><strong style="color:#ff8a80;">반려:</strong> ${REJECT_LABELS[o.rejection_reason] || o.rejection_reason || '-'}${o.rejection_note ? ' — ' + esc(o.rejection_note) : ''}</div>` : ''}
             ${o.status === 'approved' ? `<div style="margin-top:4px;font-size:12px;color:#81c784;">✓ ${dt(o.decision_at)} 승인</div>` : ''}
+            ${o.status === 'ordered' ? `<div style="margin-top:4px;font-size:12px;color:#64b5f6;">📦 ${dt(o.ordered_at)} · ${esc(o.orderer?.display_name || '-')} 주문</div>` : ''}
           </div>
-          ${user.isAdmin ? `
-            <div style="display:flex;flex-direction:column;gap:6px;">
-              ${o.status === 'pending' ? `
-                <button onclick="pmcOrders.approve(${o.id})" style="padding:6px 12px;background:#4caf50;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">✓ 승인</button>
-                <button onclick="pmcOrders.openReject(${o.id})" style="padding:6px 12px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">✗ 반려</button>
-              ` : ''}
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            ${o.status === 'approved' ? `
+              <button onclick="pmcOrders.markOrdered(${o.id})" style="padding:6px 12px;background:#1565c0;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">📦 주문완료</button>
+            ` : ''}
+            ${canUnorder ? `
+              <button onclick="pmcOrders.unorder(${o.id})" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#aaa;cursor:pointer;font-size:11px;">↶ 되돌리기</button>
+            ` : ''}
+            ${user.isAdmin && o.status === 'pending' ? `
+              <button onclick="pmcOrders.approve(${o.id})" style="padding:6px 12px;background:#4caf50;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">✓ 승인</button>
+              <button onclick="pmcOrders.openReject(${o.id})" style="padding:6px 12px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">✗ 반려</button>
+            ` : ''}
+            ${user.isAdmin ? `
               <button onclick="pmcOrders.del(${o.id})" title="삭제" style="padding:6px 12px;background:#2a2a4a;border:0;border-radius:4px;color:#aaa;cursor:pointer;font-size:12px;">🗑 삭제</button>
-            </div>` : ''}
+            ` : ''}
+          </div>
         </div>
       `;
     }).join('');
@@ -267,5 +287,19 @@
     refresh();
   }
 
-  window.pmcOrders = { load, refresh, approve, openReject, del, toggleInsights };
+  async function markOrdered(id) {
+    if (!confirm('이 항목을 주문완료 처리하시겠습니까?')) return;
+    const res = await fetch(`/api/purchase-requests/${id}/order`, { method: 'PATCH' });
+    if (!res.ok) { alert((await res.json()).error || '처리 실패'); return; }
+    refresh();
+  }
+
+  async function unorder(id) {
+    if (!confirm('주문완료 체크를 되돌리시겠습니까?')) return;
+    const res = await fetch(`/api/purchase-requests/${id}/unorder`, { method: 'PATCH' });
+    if (!res.ok) { alert((await res.json()).error || '되돌리기 실패'); return; }
+    refresh();
+  }
+
+  window.pmcOrders = { load, refresh, approve, openReject, del, toggleInsights, markOrdered, unorder };
 })();

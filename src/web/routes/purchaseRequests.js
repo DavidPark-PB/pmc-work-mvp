@@ -139,6 +139,63 @@ router.patch('/:id/reject', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// PATCH /api/purchase-requests/:id/order — 주문 완료 체크 (전 직원)
+// approved → ordered 만 허용. ordered_by/ordered_at 기록.
+router.patch('/:id/order', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = await repo.getRequest(id);
+    if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+    if (existing.status !== 'approved') {
+      return res.status(400).json({ error: '승인된 요청만 주문완료 처리할 수 있습니다' });
+    }
+
+    const updated = await repo.updateRequest(id, {
+      status: 'ordered',
+      ordered_by: req.user.id,
+      ordered_at: new Date().toISOString(),
+    });
+
+    // 요청자에게 알림 (주문자 본인이면 생략)
+    if (existing.requested_by && existing.requested_by !== req.user.id) {
+      await notify({
+        recipientId: existing.requested_by,
+        type: 'purchase_ordered',
+        title: '발주 주문완료',
+        body: `${existing.product_name} × ${existing.quantity} — ${req.user.displayName} 주문`,
+        linkUrl: '/?page=orders',
+        relatedType: 'purchase_request',
+        relatedId: id,
+      });
+    }
+
+    res.json({ data: updated });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PATCH /api/purchase-requests/:id/unorder — 주문완료 되돌리기
+// ordered → approved. 본인(=ordered_by) 또는 admin만.
+router.patch('/:id/unorder', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = await repo.getRequest(id);
+    if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+    if (existing.status !== 'ordered') {
+      return res.status(400).json({ error: '주문완료 상태만 되돌릴 수 있습니다' });
+    }
+    if (!req.user.isAdmin && existing.ordered_by !== req.user.id) {
+      return res.status(403).json({ error: '본인이 체크한 항목만 되돌릴 수 있습니다' });
+    }
+
+    const updated = await repo.updateRequest(id, {
+      status: 'approved',
+      ordered_by: null,
+      ordered_at: null,
+    });
+    res.json({ data: updated });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // DELETE /api/purchase-requests/:id — admin only
 router.delete('/:id', requireAdmin, async (req, res) => {
   try {
