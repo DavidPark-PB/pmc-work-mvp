@@ -183,43 +183,39 @@ class RepricingService {
   async getBattleDashboard() {
     const db = getClient();
 
-    // Fetch active eBay listings from eBay API (page 1, up to 200 items)
-    const EbayAPI = require('../api/ebayAPI');
-    const ebayApi = new EbayAPI();
+    // DB 기반 조회 — ebay_products 테이블 (productSync로 주기적 갱신됨).
+    // 이전에는 eBay API를 요청마다 25페이지 호출해서 Fly 프록시 60초 타임아웃에
+    // 걸려 502가 반복 발생했음. DB 조회는 1초 내로 끝남.
     let ebayItems = [];
     try {
-      // Fetch all pages (up to 25 pages x 200 = 5000 items)
-      const seenIds = new Set();
-      for (let page = 1; page <= 25; page++) {
-        const result = await ebayApi.getActiveListings(page, 200);
-        if (!result.items || result.items.length === 0) break;
-        let newCount = 0;
-        for (const item of result.items) {
-          const id = item.itemId || item.sku;
-          if (id && !seenIds.has(id)) {
-            seenIds.add(id);
-            ebayItems.push(item);
-            newCount++;
-          }
-        }
-        if (newCount === 0) break; // No new items = we've seen them all
+      // Supabase default row limit은 1000 → range()로 페이지 끝까지 수집.
+      const PAGE = 1000;
+      for (let offset = 0; ; offset += PAGE) {
+        const { data, error } = await db
+          .from('ebay_products')
+          .select('item_id, sku, title, price_usd, shipping_usd, stock')
+          .neq('status', 'ended')
+          .range(offset, offset + PAGE - 1);
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        ebayItems = ebayItems.concat(data);
+        if (data.length < PAGE) break;
       }
-      console.log('[BattleDashboard] Loaded', ebayItems.length, 'unique eBay listings');
+      console.log('[BattleDashboard] Loaded', ebayItems.length, 'ebay_products rows');
     } catch (e) {
-      console.error('[BattleDashboard] eBay API 오류:', e.message);
+      console.error('[BattleDashboard] ebay_products 조회 오류:', e.message);
       return [];
     }
 
     if (ebayItems.length === 0) return [];
 
-    // itemId를 식별자로, sku가 있으면 sku도 사용
-    const normalizedListings = ebayItems.map(item => ({
-      sku: item.sku || item.itemId || '',
-      itemId: item.itemId || '',
-      title: item.title || item.itemId || '',
-      price: parseFloat(item.price) || 0,
-      shipping: parseFloat(item.shippingCost) || 0,
-      quantity: parseInt(item.quantity) || 0,
+    const normalizedListings = ebayItems.map(r => ({
+      sku: r.sku || r.item_id || '',
+      itemId: r.item_id || '',
+      title: r.title || r.item_id || '',
+      price: parseFloat(r.price_usd) || 0,
+      shipping: parseFloat(r.shipping_usd) || 0,
+      quantity: parseInt(r.stock) || 0,
     })).filter(l => l.sku && l.price > 0);
 
     if (normalizedListings.length === 0) return [];
@@ -245,13 +241,7 @@ class RepricingService {
       .select('sku, title, title_ko')
       .in('sku', skus);
 
-    // Fetch DB stock from ebay_products (more reliable than API quantity)
-    const dbStockMap = {};
-    for (let i = 0; i < allKeys.length; i += 500) {
-      const chunk = allKeys.slice(i, i + 500);
-      const { data: stockData } = await db.from('ebay_products').select('item_id, sku, stock').in('sku', chunk);
-      (stockData || []).forEach(s => { dbStockMap[s.sku] = s.stock; dbStockMap[s.item_id] = s.stock; });
-    }
+    // quantity는 ebay_products.stock을 그대로 사용하므로 별도 조회 불필요.
     const productTitleMap = {};
     (productRows || []).forEach(p => {
       productTitleMap[p.sku] = p.title_ko || p.title || null;
@@ -283,7 +273,7 @@ class RepricingService {
         title: productTitleMap[p.sku] || p.title,
         myPrice: p.price,
         myShipping: p.shipping,
-        quantity: (dbStockMap[p.sku] !== undefined ? dbStockMap[p.sku] : null) ?? (dbStockMap[p.itemId] !== undefined ? dbStockMap[p.itemId] : null) ?? p.quantity ?? 0,
+        quantity: p.quantity ?? 0,
         competitors: competitors.map(c => ({
           itemId: c.competitor_id || null,
           price: parseFloat(c.competitor_price),
