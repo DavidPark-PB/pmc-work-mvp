@@ -29,6 +29,10 @@ async function listPosts() {
     title: p.title,
     content: p.content,
     isPinned: p.is_pinned,
+    isResolved: p.is_resolved || false,
+    resolvedBy: p.resolved_by || null,
+    resolvedByName: p.resolved_by ? (userMap.get(p.resolved_by)?.display_name || '-') : null,
+    resolvedAt: p.resolved_at || null,
     createdAt: p.created_at,
     authorId: p.author_id,
     authorName: userMap.get(p.author_id)?.display_name || '-',
@@ -38,6 +42,8 @@ async function listPosts() {
 
   return posts.sort((a, b) => {
     if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+    // 미완료(resolved=false)를 완료(true)보다 먼저
+    if (a.isResolved !== b.isResolved) return a.isResolved ? 1 : -1;
     return new Date(b.createdAt) - new Date(a.createdAt);
   });
 }
@@ -63,6 +69,10 @@ async function getPostWithReplies(id) {
     content: r.content,
     parentId: r.parent_id,
     isPinned: r.is_pinned,
+    isResolved: r.is_resolved || false,
+    resolvedBy: r.resolved_by || null,
+    resolvedByName: r.resolved_by ? (userMap.get(r.resolved_by)?.display_name || '-') : null,
+    resolvedAt: r.resolved_at || null,
     createdAt: r.created_at,
     authorId: r.author_id,
     authorName: userMap.get(r.author_id)?.display_name || '-',
@@ -113,10 +123,24 @@ async function togglePin(id, nextValue) {
   return data;
 }
 
+async function toggleResolved(id, nextValue, userId) {
+  const updates = nextValue
+    ? { is_resolved: true, resolved_by: userId, resolved_at: new Date().toISOString() }
+    : { is_resolved: false, resolved_by: null, resolved_at: null };
+  const { data, error } = await getClient()
+    .from('feedback')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 async function deletePost(id) {
   // FK CASCADE로 답글 함께 삭제됨
   const { error } = await getClient().from('feedback').delete().eq('id', id);
   if (error) throw error;
 }
 
-module.exports = { listPosts, getPostWithReplies, getById, createPost, updatePost, togglePin, deletePost };
+module.exports = { listPosts, getPostWithReplies, getById, createPost, updatePost, togglePin, toggleResolved, deletePost };

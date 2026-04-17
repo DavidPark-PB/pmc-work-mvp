@@ -61,20 +61,23 @@
               const canEdit = isOwner || user.isAdmin;
               const canDelete = isOwner || user.isAdmin;
               return `
-              <div onclick="pmcFeedback.showDetail(${p.id})" style="padding:16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:flex-start;cursor:pointer;${p.isPinned ? 'background:rgba(124,77,255,0.08);' : ''}">
+              <div onclick="pmcFeedback.showDetail(${p.id})" style="padding:16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:flex-start;cursor:pointer;${p.isResolved ? 'background:rgba(76,175,80,0.07);opacity:0.72;' : (p.isPinned ? 'background:rgba(124,77,255,0.08);' : '')}">
                 <div style="flex:1;min-width:0;">
                   <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;flex-wrap:wrap;">
                     ${p.isPinned ? '<span title="고정글" style="font-size:1.1em;">📌</span>' : ''}
-                    <span style="font-weight:600;font-size:15px;color:#fff;">${esc(p.title || '(제목 없음)')}</span>
+                    ${p.isResolved ? '<span style="padding:2px 8px;background:#4caf50;color:#fff;border-radius:10px;font-size:11px;font-weight:700;">✅ 완료됨</span>' : ''}
+                    <span style="font-weight:600;font-size:15px;color:#fff;${p.isResolved ? 'text-decoration:line-through;' : ''}">${esc(p.title || '(제목 없음)')}</span>
                     ${p.replyCount > 0 ? `<span style="padding:2px 8px;background:#555;color:#fff;border-radius:10px;font-size:11px;">답글 ${p.replyCount}</span>` : ''}
                   </div>
                   <div style="font-size:12px;color:#888;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
                     ${roleBadge(p.authorRole)}
                     <span>👤 ${esc(p.authorName)}</span>
                     <span>⏰ ${dt(p.createdAt)}</span>
+                    ${p.isResolved && p.resolvedByName ? `<span style="color:#81c784;">✓ ${esc(p.resolvedByName)} ${dt(p.resolvedAt)} 완료</span>` : ''}
                   </div>
                 </div>
                 <div onclick="event.stopPropagation();" style="display:flex;gap:4px;flex-shrink:0;">
+                  ${user.isAdmin ? `<button onclick="pmcFeedback.toggleResolved(${p.id})" title="${p.isResolved ? '완료 취소' : '완료 처리'}" style="padding:4px 8px;background:${p.isResolved ? '#4caf50' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:13px;">✅</button>` : ''}
                   ${user.isAdmin ? `<button onclick="pmcFeedback.togglePin(${p.id})" title="${p.isPinned ? '고정 해제' : '고정'}" style="padding:4px 8px;background:${p.isPinned ? '#7c4dff' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:13px;">📌</button>` : ''}
                   ${canEdit ? `<button onclick="pmcFeedback.editPost(${p.id})" title="수정" style="padding:4px 8px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">✏️</button>` : ''}
                   ${canDelete ? `<button onclick="pmcFeedback.del(${p.id})" title="삭제" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>` : ''}
@@ -102,16 +105,19 @@
         <button onclick="pmcFeedback.load()" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;">← 목록</button>
       </div>
 
-      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:24px;margin-bottom:16px;">
+      <div style="background:#1a1a2e;border:1px solid ${post.isResolved ? '#4caf50' : '#2a2a4a'};border-radius:12px;padding:24px;margin-bottom:16px;">
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
           ${post.isPinned ? '<span style="font-size:1.2em;">📌</span>' : ''}
-          <h2 style="color:#fff;font-size:18px;margin:0;">${esc(post.title)}</h2>
+          ${post.isResolved ? '<span style="padding:3px 10px;background:#4caf50;color:#fff;border-radius:10px;font-size:12px;font-weight:700;">✅ 완료됨</span>' : ''}
+          <h2 style="color:#fff;font-size:18px;margin:0;${post.isResolved ? 'text-decoration:line-through;opacity:0.75;' : ''}">${esc(post.title)}</h2>
         </div>
         <div style="font-size:12px;color:#888;display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap;">
           ${roleBadge(post.authorRole)}
           <span>👤 ${esc(post.authorName)}</span>
           <span>⏰ ${dt(post.createdAt)}</span>
+          ${post.isResolved && post.resolvedByName ? `<span style="color:#81c784;">✓ ${esc(post.resolvedByName)} ${dt(post.resolvedAt)} 완료</span>` : ''}
           <span style="margin-left:auto;display:flex;gap:4px;">
+            ${user.isAdmin ? `<button onclick="pmcFeedback.toggleResolved(${post.id})" style="padding:4px 10px;background:${post.isResolved ? '#4caf50' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">✅ ${post.isResolved ? '완료 취소' : '완료 처리'}</button>` : ''}
             ${user.isAdmin ? `<button onclick="pmcFeedback.togglePin(${post.id})" style="padding:4px 10px;background:${post.isPinned ? '#7c4dff' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">📌 ${post.isPinned ? '고정 해제' : '고정'}</button>` : ''}
             ${(post.authorId === user.id || user.isAdmin) ? `<button onclick="pmcFeedback.editPost(${post.id})" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">✏️ 수정</button>` : ''}
             ${(post.authorId === user.id || user.isAdmin) ? `<button onclick="pmcFeedback.del(${post.id})" style="padding:4px 10px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">🗑 삭제</button>` : ''}
@@ -181,6 +187,13 @@
 
   async function togglePin(id) {
     const res = await fetch(`/api/feedback/${id}/pin`, { method: 'PATCH' });
+    if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+    if (viewMode === 'detail' && detailId === id) showDetail(id);
+    else renderList();
+  }
+
+  async function toggleResolved(id) {
+    const res = await fetch(`/api/feedback/${id}/resolve`, { method: 'PATCH' });
     if (!res.ok) { alert((await res.json()).error || '실패'); return; }
     if (viewMode === 'detail' && detailId === id) showDetail(id);
     else renderList();
@@ -270,5 +283,5 @@
     else renderList();
   }
 
-  window.pmcFeedback = { load, renderList, showDetail, togglePin, del, editPost, editReply, openEditModal, closeEditModal, saveEdit };
+  window.pmcFeedback = { load, renderList, showDetail, togglePin, toggleResolved, del, editPost, editReply, openEditModal, closeEditModal, saveEdit };
 })();

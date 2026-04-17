@@ -92,6 +92,18 @@ router.patch('/:id/pin', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// PATCH /api/feedback/:id/resolve — admin only, 완료 토글 (원글만)
+router.patch('/:id/resolve', requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = await repo.getById(id);
+    if (!existing) return res.status(404).json({ error: '글을 찾을 수 없습니다' });
+    if (existing.parent_id) return res.status(400).json({ error: '답글은 완료 처리할 수 없습니다' });
+    const updated = await repo.toggleResolved(id, !existing.is_resolved, req.user.id);
+    res.json({ data: updated });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // DELETE /api/feedback/:id — 작성자 본인 또는 admin (CASCADE로 답글 함께 삭제)
 router.delete('/:id', async (req, res) => {
   try {
