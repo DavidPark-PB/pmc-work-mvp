@@ -393,23 +393,76 @@
       if (!document.hidden) resetTitle();
     });
 
-    // 4) 이벤트 처리기
+    // 4) 인앱 토스트 (하단 우측, 권한 불필요)
+    function ensureToastContainer() {
+      let c = document.getElementById('pmcToastContainer');
+      if (c) return c;
+      c = document.createElement('div');
+      c.id = 'pmcToastContainer';
+      c.style.cssText = 'position:fixed;right:20px;bottom:20px;display:flex;flex-direction:column;gap:10px;z-index:9999;pointer-events:none;';
+      document.body.appendChild(c);
+      return c;
+    }
+    function showToast(title, body, linkUrl, urgent) {
+      const c = ensureToastContainer();
+      const t = document.createElement('div');
+      const bg = urgent ? '#c62828' : '#1565c0';
+      t.style.cssText = 'pointer-events:auto;min-width:280px;max-width:380px;background:' + bg + ';color:#fff;border-radius:10px;padding:12px 16px;box-shadow:0 6px 20px rgba(0,0,0,0.35);cursor:pointer;font-size:13px;line-height:1.45;transform:translateX(120%);transition:transform .25s ease,opacity .25s ease;opacity:0;';
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:flex-start;gap:10px;';
+      const textCol = document.createElement('div');
+      textCol.style.cssText = 'flex:1;min-width:0;';
+      const titleEl = document.createElement('div');
+      titleEl.style.cssText = 'font-weight:700;margin-bottom:4px;';
+      titleEl.textContent = title;
+      const bodyEl = document.createElement('div');
+      bodyEl.style.cssText = 'opacity:.92;word-break:break-word;';
+      bodyEl.textContent = body || '';
+      textCol.appendChild(titleEl);
+      textCol.appendChild(bodyEl);
+      const closeBtn = document.createElement('button');
+      closeBtn.setAttribute('aria-label', '닫기');
+      closeBtn.style.cssText = 'background:transparent;border:0;color:#fff;font-size:18px;line-height:1;cursor:pointer;padding:0 4px;opacity:.8;';
+      closeBtn.textContent = '×';
+      row.appendChild(textCol);
+      row.appendChild(closeBtn);
+      t.appendChild(row);
+      const dismiss = () => {
+        t.style.transform = 'translateX(120%)';
+        t.style.opacity = '0';
+        setTimeout(() => t.remove(), 300);
+      };
+      closeBtn.addEventListener('click', (e) => { e.stopPropagation(); dismiss(); });
+      t.addEventListener('click', () => {
+        if (linkUrl && linkUrl.startsWith('/?page=')) {
+          const page = linkUrl.split('page=')[1];
+          if (typeof showPage === 'function') showPage(page);
+        }
+        dismiss();
+      });
+      c.appendChild(t);
+      // enter animation
+      requestAnimationFrame(() => { t.style.transform = 'translateX(0)'; t.style.opacity = '1'; });
+      // auto-dismiss
+      setTimeout(dismiss, urgent ? 9000 : 6000);
+    }
+
+    // 5) 이벤트 처리기
     function handleEvent(ev) {
       if (!ev || !ev.type) return;
       if (ev.type === 'connected') { console.log('[SSE] connected'); return; }
       if (ev.type === 'task_assigned') {
         const title = ev.urgent ? '🚨 [긴급] 새 업무 지시' : '📋 새 업무 지시';
         const body = ev.title || '업무가 할당되었습니다';
-        // 탭이 숨겨져 있으면 타이틀 + 알림; 열려있으면 beep + 토스트 느낌
         if (document.hidden) bumpTitle();
         playBeep(ev.urgent);
+        showToast(title, body, ev.linkUrl || '/?page=tasks', ev.urgent);
         showDesktop(title, body, ev.linkUrl || '/?page=tasks');
-        // 기존 알림 배지/목록도 새로고침
         if (typeof updateNotifBadge === 'function') updateNotifBadge();
       }
     }
 
-    // 5) SSE 연결
+    // 6) SSE 연결
     function connect() {
       if (eventSource) return;
       eventSource = new EventSource('/api/events/stream');
