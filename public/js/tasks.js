@@ -204,6 +204,7 @@
           </div>
           ${t.memo ? `<div style="margin-top:6px;font-size:12px;color:#b0b0b0;white-space:pre-wrap;">${escapeHtml(t.memo)}</div>` : ''}
           ${t.myCompletionNote ? `<div style="margin-top:6px;padding:6px 10px;background:#1a3a2e;border-radius:6px;font-size:12px;color:#81c784;"><strong>완료:</strong> ${escapeHtml(t.myCompletionNote)}</div>` : ''}
+          ${renderAttachmentBadges(t.id, t.myAttachments)}
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">
           ${canToggle ? `
@@ -257,18 +258,21 @@
         </div>
         <div id="recipients-${t.id}" style="display:none;padding:0 16px 12px 16px;">
           ${(t.recipients || []).map(r => `
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:#0f0f23;border-radius:6px;margin-bottom:4px;">
-              <div style="display:flex;gap:8px;align-items:center;flex:1;min-width:0;">
-                <span style="color:#fff;font-size:13px;">${escapeHtml(r.userName)}</span>
-                <span style="padding:1px 6px;background:${STATUS_COLORS[r.status]};color:#fff;border-radius:8px;font-size:10px;">${STATUS_LABELS[r.status]}</span>
-                ${r.completionNote ? `<span style="color:#81c784;font-size:11px;">— ${escapeHtml(r.completionNote)}</span>` : ''}
+            <div style="padding:6px 10px;background:#0f0f23;border-radius:6px;margin-bottom:4px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="display:flex;gap:8px;align-items:center;flex:1;min-width:0;">
+                  <span style="color:#fff;font-size:13px;">${escapeHtml(r.userName)}</span>
+                  <span style="padding:1px 6px;background:${STATUS_COLORS[r.status]};color:#fff;border-radius:8px;font-size:10px;">${STATUS_LABELS[r.status]}</span>
+                  ${r.completionNote ? `<span style="color:#81c784;font-size:11px;">— ${escapeHtml(r.completionNote)}</span>` : ''}
+                </div>
+                <div style="display:flex;gap:4px;flex-shrink:0;">
+                  ${r.status !== 'done'
+                    ? `<button onclick="pmcTasks.setStatusFor(${t.id}, ${r.userId}, 'done')" style="padding:2px 8px;background:#7c4dff;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">✓ 완료처리</button>`
+                    : `<button onclick="pmcTasks.setStatusFor(${t.id}, ${r.userId}, 'pending')" style="padding:2px 8px;background:#2a2a4a;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">↶ 재개</button>`
+                  }
+                </div>
               </div>
-              <div style="display:flex;gap:4px;flex-shrink:0;">
-                ${r.status !== 'done'
-                  ? `<button onclick="pmcTasks.setStatusFor(${t.id}, ${r.userId}, 'done')" style="padding:2px 8px;background:#7c4dff;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">✓ 완료처리</button>`
-                  : `<button onclick="pmcTasks.setStatusFor(${t.id}, ${r.userId}, 'pending')" style="padding:2px 8px;background:#2a2a4a;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">↶ 재개</button>`
-                }
-              </div>
+              ${renderAttachmentBadges(t.id, r.attachments)}
             </div>
           `).join('')}
         </div>
@@ -377,17 +381,136 @@
     refresh();
   }
 
-  // 본인 완료 처리 (코멘트 필수)
-  async function markDone(id) {
-    const note = user.isAdmin ? (prompt('완료 코멘트 (선택):') || '') : (prompt('완료 코멘트를 입력하세요:') || '');
-    if (!user.isAdmin && !note.trim()) { alert('완료 코멘트는 필수입니다.'); return; }
-    const res = await fetch('/api/tasks/' + id, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'done', completionNote: note }),
+  // 본인 완료 처리 — 모달: 코멘트 + 파일 첨부 (최대 5개, 10MB/개)
+  const ALLOWED_EXT = '.pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.docx,.doc,.zip';
+  const MAX_FILES = 5;
+  const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+  function formatSize(n) {
+    if (!n) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function openCompleteModal(id) {
+    const requireNote = !user.isAdmin;
+    const existing = document.getElementById('task-complete-modal');
+    if (existing) existing.remove();
+
+    const m = document.createElement('div');
+    m.id = 'task-complete-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;width:460px;max-width:92vw;color:#e0e0e0;">
+        <div style="font-size:16px;font-weight:700;margin-bottom:14px;">✓ 업무 완료 처리</div>
+        <label style="display:block;font-size:12px;color:#aaa;margin-bottom:6px;">완료 코멘트${requireNote ? ' <span style="color:#e94560;">*</span>' : ' (선택)'}</label>
+        <textarea id="tc-note" rows="3" placeholder="어떻게 처리했는지 간단히 남겨주세요" style="width:100%;padding:10px;border:1px solid #333;border-radius:6px;background:#0f0f23;color:#fff;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
+
+        <label style="display:block;font-size:12px;color:#aaa;margin:14px 0 6px;">첨부 파일 (PDF/이미지/엑셀/워드/ZIP · 개당 10MB · 최대 ${MAX_FILES}개)</label>
+        <input id="tc-files" type="file" multiple accept="${ALLOWED_EXT}" style="display:block;color:#ccc;font-size:12px;">
+        <div id="tc-filelist" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;"></div>
+
+        <div id="tc-error" style="display:none;margin-top:10px;padding:8px 10px;background:#3a1a1a;border-radius:6px;color:#ff8a80;font-size:12px;"></div>
+
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">
+          <button type="button" id="tc-cancel" style="padding:8px 16px;background:#2a2a4a;color:#ccc;border:0;border-radius:6px;cursor:pointer;">취소</button>
+          <button type="button" id="tc-submit" style="padding:8px 18px;background:#7c4dff;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:600;">완료 제출</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+
+    const fileInput = m.querySelector('#tc-files');
+    const fileListEl = m.querySelector('#tc-filelist');
+    const errorEl = m.querySelector('#tc-error');
+    let selectedFiles = [];
+
+    function showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.style.display = 'block';
+    }
+    function clearError() { errorEl.style.display = 'none'; }
+
+    function renderFiles() {
+      fileListEl.innerHTML = selectedFiles.map((f, i) => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:#0f0f23;border-radius:4px;font-size:12px;">
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📎 ${escapeHtml(f.name)}</span>
+          <span style="color:#888;margin:0 10px;">${formatSize(f.size)}</span>
+          <button type="button" data-idx="${i}" class="tc-rm" style="background:transparent;border:0;color:#e94560;cursor:pointer;font-size:14px;">×</button>
+        </div>
+      `).join('');
+      fileListEl.querySelectorAll('.tc-rm').forEach(btn => {
+        btn.addEventListener('click', () => {
+          selectedFiles.splice(Number(btn.dataset.idx), 1);
+          renderFiles();
+        });
+      });
+    }
+
+    fileInput.addEventListener('change', () => {
+      clearError();
+      const incoming = Array.from(fileInput.files || []);
+      for (const f of incoming) {
+        if (f.size > MAX_FILE_BYTES) { showError(`"${f.name}" 파일이 10MB를 초과합니다`); continue; }
+        if (selectedFiles.length >= MAX_FILES) { showError(`최대 ${MAX_FILES}개까지만 첨부 가능합니다`); break; }
+        if (selectedFiles.some(x => x.name === f.name && x.size === f.size)) continue;
+        selectedFiles.push(f);
+      }
+      fileInput.value = '';
+      renderFiles();
     });
-    if (!res.ok) { alert((await res.json()).error || '실패'); return; }
-    refresh();
+
+    m.querySelector('#tc-cancel').addEventListener('click', () => m.remove());
+    m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+
+    m.querySelector('#tc-submit').addEventListener('click', async () => {
+      clearError();
+      const note = m.querySelector('#tc-note').value.trim();
+      if (requireNote && !note) { showError('완료 코멘트를 입력하세요'); return; }
+
+      const btn = m.querySelector('#tc-submit');
+      btn.disabled = true;
+      btn.textContent = '제출 중...';
+
+      try {
+        const fd = new FormData();
+        fd.append('completionNote', note);
+        for (const f of selectedFiles) fd.append('files', f);
+
+        const res = await fetch('/api/tasks/' + id + '/complete', { method: 'POST', body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showError(data.error || '제출 실패'); btn.disabled = false; btn.textContent = '완료 제출'; return; }
+        m.remove();
+        refresh();
+      } catch (err) {
+        showError(err.message || '네트워크 오류');
+        btn.disabled = false;
+        btn.textContent = '완료 제출';
+      }
+    });
+  }
+
+  async function markDone(id) {
+    openCompleteModal(id);
+  }
+
+  async function downloadAttachment(taskId, attId) {
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/attachments/${attId}/url`);
+      const data = await res.json();
+      if (!res.ok) { alert(data.error || '다운로드 URL 발급 실패'); return; }
+      window.open(data.signedUrl, '_blank');
+    } catch (e) {
+      alert('다운로드 실패: ' + e.message);
+    }
+  }
+
+  function renderAttachmentBadges(taskId, atts) {
+    if (!atts || atts.length === 0) return '';
+    return `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;">` +
+      atts.map(a => `<button onclick="pmcTasks.downloadAttachment(${taskId}, ${a.id})" style="padding:3px 10px;background:#0f2a3a;border:1px solid #1565c0;border-radius:14px;color:#64b5f6;font-size:11px;cursor:pointer;">📎 ${escapeHtml(a.fileName)}</button>`).join('') +
+      `</div>`;
   }
 
   // 사장이 특정 직원 대신 상태 변경 (강제)
@@ -413,5 +536,5 @@
     refresh();
   }
 
-  window.pmcTasks = { load, refresh, setStatus, markDone, setStatusFor, deleteTask, toggleExpand };
+  window.pmcTasks = { load, refresh, setStatus, markDone, setStatusFor, deleteTask, toggleExpand, downloadAttachment };
 })();

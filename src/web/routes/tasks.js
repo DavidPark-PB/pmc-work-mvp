@@ -12,12 +12,43 @@
  *     - userId 지정은 admin만 허용 (직원 대신 완료 처리)
  */
 const express = require('express');
+const crypto = require('crypto');
+const multer = require('multer');
 const { requireAdmin } = require('../../middleware/auth');
 const repo = require('../../db/teamTaskRepository');
 const { notify, notifyMany, notifyAdmins, getStaffIds } = require('../../services/notificationService');
 const sseHub = require('../../services/sseHub');
+const { getClient } = require('../../db/supabaseClient');
 
 const router = express.Router();
+
+const ATTACHMENT_BUCKET = 'task-attachments';
+const MAX_FILES_PER_COMPLETE = 5;
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_MIME = new Set([
+  'application/pdf',
+  'image/jpeg', 'image/png', 'image/webp',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // xlsx
+  'application/vnd.ms-excel', // xls
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // docx
+  'application/msword', // doc
+  'application/zip', 'application/x-zip-compressed',
+]);
+
+const uploadAttachments = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_BYTES, files: MAX_FILES_PER_COMPLETE },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME.has(file.mimetype)) return cb(null, true);
+    cb(new Error(`허용되지 않는 파일 형식: ${file.mimetype}`));
+  },
+});
+
+function sanitizeFileName(name) {
+  return (name || 'file')
+    .replace(/[\\/\x00-\x1f]/g, '_')
+    .slice(0, 150);
+}
 
 // GET /api/tasks
 router.get('/', async (req, res) => {
@@ -183,6 +214,114 @@ router.patch('/:id', async (req, res) => {
     const updated = await repo.getTask(id);
     res.json({ data: updated });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/tasks/:id/complete — 본인 완료 + 파일 첨부 (multipart)
+// 필드: completionNote(text, 직원 필수), files[]
+router.post('/:id/complete', (req, res, next) => {
+  uploadAttachments.array('files', MAX_FILES_PER_COMPLETE)(req, res, (err) => {
+    if (err) {
+      const msg = err.code === 'LIMIT_FILE_SIZE'
+        ? `파일이 너무 큽니다 (최대 ${MAX_FILE_BYTES / 1024 / 1024}MB)`
+        : err.code === 'LIMIT_FILE_COUNT'
+        ? `파일이 너무 많습니다 (최대 ${MAX_FILES_PER_COMPLETE}개)`
+        : err.message || '업로드 오류';
+      return res.status(400).json({ error: msg });
+    }
+    next();
+  });
+}, async (req, res) => {
+  const taskId = parseInt(req.params.id, 10);
+  const files = req.files || [];
+  const uploadedPaths = [];
+
+  try {
+    const task = await repo.getTask(taskId);
+    if (!task) return res.status(404).json({ error: '업무를 찾을 수 없습니다' });
+
+    const targetUserId = req.user.id;
+    const rec = await repo.getRecipient(taskId, targetUserId);
+    if (!rec) return res.status(404).json({ error: '해당 업무의 수신자가 아닙니다' });
+
+    const note = (req.body?.completionNote || '').trim();
+    if (!req.user.isAdmin && !note) {
+      return res.status(400).json({ error: '완료 코멘트를 입력하세요' });
+    }
+
+    const existingCount = await repo.countAttachmentsForUser(taskId, targetUserId);
+    if (existingCount + files.length > MAX_FILES_PER_COMPLETE) {
+      return res.status(400).json({ error: `업무당 최대 ${MAX_FILES_PER_COMPLETE}개까지 첨부 가능합니다 (현재 ${existingCount}개)` });
+    }
+
+    const storage = getClient().storage.from(ATTACHMENT_BUCKET);
+
+    for (const f of files) {
+      const rand = crypto.randomBytes(6).toString('hex');
+      const clean = sanitizeFileName(f.originalname);
+      const path = `${taskId}/${targetUserId}/${Date.now()}-${rand}-${clean}`;
+      const { error: upErr } = await storage.upload(path, f.buffer, {
+        contentType: f.mimetype,
+        upsert: false,
+      });
+      if (upErr) throw new Error(`Storage 업로드 실패: ${upErr.message}`);
+      uploadedPaths.push(path);
+      await repo.addAttachment({
+        taskId,
+        userId: targetUserId,
+        filePath: path,
+        fileName: clean,
+        mimeType: f.mimetype,
+        sizeBytes: f.size,
+      });
+    }
+
+    await repo.updateRecipient(taskId, targetUserId, {
+      status: 'done',
+      completionNote: note || rec.completion_note || null,
+    });
+
+    if (!req.user.isAdmin) {
+      await notifyAdmins({
+        type: 'task_completed',
+        title: `${req.user.displayName} 업무 완료`,
+        body: `${task.title}${note ? ' — ' + note : ''}${files.length ? ` (📎 ${files.length})` : ''}`,
+        linkUrl: '/?page=tasks',
+        relatedType: 'task',
+        relatedId: taskId,
+      });
+    }
+
+    const updated = await repo.getTask(taskId);
+    res.json({ data: updated, attachmentsAdded: files.length });
+  } catch (e) {
+    // rollback: delete any files uploaded in this request
+    if (uploadedPaths.length > 0) {
+      try { await getClient().storage.from(ATTACHMENT_BUCKET).remove(uploadedPaths); } catch {}
+    }
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/tasks/:id/attachments/:attId/url — 서명 다운로드 URL 발급
+router.get('/:id/attachments/:attId/url', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id, 10);
+    const attId = parseInt(req.params.attId, 10);
+    const att = await repo.getAttachment(attId);
+    if (!att || att.task_id !== taskId) return res.status(404).json({ error: '첨부를 찾을 수 없습니다' });
+
+    if (!req.user.isAdmin && att.user_id !== req.user.id) {
+      return res.status(403).json({ error: '권한이 없습니다' });
+    }
+
+    const { data, error } = await getClient().storage
+      .from(ATTACHMENT_BUCKET)
+      .createSignedUrl(att.file_path, 300, { download: att.file_name });
+    if (error) throw error;
+    res.json({ signedUrl: data.signedUrl, fileName: att.file_name });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // DELETE /api/tasks/:id (owner only) — CASCADE로 recipients 함께 삭제

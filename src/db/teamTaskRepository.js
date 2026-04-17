@@ -96,7 +96,26 @@ async function listTasks({ user, status, scope, assigneeId }) {
       myStatus: r.status,
       myCompletedAt: r.completed_at,
       myCompletionNote: r.completion_note,
+      myAttachments: [],
     }));
+
+    const myTaskIds = items.map(t => t.id);
+    if (myTaskIds.length > 0) {
+      const { data: atts, error: eA } = await c
+        .from('team_task_attachments')
+        .select('id, task_id, file_name, mime_type, size_bytes, uploaded_at')
+        .eq('user_id', user.id)
+        .in('task_id', myTaskIds);
+      // Swallow "relation does not exist" (42P01) so the page still renders
+      // before the 009 migration runs. Other errors still propagate.
+      if (eA && eA.code !== '42P01') throw eA;
+      const byTask = new Map();
+      for (const a of atts || []) {
+        if (!byTask.has(a.task_id)) byTask.set(a.task_id, []);
+        byTask.get(a.task_id).push(a);
+      }
+      for (const t of items) t.myAttachments = byTask.get(t.id) || [];
+    }
 
     return items.sort(sortTasks);
   }
@@ -129,6 +148,27 @@ async function listTasks({ user, status, scope, assigneeId }) {
       status: r.status,
       completedAt: r.completed_at,
       completionNote: r.completion_note,
+      attachments: [],
+    });
+  }
+
+  // Attachments grouped by (task_id, user_id) — merge into each recipient
+  const { data: atts, error: eA } = await c
+    .from('team_task_attachments')
+    .select('id, task_id, user_id, file_name, mime_type, size_bytes, uploaded_at')
+    .in('task_id', ids);
+  // Swallow missing-table error so owner view still works pre-migration
+  if (eA && eA.code !== '42P01') throw eA;
+  for (const a of atts || []) {
+    const rs = recsByTask.get(a.task_id);
+    if (!rs) continue;
+    const r = rs.find(x => x.userId === a.user_id);
+    if (r) r.attachments.push({
+      id: a.id,
+      fileName: a.file_name,
+      mimeType: a.mime_type,
+      sizeBytes: a.size_bytes,
+      uploadedAt: a.uploaded_at,
     });
   }
 
@@ -334,6 +374,43 @@ async function getTodayStats() {
   return { today, perStaff };
 }
 
+async function addAttachment({ taskId, userId, filePath, fileName, mimeType, sizeBytes }) {
+  const { data, error } = await getClient()
+    .from('team_task_attachments')
+    .insert({
+      task_id: taskId,
+      user_id: userId,
+      file_path: filePath,
+      file_name: fileName,
+      mime_type: mimeType || null,
+      size_bytes: sizeBytes || null,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function getAttachment(id) {
+  const { data, error } = await getClient()
+    .from('team_task_attachments')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function countAttachmentsForUser(taskId, userId) {
+  const { count, error } = await getClient()
+    .from('team_task_attachments')
+    .select('id', { count: 'exact', head: true })
+    .eq('task_id', taskId)
+    .eq('user_id', userId);
+  if (error) throw error;
+  return count || 0;
+}
+
 module.exports = {
   listTasks,
   getTask,
@@ -345,4 +422,7 @@ module.exports = {
   getTodayStats,
   recomputeTaskStatus,
   getActiveStaffIds,
+  addAttachment,
+  getAttachment,
+  countAttachmentsForUser,
 };
