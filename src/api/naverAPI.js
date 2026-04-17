@@ -287,13 +287,23 @@ class NaverAPI {
       }
     }
 
-    // Aggregate revenue by day
+    // Aggregate revenue by day. Exclude cancelled/returned so a refund no
+    // longer inflates the total — matches 네이버 판매자센터 매출 기준.
+    // productOrderStatus values: PAYMENT_WAITING, PAYED, DELIVERING,
+    // DELIVERED, PURCHASE_DECIDED, EXCHANGED, CANCELED, RETURNED.
+    const EXCLUDED = new Set(['CANCELED', 'RETURNED', 'PAYMENT_WAITING']);
     let totalRevenue = 0;
+    let skippedCancelled = 0;
+    let counted = 0;
     const dailySales = {};
     allDetails.forEach(item => {
       const po = item.productOrder || {};
+      const status = String(po.productOrderStatus || '').toUpperCase();
+      if (EXCLUDED.has(status)) { skippedCancelled++; return; }
+
       const amount = po.totalPaymentAmount || po.unitPrice || 0;
       totalRevenue += amount;
+      counted++;
 
       const date = (po.placeOrderDate || item.order?.paymentDate || '').split('T')[0] || 'unknown';
       if (!dailySales[date]) dailySales[date] = { revenue: 0, orders: 0 };
@@ -303,7 +313,8 @@ class NaverAPI {
 
     return {
       totalRevenue,
-      orderCount: allDetails.length,
+      orderCount: counted,
+      skippedCancelled,
       currency: 'KRW',
       period: `${days}days`,
       dailySales,

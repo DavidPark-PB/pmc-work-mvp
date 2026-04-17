@@ -669,10 +669,20 @@ class EbayAPI {
 
     let totalRevenue = 0;
     let orderCount = 0;
+    let skippedCancelled = 0;
     const dailySales = {};
     const itemSales = {};
 
+    // Exclude cancelled/void orders so a buyer-initiated cancel no longer
+    // inflates the total. CompleteStatus=Incomplete also covers unpaid/void.
+    const isCancelled = (s) => {
+      const v = String(s || '').toLowerCase();
+      return v === 'cancelled' || v === 'canceled' || v === 'incomplete' || v === 'invalid';
+    };
+
     transactions.forEach(txn => {
+      if (isCancelled(txn.orderStatus)) { skippedCancelled++; return; }
+
       const amount = txn.price * txn.quantity;
       totalRevenue += amount;
       orderCount++;
@@ -699,6 +709,7 @@ class EbayAPI {
     return {
       totalRevenue,
       orderCount,
+      skippedCancelled,
       currency: 'USD',
       period: `${days}days`,
       dailySales,

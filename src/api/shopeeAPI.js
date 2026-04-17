@@ -398,14 +398,23 @@ class ShopeeAPI {
    * Revenue summary across all shops
    */
   async getRevenueSummary(days = 30) {
-    // Shopee order API max time range = 15 days
+    // Shopee order API max time range = 15 days; get_order_list max 100/page;
+    // use next_cursor to page through; exclude CANCELLED/IN_CANCEL to match
+    // Seller Centre "Paid Orders" style figures.
     const MAX_WINDOW = 15 * 86400;
+    const PAGE_SIZE = 100;
+    // Matches what Shopee Business Insights counts as revenue:
+    // paid/shipped/completed. CANCELLED and IN_CANCEL are excluded so a
+    // buyer-initiated cancel no longer inflates the dashboard.
+    const EXCLUDED_STATUSES = new Set(['CANCELLED', 'IN_CANCEL']);
+
+    const { toUsd } = require('../services/fxRates');
     const now = Math.floor(Date.now() / 1000);
     let totalRevenue = 0;
     let totalOrders = 0;
+    let skippedCancelled = 0;
     const dailySales = {};
 
-    // Only use shops that have tokens
     const authorizedShops = this.shopIds.filter(id => this.shopTokens[id]);
     if (authorizedShops.length === 0) {
       console.warn('Shopee: no authorized shops found');
@@ -413,57 +422,73 @@ class ShopeeAPI {
     }
 
     for (const shopId of authorizedShops) {
-      // Split time range into 15-day windows
       let windowEnd = now;
       const rangeStart = now - days * 86400;
       while (windowEnd > rangeStart) {
         const windowStart = Math.max(windowEnd - MAX_WINDOW, rangeStart);
         try {
-          const listData = await this._shopRequest('GET', '/api/v2/order/get_order_list', {
-            time_range_field: 'create_time',
-            time_from: windowStart,
-            time_to: windowEnd,
-            page_size: 100,
-          }, shopId);
-
-          if (listData?.error && listData.error !== '') {
-            console.warn(`Shopee shop ${shopId} order list error: ${listData.error} - ${listData.message}`);
-            break;
-          }
-
-          const orderList = listData?.response?.order_list || [];
-          const orderSns = orderList.map(o => o.order_sn);
-          // Build a map of order_sn → create_time for daily grouping
+          // Collect all order_sn for this window, following next_cursor until !more
+          const orderSns = [];
           const createTimeMap = {};
-          orderList.forEach(o => { createTimeMap[o.order_sn] = o.create_time; });
+          let cursor = '';
+          let safety = 0;
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            if (safety++ > 200) {
+              console.warn(`Shopee shop ${shopId}: pagination safety break at 200 pages`);
+              break;
+            }
+            const params = {
+              time_range_field: 'create_time',
+              time_from: windowStart,
+              time_to: windowEnd,
+              page_size: PAGE_SIZE,
+            };
+            if (cursor) params.cursor = cursor;
+            const listData = await this._shopRequest('GET', '/api/v2/order/get_order_list', params, shopId);
+
+            if (listData?.error && listData.error !== '') {
+              console.warn(`Shopee shop ${shopId} order list error: ${listData.error} - ${listData.message}`);
+              break;
+            }
+
+            const resp = listData?.response || {};
+            for (const o of resp.order_list || []) {
+              if (!o?.order_sn) continue;
+              orderSns.push(o.order_sn);
+              createTimeMap[o.order_sn] = o.create_time;
+            }
+            if (!resp.more || !resp.next_cursor) break;
+            cursor = resp.next_cursor;
+          }
 
           // Shopee max 50 order SNs per get_order_detail call
           for (let i = 0; i < orderSns.length; i += 50) {
             const batch = orderSns.slice(i, i + 50);
             const detailData = await this._shopRequest('GET', '/api/v2/order/get_order_detail', {
               order_sn_list: batch.join(','),
-              response_optional_fields: 'total_amount,currency',
+              response_optional_fields: 'total_amount,currency,order_status',
             }, shopId);
             const orders = detailData?.response?.order_list || [];
             for (const o of orders) {
+              const status = String(o.order_status || '').toUpperCase();
+              if (EXCLUDED_STATUSES.has(status)) {
+                skippedCancelled++;
+                continue;
+              }
               const amount = parseFloat(o.total_amount || 0);
               const currency = (o.currency || '').toUpperCase();
-              // Convert local currency to USD
-              const localToUSD = {
-                'SGD': 0.74, 'MYR': 0.22, 'PHP': 0.018, 'VND': 0.000041,
-                'TWD': 0.031, 'THB': 0.029, 'IDR': 0.000063, 'BRL': 0.19,
-                'USD': 1, 'KRW': 0.00072,
-              };
-              const rate = localToUSD[currency] || 1;
-              totalRevenue += amount * rate;
+              const amountUsd = await toUsd(amount, currency);
+
+              totalRevenue += amountUsd;
               totalOrders++;
-              // Daily grouping using create_time unix timestamp
+
               const ts = createTimeMap[o.order_sn] || o.create_time;
               const date = ts
                 ? new Date(ts * 1000).toISOString().slice(0, 10)
                 : new Date().toISOString().slice(0, 10);
               if (!dailySales[date]) dailySales[date] = { revenue: 0, orders: 0 };
-              dailySales[date].revenue += amount * rate;
+              dailySales[date].revenue += amountUsd;
               dailySales[date].orders++;
             }
           }
@@ -479,6 +504,7 @@ class ShopeeAPI {
       platform: 'Shopee',
       revenue: totalRevenue,
       orders: totalOrders,
+      skippedCancelled,
       currency: 'USD',
       days,
       dailySales,
