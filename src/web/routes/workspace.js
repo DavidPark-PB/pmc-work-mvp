@@ -4,8 +4,53 @@
  */
 const express = require('express');
 const repo = require('../../db/workspaceRepository');
+const todoRepo = require('../../db/workspaceTodoRepository');
 
 const router = express.Router();
+
+// ── 할 일 체크리스트 (본인만) ──
+router.get('/todos', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const data = await todoRepo.listTodos(req.user.id);
+    res.json({ data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/todos', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const { text, dueDate } = req.body || {};
+    const created = await todoRepo.createTodo(req.user.id, { text, dueDate });
+    res.json({ data: created });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.patch('/todos/:id', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const id = parseInt(req.params.id, 10);
+    const updated = await todoRepo.updateTodo(req.user.id, id, req.body || {});
+    res.json({ data: updated });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+router.delete('/todos/:id', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const id = parseInt(req.params.id, 10);
+    await todoRepo.deleteTodo(req.user.id, id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/todos/clear-completed', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    await todoRepo.clearCompleted(req.user.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 router.get('/', async (req, res) => {
   try {
