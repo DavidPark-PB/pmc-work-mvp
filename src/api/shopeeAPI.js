@@ -82,6 +82,7 @@ class ShopeeAPI {
   }
 
   async _merchantRequest(method, path, data, _retried = false) {
+    await this._ensureLoaded();
     const timestamp = Math.floor(Date.now() / 1000);
     const sign = this._signMerchant(path, timestamp);
     const url = `${this.baseUrl}${path}`;
@@ -96,6 +97,7 @@ class ShopeeAPI {
   }
 
   async _shopRequest(method, path, data, shopId, _retried = false) {
+    await this._ensureLoaded();
     const token = this.shopTokens[shopId]?.accessToken || this.shopAccessToken;
     const timestamp = Math.floor(Date.now() / 1000);
     const sign = crypto.createHmac('sha256', this.partnerKey)
@@ -111,34 +113,68 @@ class ShopeeAPI {
     return result;
   }
 
+  async _ensureLoaded() {
+    if (this._loaded) return;
+    this._loaded = true;
+    const { loadToken } = require('../services/tokenStore');
+    try {
+      const merchant = await loadToken('shopee');
+      if (merchant?.accessToken && merchant?.refreshToken) {
+        this.accessToken = merchant.accessToken;
+        this.refreshToken = merchant.refreshToken;
+      }
+      for (const shopId of this.shopIds) {
+        const saved = await loadToken(`shopee_shop_${shopId}`);
+        if (saved?.accessToken && saved?.refreshToken) {
+          this.shopTokens[shopId] = {
+            accessToken: saved.accessToken,
+            refreshToken: saved.refreshToken,
+          };
+        }
+      }
+      const firstShop = this.shopTokens[this.shopIds[0]];
+      if (firstShop) {
+        this.shopAccessToken = firstShop.accessToken;
+        this.shopRefreshToken = firstShop.refreshToken;
+      }
+    } catch (e) {
+      console.warn('Shopee token load from DB failed:', e.message);
+    }
+  }
+
   async _refreshTokens() {
     const { saveToken } = require('../services/tokenStore');
     const refreshPath = '/api/v2/auth/access_token/get';
-    const timestamp = Math.floor(Date.now() / 1000);
 
     // Refresh merchant token
     try {
+      const timestamp = Math.floor(Date.now() / 1000);
       const sign = this._signPublic(refreshPath, timestamp);
       const r = await axios.post(`${this.baseUrl}${refreshPath}`, {
         refresh_token: this.refreshToken,
         merchant_id: this.merchantId,
         partner_id: this.partnerId,
       }, { params: { partner_id: this.partnerId, timestamp, sign } });
-      this.accessToken = r.data.access_token;
-      this.refreshToken = r.data.refresh_token;
-      process.env.SHOPEE_ACCESS_TOKEN = this.accessToken;
-      process.env.SHOPEE_REFRESH_TOKEN = this.refreshToken;
 
-      await saveToken('shopee', {
-        accessToken: this.accessToken,
-        refreshToken: this.refreshToken,
-        expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
-      });
+      if (r.data?.error || !r.data?.access_token) {
+        console.error('Shopee merchant refresh rejected:', r.data?.error, r.data?.message);
+      } else {
+        this.accessToken = r.data.access_token;
+        this.refreshToken = r.data.refresh_token;
+        process.env.SHOPEE_ACCESS_TOKEN = this.accessToken;
+        process.env.SHOPEE_REFRESH_TOKEN = this.refreshToken;
+        await saveToken('shopee', {
+          accessToken: this.accessToken,
+          refreshToken: this.refreshToken,
+          expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+        });
+      }
     } catch (e) {
       console.error('Shopee merchant token refresh failed:', e.response?.data || e.message);
     }
 
     // Refresh each shop token individually (each shop has independent refresh_token)
+    let refreshedCount = 0;
     for (const shopId of this.shopIds) {
       const shopToken = this.shopTokens[shopId];
       if (!shopToken?.refreshToken) continue;
@@ -151,33 +187,34 @@ class ShopeeAPI {
           partner_id: this.partnerId,
         }, { params: { partner_id: this.partnerId, timestamp: ts2, sign: sign2 } });
 
-        if (r2.data.error) {
-          console.error(`Shopee shop ${shopId} refresh failed:`, r2.data.message);
+        if (r2.data?.error || !r2.data?.access_token) {
+          console.error(`Shopee shop ${shopId} refresh rejected:`, r2.data?.error, r2.data?.message);
           continue;
         }
 
         this.shopTokens[shopId] = { accessToken: r2.data.access_token, refreshToken: r2.data.refresh_token };
         process.env[`SHOPEE_SHOP_${shopId}_ACCESS_TOKEN`] = r2.data.access_token;
         process.env[`SHOPEE_SHOP_${shopId}_REFRESH_TOKEN`] = r2.data.refresh_token;
+        await saveToken(`shopee_shop_${shopId}`, {
+          accessToken: r2.data.access_token,
+          refreshToken: r2.data.refresh_token,
+          expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+        });
+        refreshedCount++;
       } catch (e) {
         console.error(`Shopee shop ${shopId} refresh error:`, e.response?.data?.message || e.message);
       }
     }
 
-    // Save first shop token as default
+    // Update default shop token pointer
     const firstShop = this.shopTokens[this.shopIds[0]];
     if (firstShop) {
       this.shopAccessToken = firstShop.accessToken;
       this.shopRefreshToken = firstShop.refreshToken;
       process.env.SHOPEE_SHOP_ACCESS_TOKEN = firstShop.accessToken;
       process.env.SHOPEE_SHOP_REFRESH_TOKEN = firstShop.refreshToken;
-      await saveToken('shopee_shop', {
-        accessToken: firstShop.accessToken,
-        refreshToken: firstShop.refreshToken,
-        expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
-      });
     }
-    console.log('✅ Shopee tokens auto-refreshed (' + this.shopIds.length + ' shops)');
+    console.log(`✅ Shopee tokens auto-refreshed (${refreshedCount}/${this.shopIds.length} shops)`);
   }
 
   async _exec(method, url, params, data) {
@@ -192,7 +229,11 @@ class ShopeeAPI {
       const response = await axios(config);
       return response.data;
     } catch (error) {
-      console.error(`Shopee API 오류 [${url}]:`, error.response?.data || error.message);
+      const body = error.response?.data;
+      // Shopee returns 4xx with { error: 'invalid_acceess_token' } on expiry.
+      // Return the body so the caller can detect it and trigger a refresh+retry.
+      if (_isInvalidToken(body)) return body;
+      console.error(`Shopee API 오류 [${url}]:`, body || error.message);
       throw error;
     }
   }
