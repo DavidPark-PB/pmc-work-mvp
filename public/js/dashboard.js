@@ -297,6 +297,19 @@ async function thumbGenerate() {
   formData.append('removeBg', removeBg ? 'true' : 'false');
   formData.append('outputBg', outputBg);
   formData.append('provider', provider);
+
+  // 뱃지 파라미터 (선택)
+  if (document.getElementById('thumbBadgeEnable').checked) {
+    var bCustom = document.getElementById('thumbBadgeCustom').value.trim();
+    if (thumbBadgeKeyword || bCustom) {
+      if (thumbBadgeKeyword) formData.append('badgeKeyword', thumbBadgeKeyword);
+      if (bCustom) formData.append('badgeCustom', bCustom);
+      formData.append('badgeStyle', document.getElementById('thumbBadgeStyle').value);
+      formData.append('badgePosition', document.getElementById('thumbBadgePosition').value);
+      formData.append('badgeSize', document.getElementById('thumbBadgeSize').value);
+      formData.append('badgeUseGemini', document.getElementById('thumbBadgeUseGemini').checked ? 'true' : 'false');
+    }
+  }
   for (var i = 0; i < files.length; i++) formData.append('images', files[i]);
 
   try {
@@ -326,6 +339,86 @@ async function thumbGenerate() {
   } finally {
     btn.disabled = false;
     btn.textContent = '✨ 생성';
+  }
+}
+
+// ── 뱃지 피커 ──
+var thumbBadgeKeyword = '';
+var thumbBadgePreviewTimer = null;
+
+async function thumbUpdateBadgeBlock() {
+  var on = document.getElementById('thumbBadgeEnable').checked;
+  document.getElementById('thumbBadgeBlock').style.display = on ? 'block' : 'none';
+  if (on && !document.getElementById('thumbBadgeChips').children.length) {
+    await thumbLoadBadgeOptions();
+  }
+}
+
+async function thumbLoadBadgeOptions() {
+  try {
+    var r = await fetch(API + '/thumbnail/badge/options');
+    var d = await r.json();
+    var chipsWrap = document.getElementById('thumbBadgeChips');
+    chipsWrap.innerHTML = (d.keywords || []).map(function(kw) {
+      return '<button type="button" data-kw="' + kw + '" onclick="thumbPickBadge(\'' + kw + '\')" style="padding:4px 10px;background:#2a2a4a;color:#fff;border:0;border-radius:12px;cursor:pointer;font-size:11px;">' + kw + '</button>';
+    }).join('');
+  } catch (e) {
+    console.warn('뱃지 옵션 로드 실패:', e.message);
+  }
+}
+
+function thumbPickBadge(kw) {
+  thumbBadgeKeyword = kw;
+  document.getElementById('thumbBadgeCustom').value = '';
+  document.querySelectorAll('#thumbBadgeChips button').forEach(function(b) {
+    b.style.background = b.dataset.kw === kw ? '#ffb74d' : '#2a2a4a';
+    b.style.color = b.dataset.kw === kw ? '#111' : '#fff';
+    b.style.fontWeight = b.dataset.kw === kw ? '700' : '400';
+  });
+  thumbBadgePreview();
+}
+
+function thumbOnBadgeInput() {
+  // 자유 텍스트 입력하면 프리셋 칩 선택 해제
+  if (document.getElementById('thumbBadgeCustom').value.trim()) {
+    thumbBadgeKeyword = '';
+    document.querySelectorAll('#thumbBadgeChips button').forEach(function(b) {
+      b.style.background = '#2a2a4a'; b.style.color = '#fff'; b.style.fontWeight = '400';
+    });
+  }
+  if (thumbBadgePreviewTimer) clearTimeout(thumbBadgePreviewTimer);
+  thumbBadgePreviewTimer = setTimeout(thumbBadgePreview, 400);
+}
+
+function thumbBadgeUpdateSize() {
+  var v = document.getElementById('thumbBadgeSize').value;
+  document.getElementById('thumbBadgeSizeLabel').textContent = v + '%';
+}
+
+async function thumbBadgePreview() {
+  var kw = thumbBadgeKeyword;
+  var custom = document.getElementById('thumbBadgeCustom').value.trim();
+  var style = document.getElementById('thumbBadgeStyle').value;
+  var useGemini = document.getElementById('thumbBadgeUseGemini').checked;
+  var previewEl = document.getElementById('thumbBadgePreview');
+  if (!kw && !custom) {
+    previewEl.innerHTML = '<span>선택 안 됨</span>';
+    return;
+  }
+  previewEl.innerHTML = '<span style="color:#ffb74d">생성 중…</span>';
+  try {
+    var params = new URLSearchParams();
+    if (kw) params.set('keyword', kw);
+    if (custom) params.set('custom', custom);
+    params.set('style', style);
+    if (useGemini) params.set('useGemini', 'true');
+    var r = await fetch(API + '/thumbnail/badge/preview?' + params);
+    var d = await r.json();
+    if (!r.ok) { previewEl.innerHTML = '<span style="color:#ff8a80;font-size:9px">' + (d.error || '실패') + '</span>'; return; }
+    previewEl.innerHTML = '<img src="' + d.data + '" style="max-height:56px;max-width:100%;object-fit:contain;">' +
+      (d.source === 'gemini' ? '<div style="font-size:8px;color:#81c784;margin-top:2px">AI' + (d.cached ? ' · 캐시' : '') + '</div>' : '');
+  } catch (e) {
+    previewEl.innerHTML = '<span style="color:#ff8a80;font-size:9px">' + e.message + '</span>';
   }
 }
 

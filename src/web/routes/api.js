@@ -8,6 +8,9 @@ const { requireAdmin } = require('../../middleware/auth');
 
 const multer = require('multer');
 
+// 뱃지 Gemini 생성 인메모리 캐시 (키: "badge:<text>:<style>", 값: {buf, at}, TTL 24h, 최대 100)
+const badgeCache = new Map();
+
 const projectRoot = path.join(__dirname, '..', '..', '..');
 const credentialsPath = path.join(projectRoot, 'config', 'credentials.json');
 
@@ -3854,6 +3857,85 @@ router.put('/master-products/:sku/cost', async (req, res) => {
 });
 
 
+// GET /api/thumbnail/badge/options — UI용 키워드/스타일 목록
+router.get('/thumbnail/badge/options', (req, res) => {
+  const badgeLib = require('../../services/badgeTemplates');
+  res.json({
+    keywords: badgeLib.listKeywords(),
+    styles: badgeLib.listStyles(),
+  });
+});
+
+// GET /api/thumbnail/badge/preview?keyword=신제품&style=redCircle[&custom=FREE]
+// 뱃지 PNG data URL을 즉석 반환 (UI 프리뷰용)
+router.get('/thumbnail/badge/preview', async (req, res) => {
+  try {
+    const sharp = require('sharp');
+    const axios = require('axios');
+    const badgeLib = require('../../services/badgeTemplates');
+
+    const keyword = (req.query.keyword || '').trim();
+    const custom = (req.query.custom || '').trim();
+    const style = req.query.style || 'redCircle';
+    const useGemini = req.query.useGemini === 'true';
+
+    if (!keyword && !custom) return res.status(400).json({ error: '키워드 또는 자유 텍스트를 입력하세요' });
+
+    const svg = badgeLib.getBadgeSvg({ keyword, customText: custom, style });
+    if (svg) {
+      const png = await sharp(Buffer.from(svg)).resize(384, 384, { fit: 'inside' }).png().toBuffer();
+      return res.json({ source: 'svg', data: `data:image/png;base64,${png.toString('base64')}` });
+    }
+
+    // SVG 템플릿에 없는 키워드 + Gemini 요청
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (!useGemini || !geminiKey) {
+      return res.status(400).json({ error: '프리셋에 없는 키워드입니다. Gemini 생성을 체크하거나 프리셋 중에서 선택하세요.' });
+    }
+
+    const cacheKey = `badge:${custom.toLowerCase()}:${style}`;
+    const cached = badgeCache.get(cacheKey);
+    let buf;
+    if (cached && Date.now() - cached.at < 24 * 60 * 60 * 1000) {
+      buf = cached.buf;
+    } else {
+      const styleHints = {
+        redCircle:    'bold red circular badge with white text, flat design, playful',
+        yellowRibbon: 'yellow ribbon banner shape with dark text, retro sale vibe',
+        blackTag:     'minimalist black rectangular price-tag style with white text, modern',
+        starburst:    'pink starburst explosion shape with white text, attention-grabbing',
+      };
+      const prompt = `Design a square commerce badge icon that says "${custom}". Style: ${styleHints[style] || styleHints.redCircle}. Transparent PNG background, centered composition, high contrast, no photo, bold typography, no extra objects. Output: single 512x512 PNG with transparency.`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${geminiKey}`;
+      const r = await axios.post(url, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseModalities: ['IMAGE'] },
+      }, { timeout: 60000, validateStatus: () => true });
+      if (r.status !== 200) {
+        let msg = r.data?.error?.message || `Gemini error ${r.status}`;
+        if (r.status === 429 && /free_tier/i.test(msg)) {
+          msg = 'Gemini Billing 미연결 — Google Cloud 콘솔에서 결제 계정 연결 필요';
+        }
+        return res.status(502).json({ error: msg });
+      }
+      const parts = r.data?.candidates?.[0]?.content?.parts || [];
+      const img = parts.find(p => p.inlineData?.data);
+      if (!img) return res.status(502).json({ error: 'Gemini가 이미지를 반환하지 않음' });
+      buf = Buffer.from(img.inlineData.data, 'base64');
+      badgeCache.set(cacheKey, { buf, at: Date.now() });
+      if (badgeCache.size > 100) {
+        const oldest = [...badgeCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+        if (oldest) badgeCache.delete(oldest[0]);
+      }
+    }
+
+    const preview = await sharp(buf).resize(384, 384, { fit: 'inside' }).png().toBuffer();
+    res.json({ source: 'gemini', cached: !!cached, data: `data:image/png;base64,${preview.toString('base64')}` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/thumbnail/generate — 썸네일 만들기 (로고 합성)
 const thumbnailUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -3896,6 +3978,15 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
     // 'local' | 'gemini' | 'removebg' | 'auto'
     // auto: local 우선 → gemini → removebg
     const provider = req.body.provider || 'local';
+
+    // 뱃지 파라미터 (선택)
+    const badgeKeyword = (req.body.badgeKeyword || '').trim();   // 프리셋 키워드
+    const badgeCustom = (req.body.badgeCustom || '').trim();     // 자유 텍스트
+    const badgeStyle = req.body.badgeStyle || 'redCircle';
+    const badgePosition = req.body.badgePosition || 'top-right';
+    const badgeSize = Math.max(10, Math.min(40, parseInt(req.body.badgeSize) || 22));
+    const badgeUseGemini = req.body.badgeUseGemini === 'true' || req.body.badgeUseGemini === true;
+    const hasBadge = !!(badgeKeyword || badgeCustom);
 
     const geminiKey = process.env.GEMINI_API_KEY;
     const rembgKey = process.env.REMOVE_BG_API_KEY;
@@ -3963,6 +4054,63 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
         throw new Error(msg);
       }
       return Buffer.from(r.data);
+    }
+
+    // ---------- 뱃지 해석: SVG 라이브러리 우선 → (옵션) Gemini 폴백 ----------
+    async function resolveBadgeBuffer({ keyword, customText, style, useGemini, targetSize }) {
+      const badgeLib = require('../../services/badgeTemplates');
+      const svg = badgeLib.getBadgeSvg({ keyword, customText, style });
+      if (svg) {
+        return sharp(Buffer.from(svg))
+          .resize(targetSize, targetSize, { fit: 'inside' })
+          .png()
+          .toBuffer();
+      }
+
+      // SVG 라이브러리에 없는 자유 키워드 + Gemini 요청 → 생성·캐시
+      if (useGemini && geminiKey && customText) {
+        const cacheKey = `badge:${customText.trim().toLowerCase()}:${style}`;
+        const cached = badgeCache.get(cacheKey);
+        if (cached && Date.now() - cached.at < 24 * 60 * 60 * 1000) {
+          return sharp(cached.buf).resize(targetSize, targetSize, { fit: 'inside' }).png().toBuffer();
+        }
+        const generated = await callGeminiBadge(customText, style);
+        badgeCache.set(cacheKey, { buf: generated, at: Date.now() });
+        // 캐시 사이즈 제한 (메모리 폭증 방지)
+        if (badgeCache.size > 100) {
+          const oldest = [...badgeCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+          if (oldest) badgeCache.delete(oldest[0]);
+        }
+        return sharp(generated).resize(targetSize, targetSize, { fit: 'inside' }).png().toBuffer();
+      }
+      return null;
+    }
+
+    async function callGeminiBadge(text, style) {
+      const styleHints = {
+        redCircle:    'bold red circular badge with white text, flat design, playful',
+        yellowRibbon: 'yellow ribbon banner shape with dark text, retro sale vibe',
+        blackTag:     'minimalist black rectangular price-tag style with white text, modern',
+        starburst:    'pink starburst explosion shape with white text, attention-grabbing',
+      };
+      const style_hint = styleHints[style] || styleHints.redCircle;
+      const prompt = `Design a square commerce badge icon that says "${text}". Style: ${style_hint}. Transparent PNG background, centered composition, high contrast, no photo, bold typography, no extra objects. Output: single 512x512 PNG with transparency.`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${geminiKey}`;
+      const r = await axios.post(url, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseModalities: ['IMAGE'] },
+      }, { timeout: 60000, validateStatus: () => true });
+      if (r.status !== 200) {
+        let msg = r.data?.error?.message || `Gemini error ${r.status}`;
+        if (r.status === 429 && /free_tier/i.test(msg)) {
+          msg = 'Gemini 이미지 API Billing 미연결 — Google Cloud 콘솔에서 결제 계정 연결 필요';
+        }
+        throw new Error(msg);
+      }
+      const parts = r.data?.candidates?.[0]?.content?.parts || [];
+      const img = parts.find(p => p.inlineData?.data);
+      if (!img) throw new Error('Gemini가 뱃지 이미지를 반환하지 않음');
+      return Buffer.from(img.inlineData.data, 'base64');
     }
 
     async function doBgRemove(file) {
@@ -4074,12 +4222,43 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
           default:             left = padding;                 top = padding;
         }
 
-        // 6) 합성 + 출력 포맷 결정
-        const composited = base.composite([{
+        // 6) 뱃지 합성 (옵션) — 로고와 별도 corner
+        const composites = [{
           input: resizedLogo,
           left: Math.max(0, left),
           top: Math.max(0, top),
-        }]);
+        }];
+
+        if (hasBadge) {
+          try {
+            const badgeBuf = await resolveBadgeBuffer({
+              keyword: badgeKeyword,
+              customText: badgeCustom,
+              style: badgeStyle,
+              useGemini: badgeUseGemini,
+              targetSize: Math.round(imgW * badgeSize / 100),
+            });
+            if (badgeBuf) {
+              const bMeta = await sharp(badgeBuf).metadata();
+              const bW = bMeta.width || Math.round(imgW * badgeSize / 100);
+              const bH = bMeta.height || bW;
+              let bLeft, bTop;
+              switch (badgePosition) {
+                case 'bottom-right': bLeft = imgW - bW - padding; bTop = imgH - bH - padding; break;
+                case 'bottom-left':  bLeft = padding;              bTop = imgH - bH - padding; break;
+                case 'top-left':     bLeft = padding;              bTop = padding;              break;
+                case 'top-right':
+                default:             bLeft = imgW - bW - padding; bTop = padding;              break;
+              }
+              composites.push({ input: badgeBuf, left: Math.max(0, bLeft), top: Math.max(0, bTop) });
+            }
+          } catch (badgeErr) {
+            console.warn('[thumbnail] badge 합성 실패:', badgeErr.message);
+          }
+        }
+
+        // 7) 합성 + 출력 포맷 결정
+        const composited = base.composite(composites);
 
         const outputAsPng = removeBg && outputBg === 'transparent';
         const output = outputAsPng
