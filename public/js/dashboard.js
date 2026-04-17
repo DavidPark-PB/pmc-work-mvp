@@ -207,6 +207,15 @@ function thumbUpdateSizeLabel() {
   document.getElementById('thumbSizeLabel').textContent = v + '%';
   var plat = document.getElementById('thumbPlatform');
   if (plat && plat.value !== 'custom') plat.value = 'custom';
+  thumbUpdatePlatformHint();
+}
+
+function thumbUpdateMarginLabel() {
+  var v = document.getElementById('thumbMargin').value;
+  document.getElementById('thumbMarginLabel').textContent = v + '%';
+  var plat = document.getElementById('thumbPlatform');
+  if (plat && plat.value !== 'custom') plat.value = 'custom';
+  thumbUpdatePlatformHint();
 }
 
 function thumbUpdateBgOptions() {
@@ -214,23 +223,42 @@ function thumbUpdateBgOptions() {
   document.getElementById('thumbBgOptions').style.display = on ? 'block' : 'none';
 }
 
+// 서버와 동일한 플랫폼 프리셋 (UX용)
+var THUMB_PRESETS = {
+  ebay:    { canvas: 1600, marginPct: 8, position: 'top-left', size: 45 },
+  alibaba: { canvas: 1000, marginPct: 8, position: 'top-left', size: 45 },
+  shopify: { canvas: 2048, marginPct: 8, position: 'top-left', size: 40 },
+  shopee:  { canvas: 1080, marginPct: 8, position: 'top-left', size: 45 },
+  qoo10:   { canvas: 1200, marginPct: 8, position: 'top-left', size: 45 },
+};
+
+function thumbUpdatePlatformHint() {
+  var plat = document.getElementById('thumbPlatform').value;
+  var hint = document.getElementById('thumbPlatformHint');
+  if (!hint) return;
+  if (plat === 'custom') {
+    hint.style.color = '#666';
+    hint.textContent = '원본 이미지 크기 그대로 유지 — 여백/캔버스 정규화 없음';
+  } else {
+    var p = THUMB_PRESETS[plat];
+    hint.style.color = '#ff9800';
+    hint.textContent = p ? ('출력: ' + p.canvas + '×' + p.canvas + ' · 여백 ' + p.marginPct + '% · 로고 ' + p.size + '%') : '';
+  }
+}
+
 function thumbApplyPreset() {
   var plat = document.getElementById('thumbPlatform').value;
-  if (plat === 'custom') return;
-  // 서버와 동일한 프리셋 — 사용자 UX용
-  var presets = {
-    ebay:    { position: 'top-left', size: 45 },
-    alibaba: { position: 'top-left', size: 45 },
-    shopify: { position: 'top-left', size: 40 },
-    shopee:  { position: 'top-left', size: 45 },
-    qoo10:   { position: 'top-left', size: 45 },
-  };
-  var p = presets[plat] || presets.ebay;
+  if (plat === 'custom') { thumbUpdatePlatformHint(); return; }
+  var p = THUMB_PRESETS[plat] || THUMB_PRESETS.ebay;
   thumbSetPosition(p.position);
   document.getElementById('thumbSize').value = p.size;
   document.getElementById('thumbSizeLabel').textContent = p.size + '%';
+  var mSlider = document.getElementById('thumbMargin');
+  var mLabel = document.getElementById('thumbMarginLabel');
+  if (mSlider) { mSlider.value = p.marginPct; mLabel.textContent = p.marginPct + '%'; }
   // preset 다시 복원 (thumbSetPosition/사이즈가 'custom'으로 바꾸니까)
   document.getElementById('thumbPlatform').value = plat;
+  thumbUpdatePlatformHint();
 }
 
 function thumbPreview() {
@@ -250,6 +278,7 @@ async function thumbGenerate() {
   if (!files || files.length === 0) { alert('이미지를 선택하세요'); return; }
   var platform = document.getElementById('thumbPlatform').value || 'custom';
   var size = document.getElementById('thumbSize').value || '45';
+  var marginPct = document.getElementById('thumbMargin')?.value || '8';
   var removeBg = document.getElementById('thumbRemoveBg').checked;
   var outputBg = document.getElementById('thumbOutputBg').value || 'transparent';
   var provider = document.getElementById('thumbProvider')?.value || 'local';
@@ -264,6 +293,7 @@ async function thumbGenerate() {
   formData.append('platform', platform);
   formData.append('position', thumbPosition);
   formData.append('size', size);
+  formData.append('marginPct', marginPct);
   formData.append('removeBg', removeBg ? 'true' : 'false');
   formData.append('outputBg', outputBg);
   formData.append('provider', provider);
@@ -276,7 +306,8 @@ async function thumbGenerate() {
 
     thumbResults = d.images || [];
     var area = document.getElementById('thumbResultArea');
-    var meta = `위치: ${d.position}, 크기: ${d.size}%, 배경제거: ${d.removeBg ? 'ON' : 'OFF'}`;
+    var canvasMeta = d.canvas ? `${d.canvas}×${d.canvas}` : '원본';
+    var meta = `출력: ${canvasMeta}, 여백: ${d.marginPct || 0}%, 위치: ${d.position}, 로고: ${d.size}%, 배경제거: ${d.removeBg ? 'ON' : 'OFF'}`;
     area.innerHTML = '<h4 style="width:100%;margin:0 0 8px;color:#ff9800">' + d.count + '/' + d.images.length + ' 생성 완료 — ' + meta + '</h4>';
     thumbResults.forEach(function(img) {
       if (img.error) {

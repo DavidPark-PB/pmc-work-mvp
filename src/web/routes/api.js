@@ -3872,18 +3872,25 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
     const logoPath = path.join(__dirname, '../../..', 'public/images/pmc_logo.png');
     if (!fs.existsSync(logoPath)) return res.status(400).json({ success: false, error: 'Logo file not found. Upload pmc_logo.png to public/images/' });
 
-    // 사용자 지정 > 플랫폼 프리셋 > 기본값
+    // 각 플랫폼 썸네일 최적 사이즈(정사각) + 여백(%) + 로고 위치/크기
+    //   canvas: 출력 캔버스 변 길이 (null이면 원본 유지)
+    //   marginPct: 제품 이미지 주변 여백 (%) — 캔바처럼 일정한 여백 유지용
+    //   size/padding: 로고 크기(%)와 로고 가장자리 패딩(px, 캔버스의 ~3%)
     const platformPresets = {
-      alibaba: { position: 'top-left',     size: 45, padding: 24 },
-      ebay:    { position: 'top-left',     size: 45, padding: 20 },
-      shopify: { position: 'top-left',     size: 40, padding: 20 },
-      shopee:  { position: 'top-left',     size: 45, padding: 20 },
-      qoo10:   { position: 'top-left',     size: 45, padding: 20 },
+      alibaba: { canvas: 1000, marginPct: 8, position: 'top-left', size: 45, padding: 30 },
+      ebay:    { canvas: 1600, marginPct: 8, position: 'top-left', size: 45, padding: 48 },
+      shopify: { canvas: 2048, marginPct: 8, position: 'top-left', size: 40, padding: 60 },
+      shopee:  { canvas: 1080, marginPct: 8, position: 'top-left', size: 45, padding: 32 },
+      qoo10:   { canvas: 1200, marginPct: 8, position: 'top-left', size: 45, padding: 36 },
+      custom:  { canvas: null, marginPct: 0,  position: 'top-left', size: 45, padding: 20 },
     };
     const preset = platformPresets[platform] || platformPresets.ebay;
     const position = req.body.position || preset.position;
     const size = Math.max(10, Math.min(80, parseInt(req.body.size) || preset.size));
     const padding = parseInt(req.body.padding) || preset.padding;
+    const userMargin = parseInt(req.body.marginPct);
+    const marginPct = Number.isFinite(userMargin) ? Math.max(0, Math.min(20, userMargin)) : preset.marginPct;
+    const targetCanvas = preset.canvas || null;
     const removeBg = req.body.removeBg === 'true' || req.body.removeBg === true;
     const outputBg = req.body.outputBg || 'transparent'; // 'transparent' | 'white'
     // 'local' | 'gemini' | 'removebg' | 'auto'
@@ -4000,18 +4007,55 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
           }
         }
 
-        // 2) 배경 처리: PNG 투명 유지 or 흰 배경 플래튼
-        let base = sharp(workingBuffer);
-        const meta = await base.metadata();
-        const imgW = meta.width || 800;
-        const imgH = meta.height || 800;
+        // 2) 플랫폼 캔버스 정규화 — 정사각 + 일정 여백 (Canva 스타일)
+        //    targetCanvas가 null(=custom)이면 원본 크기 유지
+        let imgW, imgH;
+        if (targetCanvas) {
+          const marginPx = Math.round(targetCanvas * marginPct / 100);
+          const innerSize = targetCanvas - 2 * marginPx;
 
-        if (removeBg && outputBg === 'white') {
-          // 투명 배경 → 흰 배경으로 플래튼
+          // 제품 이미지를 innerSize × innerSize 안쪽으로 contain 리사이즈
+          const resizedProduct = await sharp(workingBuffer)
+            .resize(innerSize, innerSize, { fit: 'inside' })
+            .png()
+            .toBuffer();
+          const pMeta = await sharp(resizedProduct).metadata();
+          const offsetX = Math.round((targetCanvas - pMeta.width) / 2);
+          const offsetY = Math.round((targetCanvas - pMeta.height) / 2);
+
+          // 출력 배경: 누끼+투명이면 투명, 그 외엔 흰색
+          const wantTransparent = removeBg && outputBg === 'transparent';
+          const canvasBg = wantTransparent
+            ? { r: 255, g: 255, b: 255, alpha: 0 }
+            : { r: 255, g: 255, b: 255, alpha: 1 };
+
+          workingBuffer = await sharp({
+            create: {
+              width: targetCanvas,
+              height: targetCanvas,
+              channels: 4,
+              background: canvasBg,
+            },
+          })
+            .composite([{ input: resizedProduct, left: offsetX, top: offsetY }])
+            .png()
+            .toBuffer();
+
+          imgW = targetCanvas;
+          imgH = targetCanvas;
+        } else {
+          const meta = await sharp(workingBuffer).metadata();
+          imgW = meta.width || 800;
+          imgH = meta.height || 800;
+        }
+
+        // 3) 배경 처리: 누끼+흰배경 출력 시 투명 → 흰 플래튼
+        let base = sharp(workingBuffer);
+        if (!targetCanvas && removeBg && outputBg === 'white') {
           base = base.flatten({ background: { r: 255, g: 255, b: 255 } });
         }
 
-        // 3) 로고 리사이즈 (이미지 너비의 size% 기준)
+        // 4) 로고 리사이즈 (캔버스/이미지 너비의 size% 기준)
         const logoW = Math.round(imgW * size / 100);
         const resizedLogo = await sharp(logoPath)
           .resize(logoW, null, { fit: 'inside' })
@@ -4020,7 +4064,7 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
         const logoMeta = await sharp(resizedLogo).metadata();
         const logoH = logoMeta.height || logoW;
 
-        // 4) 위치 계산
+        // 5) 위치 계산
         let left, top;
         switch (position) {
           case 'bottom-right': left = imgW - logoW - padding; top = imgH - logoH - padding; break;
@@ -4030,7 +4074,7 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
           default:             left = padding;                 top = padding;
         }
 
-        // 5) 합성 + 출력 포맷 결정
+        // 6) 합성 + 출력 포맷 결정
         const composited = base.composite([{
           input: resizedLogo,
           left: Math.max(0, left),
@@ -4061,6 +4105,8 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
       platform,
       position,
       size,
+      canvas: targetCanvas,
+      marginPct,
       removeBg,
       images: results,
       count: results.filter(r => !r.error).length,

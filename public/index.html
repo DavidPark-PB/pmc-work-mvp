@@ -1239,6 +1239,16 @@
             <div style="font-size:10px;color:#666;margin-top:4px;">기본 45% (이전 25~35%보다 훨씬 크게)</div>
           </div>
 
+          <!-- 제품 여백 -->
+          <div>
+            <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;color:#aaa">제품 여백 (캔버스 대비 %)</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input type="range" id="thumbMargin" min="0" max="20" value="8" step="1" oninput="thumbUpdateMarginLabel()" style="flex:1;">
+              <span id="thumbMarginLabel" style="font-weight:700;color:#ff9800;min-width:40px;text-align:right;">8%</span>
+            </div>
+            <div style="font-size:10px;color:#666;margin-top:4px;">일정한 여백으로 제품이 캔버스 꽉 채우지 않게 (Canva 스타일)</div>
+          </div>
+
           <!-- 누끼 옵션 -->
           <div>
             <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;color:#aaa">🪄 배경 처리</label>
@@ -1264,13 +1274,14 @@
           <div>
             <label style="font-size:12px;font-weight:600;display:block;margin-bottom:6px;color:#aaa">프리셋 (기본값 세팅용)</label>
             <select id="thumbPlatform" onchange="thumbApplyPreset()" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;color:#e0e0e0;border-radius:6px;font-size:12px;">
-              <option value="custom">직접 설정</option>
-              <option value="ebay" selected>eBay</option>
-              <option value="alibaba">Alibaba</option>
-              <option value="shopify">Shopify</option>
-              <option value="shopee">Shopee</option>
-              <option value="qoo10">Qoo10</option>
+              <option value="custom">직접 설정 (원본 크기 유지)</option>
+              <option value="ebay" selected>eBay (1600×1600)</option>
+              <option value="alibaba">Alibaba (1000×1000)</option>
+              <option value="shopify">Shopify (2048×2048)</option>
+              <option value="shopee">Shopee (1080×1080)</option>
+              <option value="qoo10">Qoo10 (1200×1200)</option>
             </select>
+            <div id="thumbPlatformHint" style="font-size:10px;color:#ff9800;margin-top:4px;">선택한 플랫폼의 최적 사이즈로 자동 정규화 + 여백 일정</div>
           </div>
         </div>
 
