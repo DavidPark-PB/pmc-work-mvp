@@ -80,10 +80,25 @@ const connDot = document.getElementById('conn-dot');
 const connText = document.getElementById('conn-text');
 
 let lastResultCount = 0;
+let jobIsDone = false;
 
 const evtSource = new EventSource('/api/listings/stream/' + jobId);
 
+function setConnected() {
+  connDot.classList.remove('disconnected');
+  connText.textContent = '연결됨';
+}
+function setReconnecting() {
+  connDot.classList.add('disconnected');
+  connText.textContent = '재연결 중… (백엔드는 계속 진행)';
+}
+
+evtSource.onopen = function() {
+  setConnected();
+};
+
 evtSource.onmessage = function(event) {
+  setConnected();
   const job = JSON.parse(event.data);
   const pct = job.total > 0 ? Math.round(((job.completed + job.failed) / job.total) * 100) : 0;
 
@@ -118,6 +133,7 @@ evtSource.onmessage = function(event) {
 
     progressBar.classList.remove('striped');
     doneActions.classList.remove('hidden');
+    jobIsDone = true;
     evtSource.close();
   }
 
@@ -146,14 +162,26 @@ evtSource.onmessage = function(event) {
   lastResultCount = job.results.length;
 };
 
+// 화면보호기/네트워크 일시 단절 → EventSource는 자동으로 재연결한다.
+// close()를 호출하지 않으면 readyState=CONNECTING으로 떨어지고
+// retry: 디렉티브(서버에서 보내는 3초)에 따라 재시도가 반복됨.
+// 백엔드 잡은 SSE 연결과 무관하게 jobStore에 계속 진행 상태를 기록하므로
+// 사용자가 다시 깨어났을 때 onmessage로 최신 진행률이 자동 반영된다.
 evtSource.onerror = function() {
-  statusText.textContent = '연결이 끊어졌습니다. 새로고침하세요.';
-  statusBadge.className = 'badge badge-error';
-  statusBadge.innerHTML = '<i class="ti ti-wifi-off"></i> 연결 끊김';
-  connDot.classList.add('disconnected');
-  connText.textContent = '연결 끊김';
-  evtSource.close();
+  if (jobIsDone) return; // 정상 종료 후 발생한 에러는 무시
+  setReconnecting();
+  // 진행 텍스트는 마지막으로 받은 상태를 유지 — 사용자가 깨어나면 곧 갱신됨
+  statusBadge.className = 'badge badge-pending';
+  statusBadge.innerHTML = '<i class="ti ti-refresh"></i> 재연결 중';
 };
+
+// 탭이 다시 활성화되면 명시적으로 재연결 시도 시간을 단축
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden && !jobIsDone && evtSource.readyState === EventSource.CLOSED) {
+    // EventSource가 닫혔으면 새로 만들기 — 페이지 강제 새로고침 대신
+    location.reload();
+  }
+});
 
 function escapeHtml(text) {
   const div = document.createElement('div');

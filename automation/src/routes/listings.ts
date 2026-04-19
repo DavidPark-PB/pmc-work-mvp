@@ -307,9 +307,14 @@ export async function listingRoutes(app: FastifyInstance) {
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
     });
+    // 클라이언트 재연결 간격 권고 (ms). 화면보호기 해제 직후 빠르게 재연결.
+    reply.raw.write('retry: 3000\n\n');
+    // 즉시 한 번 현재 상태 push — 재연결한 클라이언트가 1초를 더 기다리지 않게.
+    reply.raw.write(`data: ${JSON.stringify(job)}\n\n`);
 
     const interval = setInterval(async () => {
       const current = await jobStore.get(jobId);
