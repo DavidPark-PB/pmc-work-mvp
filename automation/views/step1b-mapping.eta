@@ -83,15 +83,65 @@ var fieldLabels = {
   rating: '평점', reviewCount: '리뷰수'
 };
 
-// autoMapping으로 드롭다운 초기값 설정
+// autoMapping으로 드롭다운 초기값 설정 (서버는 키워드 매핑을 즉시 반환,
+// AI 매핑은 백그라운드 수행 후 DB에 갱신됨 → 아래 폴링이 따라잡음)
 var autoMapping = <%~ JSON.stringify(it.autoMapping) %>;
-document.addEventListener('DOMContentLoaded', function() {
-  for (var field in autoMapping) {
-    var sel = document.querySelector('select[data-col="' + autoMapping[field] + '"]');
+var initialMappingSig = JSON.stringify(autoMapping);
+
+function applyMapping(mapping) {
+  document.querySelectorAll('.mapping-select').forEach(function(sel) { sel.value = ''; });
+  for (var field in mapping) {
+    var sel = document.querySelector('select[data-col="' + mapping[field] + '"]');
     if (sel) sel.value = field;
   }
   validateMapping();
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  applyMapping(autoMapping);
+  startAiMappingPoll();
 });
+
+// AI 매핑이 백그라운드에서 도착하면 자동 반영. 사용자가 이미 매핑을 손댔으면 건드리지 않음.
+function startAiMappingPoll() {
+  var uploadId = '<%= it.uploadId %>';
+  var pollCount = 0;
+  var maxPolls = 8; // 2초 × 8 = 16초까지 대기
+  var userTouched = false;
+  document.querySelectorAll('.mapping-select').forEach(function(sel) {
+    sel.addEventListener('change', function() { userTouched = true; }, { once: true });
+  });
+
+  var statusEl = document.createElement('div');
+  statusEl.style.cssText = 'margin-top:8px;font-size:var(--text-xs);color:var(--text-muted);';
+  statusEl.innerHTML = '<i class="ti ti-sparkles"></i> AI가 컬럼 매핑을 분석 중…';
+  var sectionHeader = document.querySelector('.section-header');
+  if (sectionHeader) sectionHeader.appendChild(statusEl);
+
+  function tick() {
+    pollCount++;
+    fetch('/api/upload/' + uploadId + '/status')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var newMap = data.columnMapping || {};
+        var newSig = JSON.stringify(newMap);
+        if (newSig !== initialMappingSig && Object.keys(newMap).length > 0) {
+          if (!userTouched) {
+            applyMapping(newMap);
+            statusEl.innerHTML = '<i class="ti ti-check" style="color:var(--green);"></i> AI 분석 결과 적용됨';
+            setTimeout(function() { statusEl.remove(); }, 4000);
+          } else {
+            statusEl.innerHTML = '<i class="ti ti-info-circle"></i> AI가 더 정확한 매핑을 제안했습니다 (직접 설정한 항목은 유지)';
+          }
+          return;
+        }
+        if (pollCount < maxPolls) setTimeout(tick, 2000);
+        else { statusEl.innerHTML = '<i class="ti ti-keyboard"></i> 키워드 매핑 사용 (AI 분석 시간 초과)'; setTimeout(function() { statusEl.remove(); }, 4000); }
+      })
+      .catch(function() { if (pollCount < maxPolls) setTimeout(tick, 2000); });
+  }
+  setTimeout(tick, 2000);
+}
 
 // 드롭다운 변경 시 유효성 검사
 document.querySelectorAll('.mapping-select').forEach(function(sel) {

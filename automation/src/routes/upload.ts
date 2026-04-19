@@ -57,30 +57,60 @@ export async function uploadRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: 'CSV 파일에 데이터가 없습니다' });
     }
 
-    // 자동 매핑 감지: Gemini → 키워드 폴백
+    // 빠른 키워드 매핑부터 즉시 저장 → 클라이언트 응답을 1~2초 내로 끝낸다.
+    // 화면보호기 켜져도 업로드 단계는 이미 완료됨. AI 매핑은 백그라운드.
     const headers = rawFields[0];
     const sampleRows = rawFields.slice(1, 6);
-    let autoMapping = await detectMappingWithAI(headers, sampleRows);
-    if (!autoMapping || Object.keys(autoMapping).length === 0) {
-      autoMapping = detectMappingByKeyword(rawFields);
-    }
+    const keywordMapping = detectMappingByKeyword(rawFields);
 
-    // DB에 저장: rawFields + autoMapping (parsedRows는 매핑 확정 후)
     await db.insert(csvUploads).values({
       uploadId,
       filename: data.filename,
-      rowCount: rawFields.length - 1,  // 헤더 제외
+      rowCount: rawFields.length - 1,
       rawFields,
-      columnMapping: autoMapping,
+      columnMapping: keywordMapping,
       ownerId: user.id,
       ownerName: user.name,
     });
 
     logAction(user, 'import.csv', { targetType: 'csv_upload', targetId: uploadId, details: { filename: data.filename, rowCount: rawFields.length - 1 } });
+
+    // 백그라운드 AI 매핑 — 실패해도 키워드 매핑이 이미 저장되어 있으므로 안전.
+    // 클라이언트는 즉시 /mapping으로 이동하고, AI 결과가 도착하면 새로고침으로 반영됨.
+    void (async () => {
+      try {
+        const aiMapping = await detectMappingWithAI(headers, sampleRows);
+        if (aiMapping && Object.keys(aiMapping).length > 0) {
+          await db.update(csvUploads)
+            .set({ columnMapping: aiMapping })
+            .where(eq(csvUploads.uploadId, uploadId));
+        }
+      } catch (e) {
+        request.log.warn({ err: e, uploadId }, 'AI 매핑 백그라운드 실패 (키워드 매핑은 유지됨)');
+      }
+    })();
+
     return {
       uploadId,
       filename: data.filename,
       rowCount: rawFields.length - 1,
+    };
+  });
+
+  // GET /api/upload/:uploadId/status — 매핑 페이지가 AI 완료를 폴링할 때 사용
+  app.get<{ Params: { uploadId: string } }>('/upload/:uploadId/status', async (request, reply) => {
+    const user = getUser(request);
+    if (!user?.isAdmin) {
+      return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
+    }
+    const upload = await db.query.csvUploads.findFirst({
+      where: eq(csvUploads.uploadId, request.params.uploadId),
+    });
+    if (!upload) return reply.status(404).send({ error: '업로드를 찾을 수 없습니다' });
+    return {
+      uploadId: upload.uploadId,
+      status: upload.status,
+      columnMapping: upload.columnMapping || {},
     };
   });
 
