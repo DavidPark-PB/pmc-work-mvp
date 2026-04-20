@@ -4,6 +4,7 @@
 (function() {
   let user = null;
   let refreshTimer = null;
+  let cachedOrders = [];
   const REJECT_LABELS = { out_of_stock: '품절', discontinued: '단종', budget: '예산 부족', price_review: '가격 검토 필요', other: '기타' };
 
   function esc(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -198,9 +199,11 @@
       ordered: '<span style="padding:2px 8px;background:#1565c0;color:#fff;border-radius:10px;font-size:11px;">주문완료</span>',
       rejected: '<span style="padding:2px 8px;background:#555;color:#fff;border-radius:10px;font-size:11px;">반려</span>',
     };
+    cachedOrders = items;
     c.innerHTML = items.map(o => {
       const urgent = o.priority === 'urgent' ? '<span style="color:#e94560;font-weight:700;margin-right:6px;">🚨 긴급</span>' : '';
       const canUnorder = o.status === 'ordered' && (user.isAdmin || o.ordered_by === user.id);
+      const canEdit = user.isAdmin || (o.requested_by === user.id && o.status === 'pending');
       return `
         <div style="padding:16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
           <div style="flex:1;min-width:200px;">
@@ -219,6 +222,9 @@
             ${o.status === 'ordered' ? `<div style="margin-top:4px;font-size:12px;color:#64b5f6;">📦 ${dt(o.ordered_at)} · ${esc(o.orderer?.display_name || '-')} 주문</div>` : ''}
           </div>
           <div style="display:flex;flex-direction:column;gap:6px;">
+            ${canEdit ? `
+              <button onclick="pmcOrders.openEdit(${o.id})" style="padding:4px 10px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">✏️ 수정</button>
+            ` : ''}
             ${o.status === 'approved' ? `
               <button onclick="pmcOrders.markOrdered(${o.id})" style="padding:6px 12px;background:#1565c0;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">📦 주문완료</button>
             ` : ''}
@@ -301,5 +307,92 @@
     refresh();
   }
 
-  window.pmcOrders = { load, refresh, approve, openReject, del, toggleInsights, markOrdered, unorder };
+  // ── 요청 내용 수정 ──
+  function openEdit(id) {
+    const o = cachedOrders.find(x => x.id === id);
+    if (!o) return;
+    const existing = document.getElementById('po-edit-modal');
+    if (existing) existing.remove();
+
+    const urgentOpt = o.priority === 'urgent' ? 'selected' : '';
+    const normalOpt = o.priority !== 'urgent' ? 'selected' : '';
+
+    const m = document.createElement('div');
+    m.id = 'po-edit-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;width:460px;max-width:95vw;color:#e0e0e0;">
+        <h3 style="color:#fff;font-size:15px;margin:0 0 14px;">✏️ 발주 요청 수정</h3>
+        <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">상품명</label>
+        <input id="po-edit-product" type="text" maxlength="500" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:10px;font-size:13px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px;">
+          <div>
+            <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">수량</label>
+            <input id="po-edit-qty" type="number" min="1" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">예상 금액 (원)</label>
+            <input id="po-edit-price" type="number" min="0" step="100" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">우선순위</label>
+            <select id="po-edit-priority" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+              <option value="normal" ${normalOpt}>일반</option>
+              <option value="urgent" ${urgentOpt}>🚨 긴급</option>
+            </select>
+          </div>
+        </div>
+        <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">사유</label>
+        <textarea id="po-edit-reason" rows="3" maxlength="2000" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
+        <div id="po-edit-error" style="display:none;margin-top:10px;padding:8px 10px;background:#3a1a1a;border-radius:6px;color:#ff8a80;font-size:12px;"></div>
+        <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:14px;">
+          <button onclick="pmcOrders.closeEdit()" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
+          <button id="po-edit-save" onclick="pmcOrders.saveEdit(${id})" style="padding:8px 16px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">저장</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    document.getElementById('po-edit-product').value = o.product_name || '';
+    document.getElementById('po-edit-qty').value = o.quantity || 1;
+    document.getElementById('po-edit-price').value = o.estimated_price || '';
+    document.getElementById('po-edit-reason').value = o.reason || '';
+    document.getElementById('po-edit-product').focus();
+    m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+  }
+
+  function closeEdit() {
+    document.getElementById('po-edit-modal')?.remove();
+  }
+
+  async function saveEdit(id) {
+    const errEl = document.getElementById('po-edit-error');
+    errEl.style.display = 'none';
+    const payload = {
+      productName: document.getElementById('po-edit-product').value.trim(),
+      quantity: document.getElementById('po-edit-qty').value,
+      estimatedPrice: document.getElementById('po-edit-price').value || null,
+      priority: document.getElementById('po-edit-priority').value,
+      reason: document.getElementById('po-edit-reason').value.trim(),
+    };
+    if (!payload.productName) { errEl.textContent = '상품명을 입력하세요'; errEl.style.display = 'block'; return; }
+    const btn = document.getElementById('po-edit-save');
+    btn.disabled = true; btn.textContent = '저장 중...';
+    try {
+      const res = await fetch(`/api/purchase-requests/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { errEl.textContent = data.error || '수정 실패'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = '저장'; return; }
+      closeEdit();
+      refresh();
+    } catch (e) {
+      errEl.textContent = e.message || '네트워크 오류';
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = '저장';
+    }
+  }
+
+  window.pmcOrders = { load, refresh, approve, openReject, del, toggleInsights, markOrdered, unorder, openEdit, closeEdit, saveEdit };
 })();

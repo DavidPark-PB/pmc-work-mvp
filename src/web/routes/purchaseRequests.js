@@ -76,6 +76,55 @@ router.post('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// PATCH /api/purchase-requests/:id — 요청 내용 수정
+//  - 사장: 언제든 수정 가능
+//  - 요청자 본인: status=pending 일 때만
+//  - 그 외 직원: 금지
+router.patch('/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = await repo.getRequest(id);
+    if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+
+    const isOwner = existing.requested_by === req.user.id;
+    if (!req.user.isAdmin && !isOwner) {
+      return res.status(403).json({ error: '본인 요청만 수정할 수 있습니다' });
+    }
+    if (!req.user.isAdmin && existing.status !== 'pending') {
+      return res.status(400).json({ error: '이미 처리된 요청은 수정할 수 없습니다 (관리자 문의)' });
+    }
+
+    const { productName, quantity, estimatedPrice, priority, reason } = req.body || {};
+    const updates = {};
+    if (productName !== undefined) {
+      const trimmed = String(productName).trim();
+      if (!trimmed) return res.status(400).json({ error: '상품명을 입력하세요' });
+      updates.product_name = trimmed;
+    }
+    if (quantity !== undefined) {
+      const qty = Number(quantity);
+      if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: '수량은 1 이상이어야 합니다' });
+      updates.quantity = qty;
+    }
+    if (estimatedPrice !== undefined) {
+      updates.estimated_price = estimatedPrice !== null && estimatedPrice !== '' ? String(estimatedPrice) : null;
+    }
+    if (priority !== undefined) {
+      updates.priority = priority === 'urgent' ? 'urgent' : 'normal';
+    }
+    if (reason !== undefined) {
+      updates.reason = String(reason).trim() || null;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: '변경할 내용이 없습니다' });
+    }
+
+    const updated = await repo.updateRequest(id, updates);
+    res.json({ data: updated });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // PATCH /api/purchase-requests/:id/approve
 router.patch('/:id/approve', requireAdmin, async (req, res) => {
   try {
