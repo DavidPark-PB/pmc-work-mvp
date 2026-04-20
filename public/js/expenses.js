@@ -125,6 +125,17 @@
         </form>
       </div>
 
+      ${hasFinance ? `
+      <!-- 정기결제 -->
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:0;margin-bottom:16px;">
+        <div style="padding:14px 16px;border-bottom:1px solid #2a2a4a;display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="pmcExpenses.toggleRecurring()">
+          <h3 style="color:#fff;font-size:14px;margin:0;">🔁 정기결제 <span id="rec-count" style="color:#888;font-weight:400;font-size:12px;"></span></h3>
+          <span id="rec-toggle" style="color:#888;font-size:12px;">▼ 펼치기</span>
+        </div>
+        <div id="rec-panel" style="display:none;padding:14px 16px;"></div>
+      </div>
+      ` : ''}
+
       <!-- 월 선택 + 요약 카드 -->
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
         <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
@@ -664,10 +675,166 @@
     }
   }
 
+  // ── 정기결제 (재무 권한자만) ──
+  let recurringList = [];
+
+  async function toggleRecurring() {
+    const panel = document.getElementById('rec-panel');
+    const toggle = document.getElementById('rec-toggle');
+    if (!panel) return;
+    if (panel.style.display === 'none') {
+      panel.style.display = 'block';
+      toggle.textContent = '▲ 접기';
+      await refreshRecurring();
+    } else {
+      panel.style.display = 'none';
+      toggle.textContent = '▼ 펼치기';
+    }
+  }
+
+  async function refreshRecurring() {
+    const panel = document.getElementById('rec-panel');
+    if (!panel) return;
+    try {
+      const res = await fetch('/api/recurring');
+      const { data } = await res.json();
+      recurringList = data || [];
+      const countEl = document.getElementById('rec-count');
+      if (countEl) {
+        const active = recurringList.filter(r => r.active).length;
+        countEl.textContent = `· 총 ${recurringList.length}건 (활성 ${active})`;
+      }
+      renderRecurring();
+    } catch (e) {
+      panel.innerHTML = '<div style="color:#ff8a80;">로드 실패: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function renderRecurring() {
+    const panel = document.getElementById('rec-panel');
+    if (!panel) return;
+    const catOptions = categories.map(c => `<option value="${esc(c.key)}">${esc(c.label)}</option>`).join('');
+
+    panel.innerHTML = `
+      <form id="rec-form" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-bottom:12px;">
+        <input type="text" id="rec-name" placeholder="이름 (예: Netflix)" required maxlength="200" style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+        <input type="number" id="rec-amount" placeholder="금액" step="0.01" required style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+        <select id="rec-currency" style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          <option value="KRW" selected>KRW</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="JPY">JPY</option>
+        </select>
+        <select id="rec-category" style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">${catOptions}</select>
+        <select id="rec-cycle" style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          <option value="monthly">매달</option><option value="yearly">매년</option>
+        </select>
+        <input type="number" id="rec-dom" min="1" max="28" value="1" required title="결제일 (1~28)" style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+        <input type="text" id="rec-card" placeholder="카드뒤4" maxlength="4" style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+        <button type="submit" style="padding:7px 14px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">추가</button>
+      </form>
+
+      ${recurringList.length === 0 ? `
+        <div style="padding:20px;text-align:center;color:#666;font-size:12px;">정기결제 항목이 없습니다. 월 구독·임대료 등 반복되는 지출을 등록해두면 매일 새벽 3시에 자동으로 지출에 추가됩니다.</div>
+      ` : `
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead style="background:#0f0f23;">
+            <tr>
+              <th style="padding:6px;text-align:left;">이름</th>
+              <th style="padding:6px;text-align:left;">카테고리</th>
+              <th style="padding:6px;text-align:right;">금액</th>
+              <th style="padding:6px;text-align:center;">주기</th>
+              <th style="padding:6px;text-align:center;">다음 결제</th>
+              <th style="padding:6px;text-align:center;">카드</th>
+              <th style="padding:6px;text-align:center;">상태</th>
+              <th style="padding:6px;text-align:center;">관리</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${recurringList.map(r => {
+              const info = categoryMap[r.category] || { label: r.category, color: '#8d6e63' };
+              const cycleLabel = r.cycle === 'yearly' ? '매년' : '매달';
+              const soon = isComingSoon(r.nextDueAt);
+              return `
+                <tr style="border-bottom:1px solid #2a2a4a;${!r.active ? 'opacity:0.45;' : ''}">
+                  <td style="padding:6px;color:#fff;">${esc(r.name)}</td>
+                  <td style="padding:6px;"><span style="padding:1px 6px;background:${info.color};color:#fff;border-radius:8px;font-size:10px;">${esc(info.label)}</span></td>
+                  <td style="padding:6px;text-align:right;color:#ff8a80;">${money(r.amount, r.currency)}</td>
+                  <td style="padding:6px;text-align:center;color:#aaa;">${cycleLabel} ${r.dayOfCycle}일</td>
+                  <td style="padding:6px;text-align:center;color:${soon ? '#ffb74d' : '#aaa'};">${esc(r.nextDueAt)}${soon ? ' 🔔' : ''}</td>
+                  <td style="padding:6px;text-align:center;color:#666;font-size:11px;">${esc(r.cardLast4 || '-')}</td>
+                  <td style="padding:6px;text-align:center;">${r.active ? '<span style="color:#81c784;">● 활성</span>' : '<span style="color:#888;">○ 비활성</span>'}</td>
+                  <td style="padding:6px;text-align:center;white-space:nowrap;">
+                    <button onclick="pmcExpenses.recRunNow(${r.id})" title="지금 1건 발행" style="padding:3px 7px;background:#2a4a6a;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;margin-right:2px;">▶</button>
+                    <button onclick="pmcExpenses.recToggleActive(${r.id}, ${r.active})" style="padding:3px 7px;background:${r.active ? '#2a2a4a' : '#4caf50'};border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;margin-right:2px;">${r.active ? '중지' : '재개'}</button>
+                    <button onclick="pmcExpenses.recDelete(${r.id})" style="padding:3px 7px;background:#e94560;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">🗑</button>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      `}
+    `;
+
+    document.getElementById('rec-form').addEventListener('submit', recSubmit);
+  }
+
+  function isComingSoon(isoDate) {
+    if (!isoDate) return false;
+    const due = new Date(isoDate + 'T00:00:00');
+    const diff = (due - new Date()) / 86400000;
+    return diff < 7;
+  }
+
+  async function recSubmit(e) {
+    e.preventDefault();
+    const payload = {
+      name: document.getElementById('rec-name').value.trim(),
+      amount: document.getElementById('rec-amount').value,
+      currency: document.getElementById('rec-currency').value,
+      category: document.getElementById('rec-category').value,
+      cycle: document.getElementById('rec-cycle').value,
+      dayOfCycle: document.getElementById('rec-dom').value,
+      cardLast4: document.getElementById('rec-card').value.trim() || null,
+    };
+    const res = await fetch('/api/recurring', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) { alert((await res.json()).error || '등록 실패'); return; }
+    document.getElementById('rec-form').reset();
+    document.getElementById('rec-dom').value = '1';
+    document.getElementById('rec-currency').value = 'KRW';
+    refreshRecurring();
+  }
+
+  async function recRunNow(id) {
+    if (!confirm('이 정기결제를 지금 즉시 1건 발행합니다. 계속할까요?')) return;
+    const res = await fetch('/api/recurring/' + id + '/run', { method: 'POST' });
+    if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+    refreshRecurring();
+    refresh();
+  }
+
+  async function recToggleActive(id, currentActive) {
+    const res = await fetch('/api/recurring/' + id, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: !currentActive }),
+    });
+    if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+    refreshRecurring();
+  }
+
+  async function recDelete(id) {
+    if (!confirm('이 정기결제를 삭제하시겠습니까?\n(이미 발행된 지출은 남아있습니다)')) return;
+    const res = await fetch('/api/recurring/' + id, { method: 'DELETE' });
+    if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+    refreshRecurring();
+  }
+
   window.pmcExpenses = {
     load, refresh, edit, del,
     onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater,
     closeEditModal, saveEditModal, replaceReceiptInModal, deleteReceiptInModal,
     onCsvPick, closeCsvModal, confirmCsv, csvRecalc, csvToggleAll, csvSkipDup,
+    toggleRecurring, recRunNow, recToggleActive, recDelete,
   };
 })();

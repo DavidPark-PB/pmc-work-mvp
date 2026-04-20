@@ -101,6 +101,7 @@ app.use('/api/catalog', require('./src/web/routes/catalog'));
 app.use('/api/events', require('./src/web/routes/events'));
 app.use('/api/workspace', require('./src/web/routes/workspace'));
 app.use('/api/expenses', require('./src/web/routes/expenses'));
+app.use('/api/recurring', require('./src/web/routes/recurring'));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

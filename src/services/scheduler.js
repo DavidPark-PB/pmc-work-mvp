@@ -145,8 +145,25 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // 매일 새벽 3시 — 도래한 정기결제를 expenses로 발행
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      const recurringRepo = require('../db/recurringRepository');
+      const expenseRepo = require('../db/expenseRepository');
+      const due = await recurringRepo.listDue();
+      let fired = 0;
+      for (const r of due) {
+        try { await recurringRepo.fire(r, { expenseRepo }); fired++; }
+        catch (e) { console.warn(`[scheduler] recurring fire fail id=${r.id}:`, e.message); }
+      }
+      if (due.length > 0) console.log(`[scheduler] recurring: ${fired}/${due.length}건 발행`);
+    } catch (e) {
+      console.error('[scheduler] recurring error:', e.message);
+    }
+  }, { timezone: TZ });
+
   scheduled = true;
-  console.log('[scheduler] 활성화 — 9시(digest)·17시(summary)·4시(platform sync)·매시(naver enrich)');
+  console.log('[scheduler] 활성화 — 9시(digest)·17시(summary)·4시(platform sync)·매시(naver enrich)·3시(recurring)');
 }
 
 module.exports = { start, sendMorningDigest, sendEveningOwnerSummary };
