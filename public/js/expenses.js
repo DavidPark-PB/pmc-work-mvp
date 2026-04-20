@@ -66,6 +66,14 @@
         <p style="color:#888;font-size:13px;">${desc}</p>
       </div>
 
+      <!-- 탭 바 -->
+      <div style="display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid #2a2a4a;">
+        <button type="button" id="tab-btn-expenses" onclick="pmcExpenses.switchTab('expenses')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid #7c4dff;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">💸 지출${hasFinance ? ' + 정기결제' : ''}</button>
+        <button type="button" id="tab-btn-purchases" onclick="pmcExpenses.switchTab('purchases')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">🃏 카드 매입</button>
+      </div>
+
+      <div id="tab-expenses">
+
       <!-- 등록 폼 -->
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 10px;">
@@ -156,6 +164,9 @@
         </div>
         <div id="exp-list"></div>
       </div>
+      </div><!-- /tab-expenses -->
+
+      <div id="tab-purchases" style="display:none;"></div>
     `;
 
     document.getElementById('exp-paid-at').value = today();
@@ -830,11 +841,519 @@
     refreshRecurring();
   }
 
+  // ──────────────────────────────────────────────────────────
+  // 탭 전환
+  // ──────────────────────────────────────────────────────────
+  let activeTab = 'expenses';
+  let purchasesLoaded = false;
+
+  function switchTab(key) {
+    activeTab = key;
+    const allTabs = ['expenses', 'purchases'];
+    for (const k of allTabs) {
+      const btn = document.getElementById('tab-btn-' + k);
+      const panel = document.getElementById('tab-' + k);
+      if (!btn || !panel) continue;
+      if (k === key) {
+        btn.style.color = '#fff';
+        btn.style.fontWeight = '600';
+        btn.style.borderBottom = '2px solid #7c4dff';
+        panel.style.display = '';
+      } else {
+        btn.style.color = '#888';
+        btn.style.fontWeight = '400';
+        btn.style.borderBottom = '2px solid transparent';
+        panel.style.display = 'none';
+      }
+    }
+    if (key === 'purchases' && !purchasesLoaded) {
+      renderPurchasesShell();
+      refreshPurchases();
+      purchasesLoaded = true;
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // 카드 매입 (inventory_purchases)
+  // ──────────────────────────────────────────────────────────
+  let purchasesCached = [];
+  let purchasesSummary = null;
+  let purchaseLines = [];        // 등록 폼의 라인 아이템
+  let knownSellers = [];         // 자동완성 대상
+  let catalogTabs = [];
+  let catalogTabCache = {};      // tab → items[]
+
+  function renderPurchasesShell() {
+    const wrap = document.getElementById('tab-purchases');
+    if (!wrap) return;
+    wrap.innerHTML = `
+      <!-- 등록 폼 -->
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
+        <h3 style="color:#fff;font-size:14px;margin:0 0 10px;">🃏 카드 매입 등록</h3>
+        <form id="pur-form">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:8px;">
+            <div>
+              <label style="font-size:11px;color:#888;">매입일</label>
+              <input type="date" id="pur-date" required style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;">판매자 이름</label>
+              <input type="text" id="pur-seller" required list="pur-seller-list" maxlength="200" placeholder="예: 김컬렉터" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+              <datalist id="pur-seller-list"></datalist>
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;">연락처 (선택)</label>
+              <input type="text" id="pur-contact" maxlength="200" placeholder="카톡/전화" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#888;">지불방법</label>
+              <select id="pur-method" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+                <option value="cash">💵 현금</option>
+                <option value="bank_transfer">🏦 계좌이체</option>
+                <option value="card">💳 카드</option>
+                <option value="other">기타</option>
+              </select>
+            </div>
+          </div>
+          <input id="pur-bank-ref" type="text" maxlength="200" placeholder="은행 참조 (계좌이체만)" style="display:none;width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;margin-bottom:8px;">
+
+          <!-- 라인 아이템 -->
+          <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <div style="color:#ccc;font-size:12px;">매입 품목</div>
+              <div style="display:flex;gap:6px;">
+                <button type="button" onclick="pmcExpenses.purAddEmptyLine()" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">+ 빈 줄</button>
+                <button type="button" onclick="pmcExpenses.purOpenCatalogSearch()" style="padding:4px 10px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">📗 카탈로그 검색</button>
+              </div>
+            </div>
+            <div id="pur-lines"></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid #1a1a2e;font-size:13px;">
+              <span style="color:#888;">라인 합계: <strong id="pur-lines-total" style="color:#fff;">0</strong></span>
+              <label style="display:flex;gap:6px;align-items:center;color:#ccc;font-size:12px;cursor:pointer;">
+                <input type="checkbox" id="pur-total-override" onchange="pmcExpenses.purToggleOverride()"> 총액 직접 입력
+              </label>
+            </div>
+            <input type="number" id="pur-total" step="1" min="0" placeholder="총액 (직접 입력시)" style="display:none;width:100%;margin-top:6px;padding:8px;background:#1a1a2e;border:1px solid #555;border-radius:4px;color:#fff;font-size:13px;">
+          </div>
+
+          <textarea id="pur-notes" placeholder="메모 (선택)" rows="2" maxlength="1000" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-family:inherit;font-size:13px;resize:vertical;margin-bottom:8px;"></textarea>
+
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+            <label style="padding:7px 14px;background:#2a4a6a;color:#fff;border-radius:6px;cursor:pointer;font-size:12px;">
+              📎 영수증 첨부 (선택)
+              <input type="file" id="pur-receipt" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" style="display:none" onchange="pmcExpenses.purOnReceiptPick()">
+            </label>
+            <span id="pur-receipt-name" style="color:#888;font-size:11px;"></span>
+          </div>
+
+          <div id="pur-error" style="display:none;margin-bottom:8px;padding:8px 10px;background:#3a1a1a;border-radius:6px;color:#ff8a80;font-size:12px;"></div>
+          <button type="submit" id="pur-submit" style="padding:8px 20px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">매입 등록</button>
+        </form>
+      </div>
+
+      <!-- 월 선택 + 요약 -->
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+          <input type="month" id="pur-month" value="${currentMonth}" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          <div id="pur-totals" style="flex:1;color:#e0e0e0;font-size:13px;"></div>
+        </div>
+        <div id="pur-sellers"></div>
+      </div>
+
+      <!-- 목록 -->
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:0;">
+        <div style="padding:14px 16px;border-bottom:1px solid #2a2a4a;">
+          <h3 style="color:#fff;font-size:14px;margin:0;">📋 매입 내역</h3>
+        </div>
+        <div id="pur-list"></div>
+      </div>
+    `;
+
+    document.getElementById('pur-date').value = today();
+    document.getElementById('pur-method').addEventListener('change', (e) => {
+      document.getElementById('pur-bank-ref').style.display = e.target.value === 'bank_transfer' ? 'block' : 'none';
+    });
+    document.getElementById('pur-month').addEventListener('change', (e) => {
+      currentMonth = e.target.value || thisMonth();
+      refreshPurchases();
+    });
+    document.getElementById('pur-form').addEventListener('submit', purSubmit);
+    purAddEmptyLine();
+    renderPurLines();
+    loadKnownSellers();
+  }
+
+  async function loadKnownSellers() {
+    try {
+      const res = await fetch('/api/inventory-purchases/sellers');
+      const j = await res.json();
+      knownSellers = j.data || [];
+      const dl = document.getElementById('pur-seller-list');
+      if (dl) dl.innerHTML = knownSellers.map(s => `<option value="${esc(s.name)}">${esc(s.contact || '')}</option>`).join('');
+    } catch {}
+  }
+
+  function purAddEmptyLine(line) {
+    purchaseLines.push(line || { name: '', sku: '', quantity: 1, unitPrice: 0, catalogTab: null, catalogRowIndex: null });
+    renderPurLines();
+  }
+
+  function purRemoveLine(idx) {
+    purchaseLines.splice(idx, 1);
+    renderPurLines();
+  }
+
+  function renderPurLines() {
+    const host = document.getElementById('pur-lines');
+    if (!host) return;
+    if (purchaseLines.length === 0) {
+      host.innerHTML = '<div style="padding:10px;color:#666;text-align:center;font-size:11px;">품목이 없습니다. "+ 빈 줄"이나 "카탈로그 검색"으로 추가하세요.</div>';
+      recalcPurTotal();
+      return;
+    }
+    host.innerHTML = purchaseLines.map((l, i) => {
+      const subtotal = (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0);
+      const hasCatalog = l.catalogTab != null;
+      return `
+        <div style="display:grid;grid-template-columns:2fr 100px 120px 100px 40px;gap:6px;margin-bottom:5px;align-items:center;">
+          <input type="text" data-i="${i}" data-f="name" value="${esc(l.name || '')}" placeholder="상품명" oninput="pmcExpenses.purUpdateLine(event)" style="padding:6px;background:#1a1a2e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          <input type="text" data-i="${i}" data-f="sku" value="${esc(l.sku || '')}" placeholder="SKU${hasCatalog ? '' : ' (선택)'}" oninput="pmcExpenses.purUpdateLine(event)" style="padding:6px;background:#1a1a2e;border:1px solid #333;border-radius:4px;color:${hasCatalog ? '#81c784' : '#aaa'};font-size:11px;">
+          <input type="number" data-i="${i}" data-f="unitPrice" value="${l.unitPrice || 0}" step="1" min="0" placeholder="단가" oninput="pmcExpenses.purUpdateLine(event)" style="padding:6px;background:#1a1a2e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;text-align:right;">
+          <input type="number" data-i="${i}" data-f="quantity" value="${l.quantity || 1}" step="1" min="0" placeholder="수량" oninput="pmcExpenses.purUpdateLine(event)" style="padding:6px;background:#1a1a2e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;text-align:right;">
+          <button type="button" onclick="pmcExpenses.purRemoveLine(${i})" style="padding:6px;background:transparent;border:0;color:#e94560;cursor:pointer;font-size:13px;">×</button>
+        </div>
+        <div style="font-size:10px;color:#666;text-align:right;margin-top:-3px;margin-bottom:4px;padding-right:45px;">소계 ${subtotal.toLocaleString('ko-KR')}${hasCatalog ? ` · 📗 ${esc(l.catalogTab)}` : ''}</div>
+      `;
+    }).join('');
+    recalcPurTotal();
+  }
+
+  function purUpdateLine(e) {
+    const i = parseInt(e.target.dataset.i, 10);
+    const f = e.target.dataset.f;
+    if (!purchaseLines[i]) return;
+    if (f === 'quantity' || f === 'unitPrice') {
+      purchaseLines[i][f] = Number(e.target.value) || 0;
+      renderPurLines();
+    } else {
+      purchaseLines[i][f] = e.target.value;
+      // 소계만 업데이트 (rerender 피하고 커서 유지)
+      recalcPurTotal();
+    }
+  }
+
+  function recalcPurTotal() {
+    const sum = purchaseLines.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0), 0);
+    const el = document.getElementById('pur-lines-total');
+    if (el) el.textContent = sum.toLocaleString('ko-KR');
+  }
+
+  function purToggleOverride() {
+    const override = document.getElementById('pur-total-override').checked;
+    document.getElementById('pur-total').style.display = override ? 'block' : 'none';
+  }
+
+  async function purOpenCatalogSearch() {
+    if (catalogTabs.length === 0) {
+      try {
+        const r = await fetch('/api/catalog/tabs');
+        const j = await r.json();
+        catalogTabs = j.tabs || [];
+      } catch { catalogTabs = []; }
+    }
+    if (catalogTabs.length === 0) { alert('카탈로그 탭을 불러올 수 없습니다'); return; }
+
+    const existing = document.getElementById('pur-cat-modal');
+    if (existing) existing.remove();
+
+    const m = document.createElement('div');
+    m.id = 'pur-cat-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:18px;width:720px;max-width:96vw;max-height:82vh;display:flex;flex-direction:column;color:#e0e0e0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <h3 style="color:#fff;font-size:14px;margin:0;">📗 카탈로그 검색</h3>
+          <button type="button" onclick="pmcExpenses.closeCatalogSearch()" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">닫기</button>
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:8px;">
+          <select id="pur-cat-tab" onchange="pmcExpenses.loadCatalogTab()" style="padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+            ${catalogTabs.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+          </select>
+          <input type="text" id="pur-cat-search" placeholder="이름·SETCODE·UPC 검색" oninput="pmcExpenses.filterCatalog()" style="flex:1;padding:6px 10px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+        </div>
+        <div id="pur-cat-results" style="flex:1;overflow:auto;border:1px solid #2a2a4a;border-radius:4px;min-height:200px;"></div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    m.addEventListener('click', (e) => { if (e.target === m) closeCatalogSearch(); });
+    loadCatalogTab();
+  }
+
+  function closeCatalogSearch() {
+    document.getElementById('pur-cat-modal')?.remove();
+  }
+
+  async function loadCatalogTab() {
+    const tab = document.getElementById('pur-cat-tab')?.value;
+    if (!tab) return;
+    const host = document.getElementById('pur-cat-results');
+    host.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">로딩…</div>';
+    try {
+      if (!catalogTabCache[tab]) {
+        const r = await fetch('/api/catalog/prices?tab=' + encodeURIComponent(tab));
+        const j = await r.json();
+        catalogTabCache[tab] = j.items || [];
+      }
+      renderCatalogResults(catalogTabCache[tab]);
+    } catch (e) {
+      host.innerHTML = '<div style="padding:20px;color:#ff8a80;">로드 실패: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function filterCatalog() {
+    const tab = document.getElementById('pur-cat-tab').value;
+    const q = document.getElementById('pur-cat-search').value.toLowerCase().trim();
+    const items = catalogTabCache[tab] || [];
+    if (!q) return renderCatalogResults(items);
+    const filtered = items.filter(i =>
+      (i.name || '').toLowerCase().includes(q) ||
+      (i.setCode || '').toLowerCase().includes(q) ||
+      (i.upc || '').toLowerCase().includes(q)
+    );
+    renderCatalogResults(filtered);
+  }
+
+  function renderCatalogResults(items) {
+    const host = document.getElementById('pur-cat-results');
+    if (!host) return;
+    if (items.length === 0) {
+      host.innerHTML = '<div style="padding:20px;text-align:center;color:#666;">결과 없음</div>';
+      return;
+    }
+    const tab = document.getElementById('pur-cat-tab').value;
+    host.innerHTML = items.slice(0, 200).map(i => `
+      <div onclick='pmcExpenses.pickCatalogItem(${JSON.stringify({ name: i.name, sku: i.setCode, upc: i.upc, unitPrice: i.usdPrice, catalogTab: tab, catalogRowIndex: i.rowIndex }).replace(/'/g, "&#39;")})' style="padding:6px 10px;border-bottom:1px solid #2a2a4a;cursor:pointer;font-size:12px;display:grid;grid-template-columns:2fr 100px 100px;gap:8px;align-items:center;">
+        <span style="color:#fff;">${esc(i.name)}</span>
+        <span style="color:#aaa;font-family:monospace;">${esc(i.setCode || '-')}</span>
+        <span style="color:#81d4fa;text-align:right;">${i.usdPrice ? '$' + Number(i.usdPrice).toFixed(2) : '-'}</span>
+      </div>
+    `).join('');
+  }
+
+  function pickCatalogItem(info) {
+    // USD 가격은 참고용; 매입은 KRW 입력이 기본
+    purchaseLines.push({
+      name: info.name,
+      sku: info.sku || null,
+      quantity: 1,
+      unitPrice: 0,
+      catalogTab: info.catalogTab,
+      catalogRowIndex: info.catalogRowIndex,
+    });
+    closeCatalogSearch();
+    renderPurLines();
+  }
+
+  function purOnReceiptPick() {
+    const input = document.getElementById('pur-receipt');
+    const label = document.getElementById('pur-receipt-name');
+    const f = input?.files?.[0];
+    if (!f) { label.textContent = ''; return; }
+    const sz = f.size < 1024 * 1024 ? (f.size / 1024).toFixed(1) + ' KB' : (f.size / 1024 / 1024).toFixed(1) + ' MB';
+    label.innerHTML = '📎 ' + (f.name || '') + ' <span style="color:#666">(' + sz + ')</span>';
+  }
+
+  async function purSubmit(e) {
+    e.preventDefault();
+    const err = document.getElementById('pur-error');
+    err.style.display = 'none';
+
+    const items = purchaseLines.filter(l => l.name && l.name.trim());
+    if (items.length === 0) { err.textContent = '최소 1개의 품목을 추가하세요'; err.style.display = 'block'; return; }
+
+    const override = document.getElementById('pur-total-override').checked;
+    const itemsSum = items.reduce((s, l) => s + (Number(l.quantity) || 0) * (Number(l.unitPrice) || 0), 0);
+    const total = override ? Number(document.getElementById('pur-total').value) : itemsSum;
+    if (!Number.isFinite(total) || total <= 0) { err.textContent = '총액이 0보다 커야 합니다'; err.style.display = 'block'; return; }
+
+    const payload = {
+      purchasedAt: document.getElementById('pur-date').value,
+      sellerName: document.getElementById('pur-seller').value.trim(),
+      sellerContact: document.getElementById('pur-contact').value.trim() || null,
+      paymentMethod: document.getElementById('pur-method').value,
+      bankRef: document.getElementById('pur-bank-ref').value.trim() || null,
+      totalAmount: total,
+      currency: 'KRW',
+      items,
+      notes: document.getElementById('pur-notes').value.trim() || null,
+    };
+
+    const btn = document.getElementById('pur-submit');
+    btn.disabled = true; btn.textContent = '저장 중…';
+    try {
+      const res = await fetch('/api/inventory-purchases', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) { err.textContent = data.error || '저장 실패'; err.style.display = 'block'; btn.disabled = false; btn.textContent = '매입 등록'; return; }
+
+      // 영수증 첨부
+      const f = document.getElementById('pur-receipt')?.files?.[0];
+      if (f && data.data?.id) {
+        const fd = new FormData();
+        fd.append('file', f);
+        await fetch(`/api/inventory-purchases/${data.data.id}/receipt`, { method: 'POST', body: fd }).catch(() => {});
+      }
+
+      // 폼 리셋
+      document.getElementById('pur-form').reset();
+      document.getElementById('pur-date').value = today();
+      document.getElementById('pur-method').value = 'cash';
+      document.getElementById('pur-bank-ref').style.display = 'none';
+      document.getElementById('pur-total-override').checked = false;
+      document.getElementById('pur-total').style.display = 'none';
+      document.getElementById('pur-receipt-name').textContent = '';
+      purchaseLines = [];
+      purAddEmptyLine();
+      await loadKnownSellers();
+      refreshPurchases();
+      refresh(); // 지출 탭도 갱신 (연동 expense 반영)
+    } catch (e2) {
+      err.textContent = e2.message || '네트워크 오류';
+      err.style.display = 'block';
+    } finally {
+      btn.disabled = false; btn.textContent = '매입 등록';
+    }
+  }
+
+  async function refreshPurchases() {
+    const from = currentMonth + '-01';
+    const [y, m] = currentMonth.split('-').map(n => parseInt(n, 10));
+    const lastDay = new Date(y, m, 0).getDate();
+    const to = currentMonth + '-' + String(lastDay).padStart(2, '0');
+    const params = new URLSearchParams();
+    params.set('from', from);
+    params.set('to', to);
+
+    const [listRes, sumRes] = await Promise.all([
+      fetch('/api/inventory-purchases?' + params),
+      fetch('/api/inventory-purchases/summary?month=' + currentMonth),
+    ]);
+    const l = await listRes.json();
+    const s = await sumRes.json();
+    purchasesCached = l.data || [];
+    purchasesSummary = s;
+    renderPurchasesSummary();
+    renderPurchasesList();
+  }
+
+  function renderPurchasesSummary() {
+    const tot = document.getElementById('pur-totals');
+    const sellers = document.getElementById('pur-sellers');
+    if (!tot || !purchasesSummary) return;
+
+    const totals = purchasesSummary.totals || {};
+    if (Object.keys(totals).length === 0) {
+      tot.innerHTML = '<span style="color:#666;">이번달 매입 없음</span>';
+      sellers.innerHTML = '';
+      return;
+    }
+    tot.innerHTML = '이번달 매입 총액: ' + Object.entries(totals).map(([ccy, v]) =>
+      `<strong style="color:#ffb74d;">${money(v, ccy)}</strong>`
+    ).join(' · ');
+
+    const list = purchasesSummary.bySeller || [];
+    if (list.length === 0) { sellers.innerHTML = ''; return; }
+    const primaryCcy = totals['KRW'] ? 'KRW' : Object.keys(totals)[0];
+    const max = list[0].total;
+    sellers.innerHTML = '<div style="margin-top:6px;font-size:11px;color:#aaa;margin-bottom:4px;">판매자별:</div>' + list.slice(0, 8).map(s => {
+      const pct = Math.max(3, Math.round((s.total / max) * 100));
+      return `
+        <div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:11px;">
+          <span style="width:120px;color:#ccc;">${esc(s.seller)} <span style="color:#666">· ${s.count}회</span></span>
+          <div style="flex:1;height:8px;background:#0f0f23;border-radius:4px;overflow:hidden;">
+            <div style="height:100%;width:${pct}%;background:#ff9800;"></div>
+          </div>
+          <span style="width:110px;text-align:right;color:#ccc;">${money(s.total, primaryCcy)}</span>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderPurchasesList() {
+    const host = document.getElementById('pur-list');
+    if (!host) return;
+    if (purchasesCached.length === 0) {
+      host.innerHTML = '<div style="padding:40px;text-align:center;color:#888;">이달 매입 기록이 없습니다.</div>';
+      return;
+    }
+    const methodBadge = { cash: '💵 현금', bank_transfer: '🏦 이체', card: '💳 카드', other: '기타' };
+    host.innerHTML = purchasesCached.map(p => {
+      const canAct = user.canManageFinance || p.createdBy === user.id;
+      const itemsText = (p.items || []).slice(0, 2).map(i => `${i.name}${i.quantity > 1 ? '×' + i.quantity : ''}`).join(', ');
+      const more = (p.items || []).length > 2 ? ` 외 ${p.items.length - 2}` : '';
+      return `
+        <div style="padding:12px 16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+          <div style="font-size:11px;color:#888;min-width:80px;">${esc(p.purchasedAt)}</div>
+          <div style="flex:1;min-width:200px;">
+            <div style="color:#fff;font-size:13px;"><strong>${esc(p.sellerName)}</strong>${p.sellerContact ? ` <span style="color:#888;font-size:11px;">· ${esc(p.sellerContact)}</span>` : ''}</div>
+            <div style="color:#aaa;font-size:11px;margin-top:2px;">${esc(itemsText)}${more}</div>
+          </div>
+          <div style="min-width:120px;text-align:right;color:#ffb74d;font-weight:600;font-size:14px;">${money(p.totalAmount, p.currency)}</div>
+          <span style="padding:2px 8px;background:#0f0f23;color:#aaa;border-radius:10px;font-size:10px;">${esc(methodBadge[p.paymentMethod] || p.paymentMethod)}</span>
+          <div style="display:flex;gap:4px;align-items:center;">
+            ${p.hasReceipt ? `<button onclick="pmcExpenses.purViewReceipt(${p.id})" style="padding:4px 8px;background:#0f2a3a;border:1px solid #1565c0;border-radius:4px;color:#64b5f6;cursor:pointer;font-size:11px;">📎</button>` : ''}
+            ${canAct ? `<button onclick="pmcExpenses.purEdit(${p.id})" style="padding:4px 8px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">✏️</button>` : ''}
+            ${canAct ? `<button onclick="pmcExpenses.purDelete(${p.id})" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async function purViewReceipt(id) {
+    try {
+      const r = await fetch('/api/inventory-purchases/' + id + '/receipt/url');
+      const j = await r.json();
+      if (!r.ok) { alert(j.error || '실패'); return; }
+      window.open(j.signedUrl, '_blank');
+    } catch (e) { alert('실패: ' + e.message); }
+  }
+
+  async function purDelete(id) {
+    if (!confirm('이 매입 건을 삭제하시겠습니까?\n(연동된 지출도 함께 삭제됩니다)')) return;
+    const res = await fetch('/api/inventory-purchases/' + id, { method: 'DELETE' });
+    if (!res.ok) { alert((await res.json()).error || '삭제 실패'); return; }
+    refreshPurchases();
+    refresh();
+  }
+
+  function purEdit(id) {
+    // 단순 수정: 총액 prompt 먼저, 상세 편집은 향후
+    const p = purchasesCached.find(x => x.id === id);
+    if (!p) return;
+    const newTotal = prompt('총액 수정 (KRW)', p.totalAmount);
+    if (newTotal === null) return;
+    const n = Number(newTotal);
+    if (!Number.isFinite(n) || n <= 0) { alert('숫자'); return; }
+    fetch('/api/inventory-purchases/' + id, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ totalAmount: n }),
+    }).then(r => r.ok ? (refreshPurchases(), refresh()) : r.json().then(j => alert(j.error || '실패')));
+  }
+
   window.pmcExpenses = {
     load, refresh, edit, del,
     onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater,
     closeEditModal, saveEditModal, replaceReceiptInModal, deleteReceiptInModal,
     onCsvPick, closeCsvModal, confirmCsv, csvRecalc, csvToggleAll, csvSkipDup,
     toggleRecurring, recRunNow, recToggleActive, recDelete,
+    // Tab switching
+    switchTab,
+    // Purchases
+    purAddEmptyLine, purRemoveLine, purUpdateLine, purToggleOverride,
+    purOpenCatalogSearch, closeCatalogSearch, loadCatalogTab, filterCatalog, pickCatalogItem,
+    purOnReceiptPick, purViewReceipt, purDelete, purEdit,
   };
 })();
