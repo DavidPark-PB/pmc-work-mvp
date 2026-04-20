@@ -38,7 +38,28 @@ function decorate(row) {
     recurringId: row.recurring_id,
     createdBy: row.created_by,
     createdAt: row.created_at,
+    receiptPath: row.receipt_path || null,
+    receiptName: row.receipt_name || null,
+    receiptMime: row.receipt_mime || null,
+    receiptSize: row.receipt_size || null,
+    hasReceipt: !!row.receipt_path,
   };
+}
+
+async function setReceipt(id, { path, name, mime, size }) {
+  const { data, error } = await getClient().from('expenses')
+    .update({ receipt_path: path, receipt_name: name, receipt_mime: mime, receipt_size: size })
+    .eq('id', id).select().single();
+  if (error) throwFriendly(error);
+  return decorate(data);
+}
+
+async function clearReceipt(id) {
+  const { data, error } = await getClient().from('expenses')
+    .update({ receipt_path: null, receipt_name: null, receipt_mime: null, receipt_size: null })
+    .eq('id', id).select().single();
+  if (error) throwFriendly(error);
+  return decorate(data);
 }
 
 async function listExpenses({ from, to, category, source, createdBy, limit = 500 } = {}) {
@@ -199,4 +220,5 @@ async function saveCachedCategory({ merchant, category, confidence = 80, created
 module.exports = {
   listExpenses, getExpense, createExpense, bulkCreate, updateExpense, deleteExpense,
   summaryByMonth, getCachedCategory, saveCachedCategory,
+  setReceipt, clearReceipt,
 };

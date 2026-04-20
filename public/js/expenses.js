@@ -103,9 +103,16 @@
             <input type="text" id="exp-merchant" placeholder="가맹점/거래처 (선택)" maxlength="200" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
             <input type="text" id="exp-memo" placeholder="메모 (선택)" maxlength="500" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
           </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+            <label style="padding:7px 14px;background:#2a4a6a;color:#fff;border-radius:6px;cursor:pointer;font-size:12px;">
+              📎 영수증 첨부 (선택)
+              <input type="file" id="exp-receipt" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" style="display:none" onchange="pmcExpenses.onReceiptPick()">
+            </label>
+            <span id="exp-receipt-name" style="color:#888;font-size:11px;"></span>
+          </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <button type="submit" style="padding:8px 16px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">저장</button>
-            <span style="color:#666;font-size:11px;">같은 가맹점 재등록 시 카테고리 자동 추천 (곧 지원)</span>
+            <span style="color:#666;font-size:11px;">사진/PDF · 최대 10MB · 같은 가맹점 재등록 시 카테고리 자동 추천</span>
           </div>
         </form>
       </div>
@@ -217,6 +224,14 @@
       const srcLabel = { manual: '수동', csv: 'CSV', recurring: '정기' }[e.source] || e.source;
       const canEdit = user.canManageFinance || e.createdBy === user.id;
       const canDelete = user.canManageFinance;
+      const canReceipt = user.canManageFinance || e.createdBy === user.id;
+      let receiptBtn = '';
+      if (e.hasReceipt) {
+        receiptBtn = `<button onclick="pmcExpenses.viewReceipt(${e.id})" title="${esc(e.receiptName || '영수증')}" style="padding:4px 8px;background:#0f2a3a;border:1px solid #1565c0;border-radius:4px;color:#64b5f6;cursor:pointer;font-size:11px;">📎 영수증</button>`;
+        if (canReceipt) receiptBtn += `<button onclick="pmcExpenses.deleteReceipt(${e.id})" title="영수증 삭제" style="padding:4px 6px;background:transparent;border:0;color:#666;cursor:pointer;font-size:11px;">✕</button>`;
+      } else if (canReceipt) {
+        receiptBtn = `<button onclick="pmcExpenses.uploadReceiptLater(${e.id})" style="padding:4px 8px;background:#2a2a4a;border:1px dashed #555;border-radius:4px;color:#888;cursor:pointer;font-size:11px;">📎 첨부</button>`;
+      }
       return `
         <div style="padding:12px 16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
           <div style="font-size:11px;color:#888;min-width:80px;">${esc(dt(e.paidAt))}</div>
@@ -229,7 +244,8 @@
           </div>
           <div style="min-width:120px;text-align:right;color:#ff8a80;font-weight:600;font-size:14px;">${money(e.amount, e.currency)}</div>
           <div style="min-width:50px;font-size:10px;color:#666;">${esc(srcLabel)}${e.cardLast4 ? ' ·' + esc(e.cardLast4) : ''}</div>
-          <div style="display:flex;gap:4px;">
+          <div style="display:flex;gap:4px;align-items:center;">
+            ${receiptBtn}
             ${canEdit ? `<button onclick="pmcExpenses.edit(${e.id})" style="padding:4px 8px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">✏️</button>` : ''}
             ${canDelete ? `<button onclick="pmcExpenses.del(${e.id})" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>` : ''}
           </div>
@@ -254,10 +270,67 @@
       body: JSON.stringify(payload),
     });
     if (!res.ok) { alert((await res.json()).error || '저장 실패'); return; }
+    const { data: created } = await res.json();
+
+    // 영수증 파일이 있으면 뒤이어 업로드
+    const receiptInput = document.getElementById('exp-receipt');
+    const file = receiptInput?.files?.[0];
+    if (file && created?.id) {
+      const fd = new FormData();
+      fd.append('file', file);
+      const upRes = await fetch('/api/expenses/' + created.id + '/receipt', { method: 'POST', body: fd });
+      if (!upRes.ok) {
+        const err = await upRes.json().catch(() => ({}));
+        alert('지출은 저장됐지만 영수증 업로드 실패: ' + (err.error || ''));
+      }
+    }
+
     document.getElementById('exp-form').reset();
     document.getElementById('exp-paid-at').value = today();
     document.getElementById('exp-currency').value = 'KRW';
+    document.getElementById('exp-receipt-name').textContent = '';
     refresh();
+  }
+
+  function onReceiptPick() {
+    const input = document.getElementById('exp-receipt');
+    const label = document.getElementById('exp-receipt-name');
+    const f = input?.files?.[0];
+    if (!f) { label.textContent = ''; return; }
+    const sz = f.size < 1024 * 1024 ? (f.size / 1024).toFixed(1) + ' KB' : (f.size / 1024 / 1024).toFixed(1) + ' MB';
+    label.innerHTML = '📎 ' + (f.name || '') + ' <span style="color:#666">(' + sz + ')</span>';
+  }
+
+  async function viewReceipt(id) {
+    try {
+      const res = await fetch('/api/expenses/' + id + '/receipt/url');
+      const data = await res.json();
+      if (!res.ok) { alert(data.error || '영수증 조회 실패'); return; }
+      window.open(data.signedUrl, '_blank');
+    } catch (e) { alert('실패: ' + e.message); }
+  }
+
+  async function deleteReceipt(id) {
+    if (!confirm('영수증을 삭제하시겠습니까?')) return;
+    const res = await fetch('/api/expenses/' + id + '/receipt', { method: 'DELETE' });
+    if (!res.ok) { alert((await res.json()).error || '삭제 실패'); return; }
+    refresh();
+  }
+
+  async function uploadReceiptLater(id) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf';
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      const fd = new FormData();
+      fd.append('file', f);
+      const res = await fetch('/api/expenses/' + id + '/receipt', { method: 'POST', body: fd });
+      if (!res.ok) { alert((await res.json()).error || '업로드 실패'); return; }
+      refresh();
+    };
+    input.click();
   }
 
   async function edit(id) {
@@ -282,5 +355,5 @@
     refresh();
   }
 
-  window.pmcExpenses = { load, refresh, edit, del };
+  window.pmcExpenses = { load, refresh, edit, del, onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater };
 })();
