@@ -6512,16 +6512,21 @@ async function loadB2BBuyers() {
       return;
     }
 
-    tbody.innerHTML = buyers.map(b => `<tr>
-      <td style="font-weight:600">${b.BuyerID}</td>
-      <td>${b.Name}</td>
-      <td style="font-size:11px">${b.Email}</td>
-      <td style="font-size:11px">${b.WhatsApp}</td>
-      <td>${b.Country}</td>
-      <td>${b.PaymentTerms}</td>
-      <td style="text-align:right">${b.TotalOrders}</td>
-      <td style="text-align:right;font-weight:600">${Number(b.TotalRevenue).toFixed(2)}</td>
-    </tr>`).join('');
+    tbody.innerHTML = buyers.map(b => {
+      const extCount = Object.values(b.ExternalIds || {}).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
+      const mapBtn = `<button onclick="b2bOpenMappingModal('${b.BuyerID}', ${JSON.stringify(b.Name || '').replace(/"/g,'&quot;')})" style="padding:3px 8px;background:${extCount > 0 ? '#2a4a6a' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🔗 ${extCount > 0 ? `맵핑 ${extCount}` : '맵핑 없음'}</button>`;
+      return `<tr>
+        <td style="font-weight:600">${b.BuyerID}</td>
+        <td>${b.Name}</td>
+        <td style="font-size:11px">${b.Email || ''}</td>
+        <td style="font-size:11px">${b.WhatsApp || ''}</td>
+        <td>${b.Country || ''}</td>
+        <td>${b.PaymentTerms || ''}</td>
+        <td style="text-align:right">${b.TotalOrders}</td>
+        <td style="text-align:right;font-weight:600">${Number(b.TotalRevenue).toFixed(2)}</td>
+        <td style="text-align:center">${mapBtn}</td>
+      </tr>`;
+    }).join('');
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="8" class="empty" style="color:#c62828">${err.message}</td></tr>`;
   }
@@ -6568,6 +6573,150 @@ async function b2bSaveBuyer() {
     alert('저장 에러: ' + err.message);
   } finally {
     btn.disabled = false; btn.textContent = '저장';
+  }
+}
+
+// ─── 거래처 ↔ 플랫폼 주문 맵핑 (Day 3-C) ───
+async function b2bOpenMappingModal(buyerId, buyerName) {
+  const existing = document.getElementById('b2b-map-modal');
+  if (existing) existing.remove();
+
+  // 기존 거래처 전체 불러와서 해당 buyer의 external_ids 추출
+  let buyer = null;
+  try {
+    const res = await fetch(`${API}/b2b/buyers`);
+    const { buyers } = await res.json();
+    buyer = (buyers || []).find(b => b.BuyerID === buyerId);
+  } catch {}
+  const ext = buyer?.ExternalIds || {};
+  const platforms = ['ebay', 'alibaba', 'shopify', 'shopee', 'naver', 'qoo10', 'coupang'];
+  const rows = platforms.map(p => {
+    const vals = Array.isArray(ext[p]) ? ext[p] : [];
+    return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+      <span style="width:80px;color:#ccc;font-size:12px;text-transform:uppercase;">${p}</span>
+      <input type="text" class="bmap-ids" data-platform="${p}" value="${(vals || []).join(', ').replace(/"/g,'&quot;')}" placeholder="이메일·username, 콤마로 여러 개" style="flex:1;padding:6px 10px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+    </div>`;
+  }).join('');
+
+  const m = document.createElement('div');
+  m.id = 'b2b-map-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  m.innerHTML = `
+    <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:18px;width:720px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;color:#e0e0e0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h3 style="color:#fff;font-size:15px;margin:0;">🔗 맵핑 · ${buyerId} ${buyerName || ''}</h3>
+        <button type="button" onclick="document.getElementById('b2b-map-modal').remove()" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">닫기</button>
+      </div>
+      <p style="color:#888;font-size:12px;margin:0 0 10px;">각 플랫폼에서 이 거래처와 동일인의 식별자(이메일·username)를 쉼표로 구분해 입력하세요. 저장하면 기존 미매칭 주문까지 자동 매칭됩니다.</p>
+
+      <div style="background:#0f0f23;padding:10px;border-radius:6px;margin-bottom:10px;">
+        ${rows}
+      </div>
+
+      <div style="display:flex;gap:6px;margin-bottom:10px;">
+        <button type="button" id="b2b-map-save" onclick="b2bSaveMapping('${buyerId}')" style="padding:7px 14px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">맵핑 저장 + 자동 매칭</button>
+        <button type="button" onclick="b2bLoadOrdersInModal('${buyerId}')" style="padding:7px 14px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">📦 실제 주문 불러오기</button>
+        <div id="b2b-map-status" style="margin-left:auto;font-size:11px;color:#81c784;"></div>
+      </div>
+
+      <div id="b2b-map-orders" style="flex:1;overflow:auto;border:1px solid #2a2a4a;border-radius:6px;font-size:12px;min-height:180px;display:flex;align-items:center;justify-content:center;color:#666;">📦 실제 주문 불러오기를 눌러 확인</div>
+    </div>
+  `;
+  document.body.appendChild(m);
+  m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+}
+
+async function b2bSaveMapping(buyerId) {
+  const btn = document.getElementById('b2b-map-save');
+  const status = document.getElementById('b2b-map-status');
+  btn.disabled = true; btn.textContent = '저장 중...';
+  status.style.color = '#81c784';
+  status.textContent = '';
+
+  const externalIds = {};
+  document.querySelectorAll('#b2b-map-modal .bmap-ids').forEach(inp => {
+    const platform = inp.dataset.platform;
+    const raw = inp.value.trim();
+    if (!raw) return;
+    const arr = raw.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+    if (arr.length > 0) externalIds[platform] = arr;
+  });
+
+  try {
+    const res = await fetch(`${API}/b2b/buyers/${buyerId}/external-ids`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ externalIds }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '저장 실패');
+
+    // 기존 주문 자동 backfill
+    status.textContent = '미매칭 주문 자동 매칭 중...';
+    const matchRes = await fetch(`${API}/b2b/match/run`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const matchData = await matchRes.json();
+    status.style.color = '#81c784';
+    status.textContent = `✓ 저장됨 · 자동 매칭 ${matchData.matched || 0}건`;
+    loadB2BBuyers();
+  } catch (e) {
+    status.style.color = '#ff8a80';
+    status.textContent = '실패: ' + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = '맵핑 저장 + 자동 매칭';
+  }
+}
+
+async function b2bLoadOrdersInModal(buyerId) {
+  const host = document.getElementById('b2b-map-orders');
+  host.innerHTML = '<div style="padding:20px;color:#888;">로딩…</div>';
+  try {
+    const [ordRes, revRes] = await Promise.all([
+      fetch(`${API}/b2b/buyers/${buyerId}/orders?limit=100`),
+      fetch(`${API}/b2b/buyers/${buyerId}/revenue`),
+    ]);
+    const ord = await ordRes.json();
+    const rev = await revRes.json();
+    const orders = ord.data || [];
+    const totals = rev.totals || {};
+
+    const totalsStr = Object.entries(totals).map(([c, v]) =>
+      `${v.toLocaleString('ko-KR')} ${c}`
+    ).join(' · ') || '0';
+
+    if (orders.length === 0) {
+      host.innerHTML = `<div style="padding:20px;text-align:center;color:#888;font-size:12px;">매칭된 주문이 없습니다.<br>위에서 맵핑을 저장하면 자동으로 연결됩니다.</div>`;
+      return;
+    }
+
+    host.innerHTML = `
+      <div style="padding:10px 12px;background:#0f2a3a;border-bottom:1px solid #1565c0;color:#64b5f6;font-size:12px;">
+        실매출: <strong>${totalsStr}</strong> · ${orders.length}건 주문
+      </div>
+      <table style="width:100%;border-collapse:collapse;">
+        <thead style="background:#0f0f23;position:sticky;top:0;">
+          <tr>
+            <th style="padding:6px;text-align:left;">날짜</th>
+            <th style="padding:6px;text-align:left;">플랫폼</th>
+            <th style="padding:6px;text-align:left;">상품</th>
+            <th style="padding:6px;text-align:right;">금액</th>
+            <th style="padding:6px;text-align:center;">상태</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${orders.map(o => `
+            <tr style="border-bottom:1px solid #2a2a4a;">
+              <td style="padding:5px 6px;color:#aaa;font-family:monospace;">${(o.order_date || '').slice(0, 10)}</td>
+              <td style="padding:5px 6px;">${o.platform || '-'}</td>
+              <td style="padding:5px 6px;color:#fff;">${(o.title || '').slice(0, 50)}</td>
+              <td style="padding:5px 6px;text-align:right;color:#ffb74d;">${Number(o.payment_amount || 0).toFixed(2)} ${o.currency || ''}</td>
+              <td style="padding:5px 6px;text-align:center;color:#888;font-size:10px;">${o.status || ''}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+    host.style.display = 'block';
+  } catch (e) {
+    host.innerHTML = `<div style="padding:20px;color:#ff8a80;">실패: ${e.message}</div>`;
   }
 }
 

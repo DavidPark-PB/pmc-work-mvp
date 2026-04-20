@@ -3378,6 +3378,103 @@ router.get('/b2b/revenue/products', async (req, res) => {
   }
 });
 
+// ─── B2B 거래처 맵핑 (Phase 1 Day 3-C) ───
+
+// PATCH /api/b2b/buyers/:buyerId/external-ids — 플랫폼별 식별자 저장
+//   body: { externalIds: { ebay: ["buyer@x.com"], alibaba: ["abc_trade"] } }
+router.patch('/b2b/buyers/:buyerId/external-ids', async (req, res) => {
+  try {
+    const { buyerId } = req.params;
+    const ids = req.body?.externalIds || {};
+    if (typeof ids !== 'object' || Array.isArray(ids)) {
+      return res.status(400).json({ error: 'externalIds는 객체여야 합니다' });
+    }
+    // 정규화: 모든 값은 배열, 요소는 문자열
+    const cleaned = {};
+    for (const [k, v] of Object.entries(ids)) {
+      const arr = Array.isArray(v) ? v : [v];
+      const filtered = arr.map(x => String(x || '').trim()).filter(Boolean);
+      if (filtered.length > 0) cleaned[String(k).toLowerCase()] = filtered;
+    }
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    await repo.updateBuyer(buyerId, { ExternalIds: cleaned });
+    res.json({ success: true, externalIds: cleaned });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/b2b/buyers/:buyerId/orders — 실제 플랫폼 주문 (b2b_buyer_id 매칭된 것)
+router.get('/b2b/buyers/:buyerId/orders', async (req, res) => {
+  try {
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    const data = await repo.getBuyerOrders(req.params.buyerId, {
+      from: req.query.from,
+      to: req.query.to,
+      limit: Math.min(2000, parseInt(req.query.limit, 10) || 500),
+    });
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/b2b/buyers/:buyerId/revenue — 실제 주문 기반 매출 (external_ids 매칭)
+router.get('/b2b/buyers/:buyerId/revenue', async (req, res) => {
+  try {
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    const data = await repo.getBuyerRevenue(req.params.buyerId, { from: req.query.from, to: req.query.to });
+    res.json({ success: true, ...data });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/b2b/unmapped-orders — 미매칭 주문 (admin 수동 배정용)
+router.get('/b2b/unmapped-orders', async (req, res) => {
+  try {
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    const data = await repo.getUnmappedOrders({
+      from: req.query.from,
+      to: req.query.to,
+      platform: req.query.platform,
+      limit: Math.min(500, parseInt(req.query.limit, 10) || 100),
+    });
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/b2b/orders/:orderNo/assign — 주문을 특정 거래처에 수동 배정
+//   body: { buyerId: 'B003' }  — null 보내면 매칭 해제
+router.post('/b2b/orders/:orderNo/assign', async (req, res) => {
+  try {
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    await repo.assignOrderToBuyer(req.params.orderNo, req.body?.buyerId || null);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/b2b/match/run — 전체 미매칭 주문에 대해 external_ids 기준 backfill 실행
+router.post('/b2b/match/run', async (req, res) => {
+  try {
+    const matcher = require('../../services/b2bBuyerMatcher');
+    const onlyUnmapped = req.body?.rescanAll !== true;
+    const r = await matcher.backfillOrders({ onlyUnmapped, limit: 50000 });
+    res.json({ success: true, ...r });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ===========================
 // Platform Registry API (DB-driven platform config)
 // ===========================

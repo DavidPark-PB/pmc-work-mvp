@@ -30,6 +30,7 @@ class B2BRepository {
       Notes: r.notes,
       TotalOrders: r.total_orders || 0,
       TotalRevenue: parseFloat(r.total_revenue) || 0,
+      ExternalIds: r.external_ids || {},
     }));
   }
 
@@ -56,6 +57,7 @@ class B2BRepository {
       Notes: data.notes,
       TotalOrders: data.total_orders || 0,
       TotalRevenue: parseFloat(data.total_revenue) || 0,
+      ExternalIds: data.external_ids || {},
     };
   }
 
@@ -74,6 +76,7 @@ class B2BRepository {
       notes: buyer.Notes || buyer.notes || '',
       total_orders: parseInt(buyer.TotalOrders || buyer.totalOrders) || 0,
       total_revenue: parseFloat(buyer.TotalRevenue || buyer.totalRevenue) || 0,
+      external_ids: buyer.ExternalIds || buyer.externalIds || {},
     };
 
     const { data, error } = await this.db
@@ -96,12 +99,72 @@ class B2BRepository {
     if (updates.Notes !== undefined) dbUpdates.notes = updates.Notes;
     if (updates.TotalOrders !== undefined) dbUpdates.total_orders = parseInt(updates.TotalOrders);
     if (updates.TotalRevenue !== undefined) dbUpdates.total_revenue = parseFloat(updates.TotalRevenue);
+    if (updates.ExternalIds !== undefined) dbUpdates.external_ids = updates.ExternalIds || {};
 
     const { error } = await this.db
       .from('b2b_buyers')
       .update(dbUpdates)
       .eq('buyer_id', buyerId);
     if (error) throw error;
+  }
+
+  /**
+   * 실제 플랫폼 주문 조회 — orders.b2b_buyer_id로 매핑된 주문들.
+   * 주문 테이블에 `b2b_buyer_id` 컬럼(018 마이그레이션)이 있어야 함.
+   */
+  async getBuyerOrders(buyerId, { from, to, limit = 500 } = {}) {
+    let q = this.db.from('orders')
+      .select('order_no, platform, order_date, buyer_name, email, title, sku, quantity, payment_amount, currency, status, country')
+      .eq('b2b_buyer_id', buyerId)
+      .order('order_date', { ascending: false })
+      .limit(limit);
+    if (from) q = q.gte('order_date', from);
+    if (to) q = q.lte('order_date', to);
+    const { data, error } = await q;
+    if (error && error.code !== '42703') throw error;   // column missing = migration not applied
+    return data || [];
+  }
+
+  async getBuyerRevenue(buyerId, { from, to } = {}) {
+    const orders = await this.getBuyerOrders(buyerId, { from, to, limit: 5000 });
+    const totals = {};
+    for (const o of orders) {
+      const ccy = (o.currency || 'USD').toUpperCase();
+      totals[ccy] = (totals[ccy] || 0) + (parseFloat(o.payment_amount) || 0);
+    }
+    return { totals, orderCount: orders.length };
+  }
+
+  /** 미매칭 주문 — admin이 수동 지정할 수 있도록 */
+  async getUnmappedOrders({ from, to, limit = 200, platform } = {}) {
+    let q = this.db.from('orders')
+      .select('order_no, platform, order_date, buyer_name, email, title, payment_amount, currency, country')
+      .is('b2b_buyer_id', null)
+      .order('order_date', { ascending: false })
+      .limit(limit);
+    if (from) q = q.gte('order_date', from);
+    if (to) q = q.lte('order_date', to);
+    if (platform) q = q.eq('platform', platform);
+    const { data, error } = await q;
+    if (error && error.code !== '42703') throw error;
+    return data || [];
+  }
+
+  async assignOrderToBuyer(orderNo, buyerId) {
+    const { error } = await this.db.from('orders')
+      .update({ b2b_buyer_id: buyerId })
+      .eq('order_no', orderNo);
+    if (error) throw error;
+  }
+
+  async bulkAssignOrders(orderNos, buyerId) {
+    if (!orderNos?.length) return 0;
+    const { data, error } = await this.db.from('orders')
+      .update({ b2b_buyer_id: buyerId })
+      .in('order_no', orderNos)
+      .select('order_no');
+    if (error) throw error;
+    return (data || []).length;
   }
 
   async getNextBuyerId() {

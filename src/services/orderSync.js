@@ -159,6 +159,11 @@ class OrderSync {
     const duplicates = allOrders.length - newOrders.length;
 
     if (newOrders.length === 0) {
+      // B2B 거래처 자동 매칭 (기존 주문 중 미매칭 것만 스캔)
+      try {
+        const matcher = require('./b2bBuyerMatcher');
+        await matcher.matchRecent();
+      } catch (e) { console.warn('[orderSync] b2b match fail:', e.message); }
       return { synced: allOrders.length, newOrders: 0, duplicates, supabaseUpserted, shipped: shippedCount || 0, errors };
     }
 
@@ -237,6 +242,17 @@ class OrderSync {
       errors.push(`EU 자동 배정: ${euErr.message}`);
     }
 
+    // B2B 거래처 자동 매칭 (새 주문 insert 이후 실행)
+    let b2bMatched = 0;
+    try {
+      const matcher = require('./b2bBuyerMatcher');
+      const r = await matcher.matchRecent();
+      b2bMatched = r.matched || 0;
+      if (b2bMatched > 0) console.log(`[orderSync] B2B 자동 매칭: ${b2bMatched}건`);
+    } catch (e) {
+      console.warn('[orderSync] b2b match fail:', e.message);
+    }
+
     return {
       synced: allOrders.length,
       newOrders: newOrders.length,
@@ -244,6 +260,7 @@ class OrderSync {
       supabaseUpserted,
       shipped: shippedCount || 0,
       euAssigned,
+      b2bMatched,
       errors,
     };
   }
