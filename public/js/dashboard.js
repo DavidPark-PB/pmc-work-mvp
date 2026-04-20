@@ -87,6 +87,7 @@ function navigateTo(page) {
     case 'orders':       if (window.pmcOrders)     pmcOrders.load();     break;
     case 'attendance':   if (window.pmcAttendance) pmcAttendance.load(); break;
     case 'payroll':      if (window.pmcPayroll)    pmcPayroll.load();    break;
+    case 'weekly':       if (window.pmcWeekly)     pmcWeekly.load();     break;
     case 'expenses':     if (window.pmcExpenses)   pmcExpenses.load();   break;
     case 'feedback':     if (window.pmcFeedback)   pmcFeedback.load();   break;
     case 'workspace':    if (window.pmcWorkspace)  pmcWorkspace.load();  break;
