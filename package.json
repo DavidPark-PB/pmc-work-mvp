@@ -47,6 +47,7 @@
     "googleapis": "^170.0.0",
     "helmet": "^8.1.0",
     "http-proxy-middleware": "^3.0.5",
+    "iconv-lite": "^0.7.2",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "open": "^11.0.0",

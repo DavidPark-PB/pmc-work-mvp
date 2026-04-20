@@ -12,10 +12,18 @@ const express = require('express');
 const crypto = require('crypto');
 const multer = require('multer');
 const repo = require('../../db/expenseRepository');
-const { CATEGORIES } = require('../../services/expenseCategories');
+const { CATEGORIES, normalize } = require('../../services/expenseCategories');
 const { getClient } = require('../../db/supabaseClient');
+const { parseExpenseCsvBuffer } = require('../../services/expenseCsvParser');
+const { suggestCategories } = require('../../services/expenseCategorizer');
 
 const router = express.Router();
+
+// CSV 업로드 memoryStorage (10MB까지)
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+});
 
 const RECEIPT_BUCKET = 'expense-receipts';
 const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
@@ -131,6 +139,97 @@ router.patch('/:id', async (req, res) => {
     const updated = await repo.updateExpense(id, req.body || {});
     res.json({ data: updated });
   } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// POST /api/expenses/csv — 카드명세서 파일 업로드 → 파싱 + AI 카테고리 제안 반환
+// 실제 DB insert는 /csv/confirm에서. 재무 권한자만.
+router.post('/csv', (req, res, next) => {
+  if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+  if (!req.user.canManageFinance) return res.status(403).json({ error: '재무 권한자만 CSV 업로드 가능합니다' });
+  csvUpload.single('file')(req, res, (err) => {
+    if (err) {
+      const msg = err.code === 'LIMIT_FILE_SIZE'
+        ? '파일이 너무 큽니다 (최대 10MB)' : err.message || '업로드 오류';
+      return res.status(400).json({ error: msg });
+    }
+    next();
+  });
+}, async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: '파일이 없습니다' });
+    const parsed = parseExpenseCsvBuffer(req.file.buffer);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+    const suggested = await suggestCategories(parsed.rows);
+
+    // 중복 체크 — 같은 (paidAt + amount + merchant)가 이미 있으면 duplicate 표시
+    const existing = await repo.listExpenses({
+      from: suggested.reduce((min, r) => !min || r.paidAt < min ? r.paidAt : min, null),
+      to: suggested.reduce((max, r) => !max || r.paidAt > max ? r.paidAt : max, null),
+      limit: 2000,
+    });
+    const seen = new Set(existing.map(e => `${e.paidAt}|${e.amount}|${(e.merchant || '').toLowerCase()}`));
+    const rows = suggested.map((r, idx) => ({
+      tempId: idx,
+      paidAt: r.paidAt,
+      amount: r.amount,
+      currency: r.currency,
+      merchant: r.merchant,
+      memo: r.memo,
+      cardLast4: r.cardLast4,
+      suggestedCategory: r.suggestedCategory,
+      categorySource: r.categorySource,
+      duplicate: seen.has(`${r.paidAt}|${r.amount}|${(r.merchant || '').toLowerCase()}`),
+    }));
+
+    res.json({
+      ok: true,
+      filename: req.file.originalname,
+      totalRows: rows.length,
+      duplicates: rows.filter(r => r.duplicate).length,
+      headerRow: parsed.headerRow,
+      mapping: parsed.mapping,
+      rows,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/expenses/csv/confirm — 미리보기에서 사용자가 편집한 행들을 bulk insert.
+// 재무 권한자만. body: { rows: [{ paidAt, amount, currency, category, merchant, memo, cardLast4 }] }
+router.post('/csv/confirm', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    if (!req.user.canManageFinance) return res.status(403).json({ error: '재무 권한자만 확정할 수 있습니다' });
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (rows.length === 0) return res.status(400).json({ error: '저장할 행이 없습니다' });
+
+    const prepared = rows.map(r => ({
+      paidAt: r.paidAt,
+      amount: Number(r.amount),
+      currency: (r.currency || 'KRW').toUpperCase(),
+      category: normalize(r.category || '기타'),
+      merchant: r.merchant || null,
+      memo: r.memo || null,
+      cardLast4: r.cardLast4 || null,
+      source: 'csv',
+      createdBy: req.user.id,
+    })).filter(r => r.paidAt && Number.isFinite(r.amount) && r.amount > 0);
+
+    if (prepared.length === 0) return res.status(400).json({ error: '유효한 행이 없습니다' });
+
+    const inserted = await repo.bulkCreate(prepared);
+
+    // 사용자가 확정한 merchant→category 매핑은 confidence 100으로 캐시 갱신
+    const uniqueMap = new Map();
+    for (const r of prepared) {
+      if (r.merchant) uniqueMap.set(r.merchant, r.category);
+    }
+    for (const [merchant, category] of uniqueMap) {
+      try { await repo.saveCachedCategory({ merchant, category, confidence: 100, createdBy: req.user.id }); } catch {}
+    }
+
+    res.json({ ok: true, insertedCount: inserted.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // POST /api/expenses/:id/receipt — 영수증 업로드 (본인 것 or 재무)

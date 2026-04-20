@@ -68,7 +68,15 @@
 
       <!-- 등록 폼 -->
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
-        <h3 style="color:#fff;font-size:14px;margin:0 0 10px;">✏️ 지출 등록</h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin:0 0 10px;">
+          <h3 style="color:#fff;font-size:14px;margin:0;">✏️ 지출 등록</h3>
+          ${hasFinance ? `
+            <label style="padding:6px 12px;background:#2a4a6a;color:#fff;border-radius:6px;cursor:pointer;font-size:12px;">
+              📄 카드명세서 CSV 업로드
+              <input type="file" id="exp-csv-file" accept=".csv,text/csv" style="display:none" onchange="pmcExpenses.onCsvPick()">
+            </label>
+          ` : ''}
+        </div>
         <form id="exp-form">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:8px;">
             <div>
@@ -484,9 +492,182 @@
     refresh();
   }
 
+  // ── CSV 업로드 ──
+  let csvRows = [];
+
+  async function onCsvPick() {
+    const input = document.getElementById('exp-csv-file');
+    const f = input?.files?.[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append('file', f);
+
+    // 진행 표시
+    const placeholder = document.createElement('div');
+    placeholder.id = 'exp-csv-loading';
+    placeholder.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;';
+    placeholder.innerHTML = '<div style="background:#1a1a2e;padding:24px 32px;border-radius:12px;color:#fff;"><div style="margin-bottom:8px;">📄 CSV 파싱 + AI 카테고리 분류 중…</div><div style="color:#888;font-size:12px;">가맹점이 많으면 10~20초 걸릴 수 있어요.</div></div>';
+    document.body.appendChild(placeholder);
+
+    try {
+      const res = await fetch('/api/expenses/csv', { method: 'POST', body: fd });
+      const data = await res.json();
+      placeholder.remove();
+      input.value = '';
+      if (!res.ok) { alert(data.error || '업로드 실패'); return; }
+      csvRows = data.rows || [];
+      openCsvPreview(data);
+    } catch (e) {
+      placeholder.remove();
+      alert('실패: ' + e.message);
+    }
+  }
+
+  function openCsvPreview(data) {
+    const existing = document.getElementById('exp-csv-modal');
+    if (existing) existing.remove();
+    const catOptions = categories.map(c => `<option value="${esc(c.key)}">${esc(c.label)}</option>`).join('');
+
+    const m = document.createElement('div');
+    m.id = 'exp-csv-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:20px;width:1000px;max-width:96vw;max-height:92vh;display:flex;flex-direction:column;color:#e0e0e0;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+          <h3 style="color:#fff;font-size:15px;margin:0;">📄 CSV 미리보기 · ${esc(data.filename || '')}</h3>
+          <div style="font-size:12px;color:#888;">총 ${data.totalRows}건${data.duplicates > 0 ? ` · <span style="color:#ff8a80">중복 의심 ${data.duplicates}건</span>` : ''}</div>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+          <label style="display:flex;gap:4px;align-items:center;font-size:12px;color:#ccc;cursor:pointer;">
+            <input type="checkbox" id="exp-csv-include-all" checked onchange="pmcExpenses.csvToggleAll()"> 전부 포함
+          </label>
+          <label style="display:flex;gap:4px;align-items:center;font-size:12px;color:#ccc;cursor:pointer;">
+            <input type="checkbox" id="exp-csv-skip-dup" ${data.duplicates > 0 ? 'checked' : ''} onchange="pmcExpenses.csvSkipDup()"> 중복 자동 제외
+          </label>
+          <div id="exp-csv-summary" style="margin-left:auto;font-size:12px;color:#81c784;"></div>
+        </div>
+        <div style="flex:1;overflow:auto;border:1px solid #2a2a4a;border-radius:6px;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead style="position:sticky;top:0;background:#0f0f23;z-index:1;">
+              <tr>
+                <th style="padding:8px;text-align:center;width:40px;">✓</th>
+                <th style="padding:8px;text-align:left;">결제일</th>
+                <th style="padding:8px;text-align:left;">가맹점</th>
+                <th style="padding:8px;text-align:right;">금액</th>
+                <th style="padding:8px;text-align:center;">카드</th>
+                <th style="padding:8px;text-align:left;width:160px;">카테고리</th>
+                <th style="padding:8px;text-align:center;">출처</th>
+              </tr>
+            </thead>
+            <tbody id="exp-csv-tbody">
+              ${data.rows.map(r => `
+                <tr data-tempid="${r.tempId}" style="border-bottom:1px solid #2a2a4a;${r.duplicate ? 'background:rgba(229,57,53,0.08);' : ''}">
+                  <td style="padding:6px;text-align:center;"><input type="checkbox" class="csv-incl" ${r.duplicate ? '' : 'checked'} onchange="pmcExpenses.csvRecalc()"></td>
+                  <td style="padding:6px;color:#aaa;font-family:monospace;">${esc(r.paidAt)}</td>
+                  <td style="padding:6px;color:#fff;">${esc(r.merchant || '-')}${r.duplicate ? '<span style="color:#ff8a80;font-size:10px;margin-left:6px;">· 중복 의심</span>' : ''}</td>
+                  <td style="padding:6px;text-align:right;color:#ff8a80;">${r.amount.toLocaleString('ko-KR')}원</td>
+                  <td style="padding:6px;text-align:center;color:#666;font-size:11px;">${esc(r.cardLast4 || '-')}</td>
+                  <td style="padding:6px;">
+                    <select class="csv-cat" style="width:100%;padding:4px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+                      ${categories.map(c => `<option value="${esc(c.key)}" ${r.suggestedCategory === c.key ? 'selected' : ''}>${esc(c.label)}</option>`).join('')}
+                    </select>
+                  </td>
+                  <td style="padding:6px;text-align:center;font-size:10px;color:${r.categorySource === 'ai' ? '#81c784' : r.categorySource === 'cache' ? '#64b5f6' : '#888'};">
+                    ${r.categorySource === 'ai' ? '🤖 AI' : r.categorySource === 'cache' ? '💾 캐시' : '기본값'}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div id="exp-csv-error" style="display:none;margin-top:10px;padding:8px 10px;background:#3a1a1a;border-radius:6px;color:#ff8a80;font-size:12px;"></div>
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:12px;">
+          <button type="button" onclick="pmcExpenses.closeCsvModal()" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
+          <button type="button" id="exp-csv-save" onclick="pmcExpenses.confirmCsv()" style="padding:8px 18px;background:#2e7d32;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">선택 항목 저장</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+    csvRecalc();
+  }
+
+  function csvRecalc() {
+    const checks = document.querySelectorAll('#exp-csv-tbody .csv-incl');
+    let count = 0; let total = 0;
+    checks.forEach((cb, i) => {
+      if (cb.checked) { count++; total += Number(csvRows[i]?.amount) || 0; }
+    });
+    const sum = document.getElementById('exp-csv-summary');
+    if (sum) sum.textContent = `선택 ${count}건 · 합계 ${total.toLocaleString('ko-KR')}원`;
+  }
+
+  function csvToggleAll() {
+    const master = document.getElementById('exp-csv-include-all');
+    document.querySelectorAll('#exp-csv-tbody .csv-incl').forEach(cb => { cb.checked = master.checked; });
+    csvRecalc();
+  }
+
+  function csvSkipDup() {
+    const skip = document.getElementById('exp-csv-skip-dup').checked;
+    document.querySelectorAll('#exp-csv-tbody tr').forEach((tr, i) => {
+      const r = csvRows[i];
+      if (r?.duplicate) tr.querySelector('.csv-incl').checked = !skip;
+    });
+    csvRecalc();
+  }
+
+  function closeCsvModal() {
+    document.getElementById('exp-csv-modal')?.remove();
+    csvRows = [];
+  }
+
+  async function confirmCsv() {
+    const rows = [];
+    const trs = document.querySelectorAll('#exp-csv-tbody tr');
+    trs.forEach((tr, i) => {
+      const cb = tr.querySelector('.csv-incl');
+      if (!cb?.checked) return;
+      const src = csvRows[i];
+      if (!src) return;
+      const catSel = tr.querySelector('.csv-cat');
+      rows.push({
+        paidAt: src.paidAt,
+        amount: src.amount,
+        currency: src.currency || 'KRW',
+        category: catSel?.value || src.suggestedCategory || '기타',
+        merchant: src.merchant,
+        memo: src.memo,
+        cardLast4: src.cardLast4,
+      });
+    });
+    const errEl = document.getElementById('exp-csv-error');
+    errEl.style.display = 'none';
+    if (rows.length === 0) { errEl.textContent = '저장할 행을 선택하세요'; errEl.style.display = 'block'; return; }
+
+    const btn = document.getElementById('exp-csv-save');
+    btn.disabled = true; btn.textContent = '저장 중…';
+    try {
+      const res = await fetch('/api/expenses/csv/confirm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows }),
+      });
+      const data = await res.json();
+      if (!res.ok) { errEl.textContent = data.error || '저장 실패'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = '선택 항목 저장'; return; }
+      closeCsvModal();
+      refresh();
+      alert(`${data.insertedCount}건 저장됐습니다.`);
+    } catch (e) {
+      errEl.textContent = e.message || '네트워크 오류';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = '선택 항목 저장';
+    }
+  }
+
   window.pmcExpenses = {
     load, refresh, edit, del,
     onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater,
     closeEditModal, saveEditModal, replaceReceiptInModal, deleteReceiptInModal,
+    onCsvPick, closeCsvModal, confirmCsv, csvRecalc, csvToggleAll, csvSkipDup,
   };
 })();
