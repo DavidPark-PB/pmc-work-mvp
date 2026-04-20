@@ -68,6 +68,8 @@ function sanitizeItems(items) {
     priority: ['high', 'normal', 'low'].includes(it.priority) ? it.priority : 'normal',
     status: ['pending', 'in_progress', 'done', 'dropped'].includes(it.status) ? it.status : 'pending',
     result: it.result ? String(it.result).trim().slice(0, 1000) : null,
+    sourceMeetingId: it.sourceMeetingId || null,
+    notes: it.notes ? String(it.notes).trim().slice(0, 1000) : null,
     createdAt: it.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   })).filter(it => it.title);
