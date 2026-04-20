@@ -482,6 +482,8 @@ async function loadDashboard() {
     // 매출 요약 + 마스터 상품 로드
     loadSummaryCards();
     loadDashboardMasterProducts();
+    // 재무 요약 (재무 권한자만)
+    loadFinanceSummary();
   } catch (err) {
     console.error('Dashboard load failed:', err);
   } finally {
@@ -7695,4 +7697,138 @@ async function importSelectedCrawlResults() {
     alert(`${ids.length}개 상품 가져오기 완료`);
     loadCrawlResults(document.getElementById('crawlStatusFilter')?.value || 'all');
   } catch (err) { alert('일괄 가져오기 실패: ' + err.message); }
+}
+
+// ═══ 💹 재무 요약 카드 (대시보드 상단, 재무 권한자 전용) ═══
+
+async function loadFinanceSummary() {
+  const host = document.getElementById('financeSummaryCard');
+  if (!host) return;
+  const user = window.__pmcUser;
+  if (!user?.canManageFinance) { host.style.display = 'none'; return; }
+
+  host.style.display = 'block';
+  host.innerHTML = '<div style="padding:12px;color:#888;font-size:12px;text-align:center;background:#1a1a2e;border-radius:8px;">💹 재무 요약 로딩…</div>';
+
+  try {
+    const res = await fetch(`${API}/finance/summary`);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || '실패');
+    renderFinanceSummary(d);
+  } catch (e) {
+    host.innerHTML = `<div style="padding:10px;background:#3a1a1a;border-radius:8px;color:#ff8a80;font-size:12px;">재무 요약 로드 실패: ${e.message}</div>`;
+  }
+}
+
+function renderFinanceSummary(d) {
+  const host = document.getElementById('financeSummaryCard');
+  if (!host) return;
+
+  // 지출 요약 — KRW 대표, 다른 통화는 옆에
+  const expTotals = d.expenses?.totals || {};
+  const expKrw = Number(expTotals.KRW || 0);
+  const expUsd = Number(expTotals.USD || 0);
+  const expOther = Object.entries(expTotals).filter(([c]) => c !== 'KRW' && c !== 'USD');
+
+  // 매입 (inventory_purchases)
+  const purKrw = Number(d.inventoryPurchases?.totals?.KRW || 0);
+
+  // B2B 매출 비율
+  const b2b = d.b2bShare || {};
+  const totalB2b = b2b.b2bByCurrency || {};
+  const totalAll = b2b.totalByCurrency || {};
+  const b2bTopCcy = Object.keys(totalAll).sort((a, b) => (totalAll[b] || 0) - (totalAll[a] || 0))[0];
+  const b2bPct = b2bTopCcy && totalAll[b2bTopCcy] > 0
+    ? Math.round((totalB2b[b2bTopCcy] || 0) / totalAll[b2bTopCcy] * 1000) / 10
+    : 0;
+
+  // 카테고리별 지출 (KRW 기준 상위 5)
+  const byCat = d.expenses?.byCategory || {};
+  const catRanked = Object.entries(byCat).map(([cat, perCcy]) => ({
+    cat, amount: Number(perCcy.KRW || 0) + Number(perCcy.USD || 0) * 1400,
+  })).filter(x => x.amount > 0).sort((a, b) => b.amount - a.amount).slice(0, 6);
+  const catColors = {
+    '운송': '#1565c0', '임대료': '#6a1b9a', '마케팅': '#d81b60',
+    '인건비': '#2e7d32', '소프트웨어': '#0288d1', '재료비': '#ef6c00',
+    '수수료': '#616161', '공과금': '#455a64', '접대식비': '#c62828',
+    '교통': '#00838f', '기타': '#8d6e63',
+  };
+  const maxCat = catRanked[0]?.amount || 1;
+
+  // 다가오는 정기결제
+  const upcoming = d.upcomingRecurring || [];
+
+  const fmtKrw = n => Number(n || 0).toLocaleString('ko-KR') + '원';
+
+  host.innerHTML = `
+    <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px 16px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+        <h3 style="color:#fff;font-size:14px;margin:0;">💹 재무 요약 <span style="color:#888;font-weight:400;font-size:11px;">· ${d.month}</span></h3>
+        <a href="#" onclick="showPage('expenses');return false;" style="color:#81d4fa;font-size:11px;text-decoration:none;">상세보기 →</a>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;">
+        <!-- 지출 -->
+        <div style="background:#0f0f23;padding:12px;border-radius:8px;border-left:3px solid #ff8a80;">
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">이번달 지출</div>
+          <div style="color:#ff8a80;font-size:20px;font-weight:700;">${fmtKrw(expKrw)}</div>
+          ${expUsd > 0 ? `<div style="color:#ffb74d;font-size:11px;">+ $${expUsd.toLocaleString('en-US', { maximumFractionDigits: 2 })}</div>` : ''}
+        </div>
+
+        <!-- 카드 매입 -->
+        <div style="background:#0f0f23;padding:12px;border-radius:8px;border-left:3px solid #ffb74d;">
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">이번달 카드 매입</div>
+          <div style="color:#ffb74d;font-size:20px;font-weight:700;">${fmtKrw(purKrw)}</div>
+          <div style="color:#666;font-size:11px;">${(d.inventoryPurchases?.bySeller || []).length}명 판매자</div>
+        </div>
+
+        <!-- B2B 매출 비율 -->
+        <div style="background:#0f0f23;padding:12px;border-radius:8px;border-left:3px solid #64b5f6;">
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">B2B 매출 비율</div>
+          <div style="color:#64b5f6;font-size:20px;font-weight:700;">${b2bPct}%</div>
+          <div style="color:#666;font-size:11px;">${b2b.b2bOrderCount || 0}/${b2b.orderCount || 0} 주문 ${b2bTopCcy ? '· ' + b2bTopCcy : ''}</div>
+        </div>
+
+        <!-- 정기결제 다가옴 -->
+        <div style="background:#0f0f23;padding:12px;border-radius:8px;border-left:3px solid #b388ff;">
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">정기결제 (7일내)</div>
+          <div style="color:#b388ff;font-size:20px;font-weight:700;">${upcoming.length}건</div>
+          <div style="color:#666;font-size:11px;${upcoming.length > 0 ? '' : 'color:#444;'}">${upcoming.length > 0 ? upcoming.slice(0, 2).map(r => r.name).join(', ') : '없음'}</div>
+        </div>
+      </div>
+
+      ${catRanked.length > 0 ? `
+        <div style="margin-top:12px;padding-top:10px;border-top:1px solid #2a2a4a;">
+          <div style="color:#ccc;font-size:11px;margin-bottom:6px;">카테고리별 지출 (KRW 환산)</div>
+          ${catRanked.map(c => {
+            const info = { label: c.cat, color: catColors[c.cat] || '#8d6e63' };
+            const pct = Math.max(3, Math.round((c.amount / maxCat) * 100));
+            return `<div style="display:flex;align-items:center;gap:8px;padding:2px 0;font-size:11px;">
+              <span style="width:70px;color:#ccc;">${info.label}</span>
+              <div style="flex:1;height:6px;background:#0f0f23;border-radius:3px;overflow:hidden;">
+                <div style="height:100%;width:${pct}%;background:${info.color};"></div>
+              </div>
+              <span style="width:110px;text-align:right;color:#ccc;">${fmtKrw(c.amount)}</span>
+            </div>`;
+          }).join('')}
+        </div>
+      ` : ''}
+
+      ${upcoming.length > 0 ? `
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #2a2a4a;">
+          <div style="color:#ccc;font-size:11px;margin-bottom:4px;">📅 다가오는 정기결제</div>
+          ${upcoming.map(r => {
+            const dueDate = new Date(r.nextDueAt + 'T00:00:00');
+            const today = new Date(); today.setHours(0, 0, 0, 0);
+            const diffDays = Math.round((dueDate - today) / 86400000);
+            const soonLabel = diffDays === 0 ? '오늘' : diffDays === 1 ? '내일' : diffDays + '일 뒤';
+            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:11px;">
+              <span style="color:#fff;">${r.name}</span>
+              <span style="color:#aaa;">${r.currency} ${Number(r.amount).toLocaleString('ko-KR')} · <span style="color:#b388ff;">${soonLabel}</span></span>
+            </div>`;
+          }).join('')}
+        </div>
+      ` : ''}
+    </div>
+  `;
 }

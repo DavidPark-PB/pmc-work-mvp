@@ -103,6 +103,7 @@ app.use('/api/workspace', require('./src/web/routes/workspace'));
 app.use('/api/expenses', require('./src/web/routes/expenses'));
 app.use('/api/recurring', require('./src/web/routes/recurring'));
 app.use('/api/inventory-purchases', require('./src/web/routes/inventoryPurchases'));
+app.use('/api/finance', require('./src/web/routes/finance'));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
