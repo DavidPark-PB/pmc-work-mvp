@@ -123,6 +123,7 @@ async function loadUserFromSession(session) {
       displayName: '관리자 (레거시)',
       role: 'admin',
       isAdmin: true,
+      canManageFinance: true,
       isLegacy: true,
     };
   }
@@ -130,12 +131,14 @@ async function loadUserFromSession(session) {
   const row = await userRepo.findById(session.userId);
   if (!row || !row.is_active) return null;
 
+  const isAdmin = row.role === 'admin';
   return {
     id: row.id,
     username: row.username,
     displayName: row.display_name,
     role: row.role,
-    isAdmin: row.role === 'admin',
+    isAdmin,
+    canManageFinance: isAdmin || !!row.can_manage_finance,
     platform: row.platform || null,
     uiMode: row.ui_mode || 'normal',
     isLegacy: false,
@@ -191,6 +194,13 @@ async function authGuard(req, res, next) {
 function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Authentication required' });
   if (!req.user.isAdmin) return res.status(403).json({ error: '관리자 권한이 필요합니다' });
+  next();
+}
+
+/** 재무(지출) 접근 가드 — admin 또는 can_manage_finance=true */
+function requireFinanceAccess(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  if (!req.user.canManageFinance) return res.status(403).json({ error: '재무 접근 권한이 없습니다' });
   next();
 }
 
@@ -374,6 +384,7 @@ module.exports = {
   // 미들웨어
   authGuard,
   requireAdmin,
+  requireFinanceAccess,
   requireAuth,
   blockLegacyWrites,
   getCurrentUser,

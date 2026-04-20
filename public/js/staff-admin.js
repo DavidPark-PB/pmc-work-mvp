@@ -63,6 +63,7 @@
               <th style="padding:10px;text-align:center;">상태</th>
               <th style="padding:10px;text-align:left;">담당</th>
               <th style="padding:10px;text-align:right;">시급</th>
+              <th style="padding:10px;text-align:center;" title="지출관리 전체 조회·삭제 권한">💸 재무</th>
               <th style="padding:10px;text-align:center;">마지막 로그인</th>
               <th style="padding:10px;text-align:center;">관리</th>
             </tr>
@@ -80,21 +81,29 @@
     const tbody = document.getElementById('user-tbody');
     if (!data || data.length === 0) { tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:#888;">직원이 없습니다.</td></tr>'; return; }
 
-    tbody.innerHTML = data.map(u => `
+    tbody.innerHTML = data.map(u => {
+      const isAdmin = u.role === 'admin';
+      const canFin = isAdmin || !!u.can_manage_finance;
+      const finCell = isAdmin
+        ? '<span title="관리자는 자동 허용" style="color:#7c4dff;font-size:11px;">● Admin</span>'
+        : `<button onclick="pmcStaffAdmin.toggleFinance(${u.id}, ${!!u.can_manage_finance})" style="padding:3px 10px;background:${canFin ? '#4caf50' : '#2a2a4a'};border:0;border-radius:12px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">${canFin ? '✓ 허용' : '○ 없음'}</button>`;
+      return `
       <tr style="border-bottom:1px solid #2a2a4a;${u.is_active ? '' : 'opacity:0.5;'}">
         <td style="padding:10px;"><code style="color:#81d4fa;">${esc(u.username)}</code></td>
         <td style="padding:10px;"><strong>${esc(u.display_name)}</strong></td>
-        <td style="padding:10px;text-align:center;">${u.role === 'admin' ? '<span style="padding:2px 8px;background:#7c4dff;color:#fff;border-radius:8px;font-size:11px;">Admin</span>' : '<span style="padding:2px 8px;background:#0288d1;color:#fff;border-radius:8px;font-size:11px;">Staff</span>'}</td>
+        <td style="padding:10px;text-align:center;">${isAdmin ? '<span style="padding:2px 8px;background:#7c4dff;color:#fff;border-radius:8px;font-size:11px;">Admin</span>' : '<span style="padding:2px 8px;background:#0288d1;color:#fff;border-radius:8px;font-size:11px;">Staff</span>'}</td>
         <td style="padding:10px;text-align:center;">${u.is_active ? '<span style="color:#81c784;">● 활성</span>' : '<span style="color:#888;">○ 비활성</span>'}</td>
         <td style="padding:10px;color:#aaa;font-size:12px;">${esc(u.platform || '-')}</td>
         <td style="padding:10px;text-align:right;font-family:monospace;">${u.hourly_rate ? Number(u.hourly_rate).toLocaleString() + '원' : '-'}</td>
+        <td style="padding:10px;text-align:center;">${finCell}</td>
         <td style="padding:10px;text-align:center;font-size:11px;color:#888;">${dt(u.last_login_at)}</td>
         <td style="padding:10px;text-align:center;white-space:nowrap;">
           <button onclick="pmcStaffAdmin.resetPw(${u.id}, '${esc(u.display_name)}')" style="padding:4px 10px;background:#ffa726;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;margin-right:4px;">비번 초기화</button>
           <button onclick="pmcStaffAdmin.toggleActive(${u.id}, ${u.is_active})" style="padding:4px 10px;background:${u.is_active ? '#e94560' : '#4caf50'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">${u.is_active ? '비활성' : '활성'}</button>
         </td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   }
 
   async function submitCreate(e) {
@@ -137,5 +146,18 @@
     refresh();
   }
 
-  window.pmcStaffAdmin = { load, refresh, resetPw, toggleActive };
+  async function toggleFinance(userId, currentValue) {
+    const next = !currentValue;
+    if (!confirm(next
+      ? '이 직원에게 지출관리 전체 조회·삭제 권한을 부여합니까?\n(다른 직원이 등록한 지출도 다 볼 수 있게 됩니다)'
+      : '지출관리 권한을 회수합니까?')) return;
+    const res = await fetch(`/api/users/${userId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ canManageFinance: next }),
+    });
+    if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+    refresh();
+  }
+
+  window.pmcStaffAdmin = { load, refresh, resetPw, toggleActive, toggleFinance };
 })();

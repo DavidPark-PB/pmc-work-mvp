@@ -41,7 +41,7 @@ function decorate(row) {
   };
 }
 
-async function listExpenses({ from, to, category, source, limit = 500 } = {}) {
+async function listExpenses({ from, to, category, source, createdBy, limit = 500 } = {}) {
   let q = getClient().from('expenses')
     .select('*')
     .order('paid_at', { ascending: false })
@@ -51,6 +51,7 @@ async function listExpenses({ from, to, category, source, limit = 500 } = {}) {
   if (to) q = q.lte('paid_at', to);
   if (category) q = q.eq('category', category);
   if (source) q = q.eq('source', source);
+  if (createdBy !== undefined && createdBy !== null) q = q.eq('created_by', createdBy);
   const { data, error } = await q;
   if (error && isMissingTable(error)) return [];
   if (error) throw error;
@@ -136,16 +137,18 @@ async function deleteExpense(id) {
  * 카테고리별 월 합계. { month: 'YYYY-MM', [KRW|USD|...] : { [category]: amount } }
  * 통화 섞이면 통화별로 따로 합산 — 대시보드가 표시 여부 결정.
  */
-async function summaryByMonth(month) {
+async function summaryByMonth(month, { createdBy } = {}) {
   if (!/^\d{4}-\d{2}$/.test(month || '')) throw new Error('month must be YYYY-MM');
   const from = `${month}-01`;
   const [year, mm] = month.split('-').map(n => parseInt(n, 10));
   const lastDay = new Date(year, mm, 0).getDate();
   const to = `${month}-${String(lastDay).padStart(2, '0')}`;
 
-  const { data, error } = await getClient().from('expenses')
+  let q = getClient().from('expenses')
     .select('category, amount, currency')
     .gte('paid_at', from).lte('paid_at', to);
+  if (createdBy !== undefined && createdBy !== null) q = q.eq('created_by', createdBy);
+  const { data, error } = await q;
   if (error && isMissingTable(error)) return { month, totals: {}, byCategory: {} };
   if (error) throw error;
 

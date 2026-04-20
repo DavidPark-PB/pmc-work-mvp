@@ -55,10 +55,15 @@
 
   function renderShell() {
     const el = document.getElementById('page-expenses');
+    const hasFinance = user.canManageFinance;
+    const title = hasFinance ? '💸 지출 관리' : '💸 내 지출 등록';
+    const desc = hasFinance
+      ? '전 직원 지출을 확인·편집·삭제할 수 있습니다. 직원이 등록한 지출을 승인·확정하세요.'
+      : '발주/구매한 금액과 영수증을 등록하세요. 재무 담당이 확인 후 승인합니다. 본인이 등록한 내역만 보입니다.';
     el.innerHTML = `
       <div style="margin-bottom:16px;">
-        <h1 style="font-size:22px;color:#fff;">💸 지출 관리 <span style="font-size:13px;color:#888;font-weight:400;">· 재무 기반</span></h1>
-        <p style="color:#888;font-size:13px;">카드 결제·정기결제·현금 지출을 한 곳에 기록하세요. 같은 가맹점 다음 지출부턴 카테고리 자동 분류됩니다.</p>
+        <h1 style="font-size:22px;color:#fff;">${title} <span style="font-size:13px;color:${hasFinance ? '#81c784' : '#888'};font-weight:400;">· ${hasFinance ? '재무 권한' : '본인 등록분만'}</span></h1>
+        <p style="color:#888;font-size:13px;">${desc}</p>
       </div>
 
       <!-- 등록 폼 -->
@@ -210,8 +215,8 @@
     c.innerHTML = cached.map(e => {
       const info = categoryMap[e.category] || { label: e.category, color: '#8d6e63' };
       const srcLabel = { manual: '수동', csv: 'CSV', recurring: '정기' }[e.source] || e.source;
-      const canEdit = user.isAdmin || e.createdBy === user.id;
-      const canDelete = user.isAdmin;
+      const canEdit = user.canManageFinance || e.createdBy === user.id;
+      const canDelete = user.canManageFinance;
       return `
         <div style="padding:12px 16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
           <div style="font-size:11px;color:#888;min-width:80px;">${esc(dt(e.paidAt))}</div>

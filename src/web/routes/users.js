@@ -21,7 +21,7 @@ router.get('/all', requireAdmin, async (req, res) => {
   try {
     const { data, error } = await getClient()
       .from('users')
-      .select('id, username, display_name, role, is_active, platform, work_type, hourly_rate, default_due_time, shopee_bonus_rate, ui_mode, notes, last_login_at, created_at')
+      .select('id, username, display_name, role, is_active, platform, work_type, hourly_rate, default_due_time, shopee_bonus_rate, ui_mode, notes, can_manage_finance, last_login_at, created_at')
       .order('role', { ascending: true })
       .order('display_name', { ascending: true });
     if (error) throw error;
@@ -69,7 +69,7 @@ router.post('/', requireAdmin, async (req, res) => {
 router.patch('/:id', requireAdmin, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const allowed = ['display_name', 'role', 'platform', 'work_type', 'hourly_rate', 'default_due_time', 'shopee_bonus_rate', 'ui_mode', 'notes', 'is_active'];
+    const allowed = ['display_name', 'role', 'platform', 'work_type', 'hourly_rate', 'default_due_time', 'shopee_bonus_rate', 'ui_mode', 'notes', 'is_active', 'can_manage_finance'];
     const body = req.body || {};
     const updates = {};
     const map = {
@@ -80,6 +80,7 @@ router.patch('/:id', requireAdmin, async (req, res) => {
       shopeeBonusRate: 'shopee_bonus_rate',
       uiMode: 'ui_mode',
       isActive: 'is_active',
+      canManageFinance: 'can_manage_finance',
     };
     for (const [k, v] of Object.entries(body)) {
       const dbKey = map[k] || k;
