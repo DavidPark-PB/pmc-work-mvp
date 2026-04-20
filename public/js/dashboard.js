@@ -89,6 +89,7 @@ function navigateTo(page) {
     case 'payroll':      if (window.pmcPayroll)    pmcPayroll.load();    break;
     case 'weekly':       if (window.pmcWeekly)     pmcWeekly.load();     break;
     case 'cs':           if (window.pmcCs)         pmcCs.load();         break;
+    case 'resources':    if (window.pmcResources)  pmcResources.load();  break;
     case 'expenses':     if (window.pmcExpenses)   pmcExpenses.load();   break;
     case 'feedback':     if (window.pmcFeedback)   pmcFeedback.load();   break;
     case 'workspace':    if (window.pmcWorkspace)  pmcWorkspace.load();  break;

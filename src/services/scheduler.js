@@ -145,6 +145,18 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // 매일 새벽 2시 30분 — 자료실 폴더 Drive 동기화
+  cron.schedule('30 2 * * *', async () => {
+    try {
+      const resourceSync = require('./resourceSync');
+      const results = await resourceSync.syncAll();
+      const ok = results.filter(r => r.ok).length;
+      if (results.length > 0) console.log(`[scheduler] resources sync: ${ok}/${results.length} folders`);
+    } catch (e) {
+      console.error('[scheduler] resources sync error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // 매일 새벽 3시 — 도래한 정기결제를 expenses로 발행
   cron.schedule('0 3 * * *', async () => {
     try {
