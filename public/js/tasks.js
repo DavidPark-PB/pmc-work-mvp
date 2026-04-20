@@ -225,10 +225,15 @@
     const progressColor = progressPct === 100 ? '#4caf50' : progressPct >= 50 ? '#7c4dff' : '#ff9800';
     const titleStyle = t.status === 'done' ? 'text-decoration:line-through;opacity:0.7;' : '';
 
-    // 특정 담당자 경우 대표 이름, broadcast면 '전체 공지'
     const assigneeLabel = isBroadcast
       ? `🔔 전체 공지 · ${agg.done}/${agg.total} 완료`
       : (t.recipients?.[0]?.userName || '-');
+
+    // 첨부 요약 — 사장이 펼치기 없이도 바로 보게 함
+    const totalAttachments = (t.recipients || []).reduce((n, r) => n + ((r.attachments && r.attachments.length) || 0), 0);
+    const soleRecipient = !isBroadcast ? (t.recipients || [])[0] : null;
+    const soleCompletionNote = soleRecipient?.completionNote;
+    const soleAttachments = soleRecipient?.attachments || [];
 
     return `
       <div style="border-bottom:1px solid #2a2a4a;">
@@ -243,16 +248,34 @@
             <div style="font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
               <span>👤 ${escapeHtml(assigneeLabel)}</span>
               ${t.due_date ? `<span style="${overdue ? 'color:#ff8a80;font-weight:600;' : ''}">⏰ ${formatDate(t.due_date)}</span>` : ''}
+              ${!isBroadcast && soleRecipient
+                ? `<span style="padding:1px 6px;background:${STATUS_COLORS[soleRecipient.status]};color:#fff;border-radius:8px;font-size:10px;">${STATUS_LABELS[soleRecipient.status]}</span>`
+                : ''}
             </div>
+            ${!isBroadcast && soleCompletionNote
+              ? `<div style="margin-top:6px;padding:6px 10px;background:#1a3a2e;border-radius:6px;font-size:12px;color:#81c784;"><strong>완료:</strong> ${escapeHtml(soleCompletionNote)}</div>`
+              : ''}
+            ${!isBroadcast && soleAttachments.length > 0
+              ? renderAttachmentBadges(t.id, soleAttachments)
+              : ''}
             ${isBroadcast ? `
               <div style="margin-top:8px;height:6px;background:#2a2a4a;border-radius:3px;overflow:hidden;">
                 <div style="height:100%;width:${progressPct}%;background:${progressColor};transition:width 0.3s;"></div>
               </div>
-              <button onclick="pmcTasks.toggleExpand(${t.id}, event)" id="expand-btn-${t.id}" style="margin-top:6px;background:transparent;border:0;color:#888;cursor:pointer;font-size:11px;padding:0;">▼ 수신자 상세 (${agg.total}명)</button>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+                <button onclick="pmcTasks.toggleExpand(${t.id}, event)" id="expand-btn-${t.id}" style="background:transparent;border:0;color:#888;cursor:pointer;font-size:11px;padding:0;">▼ 수신자 상세 (${agg.total}명)</button>
+                ${totalAttachments > 0
+                  ? `<span style="color:#64b5f6;font-size:11px;">📎 첨부 ${totalAttachments}건</span>`
+                  : ''}
+              </div>
             ` : ''}
             ${t.memo ? `<div style="margin-top:6px;font-size:12px;color:#b0b0b0;white-space:pre-wrap;">${escapeHtml(t.memo)}</div>` : ''}
           </div>
           <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">
+            <button onclick="pmcTasks.setStatusFor(${t.id}, ${soleRecipient?.userId || 'null'}, '${soleRecipient?.status === 'done' ? 'pending' : 'done'}')"
+                    style="padding:4px 8px;background:${soleRecipient?.status === 'done' ? '#2a2a4a' : '#7c4dff'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;${isBroadcast || !soleRecipient ? 'display:none;' : ''}">
+              ${soleRecipient?.status === 'done' ? '↶ 재개' : '✓ 완료처리'}
+            </button>
             <button onclick="pmcTasks.deleteTask(${t.id})" style="padding:4px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>
           </div>
         </div>

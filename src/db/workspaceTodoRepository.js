@@ -4,6 +4,18 @@
  */
 const { getClient } = require('./supabaseClient');
 
+// PostgreSQL "relation does not exist" + PostgREST "schema cache miss".
+// 마이그레이션 012가 적용 안 된 환경에서 raw Supabase 에러가 사용자에게 노출되지 않도록.
+const MISSING_TABLE_CODES = new Set(['42P01', 'PGRST205']);
+const MISSING_TABLE_MSG = '할 일 기능 DB 마이그레이션이 적용되지 않았습니다. 관리자에게 문의하세요.';
+
+function isMissingTable(err) {
+  if (!err) return false;
+  if (MISSING_TABLE_CODES.has(err.code)) return true;
+  const msg = String(err.message || '');
+  return msg.includes('workspace_todos') && /not\s+found|does not exist|schema cache/i.test(msg);
+}
+
 async function listTodos(userId) {
   const { data, error } = await getClient()
     .from('workspace_todos')
@@ -12,8 +24,7 @@ async function listTodos(userId) {
     .order('done', { ascending: true })
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: true });
-  // 테이블 없으면 (마이그레이션 미실행) graceful fallback
-  if (error && error.code !== '42P01') throw error;
+  if (error && !isMissingTable(error)) throw error;
   return data || [];
 }
 
@@ -29,7 +40,10 @@ async function createTodo(userId, { text, dueDate = null }) {
     })
     .select()
     .single();
-  if (error) throw error;
+  if (error) {
+    if (isMissingTable(error)) throw new Error(MISSING_TABLE_MSG);
+    throw error;
+  }
   return data;
 }
 
@@ -54,7 +68,10 @@ async function updateTodo(userId, id, updates) {
     .eq('user_id', userId)
     .select()
     .single();
-  if (error) throw error;
+  if (error) {
+    if (isMissingTable(error)) throw new Error(MISSING_TABLE_MSG);
+    throw error;
+  }
   return data;
 }
 
@@ -64,7 +81,10 @@ async function deleteTodo(userId, id) {
     .delete()
     .eq('id', id)
     .eq('user_id', userId);
-  if (error) throw error;
+  if (error) {
+    if (isMissingTable(error)) throw new Error(MISSING_TABLE_MSG);
+    throw error;
+  }
 }
 
 async function clearCompleted(userId) {
@@ -73,7 +93,10 @@ async function clearCompleted(userId) {
     .delete()
     .eq('user_id', userId)
     .eq('done', true);
-  if (error) throw error;
+  if (error) {
+    if (isMissingTable(error)) throw new Error(MISSING_TABLE_MSG);
+    throw error;
+  }
 }
 
 module.exports = { listTodos, createTodo, updateTodo, deleteTodo, clearCompleted };
