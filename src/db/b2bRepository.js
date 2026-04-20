@@ -31,6 +31,7 @@ class B2BRepository {
       TotalOrders: r.total_orders || 0,
       TotalRevenue: parseFloat(r.total_revenue) || 0,
       ExternalIds: r.external_ids || {},
+      ShippingRule: r.shipping_rule || {},
     }));
   }
 
@@ -58,6 +59,7 @@ class B2BRepository {
       TotalOrders: data.total_orders || 0,
       TotalRevenue: parseFloat(data.total_revenue) || 0,
       ExternalIds: data.external_ids || {},
+      ShippingRule: data.shipping_rule || {},
     };
   }
 
@@ -77,6 +79,7 @@ class B2BRepository {
       total_orders: parseInt(buyer.TotalOrders || buyer.totalOrders) || 0,
       total_revenue: parseFloat(buyer.TotalRevenue || buyer.totalRevenue) || 0,
       external_ids: buyer.ExternalIds || buyer.externalIds || {},
+      shipping_rule: buyer.ShippingRule || buyer.shippingRule || {},
     };
 
     const { data, error } = await this.db
@@ -100,6 +103,7 @@ class B2BRepository {
     if (updates.TotalOrders !== undefined) dbUpdates.total_orders = parseInt(updates.TotalOrders);
     if (updates.TotalRevenue !== undefined) dbUpdates.total_revenue = parseFloat(updates.TotalRevenue);
     if (updates.ExternalIds !== undefined) dbUpdates.external_ids = updates.ExternalIds || {};
+    if (updates.ShippingRule !== undefined) dbUpdates.shipping_rule = updates.ShippingRule || {};
 
     const { error } = await this.db
       .from('b2b_buyers')

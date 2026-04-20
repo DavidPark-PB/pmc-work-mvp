@@ -332,6 +332,125 @@ class B2BInvoiceService {
   }
 
   /**
+   * 자동 인보이스 생성.
+   *   data.mode: 'catalog' (기본) | 'orders'
+   *   data.buyerId
+   *   data.items[]  (mode=catalog): [{ catalogTab, rowIndex, side, boxes, unitPriceOverride? }]
+   *   data.orderIds[] (mode=orders): 플랫폼 주문 order_no 배열
+   *   data.shippingOverride? — 배송비 수동 덮어쓰기 (버퍼 0 등록시 shipping 0)
+   *   data.dueDate?, data.notes?
+   */
+  async generateInvoiceAuto(data) {
+    const mode = data.mode === 'orders' ? 'orders' : 'catalog';
+    const buyers = await this.getBuyers();
+    const buyer = buyers.find(b => b.BuyerID === data.buyerId);
+    if (!buyer) throw new Error(`구매자 ${data.buyerId} 없음`);
+
+    const shippingRule = (buyer.ShippingRule && Object.keys(buyer.ShippingRule).length > 0)
+      ? buyer.ShippingRule
+      : { perBoxes: 30, rate: 120, currency: 'USD' };
+
+    let items = [];
+    let totalBoxes = 0;
+    let invoiceCurrency = (shippingRule.currency || buyer.Currency || 'USD').toUpperCase();
+    let memoExtra = [];
+
+    if (mode === 'catalog') {
+      const catalogService = require('./catalogService');
+      const rates = await catalogService.getRates().catch(() => ({ usd: 1400, jpy: 1000, local: 1000 }));
+      const usdToKrw = Number(rates.usd) || 1400;
+
+      // 탭별로 묶어서 한 번씩 getCatalog (캐시 효과)
+      const inputItems = Array.isArray(data.items) ? data.items : [];
+      if (inputItems.length === 0) throw new Error('카탈로그 품목을 선택하세요');
+      const byTab = new Map();
+      for (const it of inputItems) {
+        if (!it.catalogTab) throw new Error('catalogTab이 누락된 품목이 있습니다');
+        if (!byTab.has(it.catalogTab)) byTab.set(it.catalogTab, []);
+        byTab.get(it.catalogTab).push(it);
+      }
+      for (const [tab, tabItems] of byTab) {
+        const { items: catalogItems = [] } = await catalogService.getCatalog(tab);
+        for (const sel of tabItems) {
+          const found = catalogItems.find(c =>
+            c.rowIndex === sel.rowIndex && (sel.side ? c.side === sel.side : true)
+          );
+          if (!found) {
+            memoExtra.push(`카탈로그 항목 누락 (${tab} row ${sel.rowIndex})`);
+            continue;
+          }
+          const boxes = Math.max(1, parseInt(sel.boxes, 10) || 1);
+          const usdPrice = Number(sel.unitPriceOverride ?? found.usdPrice) || 0;
+          const priceInInvoice = invoiceCurrency === 'KRW'
+            ? Math.round(usdPrice * usdToKrw)
+            : usdPrice;
+          items.push({
+            sku: found.setCode || found.upc || '',
+            name: found.name,
+            qty: boxes,
+            price: priceInInvoice,
+          });
+          totalBoxes += boxes;
+        }
+      }
+      if (items.length === 0) throw new Error('유효한 카탈로그 품목이 없습니다');
+    } else if (mode === 'orders') {
+      const { getClient } = require('../db/supabaseClient');
+      const db = getClient();
+      const orderNos = Array.isArray(data.orderIds) ? data.orderIds : [];
+      if (orderNos.length === 0) throw new Error('주문을 선택하세요');
+      const { data: rows, error } = await db.from('orders')
+        .select('order_no, platform, title, sku, quantity, payment_amount, currency')
+        .in('order_no', orderNos);
+      if (error) throw error;
+      if (!rows || rows.length === 0) throw new Error('주문을 찾을 수 없습니다');
+
+      // 통화 검증 — 모두 같아야 함
+      const ccySet = new Set(rows.map(r => (r.currency || 'USD').toUpperCase()));
+      if (ccySet.size > 1) {
+        throw new Error(`주문 통화가 섞여있습니다 (${[...ccySet].join(', ')}). 같은 통화 주문끼리만 묶어주세요.`);
+      }
+      invoiceCurrency = [...ccySet][0];
+      for (const r of rows) {
+        const qty = Number(r.quantity) || 1;
+        const total = Number(r.payment_amount) || 0;
+        items.push({
+          sku: r.sku || '',
+          name: r.title || r.order_no,
+          qty,
+          price: qty > 0 ? total / qty : total,
+        });
+      }
+      memoExtra.push(`주문 ${rows.length}건 기반 자동 생성`);
+    }
+
+    // 배송비 계산 (catalog 모드만 자동, orders 모드는 주문에 이미 포함)
+    let shipping = 0;
+    if (data.shippingOverride != null && data.shippingOverride !== '') {
+      shipping = Number(data.shippingOverride) || 0;
+    } else if (mode === 'catalog') {
+      const perBoxes = Math.max(1, parseInt(shippingRule.perBoxes, 10) || 30);
+      const rate = Number(shippingRule.rate) || 0;
+      const chunks = Math.ceil(totalBoxes / perBoxes);
+      shipping = chunks * rate;
+      if (shipping > 0) {
+        memoExtra.push(`배송비 = ${perBoxes}박스 × ${chunks}묶음 (${totalBoxes}박스)`);
+      }
+    }
+
+    const notes = [data.notes, ...memoExtra].filter(Boolean).join(' · ');
+    return this.generateInvoice({
+      buyerId: data.buyerId,
+      items,
+      tax: 0,
+      shipping,
+      currency: invoiceCurrency,
+      dueDate: data.dueDate,
+      notes,
+    });
+  }
+
+  /**
    * Excel 인보이스 빌드
    */
   async _buildInvoiceXlsx({ invoiceNo, invoiceDate, dueDate, buyer, items, subtotal, tax, shipping, total, currency, notes }) {

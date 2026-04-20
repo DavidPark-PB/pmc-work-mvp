@@ -6598,6 +6598,12 @@ async function b2bOpenMappingModal(buyerId, buyerName) {
     </div>`;
   }).join('');
 
+  // 배송비 규칙
+  const sr = buyer?.ShippingRule || {};
+  const defPerBoxes = sr.perBoxes || 30;
+  const defRate = sr.rate || 120;
+  const defCurrency = sr.currency || 'USD';
+
   const m = document.createElement('div');
   m.id = 'b2b-map-modal';
   m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -6611,6 +6617,22 @@ async function b2bOpenMappingModal(buyerId, buyerName) {
 
       <div style="background:#0f0f23;padding:10px;border-radius:6px;margin-bottom:10px;">
         ${rows}
+      </div>
+
+      <!-- 배송비 규칙 -->
+      <div style="background:#0f0f23;padding:10px;border-radius:6px;margin-bottom:10px;">
+        <div style="color:#ccc;font-size:12px;margin-bottom:6px;">🚚 배송비 규칙 (자동 인보이스에 사용)</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input type="number" id="bmap-sr-boxes" min="1" max="100" value="${defPerBoxes}" style="width:60px;padding:5px;background:#1a1a2e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          <span style="color:#888;font-size:12px;">박스마다</span>
+          <input type="number" id="bmap-sr-rate" min="0" step="1" value="${defRate}" style="width:90px;padding:5px;background:#1a1a2e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          <select id="bmap-sr-ccy" style="padding:5px;background:#1a1a2e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+            ${['USD', 'KRW', 'EUR', 'JPY'].map(c => `<option value="${c}" ${c === defCurrency ? 'selected' : ''}>${c}</option>`).join('')}
+          </select>
+          <button type="button" onclick="b2bSaveShippingRule('${buyerId}')" style="padding:5px 10px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">저장</button>
+          <span id="bmap-sr-status" style="color:#81c784;font-size:11px;"></span>
+        </div>
+        <div style="color:#666;font-size:10px;margin-top:4px;">기본: 30박스마다 $120 / 친한 거래처는 KRW 130,000 등으로 설정</div>
       </div>
 
       <div style="display:flex;gap:6px;margin-bottom:10px;">
@@ -6717,6 +6739,383 @@ async function b2bLoadOrdersInModal(buyerId) {
     host.style.display = 'block';
   } catch (e) {
     host.innerHTML = `<div style="padding:20px;color:#ff8a80;">실패: ${e.message}</div>`;
+  }
+}
+
+async function b2bSaveShippingRule(buyerId) {
+  const perBoxes = parseInt(document.getElementById('bmap-sr-boxes').value, 10) || 30;
+  const rate = parseFloat(document.getElementById('bmap-sr-rate').value) || 0;
+  const currency = document.getElementById('bmap-sr-ccy').value || 'USD';
+  const status = document.getElementById('bmap-sr-status');
+  status.style.color = '#ccc'; status.textContent = '저장 중...';
+  try {
+    const res = await fetch(`${API}/b2b/buyers/${buyerId}/shipping-rule`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ perBoxes, rate, currency }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '실패');
+    status.style.color = '#81c784'; status.textContent = '✓ 저장';
+  } catch (e) {
+    status.style.color = '#ff8a80'; status.textContent = '실패: ' + e.message;
+  }
+}
+
+// ─── ⚡ 자동 인보이스 생성 ───
+let _autoCatalogTabs = null;
+let _autoCatalogCache = {};
+let _autoLines = [];
+let _autoBuyers = [];
+
+async function b2bOpenAutoInvoice() {
+  if (!_autoBuyers.length) {
+    try {
+      const r = await fetch(`${API}/b2b/buyers`);
+      const j = await r.json();
+      _autoBuyers = j.buyers || [];
+    } catch {}
+  }
+  if (_autoBuyers.length === 0) { alert('거래처가 없습니다. 거래처를 먼저 등록하세요.'); return; }
+  if (!_autoCatalogTabs) {
+    try {
+      const r = await fetch(`${API}/catalog/tabs`);
+      const j = await r.json();
+      _autoCatalogTabs = j.tabs || [];
+    } catch { _autoCatalogTabs = []; }
+  }
+
+  _autoLines = [];
+  const existing = document.getElementById('b2b-auto-modal');
+  if (existing) existing.remove();
+
+  const m = document.createElement('div');
+  m.id = 'b2b-auto-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  m.innerHTML = `
+    <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:18px;width:980px;max-width:97vw;max-height:92vh;display:flex;flex-direction:column;color:#e0e0e0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h3 style="color:#fff;font-size:15px;margin:0;">⚡ 자동 인보이스 생성</h3>
+        <button type="button" onclick="b2bCloseAutoInvoice()" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">닫기</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:10px;">
+        <div>
+          <label style="font-size:11px;color:#aaa;">거래처</label>
+          <select id="auto-buyer" onchange="b2bAutoOnBuyerChange()" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+            <option value="">선택하세요</option>
+            ${_autoBuyers.map(b => `<option value="${b.BuyerID}">${b.BuyerID} · ${b.Name}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#aaa;">만기일</label>
+          <input type="date" id="auto-due" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:#aaa;">배송비 규칙</label>
+          <div id="auto-shipping-info" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#ffb74d;font-size:11px;min-height:32px;line-height:16px;">거래처 선택 후 표시</div>
+        </div>
+      </div>
+
+      <!-- 모드 탭 -->
+      <div style="display:flex;gap:4px;margin-bottom:10px;border-bottom:1px solid #2a2a4a;">
+        <button type="button" id="auto-tab-catalog" onclick="b2bAutoSwitchMode('catalog')" style="padding:8px 16px;background:transparent;border:0;border-bottom:2px solid #7c4dff;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">📗 카탈로그 기반</button>
+        <button type="button" id="auto-tab-orders" onclick="b2bAutoSwitchMode('orders')" style="padding:8px 16px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:12px;">📦 실제 주문에서</button>
+      </div>
+
+      <!-- 카탈로그 탭 -->
+      <div id="auto-pane-catalog" style="flex:1;overflow:auto;display:flex;flex-direction:column;gap:10px;">
+        <div style="display:flex;gap:6px;">
+          <select id="auto-cat-tab" onchange="b2bAutoLoadCatalog()" style="padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+            ${(_autoCatalogTabs || []).map(t => `<option value="${t}">${t}</option>`).join('')}
+          </select>
+          <input type="text" id="auto-cat-search" placeholder="검색 (이름·SETCODE·UPC)" oninput="b2bAutoFilterCatalog()" style="flex:1;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+        </div>
+        <div id="auto-cat-results" style="flex:1;overflow:auto;border:1px solid #2a2a4a;border-radius:4px;min-height:160px;max-height:260px;"></div>
+        <div>
+          <div style="font-size:11px;color:#ccc;margin-bottom:4px;">선택한 품목 (박스 수 입력)</div>
+          <div id="auto-lines" style="background:#0f0f23;border-radius:4px;padding:8px;min-height:60px;"></div>
+        </div>
+      </div>
+
+      <!-- 주문 탭 -->
+      <div id="auto-pane-orders" style="display:none;flex:1;overflow:auto;border:1px solid #2a2a4a;border-radius:4px;min-height:200px;">
+        <div style="padding:20px;text-align:center;color:#666;font-size:12px;">거래처를 선택하면 미정산 주문이 표시됩니다.</div>
+      </div>
+
+      <!-- 합계 + 생성 -->
+      <div style="margin-top:10px;padding:10px;background:#0f0f23;border-radius:6px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <div id="auto-summary" style="color:#ccc;font-size:13px;">합계: -</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <label style="color:#aaa;font-size:11px;cursor:pointer;"><input type="checkbox" id="auto-ship-override" onchange="b2bAutoRecalc()"> 배송비 수동 입력</label>
+          <input type="number" id="auto-ship-amount" step="1" placeholder="배송비" style="display:none;padding:5px 8px;width:100px;background:#1a1a2e;border:1px solid #555;border-radius:4px;color:#fff;font-size:12px;" oninput="b2bAutoRecalc()">
+          <button type="button" id="auto-create-btn" onclick="b2bAutoCreateInvoice()" style="padding:8px 18px;background:#2e7d32;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">생성</button>
+        </div>
+      </div>
+      <div id="auto-error" style="display:none;margin-top:8px;padding:8px 10px;background:#3a1a1a;border-radius:6px;color:#ff8a80;font-size:12px;"></div>
+      <div id="auto-result" style="display:none;margin-top:8px;padding:10px;background:#1a3a2e;border-radius:6px;color:#81c784;font-size:12px;"></div>
+    </div>
+  `;
+  document.body.appendChild(m);
+  m.addEventListener('click', (e) => { if (e.target === m) b2bCloseAutoInvoice(); });
+  // 만기일 기본: 30일 뒤
+  const d = new Date(); d.setDate(d.getDate() + 30);
+  document.getElementById('auto-due').value = d.toISOString().slice(0, 10);
+
+  if ((_autoCatalogTabs || []).length > 0) b2bAutoLoadCatalog();
+}
+
+function b2bCloseAutoInvoice() {
+  document.getElementById('b2b-auto-modal')?.remove();
+}
+
+function b2bAutoSwitchMode(mode) {
+  const cat = document.getElementById('auto-pane-catalog');
+  const ord = document.getElementById('auto-pane-orders');
+  const tc = document.getElementById('auto-tab-catalog');
+  const to = document.getElementById('auto-tab-orders');
+  if (mode === 'catalog') {
+    cat.style.display = 'flex'; ord.style.display = 'none';
+    tc.style.color = '#fff'; tc.style.fontWeight = '600'; tc.style.borderBottom = '2px solid #7c4dff';
+    to.style.color = '#888'; to.style.fontWeight = '400'; to.style.borderBottom = '2px solid transparent';
+  } else {
+    cat.style.display = 'none'; ord.style.display = 'block';
+    to.style.color = '#fff'; to.style.fontWeight = '600'; to.style.borderBottom = '2px solid #7c4dff';
+    tc.style.color = '#888'; tc.style.fontWeight = '400'; tc.style.borderBottom = '2px solid transparent';
+    b2bAutoLoadBuyerOrders();
+  }
+  b2bAutoRecalc();
+}
+
+async function b2bAutoOnBuyerChange() {
+  const bid = document.getElementById('auto-buyer').value;
+  const info = document.getElementById('auto-shipping-info');
+  if (!bid) { info.textContent = '거래처 선택 후 표시'; info.style.color = '#888'; return; }
+  const buyer = _autoBuyers.find(b => b.BuyerID === bid);
+  const sr = buyer?.ShippingRule || {};
+  const perBoxes = sr.perBoxes || 30;
+  const rate = sr.rate || 120;
+  const ccy = sr.currency || 'USD';
+  info.style.color = '#ffb74d';
+  info.innerHTML = `<strong>${ccy} ${Number(rate).toLocaleString('ko-KR')}</strong> / ${perBoxes}박스`;
+  // 주문 탭 열려있으면 재로드
+  if (document.getElementById('auto-pane-orders').style.display !== 'none') b2bAutoLoadBuyerOrders();
+  b2bAutoRecalc();
+}
+
+async function b2bAutoLoadCatalog() {
+  const tab = document.getElementById('auto-cat-tab').value;
+  const host = document.getElementById('auto-cat-results');
+  host.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">로딩…</div>';
+  try {
+    if (!_autoCatalogCache[tab]) {
+      const r = await fetch(`${API}/catalog/prices?tab=${encodeURIComponent(tab)}`);
+      const j = await r.json();
+      _autoCatalogCache[tab] = j.items || [];
+    }
+    b2bAutoRenderCatalog(_autoCatalogCache[tab]);
+  } catch (e) {
+    host.innerHTML = `<div style="padding:20px;color:#ff8a80;">로드 실패: ${e.message}</div>`;
+  }
+}
+
+function b2bAutoFilterCatalog() {
+  const tab = document.getElementById('auto-cat-tab').value;
+  const q = document.getElementById('auto-cat-search').value.toLowerCase().trim();
+  const items = _autoCatalogCache[tab] || [];
+  const filtered = q ? items.filter(i =>
+    (i.name || '').toLowerCase().includes(q) ||
+    (i.setCode || '').toLowerCase().includes(q) ||
+    (i.upc || '').toLowerCase().includes(q)
+  ) : items;
+  b2bAutoRenderCatalog(filtered);
+}
+
+function b2bAutoRenderCatalog(items) {
+  const host = document.getElementById('auto-cat-results');
+  if (!items.length) { host.innerHTML = '<div style="padding:20px;text-align:center;color:#666;">결과 없음</div>'; return; }
+  const tab = document.getElementById('auto-cat-tab').value;
+  host.innerHTML = items.slice(0, 200).map(i => {
+    const key = `${tab}|${i.rowIndex}|${i.side || ''}`;
+    return `<div onclick="b2bAutoAddLine('${tab}', ${i.rowIndex}, '${i.side || ''}')" style="padding:5px 10px;border-bottom:1px solid #2a2a4a;cursor:pointer;font-size:12px;display:grid;grid-template-columns:2fr 100px 80px;gap:8px;align-items:center;">
+      <span style="color:#fff;">${(i.name || '').replace(/</g, '&lt;')}</span>
+      <span style="color:#aaa;font-family:monospace;">${i.setCode || '-'}</span>
+      <span style="color:#81d4fa;text-align:right;">${i.usdPrice ? '$' + Number(i.usdPrice).toFixed(2) : '-'}</span>
+    </div>`;
+  }).join('');
+}
+
+function b2bAutoAddLine(catalogTab, rowIndex, side) {
+  const items = _autoCatalogCache[catalogTab] || [];
+  const found = items.find(x => x.rowIndex === rowIndex && (side ? x.side === side : true));
+  if (!found) return;
+  // 중복 방지
+  if (_autoLines.some(l => l.catalogTab === catalogTab && l.rowIndex === rowIndex && l.side === side)) return;
+  _autoLines.push({ catalogTab, rowIndex, side: side || null, name: found.name, setCode: found.setCode, usdPrice: found.usdPrice, boxes: 1 });
+  b2bAutoRenderLines();
+  b2bAutoRecalc();
+}
+
+function b2bAutoRemoveLine(idx) {
+  _autoLines.splice(idx, 1);
+  b2bAutoRenderLines();
+  b2bAutoRecalc();
+}
+
+function b2bAutoUpdateBoxes(idx, val) {
+  _autoLines[idx].boxes = Math.max(1, parseInt(val, 10) || 1);
+  b2bAutoRecalc();
+}
+
+function b2bAutoRenderLines() {
+  const host = document.getElementById('auto-lines');
+  if (!host) return;
+  if (_autoLines.length === 0) {
+    host.innerHTML = '<div style="padding:6px;color:#666;font-size:11px;text-align:center;">위에서 품목을 클릭해 추가하세요</div>';
+    return;
+  }
+  host.innerHTML = _autoLines.map((l, i) => `
+    <div style="display:grid;grid-template-columns:3fr 80px 90px 90px 40px;gap:6px;align-items:center;padding:4px 0;font-size:12px;">
+      <span style="color:#fff;">${(l.name || '').replace(/</g, '&lt;')}</span>
+      <span style="color:#aaa;font-family:monospace;">${l.setCode || '-'}</span>
+      <span style="color:#81d4fa;text-align:right;">${l.usdPrice ? '$' + Number(l.usdPrice).toFixed(2) : '-'}</span>
+      <input type="number" min="1" value="${l.boxes}" onchange="b2bAutoUpdateBoxes(${i}, this.value)" style="padding:4px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:12px;text-align:right;">
+      <button type="button" onclick="b2bAutoRemoveLine(${i})" style="padding:4px;background:transparent;border:0;color:#e94560;cursor:pointer;font-size:13px;">×</button>
+    </div>
+  `).join('');
+}
+
+function b2bAutoRecalc() {
+  const buyerId = document.getElementById('auto-buyer')?.value;
+  const buyer = _autoBuyers.find(b => b.BuyerID === buyerId);
+  const sr = buyer?.ShippingRule || {};
+  const perBoxes = sr.perBoxes || 30;
+  const rate = sr.rate || 120;
+  const ccy = sr.currency || 'USD';
+
+  // 카탈로그 모드에서는 _autoLines에서 합계 계산 (USD 기반)
+  const isOrders = document.getElementById('auto-pane-orders')?.style.display !== 'none';
+  if (isOrders) {
+    // 주문 모드 합계는 체크된 주문에서
+    const checks = document.querySelectorAll('#auto-pane-orders input[type="checkbox"]:checked');
+    let subTotal = 0; let count = 0; let ccyOrd = '';
+    checks.forEach(cb => {
+      subTotal += Number(cb.dataset.amount) || 0;
+      ccyOrd = ccyOrd || cb.dataset.currency || 'USD';
+      count++;
+    });
+    const sum = document.getElementById('auto-summary');
+    if (sum) sum.innerHTML = `선택 ${count}건 · 소계 <strong>${ccyOrd} ${subTotal.toFixed(2)}</strong> · 배송비 포함 (플랫폼 주문)`;
+    return;
+  }
+
+  const totalBoxes = _autoLines.reduce((s, l) => s + (parseInt(l.boxes, 10) || 0), 0);
+  const subtotal = _autoLines.reduce((s, l) => s + (Number(l.usdPrice) || 0) * (parseInt(l.boxes, 10) || 0), 0);
+  const overrideChecked = document.getElementById('auto-ship-override')?.checked;
+  document.getElementById('auto-ship-amount').style.display = overrideChecked ? 'inline-block' : 'none';
+  let shipping = 0;
+  if (overrideChecked) {
+    shipping = Number(document.getElementById('auto-ship-amount').value) || 0;
+  } else {
+    const chunks = totalBoxes > 0 ? Math.ceil(totalBoxes / perBoxes) : 0;
+    shipping = chunks * rate;
+  }
+  // 표시는 shipping_rule 통화로, 물품은 USD로 (서버가 최종 통일)
+  const sum = document.getElementById('auto-summary');
+  if (sum) sum.innerHTML = `${_autoLines.length}품목 · ${totalBoxes}박스 · 상품 $${subtotal.toFixed(2)} + 배송 ${ccy === 'USD' ? '$' + shipping.toFixed(2) : ccy + ' ' + shipping.toLocaleString('ko-KR')}`;
+}
+
+async function b2bAutoLoadBuyerOrders() {
+  const buyerId = document.getElementById('auto-buyer').value;
+  const host = document.getElementById('auto-pane-orders');
+  if (!buyerId) { host.innerHTML = '<div style="padding:20px;text-align:center;color:#666;font-size:12px;">먼저 거래처를 선택하세요.</div>'; return; }
+  host.innerHTML = '<div style="padding:20px;color:#888;">로딩…</div>';
+  try {
+    const r = await fetch(`${API}/b2b/buyers/${buyerId}/orders?limit=100`);
+    const j = await r.json();
+    const orders = j.data || [];
+    if (orders.length === 0) {
+      host.innerHTML = '<div style="padding:20px;text-align:center;color:#666;font-size:12px;">이 거래처에 매칭된 주문이 없습니다. (맵핑을 먼저 설정해야 합니다)</div>';
+      return;
+    }
+    host.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead style="position:sticky;top:0;background:#0f0f23;">
+          <tr>
+            <th style="padding:6px;text-align:center;width:30px;">✓</th>
+            <th style="padding:6px;text-align:left;">날짜</th>
+            <th style="padding:6px;text-align:left;">플랫폼</th>
+            <th style="padding:6px;text-align:left;">상품</th>
+            <th style="padding:6px;text-align:right;">금액</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${orders.map(o => `
+            <tr style="border-bottom:1px solid #2a2a4a;">
+              <td style="padding:5px;text-align:center;"><input type="checkbox" data-orderno="${o.order_no}" data-amount="${o.payment_amount || 0}" data-currency="${o.currency || 'USD'}" onchange="b2bAutoRecalc()"></td>
+              <td style="padding:5px;color:#aaa;font-family:monospace;">${(o.order_date || '').slice(0, 10)}</td>
+              <td style="padding:5px;">${o.platform || '-'}</td>
+              <td style="padding:5px;color:#fff;">${(o.title || '').slice(0, 50)}</td>
+              <td style="padding:5px;text-align:right;color:#ffb74d;">${Number(o.payment_amount || 0).toFixed(2)} ${o.currency || ''}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    host.innerHTML = `<div style="padding:20px;color:#ff8a80;">실패: ${e.message}</div>`;
+  }
+}
+
+async function b2bAutoCreateInvoice() {
+  const err = document.getElementById('auto-error');
+  const result = document.getElementById('auto-result');
+  err.style.display = 'none'; result.style.display = 'none';
+
+  const buyerId = document.getElementById('auto-buyer').value;
+  if (!buyerId) { err.textContent = '거래처를 선택하세요'; err.style.display = 'block'; return; }
+
+  const dueDate = document.getElementById('auto-due').value;
+  const overrideChecked = document.getElementById('auto-ship-override').checked;
+  const shippingOverride = overrideChecked ? Number(document.getElementById('auto-ship-amount').value) || 0 : null;
+
+  const isOrders = document.getElementById('auto-pane-orders').style.display !== 'none';
+  const payload = { buyerId, dueDate, shippingOverride };
+
+  if (isOrders) {
+    payload.mode = 'orders';
+    const orderNos = [...document.querySelectorAll('#auto-pane-orders input[type="checkbox"]:checked')].map(cb => cb.dataset.orderno);
+    if (orderNos.length === 0) { err.textContent = '주문을 선택하세요'; err.style.display = 'block'; return; }
+    payload.orderIds = orderNos;
+  } else {
+    payload.mode = 'catalog';
+    if (_autoLines.length === 0) { err.textContent = '카탈로그 품목을 추가하세요'; err.style.display = 'block'; return; }
+    payload.items = _autoLines.map(l => ({
+      catalogTab: l.catalogTab,
+      rowIndex: l.rowIndex,
+      side: l.side || undefined,
+      boxes: l.boxes,
+    }));
+  }
+
+  const btn = document.getElementById('auto-create-btn');
+  btn.disabled = true; btn.textContent = '생성 중...';
+  try {
+    const res = await fetch(`${API}/b2b/invoices/auto`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const j = await res.json();
+    if (!res.ok || !j.success) { err.textContent = j.error || '생성 실패'; err.style.display = 'block'; return; }
+    const inv = j.invoice;
+    result.innerHTML = `✅ ${inv.invoiceNo} 생성 완료 · ${inv.currency} ${Number(inv.total).toFixed(2)}${inv.driveUrl ? ` · <a href="${inv.driveUrl}" target="_blank" style="color:#81d4fa">열기</a>` : ''}`;
+    result.style.display = 'block';
+    // 인보이스 리스트 갱신 (B2B 탭 열려있으면)
+    if (typeof loadB2BInvoices === 'function') loadB2BInvoices();
+  } catch (e) {
+    err.textContent = e.message || '네트워크 오류';
+    err.style.display = 'block';
+  } finally {
+    btn.disabled = false; btn.textContent = '생성';
   }
 }
 

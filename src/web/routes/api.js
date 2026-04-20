@@ -3463,6 +3463,37 @@ router.post('/b2b/orders/:orderNo/assign', async (req, res) => {
   }
 });
 
+// POST /api/b2b/invoices/auto — 자동 인보이스 생성 (catalog / orders 모드)
+router.post('/b2b/invoices/auto', async (req, res) => {
+  try {
+    const result = await getB2BService().generateInvoiceAuto(req.body || {});
+    const { xlsxBuffer, ...meta } = result; // xlsx는 응답 제외 (다운로드는 별도)
+    res.json({ success: true, invoice: meta });
+  } catch (error) {
+    console.error('❌ B2B auto invoice 에러:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PATCH /api/b2b/buyers/:buyerId/shipping-rule — 거래처 배송비 규칙 저장
+//   body: { perBoxes: 30, rate: 120, currency: 'USD' } (모두 선택)
+router.patch('/b2b/buyers/:buyerId/shipping-rule', async (req, res) => {
+  try {
+    const { buyerId } = req.params;
+    const { perBoxes, rate, currency } = req.body || {};
+    const rule = {};
+    if (perBoxes != null) rule.perBoxes = Math.max(1, parseInt(perBoxes, 10) || 30);
+    if (rate != null) rule.rate = Number(rate) || 0;
+    if (currency) rule.currency = String(currency).toUpperCase().slice(0, 4);
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    await repo.updateBuyer(buyerId, { ShippingRule: rule });
+    res.json({ success: true, shippingRule: rule });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/b2b/match/run — 전체 미매칭 주문에 대해 external_ids 기준 backfill 실행
 router.post('/b2b/match/run', async (req, res) => {
   try {

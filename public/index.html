@@ -2354,8 +2354,17 @@
 
       <!-- 탭 1: 인보이스 생성 -->
       <div id="b2b-create" class="b2b-tab-content active">
+        <div class="card" style="border-left:4px solid #7c4dff;margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+            <div>
+              <h3 style="font-size:14px;font-weight:700;margin-bottom:4px;">⚡ 자동 인보이스</h3>
+              <p style="font-size:12px;color:#888;margin:0;">카탈로그에서 품목 선택하면 가격·배송비 자동 계산. 혹은 실제 플랫폼 주문에서 선택.</p>
+            </div>
+            <button onclick="b2bOpenAutoInvoice()" style="padding:10px 18px;background:#7c4dff;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">⚡ 자동 생성 시작</button>
+          </div>
+        </div>
         <div class="card" style="border-left:4px solid #0288d1">
-          <h3 style="font-size:15px;font-weight:700;margin-bottom:14px">새 인보이스 생성</h3>
+          <h3 style="font-size:15px;font-weight:700;margin-bottom:14px">수동 인보이스 생성</h3>
 
           <!-- 구매자 선택 -->
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px">
@@ -3141,7 +3150,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260420b"></script>
+  <script src="/js/dashboard.js?v=20260420c"></script>
   <script src="/js/operations.js?v=20260420a"></script>
   <script src="/js/catalog.js?v=20260420a"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->
