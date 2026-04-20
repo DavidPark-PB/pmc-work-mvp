@@ -223,7 +223,7 @@
       const info = categoryMap[e.category] || { label: e.category, color: '#8d6e63' };
       const srcLabel = { manual: '수동', csv: 'CSV', recurring: '정기' }[e.source] || e.source;
       const canEdit = user.canManageFinance || e.createdBy === user.id;
-      const canDelete = user.canManageFinance;
+      const canDelete = user.canManageFinance || e.createdBy === user.id;
       const canReceipt = user.canManageFinance || e.createdBy === user.id;
       let receiptBtn = '';
       if (e.hasReceipt) {
@@ -333,19 +333,148 @@
     input.click();
   }
 
-  async function edit(id) {
+  function edit(id) {
     const exp = cached.find(x => x.id === id);
     if (!exp) return;
-    const newAmount = prompt('금액 수정', exp.amount);
-    if (newAmount === null) return;
-    const num = Number(newAmount);
-    if (!Number.isFinite(num)) { alert('숫자를 입력하세요'); return; }
-    const res = await fetch('/api/expenses/' + id, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: num }),
-    });
-    if (!res.ok) { alert((await res.json()).error || '수정 실패'); return; }
+    openEditModal(exp);
+  }
+
+  function openEditModal(exp) {
+    const prev = document.getElementById('exp-edit-modal');
+    if (prev) prev.remove();
+
+    const cardOptions = ['KRW', 'USD', 'EUR', 'JPY'].map(c =>
+      `<option value="${c}" ${exp.currency === c ? 'selected' : ''}>${c}</option>`
+    ).join('');
+    const catOptions = categories.map(c =>
+      `<option value="${esc(c.key)}" ${exp.category === c.key ? 'selected' : ''}>${esc(c.label)}</option>`
+    ).join('');
+
+    const m = document.createElement('div');
+    m.id = 'exp-edit-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:22px;width:500px;max-width:95vw;color:#e0e0e0;">
+        <h3 style="color:#fff;font-size:15px;margin:0 0 14px;">✏️ 지출 수정</h3>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:8px;">
+          <div>
+            <label style="font-size:11px;color:#aaa;">결제일</label>
+            <input type="date" id="ee-paid-at" value="${esc(exp.paidAt || '')}" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#aaa;">금액</label>
+            <input type="number" id="ee-amount" step="0.01" value="${esc(String(exp.amount))}" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          </div>
+          <div>
+            <label style="font-size:11px;color:#aaa;">통화</label>
+            <select id="ee-currency" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">${cardOptions}</select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:#aaa;">카테고리</label>
+            <select id="ee-category" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">${catOptions}</select>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 100px;gap:8px;margin-bottom:8px;">
+          <input type="text" id="ee-merchant" maxlength="200" placeholder="가맹점/거래처" value="${esc(exp.merchant || '')}" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          <input type="text" id="ee-card" maxlength="4" placeholder="카드 뒤4자리" value="${esc(exp.cardLast4 || '')}" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+        </div>
+        <input type="text" id="ee-memo" maxlength="500" placeholder="메모" value="${esc(exp.memo || '')}" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;margin-bottom:10px;">
+
+        <div style="background:#0f0f23;padding:10px;border-radius:6px;margin-bottom:10px;">
+          <div style="font-size:11px;color:#aaa;margin-bottom:6px;">영수증</div>
+          ${exp.hasReceipt ? `
+            <div style="display:flex;gap:6px;align-items:center;font-size:12px;">
+              <span style="color:#64b5f6;">📎 ${esc(exp.receiptName || '영수증')}</span>
+              <button type="button" onclick="pmcExpenses.viewReceipt(${exp.id})" style="padding:3px 8px;background:#0f2a3a;border:1px solid #1565c0;border-radius:4px;color:#64b5f6;cursor:pointer;font-size:11px;">보기</button>
+              <button type="button" onclick="pmcExpenses.replaceReceiptInModal(${exp.id})" style="padding:3px 8px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">교체</button>
+              <button type="button" onclick="pmcExpenses.deleteReceiptInModal(${exp.id})" style="padding:3px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">삭제</button>
+            </div>
+          ` : `
+            <button type="button" onclick="pmcExpenses.replaceReceiptInModal(${exp.id})" style="padding:6px 12px;background:#2a2a4a;border:1px dashed #555;border-radius:4px;color:#888;cursor:pointer;font-size:12px;">📎 영수증 추가</button>
+          `}
+        </div>
+
+        <div id="ee-error" style="display:none;margin-bottom:10px;padding:8px 10px;background:#3a1a1a;border-radius:6px;color:#ff8a80;font-size:12px;"></div>
+
+        <div style="display:flex;justify-content:flex-end;gap:6px;">
+          <button type="button" onclick="pmcExpenses.closeEditModal()" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
+          <button type="button" id="ee-save" onclick="pmcExpenses.saveEditModal(${exp.id})" style="padding:8px 16px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">저장</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+  }
+
+  function closeEditModal() {
+    document.getElementById('exp-edit-modal')?.remove();
+  }
+
+  async function saveEditModal(id) {
+    const errEl = document.getElementById('ee-error');
+    errEl.style.display = 'none';
+    const payload = {
+      paidAt: document.getElementById('ee-paid-at').value,
+      amount: Number(document.getElementById('ee-amount').value),
+      currency: document.getElementById('ee-currency').value,
+      category: document.getElementById('ee-category').value,
+      merchant: document.getElementById('ee-merchant').value.trim() || null,
+      memo: document.getElementById('ee-memo').value.trim() || null,
+      cardLast4: document.getElementById('ee-card').value.trim() || null,
+    };
+    if (!payload.paidAt) { errEl.textContent = '결제일을 입력하세요'; errEl.style.display = 'block'; return; }
+    if (!Number.isFinite(payload.amount)) { errEl.textContent = '금액을 올바르게 입력하세요'; errEl.style.display = 'block'; return; }
+    const btn = document.getElementById('ee-save');
+    btn.disabled = true; btn.textContent = '저장 중...';
+    try {
+      const res = await fetch('/api/expenses/' + id, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { errEl.textContent = data.error || '수정 실패'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = '저장'; return; }
+      closeEditModal();
+      refresh();
+    } catch (e) {
+      errEl.textContent = e.message || '네트워크 오류';
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = '저장';
+    }
+  }
+
+  function replaceReceiptInModal(id) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf';
+    input.onchange = async () => {
+      const f = input.files?.[0];
+      if (!f) return;
+      const fd = new FormData();
+      fd.append('file', f);
+      const res = await fetch('/api/expenses/' + id + '/receipt', { method: 'POST', body: fd });
+      if (!res.ok) { alert((await res.json()).error || '업로드 실패'); return; }
+      const { data } = await res.json();
+      // 모달 새로 열어서 최신 상태 반영
+      closeEditModal();
+      refresh();
+      if (data) setTimeout(() => openEditModal(data), 150);
+    };
+    input.click();
+  }
+
+  async function deleteReceiptInModal(id) {
+    if (!confirm('영수증을 삭제하시겠습니까?')) return;
+    const res = await fetch('/api/expenses/' + id + '/receipt', { method: 'DELETE' });
+    if (!res.ok) { alert((await res.json()).error || '삭제 실패'); return; }
+    closeEditModal();
     refresh();
+    // 최신 상태 다시 불러와서 모달 재오픈
+    try {
+      const r = await fetch('/api/expenses/' + id);
+      const j = await r.json();
+      if (r.ok && j.data) setTimeout(() => openEditModal(j.data), 150);
+    } catch {}
   }
 
   async function del(id) {
@@ -355,5 +484,9 @@
     refresh();
   }
 
-  window.pmcExpenses = { load, refresh, edit, del, onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater };
+  window.pmcExpenses = {
+    load, refresh, edit, del,
+    onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater,
+    closeEditModal, saveEditModal, replaceReceiptInModal, deleteReceiptInModal,
+  };
 })();

@@ -11,7 +11,6 @@
 const express = require('express');
 const crypto = require('crypto');
 const multer = require('multer');
-const { requireFinanceAccess } = require('../../middleware/auth');
 const repo = require('../../db/expenseRepository');
 const { CATEGORIES } = require('../../services/expenseCategories');
 const { getClient } = require('../../db/supabaseClient');
@@ -217,12 +216,16 @@ router.delete('/:id/receipt', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// DELETE /api/expenses/:id — 재무 권한자만 (영수증 삭제는 재무 관리 책임)
-router.delete('/:id', requireFinanceAccess, async (req, res) => {
+// DELETE /api/expenses/:id — 본인 등록분은 본인이 삭제 가능, 타인 것은 재무만.
+router.delete('/:id', async (req, res) => {
   try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
     const id = parseInt(req.params.id, 10);
     const existing = await repo.getExpense(id);
     if (!existing) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
+    if (!req.user.canManageFinance && existing.createdBy !== req.user.id) {
+      return res.status(403).json({ error: '본인이 등록한 지출만 삭제할 수 있습니다' });
+    }
     // Storage 영수증도 함께 제거 (실패 무시)
     if (existing.receiptPath) {
       try { await getClient().storage.from(RECEIPT_BUCKET).remove([existing.receiptPath]); } catch {}
