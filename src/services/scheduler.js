@@ -114,6 +114,16 @@ function start() {
     sendMorningDigest().catch(e => console.error('[scheduler] morning error:', e));
   }, { timezone: TZ });
 
+  // 매일 오전 9시 5분 — B2B 미발송 수량 admin 알림
+  cron.schedule('5 9 * * *', async () => {
+    try {
+      const reminder = require('./b2bShippingReminder');
+      await reminder.run();
+    } catch (e) {
+      console.error('[scheduler] b2b shipping reminder error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // 매일 오후 5시 정각 — 사장 미완료 요약
   cron.schedule('0 17 * * *', () => {
     sendEveningOwnerSummary().catch(e => console.error('[scheduler] evening error:', e));

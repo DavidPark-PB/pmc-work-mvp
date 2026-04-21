@@ -303,6 +303,89 @@ class B2BRepository {
     return { totalUSD, totalKRW, invoiceCount: data?.length || 0, buyerCount: Object.keys(buyerMap).length, ranking };
   }
 
+  // ─── Payments (Phase C) ───
+
+  async recordPayment({ invoiceNo, paidAt, amount, method, note, userId }) {
+    // 1. b2b_payments insert
+    const { data: pay, error: payErr } = await this.db
+      .from('b2b_payments')
+      .insert({
+        invoice_no: invoiceNo,
+        paid_at: paidAt || new Date().toISOString().slice(0, 10),
+        amount,
+        method: method || null,
+        note: note || null,
+        created_by: userId || null,
+      })
+      .select()
+      .single();
+    if (payErr) throw payErr;
+
+    // 2. invoice.paid_amount 누적 + payment_status 재계산
+    const { data: inv, error: invErr } = await this.db
+      .from('b2b_invoices')
+      .select('paid_amount, total')
+      .eq('invoice_no', invoiceNo)
+      .single();
+    if (invErr) throw invErr;
+
+    const newPaid = (Number(inv.paid_amount) || 0) + Number(amount);
+    const total = Number(inv.total) || 0;
+    let paymentStatus = 'UNPAID';
+    if (newPaid >= total && total > 0) paymentStatus = 'PAID';
+    else if (newPaid > 0) paymentStatus = 'PARTIAL';
+
+    const updates = { paid_amount: newPaid, payment_status: paymentStatus };
+    if (paymentStatus === 'PAID') updates.status = 'PAID';
+    const { error: updErr } = await this.db
+      .from('b2b_invoices')
+      .update(updates)
+      .eq('invoice_no', invoiceNo);
+    if (updErr) throw updErr;
+
+    return { payment: pay, paidAmount: newPaid, paymentStatus };
+  }
+
+  async listPayments(invoiceNo) {
+    const { data, error } = await this.db
+      .from('b2b_payments')
+      .select('*')
+      .eq('invoice_no', invoiceNo)
+      .order('paid_at', { ascending: false })
+      .order('id', { ascending: false });
+    if (error && error.code !== '42P01') throw error;
+    return (data || []).map(r => ({
+      id: r.id,
+      invoiceNo: r.invoice_no,
+      paidAt: r.paid_at,
+      amount: parseFloat(r.amount),
+      method: r.method,
+      note: r.note,
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+    }));
+  }
+
+  async getInvoicePaymentInfo(invoiceNos) {
+    // 여러 인보이스의 payment_status + paid_amount 한 번에 조회
+    if (!Array.isArray(invoiceNos) || invoiceNos.length === 0) return {};
+    const { data, error } = await this.db
+      .from('b2b_invoices')
+      .select('invoice_no, paid_amount, payment_status, total, due_date')
+      .in('invoice_no', invoiceNos);
+    if (error && error.code !== '42703') throw error;
+    const out = {};
+    for (const r of data || []) {
+      out[r.invoice_no] = {
+        paidAmount: parseFloat(r.paid_amount) || 0,
+        paymentStatus: r.payment_status || 'UNPAID',
+        total: parseFloat(r.total) || 0,
+        dueDate: r.due_date,
+      };
+    }
+    return out;
+  }
+
   // ─── Shipments (Phase B) ───
 
   async createShipment({ invoiceNo, shippedAt, carrier, trackingNumber, items, notes, userId }) {

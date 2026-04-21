@@ -3289,11 +3289,32 @@ router.get('/b2b/prices', async (req, res) => {
 
 // ─── 인보이스 ───
 
-// GET /api/b2b/invoices — 인보이스 목록 (service.getInvoices가 voided 자동 제외)
+// GET /api/b2b/invoices — 인보이스 목록 + payment_status 주입 (Phase C)
 router.get('/b2b/invoices', async (req, res) => {
   try {
     const { buyerId, status, fromDate, toDate } = req.query;
     const invoices = await getB2BService().getInvoices({ buyerId, status, fromDate, toDate });
+
+    // Supabase에서 payment 정보 조회해 주입 (마이그레이션 027 적용 시)
+    try {
+      const B2BRepo = require('../../db/b2bRepository');
+      const repo = new B2BRepo();
+      const payMap = await repo.getInvoicePaymentInfo((invoices || []).map(i => i.InvoiceNo));
+      const today = new Date().toISOString().slice(0, 10);
+      for (const inv of invoices || []) {
+        const info = payMap[inv.InvoiceNo];
+        if (info) {
+          inv.PaidAmount = info.paidAmount;
+          inv.PaymentStatus = info.paymentStatus;
+          inv.IsOverdue = info.paymentStatus !== 'PAID' && info.dueDate && info.dueDate < today;
+        } else {
+          inv.PaidAmount = inv.Status === 'PAID' ? (inv.Total || 0) : 0;
+          inv.PaymentStatus = inv.Status === 'PAID' ? 'PAID' : 'UNPAID';
+          inv.IsOverdue = inv.Status !== 'PAID' && inv.DueDate && inv.DueDate < today;
+        }
+      }
+    } catch { /* 마이그레이션 미적용 — payment 정보 스킵 */ }
+
     res.json({ success: true, invoices });
   } catch (error) {
     console.error('❌ B2B invoices 조회 에러:', error.message);
@@ -3484,6 +3505,55 @@ router.get('/b2b/shipments/by-date', async (req, res) => {
       buyerId: invMap.get(s.invoiceNo)?.BuyerID || null,
     }));
     res.json({ success: true, date, shipments: enriched });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─── 결제 추적 (Phase C) ───
+
+// POST /api/b2b/invoices/:id/payments — 입금 기록 (부분 입금 허용)
+router.post('/b2b/invoices/:id/payments', async (req, res) => {
+  try {
+    const invoiceNo = req.params.id;
+    const { amount, paidAt, method, note } = req.body || {};
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      return res.status(400).json({ success: false, error: '입금 금액을 올바르게 입력하세요' });
+    }
+
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+
+    // 인보이스가 Supabase에 없으면 먼저 upsert
+    await _ensureInvoiceInSupabase(invoiceNo, repo);
+
+    const result = await repo.recordPayment({
+      invoiceNo, paidAt, amount: amt,
+      method: method ? String(method).slice(0, 40) : null,
+      note: note ? String(note).trim().slice(0, 500) : null,
+      userId: req.user?.id,
+    });
+
+    // 완납이면 Sheets status도 PAID로 동기화
+    if (result.paymentStatus === 'PAID') {
+      try { await getB2BService().updateInvoiceStatus(invoiceNo, 'PAID'); } catch {}
+    }
+
+    res.json({ success: true, ...result });
+  } catch (e) {
+    console.error('❌ B2B payment 에러:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/b2b/invoices/:id/payments — 입금 이력
+router.get('/b2b/invoices/:id/payments', async (req, res) => {
+  try {
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    const payments = await repo.listPayments(req.params.id);
+    res.json({ success: true, payments });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

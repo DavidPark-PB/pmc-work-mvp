@@ -6465,19 +6465,30 @@ async function loadB2BInvoiceList() {
     }
 
     tbody.innerHTML = invoices.map(inv => {
-      const statusColor = inv.Status === 'PAID' ? '#27ae60' : inv.Status === 'SENT' ? '#f39c12' : '#888';
-      return `<tr>
+      const statusColor = inv.Status === 'PAID' ? '#27ae60' : inv.Status === 'FULFILLED' ? '#2e7d32' : inv.Status === 'PARTIALLY_SHIPPED' ? '#f39c12' : inv.Status === 'SENT' ? '#f39c12' : '#888';
+      const paidAmt = Number(inv.PaidAmount || 0);
+      const total = Number(inv.Total || 0);
+      const paidPct = total > 0 ? Math.round((paidAmt / total) * 100) : 0;
+      const paidStatus = inv.PaymentStatus || (inv.Status === 'PAID' ? 'PAID' : 'UNPAID');
+      const payColor = paidStatus === 'PAID' ? '#27ae60' : paidStatus === 'PARTIAL' ? '#f39c12' : '#888';
+      const overdueBadge = inv.IsOverdue ? `<span style="background:#c62828;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;margin-left:4px;">⏰ 연체</span>` : '';
+      const paidBadge = `<span style="background:${payColor};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600;">💰 ${paidPct}%</span>`;
+      return `<tr${inv.IsOverdue ? ' style="background:#fff5f5;"' : ''}>
         <td style="font-weight:600">${inv.InvoiceNo}</td>
         <td>${inv.BuyerName}</td>
         <td>${inv.Date}</td>
-        <td>${inv.DueDate}</td>
+        <td>${inv.DueDate}${overdueBadge}</td>
         <td style="text-align:right;font-weight:600">${inv.Currency} ${inv.Total.toFixed(2)}</td>
-        <td><span style="background:${statusColor};color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600">${inv.Status}</span></td>
+        <td>
+          <span style="background:${statusColor};color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600">${inv.Status}</span>
+          ${paidBadge}
+        </td>
         <td>
           <div style="display:flex;gap:4px;flex-wrap:wrap">
             <button onclick="b2bOpenShipmentModal('${inv.InvoiceNo}')" title="발송 관리" style="background:#1565c0;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🚚 발송</button>
+            <button onclick="b2bOpenPaymentModal('${inv.InvoiceNo}', ${total}, ${paidAmt})" title="입금 기록" style="background:#f39c12;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">💰 입금</button>
             <a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="background:#0288d1;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">XLSX</a>
-            ${inv.Status !== 'PAID' ? `<button onclick="b2bMarkPaid('${inv.InvoiceNo}')" style="background:#27ae60;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">PAID</button>` : ''}
+            ${paidStatus !== 'PAID' ? `<button onclick="b2bMarkPaid('${inv.InvoiceNo}')" style="background:#27ae60;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">PAID</button>` : ''}
             <button onclick="b2bSendWhatsApp('${inv.InvoiceNo}')" style="background:#25d366;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">WA</button>
             <button onclick="b2bVoidInvoice('${inv.InvoiceNo}')" title="무효화" style="background:#c62828;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🚫</button>
           </div>
@@ -6761,6 +6772,98 @@ async function b2bDeleteShipment(shipmentId, invoiceNo) {
     loadB2BInvoiceList();
   } catch (err) {
     alert('삭제 실패: ' + err.message);
+  }
+}
+
+// ─── 💰 입금 모달 (Phase C) ───
+async function b2bOpenPaymentModal(invoiceNo, total, currentPaid) {
+  let payments = [];
+  try {
+    const res = await fetch(`${API}/b2b/invoices/${invoiceNo}/payments`);
+    const data = await res.json();
+    if (data.success) payments = data.payments || [];
+  } catch {}
+
+  const balance = Math.max(0, total - currentPaid);
+  const history = payments.length === 0
+    ? '<div style="padding:16px;text-align:center;color:#888;font-size:12px;">입금 이력 없음</div>'
+    : `<table style="width:100%;font-size:12px;border-collapse:collapse;">
+        <thead><tr style="background:#f0f2f5;"><th style="padding:5px;text-align:left;">날짜</th><th style="padding:5px;text-align:right;">금액</th><th style="padding:5px;text-align:left;">방법</th><th style="padding:5px;text-align:left;">메모</th></tr></thead>
+        <tbody>${payments.map(p => `
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:5px;">${p.paidAt}</td>
+            <td style="padding:5px;text-align:right;font-weight:600;color:#27ae60;">+${p.amount.toFixed(2)}</td>
+            <td style="padding:5px;color:#555;">${p.method || '-'}</td>
+            <td style="padding:5px;color:#888;">${p.note || ''}</td>
+          </tr>`).join('')}</tbody>
+      </table>`;
+
+  const existing = document.getElementById('b2b-pay-modal');
+  if (existing) existing.remove();
+  const m = document.createElement('div');
+  m.id = 'b2b-pay-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  m.innerHTML = `
+    <div style="background:#fff;border-radius:12px;padding:20px;width:540px;max-width:96vw;max-height:90vh;overflow:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div>
+          <h3 style="font-size:16px;font-weight:700;margin:0;">💰 ${invoiceNo} 입금 관리</h3>
+          <p style="font-size:12px;color:#888;margin:2px 0 0;">총액 ${total.toFixed(2)} · 입금 완료 ${currentPaid.toFixed(2)} · 잔액 <strong style="color:${balance > 0 ? '#c62828' : '#27ae60'};">${balance.toFixed(2)}</strong></p>
+        </div>
+        <button onclick="document.getElementById('b2b-pay-modal').remove()" style="background:#2a2a4a;color:#fff;border:0;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;">닫기</button>
+      </div>
+
+      ${balance > 0 ? `
+      <div style="background:#f0f8ff;padding:12px;border-radius:6px;margin-bottom:12px;">
+        <h4 style="font-size:13px;font-weight:700;margin:0 0 8px;color:#1565c0;">+ 입금 기록 추가</h4>
+        <div style="display:grid;grid-template-columns:110px 120px 1fr;gap:6px;margin-bottom:6px;">
+          <input type="date" id="payFormDate" value="${new Date().toISOString().slice(0,10)}" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+          <input type="number" id="payFormAmount" placeholder="금액" min="0.01" step="0.01" value="${balance.toFixed(2)}" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;text-align:right;">
+          <select id="payFormMethod" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+            <option value="bank_transfer">계좌이체</option>
+            <option value="paypal">PayPal</option>
+            <option value="card">카드</option>
+            <option value="cash">현금</option>
+            <option value="other">기타</option>
+          </select>
+        </div>
+        <input type="text" id="payFormNote" placeholder="메모 (선택 — 예: 잔액 미지급)" style="width:100%;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;margin-bottom:8px;">
+        <button onclick="b2bSubmitPayment('${invoiceNo}')" id="paySubmitBtn" style="padding:8px 16px;background:#f39c12;color:#fff;border:0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">✓ 입금 저장</button>
+      </div>` : `
+      <div style="padding:12px;background:#e8f5e9;border-radius:6px;color:#27ae60;text-align:center;margin-bottom:12px;">
+        ✓ 완납되었습니다
+      </div>`}
+
+      <h4 style="font-size:13px;font-weight:700;margin:0 0 6px;">📜 입금 이력</h4>
+      ${history}
+    </div>
+  `;
+  document.body.appendChild(m);
+  m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+}
+
+async function b2bSubmitPayment(invoiceNo) {
+  const amount = parseFloat(document.getElementById('payFormAmount').value);
+  if (!amount || amount <= 0) { alert('입금 금액을 입력하세요'); return; }
+  const btn = document.getElementById('paySubmitBtn');
+  btn.disabled = true; btn.textContent = '저장 중...';
+  try {
+    const res = await fetch(`${API}/b2b/invoices/${invoiceNo}/payments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amount,
+        paidAt: document.getElementById('payFormDate').value,
+        method: document.getElementById('payFormMethod').value,
+        note: document.getElementById('payFormNote').value.trim() || undefined,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || '실패');
+    document.getElementById('b2b-pay-modal').remove();
+    loadB2BInvoiceList();
+  } catch (err) {
+    alert('입금 저장 실패: ' + err.message);
+    btn.disabled = false; btn.textContent = '✓ 입금 저장';
   }
 }
 
