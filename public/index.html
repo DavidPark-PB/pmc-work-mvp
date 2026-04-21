@@ -2364,6 +2364,7 @@
         <button class="b2b-tab" data-tab="b2b-list" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">인보이스 목록</button>
         <button class="b2b-tab" data-tab="b2b-shipping" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">🚚 발송 현황</button>
         <button class="b2b-tab" data-tab="b2b-buyers" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">구매자 관리</button>
+        <button class="b2b-tab" data-tab="b2b-archive" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">📦 완료 보관소</button>
         <button class="b2b-tab" data-tab="b2b-revenue" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">매출 분석</button>
       </div>
 
@@ -2470,10 +2471,17 @@
               <select id="b2bListFilterBuyer" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px">
                 <option value="">전체 구매자</option>
               </select>
+              <select id="b2bListFilterGroup" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+                <option value="active" selected>🔄 진행 중 (기본)</option>
+                <option value="all">🗃 전체 (완료 포함)</option>
+                <option value="completed">✅ 완료만</option>
+              </select>
               <select id="b2bListFilterStatus" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px">
-                <option value="">전체 상태</option>
+                <option value="">상태 전체</option>
                 <option value="CREATED">CREATED</option>
                 <option value="SENT">SENT</option>
+                <option value="PARTIALLY_SHIPPED">PARTIALLY_SHIPPED</option>
+                <option value="FULFILLED">FULFILLED</option>
                 <option value="PAID">PAID</option>
               </select>
               <button id="b2bListRefresh" class="refresh-btn" style="font-size:11px;padding:6px 12px">새로고침</button>
@@ -2614,6 +2622,28 @@
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <!-- 탭: 📦 완료 보관소 -->
+      <div id="b2b-archive" class="b2b-tab-content" style="display:none">
+        <div class="card" style="border-left:4px solid #27ae60">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+            <div>
+              <h3 style="font-size:15px;font-weight:700;margin:0;">📦 완료 보관소 <span style="color:#27ae60;font-size:12px;font-weight:400;">· PAID 인보이스 자동 보관</span></h3>
+              <p style="font-size:11px;color:#888;margin:2px 0 0;">결제 완료된 인보이스는 메인 목록에서 빠지고 여기에 구매자별·월별로 쌓입니다.</p>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <select id="b2bArchiveYear" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;"></select>
+              <select id="b2bArchiveBuyer" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px;">
+                <option value="">전체 구매자</option>
+              </select>
+              <button onclick="loadB2BArchive()" class="refresh-btn" style="font-size:11px;padding:6px 12px;">새로고침</button>
+            </div>
+          </div>
+
+          <div id="b2bArchiveSummary" style="background:#f0fff4;padding:12px;border-radius:6px;margin-bottom:12px;font-size:13px;color:#1a6d3a;"></div>
+          <div id="b2bArchiveContent" style="margin-top:8px;"></div>
         </div>
       </div>
 
@@ -3203,7 +3233,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260421k"></script>
+  <script src="/js/dashboard.js?v=20260421l"></script>
   <script src="/js/operations.js?v=20260420a"></script>
   <script src="/js/catalog.js?v=20260421g"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->

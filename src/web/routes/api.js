@@ -3299,10 +3299,12 @@ router.get('/b2b/prices', async (req, res) => {
 // ─── 인보이스 ───
 
 // GET /api/b2b/invoices — 인보이스 목록 + payment_status 주입 (Phase C)
+// statusGroup=active(default) | completed | all — active는 PAID 숨김
 router.get('/b2b/invoices', async (req, res) => {
   try {
     const { buyerId, status, fromDate, toDate } = req.query;
-    const invoices = await getB2BService().getInvoices({ buyerId, status, fromDate, toDate });
+    const statusGroup = req.query.statusGroup || 'all';
+    const invoices = await getB2BService().getInvoices({ buyerId, status, fromDate, toDate, statusGroup });
 
     // Supabase에서 payment 정보 조회해 주입 (마이그레이션 027 적용 시)
     try {

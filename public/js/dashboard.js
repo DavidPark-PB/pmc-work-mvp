@@ -6259,6 +6259,7 @@ function setupB2BPage() {
             }
             b2bShippingRefresh();
             break;
+          case 'b2b-archive': loadB2BArchive(); break;
           case 'b2b-buyers': loadB2BBuyers(); break;
           case 'b2b-revenue': loadB2BRevenue(); break;
         }
@@ -6280,6 +6281,8 @@ function setupB2BPage() {
     document.getElementById('b2bListRefresh').addEventListener('click', loadB2BInvoiceList);
     document.getElementById('b2bListFilterBuyer').addEventListener('change', loadB2BInvoiceList);
     document.getElementById('b2bListFilterStatus').addEventListener('change', loadB2BInvoiceList);
+    const fg = document.getElementById('b2bListFilterGroup');
+    if (fg) fg.addEventListener('change', loadB2BInvoiceList);
 
     // 구매자 추가/취소/저장
     document.getElementById('b2bAddBuyerBtn').addEventListener('click', () => {
@@ -6454,7 +6457,8 @@ async function loadB2BInvoiceList() {
   try {
     const buyerId = document.getElementById('b2bListFilterBuyer').value;
     const status = document.getElementById('b2bListFilterStatus').value;
-    let url = `${API}/b2b/invoices?`;
+    const group = document.getElementById('b2bListFilterGroup')?.value || 'active';
+    let url = `${API}/b2b/invoices?statusGroup=${group}&`;
     if (buyerId) url += `buyerId=${buyerId}&`;
     if (status) url += `status=${status}&`;
 
@@ -6775,6 +6779,144 @@ async function b2bDeleteShipment(shipmentId, invoiceNo) {
     loadB2BInvoiceList();
   } catch (err) {
     alert('삭제 실패: ' + err.message);
+  }
+}
+
+// ─── 📦 완료 보관소 (PAID 인보이스, 구매자별 · 월별) ───
+async function loadB2BArchive() {
+  const contentHost = document.getElementById('b2bArchiveContent');
+  const summaryHost = document.getElementById('b2bArchiveSummary');
+  const yearSel = document.getElementById('b2bArchiveYear');
+  const buyerSel = document.getElementById('b2bArchiveBuyer');
+  if (!contentHost) return;
+  contentHost.innerHTML = '<div style="padding:30px;text-align:center;color:#888;">로딩…</div>';
+
+  try {
+    const res = await fetch(`${API}/b2b/invoices?statusGroup=completed`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || '실패');
+    const invoices = data.invoices || [];
+
+    // 연도 드롭다운 채우기 (기존 선택값 유지)
+    const currentYearVal = yearSel.value;
+    const years = [...new Set(invoices.map(i => (i.Date || '').slice(0, 4)).filter(Boolean))].sort().reverse();
+    yearSel.innerHTML = '<option value="">전체 연도</option>' + years.map(y => `<option value="${y}">${y}</option>`).join('');
+    if (currentYearVal && years.includes(currentYearVal)) yearSel.value = currentYearVal;
+
+    // 구매자 드롭다운 채우기 (현재 구매자 셋)
+    const currentBuyer = buyerSel.value;
+    const buyerMap = new Map();
+    invoices.forEach(i => { if (!buyerMap.has(i.BuyerID)) buyerMap.set(i.BuyerID, i.BuyerName); });
+    buyerSel.innerHTML = '<option value="">전체 구매자</option>' +
+      [...buyerMap.entries()].map(([id, name]) => `<option value="${id}">${name} (${id})</option>`).join('');
+    if (currentBuyer && buyerMap.has(currentBuyer)) buyerSel.value = currentBuyer;
+
+    // 필터 적용
+    const yearFilter = yearSel.value;
+    const buyerFilter = buyerSel.value;
+    const filtered = invoices.filter(i =>
+      (!yearFilter || (i.Date || '').startsWith(yearFilter)) &&
+      (!buyerFilter || i.BuyerID === buyerFilter)
+    );
+
+    if (filtered.length === 0) {
+      summaryHost.innerHTML = '완료된 인보이스가 없습니다.';
+      contentHost.innerHTML = '<div style="padding:40px;text-align:center;color:#888;">PAID 처리된 인보이스가 아직 없습니다. 인보이스 완납(PAID) 시 자동으로 여기 보관됩니다.</div>';
+      return;
+    }
+
+    // 요약: 구매자 수, 총 인보이스 수, 통화별 합계
+    const byCurrency = {};
+    const buyerSet = new Set();
+    filtered.forEach(inv => {
+      buyerSet.add(inv.BuyerID);
+      const cur = inv.Currency || 'USD';
+      byCurrency[cur] = (byCurrency[cur] || 0) + (inv.Total || 0);
+    });
+    const currencyStr = Object.entries(byCurrency).map(([c, v]) => `<strong>${c} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}</strong>`).join(' · ');
+    summaryHost.innerHTML = `📦 <strong>${filtered.length}건</strong> · 구매자 <strong>${buyerSet.size}명</strong> · 합계 ${currencyStr}`;
+
+    // 구매자별 → 년-월별 그루핑
+    const byBuyer = new Map();
+    filtered.forEach(inv => {
+      if (!byBuyer.has(inv.BuyerID)) byBuyer.set(inv.BuyerID, { name: inv.BuyerName, months: new Map() });
+      const b = byBuyer.get(inv.BuyerID);
+      const ym = (inv.Date || '').slice(0, 7); // YYYY-MM
+      if (!b.months.has(ym)) b.months.set(ym, []);
+      b.months.get(ym).push(inv);
+    });
+
+    // 구매자별 합계 계산, 내림차순 정렬
+    const buyerRows = [...byBuyer.entries()].map(([id, b]) => {
+      const totals = {};
+      let count = 0;
+      for (const invs of b.months.values()) {
+        for (const inv of invs) {
+          const cur = inv.Currency || 'USD';
+          totals[cur] = (totals[cur] || 0) + (inv.Total || 0);
+          count++;
+        }
+      }
+      return { id, name: b.name, count, totals, months: b.months };
+    });
+    buyerRows.sort((a, b) => b.count - a.count);
+
+    contentHost.innerHTML = buyerRows.map((buyer, bIdx) => {
+      const totalStr = Object.entries(buyer.totals).map(([c, v]) => `${c} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`).join(' · ');
+      const months = [...buyer.months.entries()].sort((a, b) => b[0].localeCompare(a[0])); // 최신 월 먼저
+
+      const monthsHtml = months.map(([ym, invs], mIdx) => {
+        const monthId = `arc-m-${bIdx}-${mIdx}`;
+        const monthTotals = {};
+        invs.forEach(i => { const c = i.Currency || 'USD'; monthTotals[c] = (monthTotals[c] || 0) + (i.Total || 0); });
+        const monthTotalStr = Object.entries(monthTotals).map(([c, v]) => `${c} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`).join(' · ');
+        return `
+          <div style="margin-left:16px;margin-top:6px;border-left:2px solid #d0e8d9;padding-left:10px;">
+            <div onclick="document.getElementById('${monthId}').style.display=document.getElementById('${monthId}').style.display==='none'?'block':'none'" style="cursor:pointer;padding:6px 10px;background:#f0fff4;border-radius:4px;display:flex;justify-content:space-between;align-items:center;font-size:12px;">
+              <span><strong>${ym}</strong> · ${invs.length}건</span>
+              <span style="color:#1a6d3a;font-weight:700;">${monthTotalStr}</span>
+            </div>
+            <table id="${monthId}" style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px;display:none;">
+              <thead><tr style="background:#fafafa;"><th style="padding:4px;text-align:left;">No.</th><th style="padding:4px;text-align:left;">발행일</th><th style="padding:4px;text-align:left;">만기</th><th style="padding:4px;text-align:right;">금액</th><th style="padding:4px;text-align:center;">액션</th></tr></thead>
+              <tbody>
+                ${invs.sort((a, b) => (b.Date || '').localeCompare(a.Date || '')).map(inv => `
+                  <tr style="border-bottom:1px solid #eee;">
+                    <td style="padding:4px;font-family:monospace;font-weight:600;">${inv.InvoiceNo}</td>
+                    <td style="padding:4px;">${inv.Date || '-'}</td>
+                    <td style="padding:4px;">${inv.DueDate || '-'}</td>
+                    <td style="padding:4px;text-align:right;font-weight:600;">${inv.Currency} ${(inv.Total || 0).toFixed(2)}</td>
+                    <td style="padding:4px;text-align:center;white-space:nowrap;">
+                      <a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="padding:2px 6px;background:#0288d1;color:#fff;border-radius:3px;text-decoration:none;font-size:10px;font-weight:600;">XLSX</a>
+                      <button onclick="b2bOpenShipmentModal('${inv.InvoiceNo}')" style="padding:2px 6px;background:#1565c0;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;margin-left:2px;">🚚</button>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }).join('');
+
+      const buyerHeaderId = `arc-b-${bIdx}`;
+      return `
+        <div style="margin-bottom:10px;border:1px solid #d0e8d9;border-radius:6px;overflow:hidden;background:#fff;">
+          <div onclick="(function(){const b=document.getElementById('${buyerHeaderId}');b.style.display=b.style.display==='none'?'block':'none';})()" style="cursor:pointer;padding:10px 14px;background:#e8f5e9;display:flex;justify-content:space-between;align-items:center;">
+            <div><strong style="font-size:13px;">${buyer.name}</strong> <span style="color:#888;font-size:11px;">(${buyer.id}) · ${buyer.count}건</span></div>
+            <div style="font-weight:700;color:#1a6d3a;">${totalStr}</div>
+          </div>
+          <div id="${buyerHeaderId}" style="display:block;padding:8px;">${monthsHtml}</div>
+        </div>
+      `;
+    }).join('');
+
+    // 필터 변경 이벤트 (한 번만 바인딩)
+    if (!yearSel.dataset.bound) {
+      yearSel.dataset.bound = '1';
+      yearSel.addEventListener('change', loadB2BArchive);
+      buyerSel.addEventListener('change', loadB2BArchive);
+    }
+  } catch (err) {
+    contentHost.innerHTML = `<div style="padding:30px;color:#c62828;">로드 실패: ${err.message}</div>`;
   }
 }
 

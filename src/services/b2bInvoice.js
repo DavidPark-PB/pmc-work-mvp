@@ -677,6 +677,14 @@ class B2BInvoiceService {
     if (filters.fromDate) invoices = invoices.filter(i => i.Date >= filters.fromDate);
     if (filters.toDate) invoices = invoices.filter(i => i.Date <= filters.toDate);
 
+    // statusGroup: 진행 상태별 필터 (active=진행중 / completed=완료 / all=전체)
+    // 완료=PAID (결제 완료된 것). 메인 목록 기본값은 active로 PAID 숨김.
+    if (filters.statusGroup === 'active') {
+      invoices = invoices.filter(i => i.Status !== 'PAID');
+    } else if (filters.statusGroup === 'completed') {
+      invoices = invoices.filter(i => i.Status === 'PAID');
+    }
+
     return invoices;
   }
 
