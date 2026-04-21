@@ -68,6 +68,14 @@
             </select>
           </div>
           <textarea id="po-reason" placeholder="사유 (재고 부족, 주문 밀림 등)" rows="2" maxlength="2000" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:10px;"></textarea>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+            <label style="padding:7px 12px;background:#2a2a4a;border-radius:6px;color:#aaa;cursor:pointer;font-size:12px;">
+              📷 참고 이미지 (최대 5장)
+              <input type="file" id="po-images" multiple accept="image/*" style="display:none;" onchange="pmcOrders.previewNewImages()">
+            </label>
+            <span id="po-images-count" style="color:#888;font-size:11px;"></span>
+          </div>
+          <div id="po-images-preview" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;"></div>
           <button type="submit" style="padding:10px 20px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">요청</button>
         </form>
       </div>
@@ -204,12 +212,16 @@
       const urgent = o.priority === 'urgent' ? '<span style="color:#e94560;font-weight:700;margin-right:6px;">🚨 긴급</span>' : '';
       const canUnorder = o.status === 'ordered' && (user.isAdmin || o.ordered_by === user.id);
       const canEdit = user.isAdmin || (o.requested_by === user.id && o.status === 'pending');
+      const attCount = o.attachment_count || 0;
+      const attBadge = attCount > 0
+        ? `<button onclick="pmcOrders.toggleImages(${o.id})" style="margin-left:6px;padding:2px 8px;background:#2a4a6a;border:0;border-radius:10px;color:#fff;cursor:pointer;font-size:11px;">📷 ${attCount}</button>`
+        : '';
       return `
         <div style="padding:16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">
           <div style="flex:1;min-width:200px;">
             <div style="font-weight:600;font-size:15px;color:#fff;margin-bottom:4px;">
               ${urgent}${esc(o.product_name)} <span style="color:#888;font-weight:400;">× ${o.quantity}</span>
-              ${statusBadge[o.status] || ''}
+              ${statusBadge[o.status] || ''}${attBadge}
             </div>
             <div style="font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap;">
               <span style="color:#81d4fa;">👤 ${esc(o.requester?.display_name || '-')}${o.requester?.platform ? ' · ' + esc(o.requester.platform) : ''}</span>
@@ -220,6 +232,7 @@
             ${o.status === 'rejected' ? `<div style="margin-top:6px;padding:6px 10px;background:#2a1a1a;border-radius:6px;font-size:12px;"><strong style="color:#ff8a80;">반려:</strong> ${REJECT_LABELS[o.rejection_reason] || o.rejection_reason || '-'}${o.rejection_note ? ' — ' + esc(o.rejection_note) : ''}</div>` : ''}
             ${o.status === 'approved' ? `<div style="margin-top:4px;font-size:12px;color:#81c784;">✓ ${dt(o.decision_at)} 승인</div>` : ''}
             ${o.status === 'ordered' ? `<div style="margin-top:4px;font-size:12px;color:#64b5f6;">📦 ${dt(o.ordered_at)} · ${esc(o.orderer?.display_name || '-')} 주문</div>` : ''}
+            <div id="po-images-${o.id}" style="display:none;margin-top:8px;"></div>
           </div>
           <div style="display:flex;flex-direction:column;gap:6px;">
             ${canEdit ? `
@@ -257,8 +270,77 @@
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     });
     if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+    const { data: created } = await res.json();
+
+    // 이미지가 선택되었다면 업로드 (실패해도 발주 자체는 생성된 상태)
+    const fileInput = document.getElementById('po-images');
+    const files = fileInput?.files;
+    if (files && files.length > 0 && created?.id) {
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      try {
+        const upRes = await fetch(`/api/purchase-requests/${created.id}/attachments`, {
+          method: 'POST', body: fd,
+        });
+        if (!upRes.ok) {
+          const err = await upRes.json().catch(() => ({}));
+          alert('발주는 저장되었지만 이미지 업로드 실패: ' + (err.error || upRes.statusText) + '\n수정 화면에서 다시 시도할 수 있습니다.');
+        }
+      } catch (e) {
+        alert('발주는 저장되었지만 이미지 업로드 실패: ' + e.message);
+      }
+    }
+
     document.getElementById('po-form').reset();
+    document.getElementById('po-images-preview').innerHTML = '';
+    document.getElementById('po-images-count').textContent = '';
     refresh();
+  }
+
+  function previewNewImages() {
+    const input = document.getElementById('po-images');
+    const files = Array.from(input?.files || []);
+    const host = document.getElementById('po-images-preview');
+    const count = document.getElementById('po-images-count');
+
+    if (files.length > 5) {
+      alert('이미지는 최대 5장까지 선택 가능합니다. 앞 5장만 사용됩니다.');
+    }
+    const picked = files.slice(0, 5);
+    count.textContent = picked.length > 0 ? `${picked.length}장 선택됨` : '';
+    host.innerHTML = picked.map((f, i) => {
+      const url = URL.createObjectURL(f);
+      return `<img src="${url}" alt="preview ${i+1}" style="width:72px;height:72px;object-fit:cover;border-radius:6px;border:1px solid #333;">`;
+    }).join('');
+  }
+
+  async function toggleImages(id) {
+    const host = document.getElementById(`po-images-${id}`);
+    if (!host) return;
+    if (host.style.display !== 'none') {
+      host.style.display = 'none';
+      return;
+    }
+    host.style.display = 'block';
+    host.innerHTML = '<div style="color:#888;font-size:11px;">로딩…</div>';
+    try {
+      const { data } = await fetch(`/api/purchase-requests/${id}/attachments`).then(r => r.json());
+      if (!data || data.length === 0) {
+        host.innerHTML = '<div style="color:#666;font-size:11px;">첨부 이미지 없음</div>';
+        return;
+      }
+      // 각 이미지마다 서명 URL 요청 → 썸네일 표시
+      const urls = await Promise.all(data.map(att =>
+        fetch(`/api/purchase-requests/${id}/attachments/${att.id}/url`).then(r => r.json()).then(j => ({ ...att, signedUrl: j.signedUrl }))
+      ));
+      host.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;">${urls.map(a => `
+        <a href="${a.signedUrl}" target="_blank" rel="noopener" title="${esc(a.fileName)}">
+          <img src="${a.signedUrl}" loading="lazy" alt="${esc(a.fileName)}" style="width:96px;height:96px;object-fit:cover;border-radius:6px;border:1px solid #333;cursor:zoom-in;">
+        </a>
+      `).join('')}</div>`;
+    } catch (e) {
+      host.innerHTML = `<div style="color:#ff8a80;font-size:11px;">이미지 로드 실패: ${esc(e.message)}</div>`;
+    }
   }
 
   async function approve(id) {
@@ -344,6 +426,18 @@
         </div>
         <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">사유</label>
         <textarea id="po-edit-reason" rows="3" maxlength="2000" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
+
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid #2a2a4a;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <label style="font-size:12px;color:#aaa;">📷 참고 이미지</label>
+            <label style="padding:5px 10px;background:#2a2a4a;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">
+              + 이미지 추가
+              <input type="file" id="po-edit-add-images" multiple accept="image/*" style="display:none;" onchange="pmcOrders.uploadMoreImages(${id})">
+            </label>
+          </div>
+          <div id="po-edit-images" style="display:flex;gap:6px;flex-wrap:wrap;"><div style="color:#666;font-size:11px;">로딩…</div></div>
+        </div>
+
         <div id="po-edit-error" style="display:none;margin-top:10px;padding:8px 10px;background:#3a1a1a;border-radius:6px;color:#ff8a80;font-size:12px;"></div>
         <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:14px;">
           <button onclick="pmcOrders.closeEdit()" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
@@ -358,6 +452,70 @@
     document.getElementById('po-edit-reason').value = o.reason || '';
     document.getElementById('po-edit-product').focus();
     m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+    loadEditImages(id);
+  }
+
+  async function loadEditImages(id) {
+    const host = document.getElementById('po-edit-images');
+    if (!host) return;
+    try {
+      const { data } = await fetch(`/api/purchase-requests/${id}/attachments`).then(r => r.json());
+      if (!data || data.length === 0) {
+        host.innerHTML = '<div style="color:#666;font-size:11px;">첨부된 이미지 없음 (최대 5장)</div>';
+        return;
+      }
+      const withUrls = await Promise.all(data.map(att =>
+        fetch(`/api/purchase-requests/${id}/attachments/${att.id}/url`).then(r => r.json()).then(j => ({ ...att, signedUrl: j.signedUrl }))
+      ));
+      host.innerHTML = withUrls.map(a => `
+        <div style="position:relative;width:80px;height:80px;">
+          <a href="${a.signedUrl}" target="_blank" rel="noopener">
+            <img src="${a.signedUrl}" alt="${esc(a.fileName)}" style="width:80px;height:80px;object-fit:cover;border-radius:6px;border:1px solid #333;cursor:zoom-in;">
+          </a>
+          <button onclick="pmcOrders.removeEditImage(${id}, ${a.id})" title="삭제" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;background:#e94560;border:0;border-radius:11px;color:#fff;cursor:pointer;font-size:12px;line-height:1;padding:0;">×</button>
+        </div>
+      `).join('') + `<div style="color:#888;font-size:10px;align-self:center;margin-left:6px;">${withUrls.length}/5</div>`;
+    } catch (e) {
+      host.innerHTML = `<div style="color:#ff8a80;font-size:11px;">로드 실패: ${esc(e.message)}</div>`;
+    }
+  }
+
+  async function uploadMoreImages(id) {
+    const input = document.getElementById('po-edit-add-images');
+    const files = Array.from(input?.files || []);
+    if (files.length === 0) return;
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    const host = document.getElementById('po-edit-images');
+    if (host) host.innerHTML = '<div style="color:#888;font-size:11px;">업로드 중…</div>';
+    try {
+      const res = await fetch(`/api/purchase-requests/${id}/attachments`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert('업로드 실패: ' + (err.error || res.statusText));
+      }
+    } catch (e) {
+      alert('업로드 실패: ' + e.message);
+    }
+    input.value = '';
+    loadEditImages(id);
+    refresh();
+  }
+
+  async function removeEditImage(requestId, attId) {
+    if (!confirm('이 이미지를 삭제하시겠습니까?')) return;
+    try {
+      const res = await fetch(`/api/purchase-requests/${requestId}/attachments/${attId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert('삭제 실패: ' + (err.error || res.statusText));
+        return;
+      }
+      loadEditImages(requestId);
+      refresh();
+    } catch (e) {
+      alert('삭제 실패: ' + e.message);
+    }
   }
 
   function closeEdit() {
@@ -394,5 +552,9 @@
     }
   }
 
-  window.pmcOrders = { load, refresh, approve, openReject, del, toggleInsights, markOrdered, unorder, openEdit, closeEdit, saveEdit };
+  window.pmcOrders = {
+    load, refresh, approve, openReject, del, toggleInsights, markOrdered, unorder,
+    openEdit, closeEdit, saveEdit,
+    previewNewImages, toggleImages, uploadMoreImages, removeEditImage,
+  };
 })();
