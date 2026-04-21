@@ -2,7 +2,7 @@
  * 카탈로그 가격 관리 — Google Sheets 3시트 (USD/KRW/EURO) 동시 관리
  */
 (function() {
-  let state = { tab: '', tabs: [], rates: null, items: [], category: '', loading: false };
+  let state = { tab: '', tabs: [], rates: null, items: [], category: '', search: '', loading: false };
 
   function esc(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function fmtMoney(n, sym) {
@@ -38,6 +38,11 @@
         <label style="color:#888;font-size:13px;">게임 탭:</label>
         <select id="cat-tab" onchange="pmcCatalog.onTabChange()" style="padding:6px 10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;"></select>
         <button onclick="pmcCatalog.refresh()" style="padding:6px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">🔄 새로고침</button>
+        <div style="flex:1;min-width:200px;position:relative;">
+          <input type="search" id="cat-search" placeholder="🔍 상품명 · 세트코드 검색…" oninput="pmcCatalog.onSearch(this.value)" style="width:100%;padding:7px 30px 7px 12px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          <button id="cat-search-clear" onclick="pmcCatalog.clearSearch()" style="display:none;position:absolute;right:4px;top:50%;transform:translateY(-50%);background:transparent;border:0;color:#888;cursor:pointer;font-size:14px;padding:2px 6px;">✕</button>
+        </div>
+        <span id="cat-search-count" style="color:#888;font-size:11px;"></span>
       </div>
 
       <div id="cat-category-tabs" style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;border-bottom:1px solid #2a2a4a;padding-bottom:8px;"></div>
@@ -119,9 +124,26 @@
   function renderTable() {
     const el = document.getElementById('cat-content');
     if (!el) return;
-    const items = state.items.filter(it => it.category === state.category);
+    const q = (state.search || '').trim().toLowerCase();
+    // 검색 시 카테고리 필터 무시 (전 탭 대상) / 없으면 카테고리 내
+    const base = q ? state.items : state.items.filter(it => it.category === state.category);
+    const items = q
+      ? base.filter(it =>
+          (it.name || '').toLowerCase().includes(q) ||
+          (it.setCode || '').toLowerCase().includes(q) ||
+          String(it.num || '').toLowerCase().includes(q))
+      : base;
+
+    // 검색 카운트 표시
+    const cnt = document.getElementById('cat-search-count');
+    if (cnt) cnt.textContent = q ? `${items.length}건` : '';
+    const clr = document.getElementById('cat-search-clear');
+    if (clr) clr.style.display = q ? '' : 'none';
+
     if (items.length === 0) {
-      el.innerHTML = '<div style="padding:40px;text-align:center;color:#888;">이 카테고리에 상품이 없습니다.</div>';
+      el.innerHTML = q
+        ? `<div style="padding:40px;text-align:center;color:#888;">"${esc(q)}" 검색 결과 없음</div>`
+        : '<div style="padding:40px;text-align:center;color:#888;">이 카테고리에 상품이 없습니다.</div>';
       return;
     }
     el.innerHTML = `
@@ -163,7 +185,7 @@
       <tr style="border-bottom:1px solid #2a2a4a;">
         <td style="padding:8px;text-align:center;color:#888;font-size:12px;">${esc(it.num)}</td>
         <td style="padding:8px;text-align:center;">${imgCell}</td>
-        <td style="padding:8px;white-space:pre-wrap;">${esc(it.name)}</td>
+        <td style="padding:8px;white-space:pre-wrap;">${esc(it.name)}${state.search ? ` <span style="color:#7c4dff;font-size:10px;margin-left:4px;">· ${esc(it.category)}</span>` : ''}</td>
         <td style="padding:8px;color:#81d4fa;"><code>${esc(it.setCode)}</code></td>
         <td style="padding:8px;text-align:right;white-space:nowrap;">
           <div style="display:flex;gap:4px;align-items:center;justify-content:flex-end;">
@@ -303,8 +325,23 @@
     refresh();
   }
 
+  let searchTimer = null;
+  function onSearch(v) {
+    state.search = v || '';
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderTable, 120);
+  }
+
+  function clearSearch() {
+    state.search = '';
+    const inp = document.getElementById('cat-search');
+    if (inp) inp.value = '';
+    renderTable();
+  }
+
   window.pmcCatalog = {
     load, refresh, onTabChange, setCategory, savePrice,
     openFxModal, closeFxModal, saveFx, resetFxAuto, editImage,
+    onSearch, clearSearch,
   };
 })();
