@@ -260,7 +260,8 @@ class B2BInvoiceService {
       notes: data.notes || '',
     });
 
-    // 5. Drive 업로드 시도
+    // 5. Drive 업로드 시도 — 실패 시 API 다운로드 엔드포인트로 fallback.
+    // (과거 로컬 파일 저장 fallback은 Fly.io ephemeral disk라 의미 없어 제거)
     let driveFileId = '';
     let driveUrl = '';
     try {
@@ -275,15 +276,8 @@ class B2BInvoiceService {
       driveUrl = uploaded.webViewLink || '';
       console.log(`✅ 인보이스 Drive 업로드: ${fileName}`);
     } catch (driveErr) {
-      console.warn('⚠️ Drive 업로드 실패 (API 미활성화?), 로컬 저장:', driveErr.message);
-      // 로컬 폴더에 저장
-      const fs = require('fs');
-      const localDir = path.join(__dirname, '../../data/invoices');
-      if (!fs.existsSync(localDir)) fs.mkdirSync(localDir, { recursive: true });
-      const localPath = path.join(localDir, `${invoiceNo}.xlsx`);
-      fs.writeFileSync(localPath, xlsxBuffer);
-      driveUrl = `/data/invoices/${invoiceNo}.xlsx`;
-      console.log(`📁 로컬 저장: ${localPath}`);
+      console.warn('⚠️ Drive 업로드 실패 — API download 엔드포인트 fallback:', driveErr.message);
+      driveUrl = `/api/b2b/invoices/${invoiceNo}/download`;
     }
 
     // 6. 시트에 인보이스 기록

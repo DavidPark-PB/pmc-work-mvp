@@ -6477,7 +6477,7 @@ async function b2bCreateInvoice() {
       document.getElementById('b2bCreateResult').innerHTML =
         `<div style="padding:10px;background:#e8f5e9;border-radius:6px;font-size:12px;color:#2e7d32">
           <strong>${inv.invoiceNo}</strong> 생성 완료! (${inv.currency} ${inv.total.toFixed(2)})
-          ${inv.driveUrl ? `<a href="${inv.driveUrl}" target="_blank" style="margin-left:8px">Drive에서 보기</a>` : ''}
+          ${inv.driveUrl && inv.driveUrl.startsWith('http') ? `<a href="${inv.driveUrl}" target="_blank" style="margin-left:8px">Drive에서 보기</a>` : ''}
           <a href="${API}/b2b/invoices/${inv.invoiceNo}/download" style="margin-left:8px">다운로드</a>
         </div>`;
 
@@ -7713,7 +7713,7 @@ async function b2bAutoCreateInvoice() {
     const j = await res.json();
     if (!res.ok || !j.success) { err.textContent = j.error || '생성 실패'; err.style.display = 'block'; return; }
     const inv = j.invoice;
-    result.innerHTML = `✅ ${inv.invoiceNo} 생성 완료 · ${inv.currency} ${Number(inv.total).toFixed(2)}${inv.driveUrl ? ` · <a href="${inv.driveUrl}" target="_blank" style="color:#81d4fa">열기</a>` : ''}`;
+    result.innerHTML = `✅ ${inv.invoiceNo} 생성 완료 · ${inv.currency} ${Number(inv.total).toFixed(2)} · <a href="${API}/b2b/invoices/${inv.invoiceNo}/download" style="color:#81d4fa">📥 XLSX 다운로드</a>${inv.driveUrl && inv.driveUrl.startsWith('http') ? ` · <a href="${inv.driveUrl}" target="_blank" style="color:#81d4fa">Drive에서 보기</a>` : ''}`;
     result.style.display = 'block';
     // 인보이스 리스트 갱신 (B2B 탭 열려있으면)
     if (typeof loadB2BInvoices === 'function') loadB2BInvoices();
