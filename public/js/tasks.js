@@ -21,10 +21,12 @@
     const now = new Date();
     const sameDay = d.toDateString() === now.toDateString();
     const tmr = new Date(now); tmr.setDate(now.getDate() + 1);
+    const yday = new Date(now); yday.setDate(now.getDate() - 1);
     const pad = n => String(n).padStart(2, '0');
     const timeStr = pad(d.getHours()) + ':' + pad(d.getMinutes());
     if (sameDay) return '오늘 ' + timeStr;
     if (d.toDateString() === tmr.toDateString()) return '내일 ' + timeStr;
+    if (d.toDateString() === yday.toDateString()) return '어제 ' + timeStr;
     return pad(d.getMonth()+1) + '/' + pad(d.getDate()) + ' ' + timeStr;
   }
   function isOverdue(iso, status) {
@@ -200,6 +202,7 @@
             ${overdue ? '<span style="padding:2px 8px;background:#e94560;color:#fff;border-radius:10px;font-size:11px;">마감 초과</span>' : ''}
           </div>
           <div style="font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap;">
+            ${t.created_at ? `<span title="지시 받은 시각">📬 ${formatDate(t.created_at)} 지시</span>` : ''}
             ${t.due_date ? `<span style="${overdue ? 'color:#ff8a80;font-weight:600;' : ''}">⏰ ${formatDate(t.due_date)}</span>` : ''}
           </div>
           ${t.memo ? `<div style="margin-top:6px;font-size:12px;color:#b0b0b0;white-space:pre-wrap;">${escapeHtml(t.memo)}</div>` : ''}
@@ -247,6 +250,7 @@
             </div>
             <div style="font-size:12px;color:#888;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
               <span>👤 ${escapeHtml(assigneeLabel)}</span>
+              ${t.created_at ? `<span title="등록 시각">📬 ${formatDate(t.created_at)}</span>` : ''}
               ${t.due_date ? `<span style="${overdue ? 'color:#ff8a80;font-weight:600;' : ''}">⏰ ${formatDate(t.due_date)}</span>` : ''}
               ${!isBroadcast && soleRecipient
                 ? `<span style="padding:1px 6px;background:${STATUS_COLORS[soleRecipient.status]};color:#fff;border-radius:8px;font-size:10px;">${STATUS_LABELS[soleRecipient.status]}</span>`
