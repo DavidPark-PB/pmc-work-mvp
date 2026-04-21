@@ -34,8 +34,12 @@
         <p style="color:#888;font-size:13px;">${user.isAdmin ? '전체 직원 출퇴근 현황 · 본인 기록도 입력 가능' : esc(user.displayName) + '님의 출퇴근 기록'}</p>
       </div>
 
+      <div id="att-quick-card" style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;margin-bottom:12px;">
+        <div style="color:#888;font-size:12px;">로딩…</div>
+      </div>
+
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;margin-bottom:16px;">
-        <h3 style="color:#fff;margin-bottom:12px;">✏️ 오늘 출퇴근 입력</h3>
+        <h3 style="color:#fff;margin-bottom:12px;">✏️ 수동 입력 / 수정</h3>
         <form id="att-form">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:10px;">
             <input type="date" id="att-date" required style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
@@ -142,12 +146,75 @@
     const { data } = await res.json();
     cachedItems = data || [];
     renderRows(cachedItems);
+    renderQuickCard();
 
     // 내가 선택한 날짜에 본인 기록이 있으면 자동으로 수정 모드 진입 (편의)
     autoEnterEditIfExists();
 
     if (empId && month) await loadSummary(empId, month);
     else clearSummary();
+  }
+
+  function renderQuickCard() {
+    const host = document.getElementById('att-quick-card');
+    if (!host) return;
+    const today = todayStr();
+    // 내 오늘 기록 찾기 — cachedItems는 월 필터에 따라 오늘이 없을 수도 있으니 보수적으로 동작
+    const mine = cachedItems.find(r => r.employee_id === user.id && r.date === today);
+    const bigBtn = (label, bg, onclick, disabled) => `
+      <button type="button" ${disabled ? 'disabled' : ''} onclick="${onclick}" style="padding:16px 24px;background:${disabled ? '#2a2a4a' : bg};border:0;border-radius:10px;color:#fff;cursor:${disabled ? 'default' : 'pointer'};font-weight:700;font-size:17px;min-width:180px;opacity:${disabled ? 0.5 : 1};">${label}</button>`;
+
+    let body;
+    if (!mine) {
+      body = `
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div style="color:#fff;font-size:15px;font-weight:600;">🕐 오늘 (${today})</div>
+            <div style="color:#888;font-size:12px;margin-top:3px;">아직 출근 기록이 없습니다. 클릭 한 번으로 현재 시각이 찍힙니다.</div>
+          </div>
+          ${bigBtn('▶ 지금 출근 찍기', '#4caf50', 'pmcAttendance.clockIn()')}
+        </div>`;
+    } else if (!mine.clock_out && !['day_off','absence'].includes(mine.status)) {
+      body = `
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div style="color:#fff;font-size:15px;font-weight:600;">🕐 오늘 (${today}) <span style="color:#81c784;font-weight:400;font-size:12px;">근무 중</span></div>
+            <div style="color:#ccc;font-size:13px;margin-top:4px;">출근 <strong style="color:#81c784;">${mine.clock_in || '-'}</strong> · 퇴근 대기</div>
+          </div>
+          ${bigBtn('■ 지금 퇴근 찍기', '#1565c0', 'pmcAttendance.clockOut()')}
+        </div>`;
+    } else {
+      const hoursText = mine.work_hours ? Number(mine.work_hours).toFixed(2) + 'h' : '-';
+      const payText = mine.daily_pay != null ? money(mine.daily_pay) : '-';
+      const noTimesBadge = ['day_off','absence'].includes(mine.status) ? ` <span style="color:#aaa;font-size:11px;">(${mine.status === 'day_off' ? '휴무' : '결근'})</span>` : '';
+      body = `
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div style="color:#fff;font-size:15px;font-weight:600;">🕐 오늘 (${today}) <span style="color:#81c784;font-weight:400;font-size:12px;">✓ 완료${noTimesBadge}</span></div>
+            <div style="color:#ccc;font-size:13px;margin-top:4px;">${mine.clock_in ? `${mine.clock_in} ~ ${mine.clock_out || '-'}` : '시각 없음'} · <strong>${hoursText}</strong> · <strong style="color:#b39ddb;">${payText}</strong></div>
+          </div>
+          <div style="color:#666;font-size:11px;">수정이 필요하면 사장님께 요청하세요.</div>
+        </div>`;
+    }
+    host.innerHTML = body;
+  }
+
+  async function clockIn() {
+    try {
+      const res = await fetch('/api/attendance/clock-in', { method: 'POST' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '실패');
+      refresh();
+    } catch (e) { alert('출근 실패: ' + e.message); }
+  }
+
+  async function clockOut() {
+    try {
+      const res = await fetch('/api/attendance/clock-out', { method: 'POST' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '실패');
+      refresh();
+    } catch (e) { alert('퇴근 실패: ' + e.message); }
   }
 
   function autoEnterEditIfExists() {
@@ -392,5 +459,5 @@
     document.head.appendChild(st);
   })();
 
-  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll, editRow, cancelEdit };
+  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll, editRow, cancelEdit, clockIn, clockOut };
 })();

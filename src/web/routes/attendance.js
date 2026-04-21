@@ -21,6 +21,49 @@ router.get('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+function nowHhmm() {
+  const d = new Date();
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+// POST /api/attendance/clock-in — 오늘 출근 (본인, 현재 시각)
+router.post('/clock-in', async (req, res) => {
+  try {
+    const today = repo.todayDateStr();
+    const existing = await repo.findByEmployeeDate(req.user.id, today);
+    if (existing) {
+      return res.status(409).json({ error: '오늘 이미 출근 기록이 있습니다', data: existing });
+    }
+    const created = await repo.createAttendance({
+      employeeId: req.user.id,
+      date: today,
+      clockIn: nowHhmm(),
+      clockOut: null,
+      status: 'regular',
+    });
+    res.json({ data: created });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/attendance/clock-out — 오늘 퇴근 (본인, 현재 시각; 오늘 open 기록 업데이트)
+router.post('/clock-out', async (req, res) => {
+  try {
+    const today = repo.todayDateStr();
+    const existing = await repo.findByEmployeeDate(req.user.id, today);
+    if (!existing) {
+      return res.status(404).json({ error: '오늘 출근 기록이 없습니다. 먼저 출근을 찍으세요' });
+    }
+    if (existing.clock_out) {
+      return res.status(409).json({ error: '오늘 이미 퇴근 기록이 있습니다', data: existing });
+    }
+    if (repo.NO_TIMES.includes(existing.status)) {
+      return res.status(400).json({ error: '휴무/결근 기록은 퇴근 시각을 찍을 수 없습니다' });
+    }
+    const updated = await repo.updateAttendance(existing.id, existing, { clockOut: nowHhmm() });
+    res.json({ data: updated });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.post('/', async (req, res) => {
   try {
     const { date, clockIn, clockOut, note, status, employeeId: bodyEmpId } = req.body || {};

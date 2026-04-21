@@ -74,6 +74,13 @@ async function getById(id) {
   return data;
 }
 
+async function findByEmployeeDate(employeeId, date) {
+  const { data, error } = await getClient().from('attendance')
+    .select('*').eq('employee_id', employeeId).eq('date', date).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
 async function getUserHourlyRate(userId) {
   const { data, error } = await getClient().from('users').select('hourly_rate').eq('id', userId).maybeSingle();
   if (error) throw error;
@@ -138,7 +145,8 @@ async function deleteAttendance(id) {
 }
 
 module.exports = {
-  listAttendance, getById, createAttendance, updateAttendance, deleteAttendance,
+  listAttendance, getById, findByEmployeeDate,
+  createAttendance, updateAttendance, deleteAttendance,
   calcWorkHours, todayDateStr, isValidDateStr, getUserHourlyRate,
   VALID_STATUSES, STATUS_LABELS, REASON_REQUIRED, NO_TIMES, ZERO_PAY,
 };
