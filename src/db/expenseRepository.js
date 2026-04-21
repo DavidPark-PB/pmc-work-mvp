@@ -46,6 +46,29 @@ function decorate(row) {
   };
 }
 
+/** 과거 지출에 쓰인 카드 뒷자리 목록 (distinct, 최근 사용순). 드롭다운용. */
+async function listDistinctCards({ createdBy } = {}) {
+  let q = getClient().from('expenses')
+    .select('card_last4, paid_at')
+    .not('card_last4', 'is', null)
+    .order('paid_at', { ascending: false })
+    .limit(1000);
+  if (createdBy !== undefined && createdBy !== null) q = q.eq('created_by', createdBy);
+  const { data, error } = await q;
+  if (error && isMissingTable(error)) return [];
+  if (error) throw error;
+  // 최근 사용순 유지하면서 중복 제거
+  const seen = new Set();
+  const out = [];
+  for (const row of data || []) {
+    const c = String(row.card_last4 || '').trim();
+    if (!c || seen.has(c)) continue;
+    seen.add(c);
+    out.push(c);
+  }
+  return out;
+}
+
 async function setReceipt(id, { path, name, mime, size }) {
   const { data, error } = await getClient().from('expenses')
     .update({ receipt_path: path, receipt_name: name, receipt_mime: mime, receipt_size: size })
@@ -220,5 +243,5 @@ async function saveCachedCategory({ merchant, category, confidence = 80, created
 module.exports = {
   listExpenses, getExpense, createExpense, bulkCreate, updateExpense, deleteExpense,
   summaryByMonth, getCachedCategory, saveCachedCategory,
-  setReceipt, clearReceipt,
+  setReceipt, clearReceipt, listDistinctCards,
 };

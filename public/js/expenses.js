@@ -9,6 +9,7 @@
   let categoryMap = {};
   let currentMonth = '';
   let cached = [];
+  let knownCards = [];   // 과거 사용된 card_last4 목록 (드롭다운용)
 
   function esc(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function money(n, ccy) {
@@ -31,6 +32,55 @@
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
 
+  async function refreshKnownCards() {
+    try {
+      const j = await fetch('/api/expenses/cards').then(r => r.json());
+      knownCards = Array.isArray(j.cards) ? j.cards : [];
+    } catch { /* ignore */ }
+  }
+
+  // 카드 드롭다운 + "+ 새 카드" 토글 입력. selectedValue가 리스트에 없으면 새 카드로 간주.
+  function cardSelectHtml({ selectId, newInputId, selected = '', onChangeFn }) {
+    const inList = selected && knownCards.includes(selected);
+    const showNew = selected && !inList;
+    const opts = knownCards.map(c => `<option value="${esc(c)}"${c === selected ? ' selected' : ''}>${esc(c)}</option>`).join('');
+    const newSel = showNew ? ' selected' : '';
+    const emptySel = !selected ? ' selected' : '';
+    const selectStyle = 'width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;';
+    const inputStyle = 'width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;margin-top:4px;' + (showNew ? '' : 'display:none;');
+    return `
+      <select id="${selectId}" onchange="${onChangeFn}" style="${selectStyle}">
+        <option value=""${emptySel}>— 선택 —</option>
+        ${opts}
+        <option value="__new__"${newSel}>+ 새 카드 (직접 입력)</option>
+      </select>
+      <input type="text" id="${newInputId}" maxlength="4" placeholder="뒷 4자리 입력" value="${showNew ? esc(selected) : ''}" style="${inputStyle}">
+    `;
+  }
+
+  function onCardSelectChange(selectId, newInputId) {
+    const sel = document.getElementById(selectId);
+    const inp = document.getElementById(newInputId);
+    if (!sel || !inp) return;
+    if (sel.value === '__new__') {
+      inp.style.display = '';
+      inp.focus();
+    } else {
+      inp.style.display = 'none';
+      inp.value = '';
+    }
+  }
+
+  function readCardValue(selectId, newInputId) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return null;
+    if (sel.value === '__new__') {
+      const v = (document.getElementById(newInputId)?.value || '').trim();
+      return v || null;
+    }
+    return sel.value || null;
+  }
+
   async function load() {
     if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r=>r.json())).user;
     if (!user) return;
@@ -45,6 +95,7 @@
       }
     }
     if (!currentMonth) currentMonth = thisMonth();
+    await refreshKnownCards();
     renderShell();
     await refresh();
     if (refreshTimer) clearInterval(refreshTimer);
@@ -112,7 +163,7 @@
             </div>
             <div>
               <label style="font-size:11px;color:#888;">카드 뒷자리</label>
-              <input type="text" id="exp-card" maxlength="4" placeholder="1234" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+              ${cardSelectHtml({ selectId: 'exp-card-sel', newInputId: 'exp-card-new', onChangeFn: "pmcExpenses.onCardChange('exp-card-sel','exp-card-new')" })}
             </div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px;">
@@ -293,7 +344,7 @@
       category: document.getElementById('exp-category').value,
       merchant: document.getElementById('exp-merchant').value.trim(),
       memo: document.getElementById('exp-memo').value.trim(),
-      cardLast4: document.getElementById('exp-card').value.trim() || null,
+      cardLast4: readCardValue('exp-card-sel', 'exp-card-new'),
     };
     const res = await fetch('/api/expenses', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -301,6 +352,8 @@
     });
     if (!res.ok) { alert((await res.json()).error || '저장 실패'); return; }
     const { data: created } = await res.json();
+    // 새 카드를 썼다면 드롭다운 캐시 갱신
+    if (payload.cardLast4 && !knownCards.includes(payload.cardLast4)) await refreshKnownCards();
 
     // 영수증 파일이 있으면 뒤이어 업로드
     const receiptInput = document.getElementById('exp-receipt');
@@ -404,9 +457,9 @@
             <select id="ee-category" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">${catOptions}</select>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 100px;gap:8px;margin-bottom:8px;">
+        <div style="display:grid;grid-template-columns:1fr 140px;gap:8px;margin-bottom:8px;align-items:start;">
           <input type="text" id="ee-merchant" maxlength="200" placeholder="가맹점/거래처" value="${esc(exp.merchant || '')}" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
-          <input type="text" id="ee-card" maxlength="4" placeholder="카드 뒤4자리" value="${esc(exp.cardLast4 || '')}" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          <div>${cardSelectHtml({ selectId: 'ee-card-sel', newInputId: 'ee-card-new', selected: exp.cardLast4 || '', onChangeFn: "pmcExpenses.onCardChange('ee-card-sel','ee-card-new')" })}</div>
         </div>
         <input type="text" id="ee-memo" maxlength="500" placeholder="메모" value="${esc(exp.memo || '')}" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;margin-bottom:10px;">
 
@@ -450,7 +503,7 @@
       category: document.getElementById('ee-category').value,
       merchant: document.getElementById('ee-merchant').value.trim() || null,
       memo: document.getElementById('ee-memo').value.trim() || null,
-      cardLast4: document.getElementById('ee-card').value.trim() || null,
+      cardLast4: readCardValue('ee-card-sel', 'ee-card-new'),
     };
     if (!payload.paidAt) { errEl.textContent = '결제일을 입력하세요'; errEl.style.display = 'block'; return; }
     if (!Number.isFinite(payload.amount)) { errEl.textContent = '금액을 올바르게 입력하세요'; errEl.style.display = 'block'; return; }
@@ -463,6 +516,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { errEl.textContent = data.error || '수정 실패'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = '저장'; return; }
+      if (payload.cardLast4 && !knownCards.includes(payload.cardLast4)) await refreshKnownCards();
       closeEditModal();
       refresh();
     } catch (e) {
@@ -1349,6 +1403,7 @@
     closeEditModal, saveEditModal, replaceReceiptInModal, deleteReceiptInModal,
     onCsvPick, closeCsvModal, confirmCsv, csvRecalc, csvToggleAll, csvSkipDup,
     toggleRecurring, recRunNow, recToggleActive, recDelete,
+    onCardChange: onCardSelectChange,
     // Tab switching
     switchTab,
     // Purchases

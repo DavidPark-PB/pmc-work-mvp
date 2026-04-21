@@ -56,6 +56,17 @@ router.get('/categories', (req, res) => {
   res.json({ categories: CATEGORIES });
 });
 
+// GET /api/expenses/cards — 과거 사용한 카드 뒷자리 목록 (드롭다운용, 본인 스코프)
+router.get('/cards', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    // 재무 권한자는 전체, 아니면 본인 것만
+    const filter = req.user.canManageFinance ? {} : { createdBy: req.user.id };
+    const cards = await repo.listDistinctCards(filter);
+    res.json({ cards });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/expenses — 목록 (본인 것 or 전체)
 router.get('/', async (req, res) => {
   try {
