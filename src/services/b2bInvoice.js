@@ -469,159 +469,91 @@ class B2BInvoiceService {
   }
 
   /**
-   * Excel 인보이스 빌드
+   * Excel 인보이스 빌드 — MASTER 템플릿(templates/b2b_invoice_master.xlsx) 로드 후 데이터 주입.
+   * CCOREA 로고·서식·폰트·테두리는 템플릿에서 상속. 양식 변경 시 xlsx 파일만 교체하면 됨.
    */
   async _buildInvoiceXlsx({ invoiceNo, invoiceDate, dueDate, buyer, items, subtotal, tax, shipping, total, currency, notes }) {
-    const workbook = new ExcelJS.Workbook();
-    const ws = workbook.addWorksheet('Invoice');
-
-    // 열 너비
-    ws.columns = [
-      { width: 5 },   // A: #
-      { width: 18 },  // B: SKU
-      { width: 35 },  // C: Description
-      { width: 10 },  // D: Qty
-      { width: 14 },  // E: Unit Price
-      { width: 14 },  // F: Total
-    ];
-
-    // 스타일
-    const titleFont = { name: 'Arial', size: 16, bold: true };
-    const headerFont = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
-    const normalFont = { name: 'Arial', size: 10 };
-    const boldFont = { name: 'Arial', size: 10, bold: true };
-    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2B579A' } };
-    const lightFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
-    const borderThin = {
-      top: { style: 'thin' }, bottom: { style: 'thin' },
-      left: { style: 'thin' }, right: { style: 'thin' },
-    };
-    const currencyFmt = `"${currency}" #,##0.00`;
-
-    // Row 1: 회사명
-    ws.mergeCells('A1:F1');
-    const titleCell = ws.getCell('A1');
-    titleCell.value = 'PMC Corporation';
-    titleCell.font = titleFont;
-    titleCell.alignment = { vertical: 'middle' };
-    ws.getRow(1).height = 30;
-
-    // Row 2: 회사 정보
-    ws.mergeCells('A2:F2');
-    ws.getCell('A2').value = 'E-commerce Distribution & Wholesale';
-    ws.getCell('A2').font = { ...normalFont, color: { argb: 'FF666666' } };
-
-    // Row 4-6: 인보이스 정보
-    ws.getCell('A4').value = 'INVOICE';
-    ws.getCell('A4').font = { name: 'Arial', size: 14, bold: true, color: { argb: 'FF2B579A' } };
-
-    ws.getCell('A5').value = 'Invoice No:';
-    ws.getCell('A5').font = boldFont;
-    ws.getCell('B5').value = invoiceNo;
-    ws.getCell('B5').font = normalFont;
-
-    ws.getCell('D5').value = 'Date:';
-    ws.getCell('D5').font = boldFont;
-    ws.getCell('E5').value = invoiceDate;
-    ws.getCell('E5').font = normalFont;
-
-    ws.getCell('D6').value = 'Due Date:';
-    ws.getCell('D6').font = boldFont;
-    ws.getCell('E6').value = dueDate;
-    ws.getCell('E6').font = normalFont;
-
-    // Row 8-11: Bill To
-    ws.getCell('A8').value = 'Bill To:';
-    ws.getCell('A8').font = boldFont;
-    ws.getCell('A9').value = buyer.Name;
-    ws.getCell('A9').font = boldFont;
-    ws.getCell('A10').value = buyer.Address || '';
-    ws.getCell('A10').font = normalFont;
-    ws.getCell('A11').value = `${buyer.Country || ''} | ${buyer.Email || ''} | ${buyer.Phone || ''}`;
-    ws.getCell('A11').font = { ...normalFont, color: { argb: 'FF666666' } };
-
-    // Row 13: 테이블 헤더
-    const headerRow = ws.getRow(13);
-    const tableHeaders = ['#', 'SKU', 'Description', 'Qty', 'Unit Price', 'Total'];
-    tableHeaders.forEach((h, i) => {
-      const cell = headerRow.getCell(i + 1);
-      cell.value = h;
-      cell.font = headerFont;
-      cell.fill = headerFill;
-      cell.border = borderThin;
-      cell.alignment = { vertical: 'middle', horizontal: i >= 3 ? 'right' : 'left' };
-    });
-    headerRow.height = 22;
-
-    // 아이템 행
-    let rowNum = 14;
-    items.forEach((item, idx) => {
-      const row = ws.getRow(rowNum);
-      const isEven = idx % 2 === 0;
-
-      row.getCell(1).value = idx + 1;
-      row.getCell(2).value = item.sku;
-      row.getCell(3).value = item.name;
-      row.getCell(4).value = item.qty;
-      row.getCell(5).value = item.price;
-      row.getCell(5).numFmt = currencyFmt;
-      row.getCell(6).value = item.total;
-      row.getCell(6).numFmt = currencyFmt;
-
-      for (let c = 1; c <= 6; c++) {
-        const cell = row.getCell(c);
-        cell.font = normalFont;
-        cell.border = borderThin;
-        cell.alignment = { vertical: 'middle', horizontal: c >= 4 ? 'right' : 'left' };
-        if (isEven) cell.fill = lightFill;
-      }
-      row.height = 20;
-      rowNum++;
-    });
-
-    // 합계 영역
-    rowNum += 1;
-    const summaryData = [
-      ['Subtotal', subtotal],
-      ['Tax', tax],
-      ['Shipping', shipping],
-      ['TOTAL', total],
-    ];
-
-    summaryData.forEach(([label, value], idx) => {
-      const row = ws.getRow(rowNum);
-      row.getCell(5).value = label;
-      row.getCell(5).font = idx === 3 ? { ...boldFont, size: 12 } : boldFont;
-      row.getCell(5).alignment = { horizontal: 'right' };
-      row.getCell(6).value = value;
-      row.getCell(6).numFmt = currencyFmt;
-      row.getCell(6).font = idx === 3 ? { ...boldFont, size: 12 } : normalFont;
-      row.getCell(6).alignment = { horizontal: 'right' };
-      if (idx === 3) {
-        row.getCell(5).border = { top: { style: 'double' }, bottom: { style: 'double' } };
-        row.getCell(6).border = { top: { style: 'double' }, bottom: { style: 'double' } };
-      }
-      rowNum++;
-    });
-
-    // Notes
-    if (notes) {
-      rowNum += 1;
-      ws.getCell(`A${rowNum}`).value = 'Notes:';
-      ws.getCell(`A${rowNum}`).font = boldFont;
-      rowNum++;
-      ws.mergeCells(`A${rowNum}:F${rowNum}`);
-      ws.getCell(`A${rowNum}`).value = notes;
-      ws.getCell(`A${rowNum}`).font = normalFont;
+    const fs = require('fs');
+    const templatePath = path.join(__dirname, '../../templates/b2b_invoice_master.xlsx');
+    if (!fs.existsSync(templatePath)) {
+      throw new Error(`인보이스 템플릿 파일 없음: ${templatePath}`);
     }
 
-    // Payment Terms
-    rowNum += 2;
-    ws.getCell(`A${rowNum}`).value = `Payment Terms: ${buyer.PaymentTerms || 'Net 30'}`;
-    ws.getCell(`A${rowNum}`).font = { ...normalFont, color: { argb: 'FF666666' } };
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(templatePath);
+    const ws = workbook.getWorksheet('MASTER');
+    if (!ws) throw new Error('MASTER 시트를 템플릿에서 찾을 수 없습니다');
 
-    // 프린트 설정
-    ws.pageSetup = { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+    // 날짜 포맷: "2026-04-22" → "Apr.22,2026"
+    const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const formatDate = iso => {
+      if (!iso) return '';
+      const d = new Date(String(iso) + 'T00:00:00');
+      if (isNaN(d)) return iso;
+      return `${MONTHS[d.getMonth()]}.${d.getDate()},${d.getFullYear()}`;
+    };
+
+    // 1) 바이어 정보 (B7~B11)
+    const emailPhone = [buyer.Email, buyer.Phone || buyer.WhatsApp].filter(Boolean).join(' / ');
+    ws.getCell('B7').value = `Messrs. :${buyer.Name || ''}`;
+    ws.getCell('B8').value = buyer.Address || '';
+    ws.getCell('B9').value = emailPhone;
+    // VAT/EORI — buyer 스키마에 없어서 Notes에서 추출 (있으면). 없으면 공백
+    const vatMatch  = (buyer.Notes || '').match(/VAT\s*[:\-]?\s*(\S+)/i);
+    const eoriMatch = (buyer.Notes || '').match(/EORI\s*[:\-]?\s*(\S+)/i);
+    ws.getCell('B10').value = vatMatch  ? `VAT: ${vatMatch[1]}`   : '';
+    ws.getCell('B11').value = eoriMatch ? `EORI: ${eoriMatch[1]}` : '';
+
+    // 2) 인보이스 번호 (I7:J7 merged)
+    ws.getCell('I7').value = invoiceNo;
+
+    // 3) 조건 (E열 = 값, D = ':' , C = 라벨)
+    ws.getCell('E15').value = formatDate(invoiceDate);
+    ws.getCell('E16').value = 'FOB';
+    ws.getCell('E17').value = 'Export Standard Packing';
+    ws.getCell('E18').value = buyer.PaymentTerms || '100% T/T in advance';
+    ws.getCell('E19').value = 'Asap after payment';
+    ws.getCell('E20').value = 'Republic of Korea';
+
+    // 4) 품목 — 행 23~28 (최대 6개)
+    const ITEM_FIRST_ROW = 23;
+    const ITEM_LAST_ROW = 28;
+    const maxItems = ITEM_LAST_ROW - ITEM_FIRST_ROW + 1;
+    if ((items || []).length > maxItems) {
+      throw new Error(`품목 수 초과 (${items.length}개). 템플릿 최대 ${maxItems}개. 인보이스 분할 필요.`);
+    }
+    for (let i = 0; i < maxItems; i++) {
+      const row = ITEM_FIRST_ROW + i;
+      const it = items[i];
+      if (it) {
+        ws.getCell(`C${row}`).value = it.name || it.sku || '';    // C:F merged
+        ws.getCell(`G${row}`).value = Number(it.qty) || 0;        // G:H merged
+        ws.getCell(`I${row}`).value = Number(it.price) || 0;
+        const itemTotal = Number(it.total) || (Number(it.qty) || 0) * (Number(it.price) || 0);
+        ws.getCell(`J${row}`).value = itemTotal;
+      } else {
+        // 빈 행 — NO. 열(B)은 템플릿 값 유지, 값 셀만 비움
+        ws.getCell(`C${row}`).value = '';
+        ws.getCell(`G${row}`).value = '';
+        ws.getCell(`I${row}`).value = '';
+        ws.getCell(`J${row}`).value = '';
+      }
+    }
+
+    // 5) 배송 (row 29) — 템플릿 formula 덮어쓰고 우리 시스템 값 주입
+    const shippingAmount = Number(shipping) || 0;
+    if (shippingAmount > 0) {
+      ws.getCell('G29').value = Math.max(1, Math.ceil(shippingAmount / 100));
+      ws.getCell('I29').value = 100;
+      ws.getCell('J29').value = shippingAmount;
+    } else {
+      ws.getCell('G29').value = 0;
+      ws.getCell('I29').value = 0;
+      ws.getCell('J29').value = 0;
+    }
+
+    // 6) TOTAL (row 30) — 템플릿 SUM formula 그대로 둬도 되지만 명시적으로 값도 세팅
+    ws.getCell('J30').value = Number(total) || 0;
 
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
