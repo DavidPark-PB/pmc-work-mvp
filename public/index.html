@@ -2356,6 +2356,7 @@
       <div style="display:flex;gap:4px;margin-bottom:16px;background:#f0f2f5;border-radius:8px;padding:4px">
         <button class="b2b-tab active" data-tab="b2b-create" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:#1a1a2e;box-shadow:0 1px 3px rgba(0,0,0,0.1)">인보이스 생성</button>
         <button class="b2b-tab" data-tab="b2b-list" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">인보이스 목록</button>
+        <button class="b2b-tab" data-tab="b2b-shipping" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">🚚 발송 현황</button>
         <button class="b2b-tab" data-tab="b2b-buyers" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">구매자 관리</button>
         <button class="b2b-tab" data-tab="b2b-revenue" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">매출 분석</button>
       </div>
@@ -2488,6 +2489,44 @@
               <tbody id="b2bInvoiceListBody">
                 <tr><td colspan="7" class="empty">로딩 중...</td></tr>
               </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 탭: 🚚 발송 현황 (Phase B) -->
+      <div id="b2b-shipping" class="b2b-tab-content" style="display:none">
+        <div class="card" style="border-left:4px solid #1565c0">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+            <h3 style="font-size:15px;font-weight:700;margin:0;">🚚 발송 현황</h3>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <label style="font-size:12px;color:#666;">발송일</label>
+              <input type="date" id="b2bShipDate" style="padding:6px;border:1px solid #ddd;border-radius:6px;font-size:12px;">
+              <button onclick="b2bShippingRefresh()" style="padding:6px 12px;background:#0288d1;color:#fff;border:0;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">새로고침</button>
+            </div>
+          </div>
+
+          <!-- 오늘 발송 요약 -->
+          <div style="background:#f0f8ff;padding:12px;border-radius:6px;margin-bottom:12px;">
+            <h4 style="font-size:13px;font-weight:700;margin:0 0 8px;color:#1565c0;">📦 <span id="b2bShipDateLabel">오늘</span> 발송 <span id="b2bShipCount" style="color:#888;font-weight:400;"></span></h4>
+            <div id="b2bShipList" style="font-size:12px;"></div>
+          </div>
+
+          <!-- 미발송 SKU 집계 -->
+          <h4 style="font-size:13px;font-weight:700;margin:0 0 8px;color:#c62828;">🚨 미발송 SKU · 구매 필요 수량 <span id="b2bPendingSummary" style="color:#888;font-weight:400;font-size:11px;"></span></h4>
+          <div class="table-wrap">
+            <table class="data-table" style="font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left;">SKU</th>
+                  <th style="text-align:left;">상품명</th>
+                  <th style="text-align:right;">주문 총량</th>
+                  <th style="text-align:right;">발송 완료</th>
+                  <th style="text-align:right;color:#c62828;">🚨 남은 수량</th>
+                  <th style="text-align:left;">관련 인보이스</th>
+                </tr>
+              </thead>
+              <tbody id="b2bPendingBody"><tr><td colspan="6" class="empty">로딩 중...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -3158,7 +3197,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260421h"></script>
+  <script src="/js/dashboard.js?v=20260421i"></script>
   <script src="/js/operations.js?v=20260420a"></script>
   <script src="/js/catalog.js?v=20260421g"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->

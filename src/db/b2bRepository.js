@@ -303,6 +303,74 @@ class B2BRepository {
     return { totalUSD, totalKRW, invoiceCount: data?.length || 0, buyerCount: Object.keys(buyerMap).length, ranking };
   }
 
+  // ─── Shipments (Phase B) ───
+
+  async createShipment({ invoiceNo, shippedAt, carrier, trackingNumber, items, notes, userId }) {
+    const { data, error } = await this.db
+      .from('b2b_shipments')
+      .insert({
+        invoice_no: invoiceNo,
+        shipped_at: shippedAt || new Date().toISOString().slice(0, 10),
+        carrier: carrier || 'FedEx',
+        tracking_number: trackingNumber,
+        items,
+        notes: notes || null,
+        created_by: userId || null,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return this._toShipmentFormat(data);
+  }
+
+  async listShipmentsByInvoice(invoiceNo) {
+    const { data, error } = await this.db
+      .from('b2b_shipments')
+      .select('*')
+      .eq('invoice_no', invoiceNo)
+      .order('shipped_at', { ascending: false })
+      .order('id', { ascending: false });
+    if (error && error.code !== '42P01') throw error;
+    return (data || []).map(this._toShipmentFormat);
+  }
+
+  async deleteShipment(id) {
+    const { error } = await this.db.from('b2b_shipments').delete().eq('id', id);
+    if (error) throw error;
+  }
+
+  async listShipmentsByDate(date) {
+    const { data, error } = await this.db
+      .from('b2b_shipments')
+      .select('*')
+      .eq('shipped_at', date)
+      .order('id', { ascending: false });
+    if (error && error.code !== '42P01') throw error;
+    return (data || []).map(this._toShipmentFormat);
+  }
+
+  async listAllShipments() {
+    const { data, error } = await this.db
+      .from('b2b_shipments')
+      .select('*');
+    if (error && error.code !== '42P01') throw error;
+    return (data || []).map(this._toShipmentFormat);
+  }
+
+  _toShipmentFormat(r) {
+    return {
+      id: r.id,
+      invoiceNo: r.invoice_no,
+      shippedAt: r.shipped_at,
+      carrier: r.carrier,
+      trackingNumber: r.tracking_number,
+      items: Array.isArray(r.items) ? r.items : [],
+      notes: r.notes,
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+    };
+  }
+
   _toInvoiceFormat(r) {
     return {
       InvoiceNo: r.invoice_no,

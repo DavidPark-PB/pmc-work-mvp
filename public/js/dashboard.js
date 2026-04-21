@@ -6250,6 +6250,12 @@ function setupB2BPage() {
         // 탭별 데이터 로드
         switch (btn.dataset.tab) {
           case 'b2b-list': loadB2BInvoiceList(); break;
+          case 'b2b-shipping':
+            if (!document.getElementById('b2bShipDate').value) {
+              document.getElementById('b2bShipDate').value = new Date().toISOString().slice(0, 10);
+            }
+            b2bShippingRefresh();
+            break;
           case 'b2b-buyers': loadB2BBuyers(); break;
           case 'b2b-revenue': loadB2BRevenue(); break;
         }
@@ -6469,6 +6475,7 @@ async function loadB2BInvoiceList() {
         <td><span style="background:${statusColor};color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600">${inv.Status}</span></td>
         <td>
           <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <button onclick="b2bOpenShipmentModal('${inv.InvoiceNo}')" title="발송 관리" style="background:#1565c0;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🚚 발송</button>
             <a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="background:#0288d1;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">XLSX</a>
             ${inv.Status !== 'PAID' ? `<button onclick="b2bMarkPaid('${inv.InvoiceNo}')" style="background:#27ae60;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">PAID</button>` : ''}
             <button onclick="b2bSendWhatsApp('${inv.InvoiceNo}')" style="background:#25d366;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">WA</button>
@@ -6523,6 +6530,237 @@ async function b2bVoidInvoice(invoiceNo) {
     loadB2BInvoiceList();
   } catch (err) {
     alert('무효화 실패: ' + err.message);
+  }
+}
+
+// ─── 🚚 발송 현황 (Phase B) ───
+async function b2bShippingRefresh() {
+  const date = document.getElementById('b2bShipDate').value || new Date().toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  document.getElementById('b2bShipDateLabel').textContent = date === today ? '오늘' : date;
+
+  // 오늘 발송 + 미발송 SKU 집계를 병렬 조회
+  const listHost = document.getElementById('b2bShipList');
+  const countHost = document.getElementById('b2bShipCount');
+  const pendHost = document.getElementById('b2bPendingBody');
+  const pendSummary = document.getElementById('b2bPendingSummary');
+  listHost.innerHTML = '<div style="color:#888;padding:8px;">로딩…</div>';
+  pendHost.innerHTML = '<tr><td colspan="6" class="empty">로딩 중...</td></tr>';
+
+  try {
+    const [byDateRes, pendingRes] = await Promise.all([
+      fetch(`${API}/b2b/shipments/by-date?date=${date}`).then(r => r.json()),
+      fetch(`${API}/b2b/shipments/pending-skus`).then(r => r.json()),
+    ]);
+
+    // 오늘 발송
+    const shipments = byDateRes.shipments || [];
+    countHost.textContent = `· ${shipments.length}건`;
+    if (shipments.length === 0) {
+      listHost.innerHTML = '<div style="color:#888;padding:8px;">이 날 발송 기록이 없습니다.</div>';
+    } else {
+      listHost.innerHTML = shipments.map(s => {
+        const itemSummary = (s.items || []).map(i => `${i.sku}×${i.qty}`).join(', ');
+        return `<div style="padding:6px 10px;background:#fff;border-radius:4px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:200px;">
+            <strong>${s.invoiceNo}</strong> · <span style="color:#666;">${s.buyerName || '-'}</span>
+            <div style="color:#555;font-size:11px;margin-top:2px;">${itemSummary}</div>
+          </div>
+          <div style="font-size:11px;">
+            <span style="color:#1565c0;font-weight:600;">${s.carrier}</span>
+            <code style="background:#f0f0f0;padding:1px 5px;border-radius:3px;">${s.trackingNumber}</code>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    // 미발송 SKU 집계
+    const skus = pendingRes.skus || [];
+    pendSummary.textContent = `· 총 ${pendingRes.totalSkus || 0}개 SKU · ${pendingRes.totalPending || 0}개 단위`;
+    if (skus.length === 0) {
+      pendHost.innerHTML = '<tr><td colspan="6" class="empty" style="color:#888;">미발송 잔량이 없습니다. 모두 발송 완료.</td></tr>';
+    } else {
+      pendHost.innerHTML = skus.map(s => {
+        const invList = (s.invoices || []).map(i => `${i.invoiceNo}(${i.pending})`).join(', ');
+        return `<tr>
+          <td style="font-weight:600;font-family:monospace;">${s.sku}</td>
+          <td>${s.name || '-'}</td>
+          <td style="text-align:right;">${s.orderedQty}</td>
+          <td style="text-align:right;color:#27ae60;">${s.shippedQty}</td>
+          <td style="text-align:right;color:#c62828;font-weight:700;">🚨 ${s.pendingQty}</td>
+          <td style="font-size:11px;color:#888;">${invList}</td>
+        </tr>`;
+      }).join('');
+    }
+  } catch (err) {
+    listHost.innerHTML = `<div style="color:#c62828;padding:8px;">실패: ${err.message}</div>`;
+    pendHost.innerHTML = `<tr><td colspan="6" style="color:#c62828;padding:20px;text-align:center;">실패: ${err.message}</td></tr>`;
+  }
+}
+
+// ─── 발송 관리 모달 ───
+async function b2bOpenShipmentModal(invoiceNo) {
+  let detail;
+  try {
+    const res = await fetch(`${API}/b2b/invoices/${invoiceNo}/shipments`);
+    detail = await res.json();
+    if (!res.ok || !detail.success) throw new Error(detail.error || '로드 실패');
+  } catch (err) {
+    alert('발송 정보 로드 실패: ' + err.message);
+    return;
+  }
+
+  const inv = detail.invoice;
+  const shipments = detail.shipments || [];
+  const items = inv.ItemsEnriched || [];
+
+  const existing = document.getElementById('b2b-ship-modal');
+  if (existing) existing.remove();
+  const m = document.createElement('div');
+  m.id = 'b2b-ship-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+  const itemsTable = items.map(it => `
+    <tr>
+      <td style="font-family:monospace;font-weight:600;">${it.sku}</td>
+      <td>${it.name || '-'}</td>
+      <td style="text-align:right;">${it.qty}</td>
+      <td style="text-align:right;color:#27ae60;">${it.shippedQty}</td>
+      <td style="text-align:right;color:${it.remainingQty > 0 ? '#c62828' : '#888'};font-weight:${it.remainingQty > 0 ? 700 : 400};">${it.remainingQty}</td>
+    </tr>
+  `).join('');
+
+  const shipmentHistory = shipments.length === 0
+    ? '<div style="padding:20px;text-align:center;color:#888;">발송 이력 없음</div>'
+    : shipments.map(s => `
+      <div style="padding:8px 10px;background:#f8f8fa;border-radius:4px;margin-bottom:4px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div>
+            <strong>${s.shippedAt}</strong> · <span style="color:#1565c0;font-weight:600;">${s.carrier}</span>
+            <code style="background:#fff;padding:1px 6px;border-radius:3px;margin-left:4px;">${s.trackingNumber}</code>
+          </div>
+          <button onclick="b2bDeleteShipment(${s.id}, '${invoiceNo}')" style="background:transparent;border:1px solid #c62828;color:#c62828;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;">삭제</button>
+        </div>
+        <div style="color:#555;font-size:11px;margin-top:3px;">
+          ${(s.items || []).map(i => `${i.sku}×${i.qty}`).join(', ')}
+          ${s.notes ? `<span style="color:#888;"> · ${s.notes}</span>` : ''}
+        </div>
+      </div>
+    `).join('');
+
+  const pendingItems = items.filter(it => it.remainingQty > 0);
+  const addForm = pendingItems.length === 0 ? `
+    <div style="padding:20px;text-align:center;color:#27ae60;background:#e8f5e9;border-radius:6px;">
+      ✓ 모든 품목이 발송 완료되었습니다
+    </div>` : `
+    <div style="background:#f0f8ff;padding:12px;border-radius:6px;">
+      <h4 style="font-size:13px;font-weight:700;margin:0 0 8px;color:#1565c0;">+ 발송 추가</h4>
+      <div style="display:grid;grid-template-columns:100px 1fr 140px;gap:8px;margin-bottom:8px;">
+        <input type="date" id="shipFormDate" value="${new Date().toISOString().slice(0,10)}" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+        <select id="shipFormCarrier" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+          <option value="FedEx">FedEx</option>
+          <option value="DHL">DHL</option>
+          <option value="UPS">UPS</option>
+          <option value="EMS">EMS</option>
+          <option value="Other">기타</option>
+        </select>
+        <input type="text" id="shipFormTracking" placeholder="송장번호" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+      </div>
+      <table style="width:100%;font-size:12px;margin-bottom:8px;">
+        <thead><tr style="background:#fff;"><th style="padding:4px;text-align:left;">SKU</th><th style="padding:4px;text-align:left;">상품명</th><th style="padding:4px;text-align:right;">남은 수량</th><th style="padding:4px;text-align:right;">이번 발송 수량</th></tr></thead>
+        <tbody>
+          ${pendingItems.map(it => `
+            <tr>
+              <td style="padding:4px;font-family:monospace;">${it.sku}</td>
+              <td style="padding:4px;">${it.name || '-'}</td>
+              <td style="padding:4px;text-align:right;color:#c62828;">${it.remainingQty}</td>
+              <td style="padding:4px;text-align:right;"><input type="number" class="ship-qty" data-sku="${it.sku}" min="0" max="${it.remainingQty}" value="${it.remainingQty}" style="width:80px;padding:3px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;text-align:right;"></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <input type="text" id="shipFormNotes" placeholder="메모 (선택)" style="width:100%;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;margin-bottom:8px;">
+      <button onclick="b2bSubmitShipment('${invoiceNo}')" id="shipSubmitBtn" style="padding:8px 16px;background:#1565c0;color:#fff;border:0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">✓ 발송 기록 저장</button>
+    </div>
+  `;
+
+  m.innerHTML = `
+    <div style="background:#fff;border-radius:12px;padding:20px;width:860px;max-width:96vw;max-height:90vh;overflow:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div>
+          <h3 style="font-size:16px;font-weight:700;margin:0;">🚚 ${invoiceNo} · ${inv.BuyerName}</h3>
+          <p style="font-size:12px;color:#888;margin:2px 0 0;">주문 ${inv.OrderedTotalQty || 0}개 · 발송 완료 ${inv.ShippedTotalQty || 0}개 · 남음 ${(inv.OrderedTotalQty || 0) - (inv.ShippedTotalQty || 0)}개</p>
+        </div>
+        <button onclick="document.getElementById('b2b-ship-modal').remove()" style="background:#2a2a4a;color:#fff;border:0;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;">닫기</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:12px;">
+        <div>
+          <h4 style="font-size:13px;font-weight:700;margin:0 0 6px;">📋 주문 품목 / 발송 진행</h4>
+          <table style="width:100%;font-size:12px;border-collapse:collapse;">
+            <thead><tr style="background:#f0f2f5;"><th style="padding:4px 6px;text-align:left;">SKU</th><th style="padding:4px 6px;text-align:left;">상품명</th><th style="padding:4px 6px;text-align:right;">주문</th><th style="padding:4px 6px;text-align:right;">발송</th><th style="padding:4px 6px;text-align:right;">남음</th></tr></thead>
+            <tbody>${itemsTable}</tbody>
+          </table>
+        </div>
+        <div>
+          <h4 style="font-size:13px;font-weight:700;margin:0 0 6px;">🗂 발송 이력 (${shipments.length}건)</h4>
+          <div style="max-height:220px;overflow:auto;">${shipmentHistory}</div>
+        </div>
+      </div>
+
+      ${addForm}
+    </div>
+  `;
+  document.body.appendChild(m);
+  m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+}
+
+async function b2bSubmitShipment(invoiceNo) {
+  const trackingNumber = (document.getElementById('shipFormTracking').value || '').trim();
+  if (!trackingNumber) { alert('송장번호를 입력하세요'); return; }
+
+  const items = [];
+  document.querySelectorAll('#b2b-ship-modal .ship-qty').forEach(inp => {
+    const qty = parseInt(inp.value, 10) || 0;
+    if (qty > 0) items.push({ sku: inp.dataset.sku, qty });
+  });
+  if (items.length === 0) { alert('발송할 수량을 입력하세요'); return; }
+
+  const btn = document.getElementById('shipSubmitBtn');
+  btn.disabled = true; btn.textContent = '저장 중...';
+  try {
+    const res = await fetch(`${API}/b2b/invoices/${invoiceNo}/shipments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        carrier: document.getElementById('shipFormCarrier').value,
+        trackingNumber,
+        items,
+        notes: document.getElementById('shipFormNotes').value.trim() || undefined,
+        shippedAt: document.getElementById('shipFormDate').value || undefined,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || '저장 실패');
+    document.getElementById('b2b-ship-modal').remove();
+    b2bOpenShipmentModal(invoiceNo);  // 다시 열어 최신 상태 반영
+    loadB2BInvoiceList();
+  } catch (err) {
+    alert('발송 저장 실패: ' + err.message);
+    btn.disabled = false; btn.textContent = '✓ 발송 기록 저장';
+  }
+}
+
+async function b2bDeleteShipment(shipmentId, invoiceNo) {
+  if (!confirm('이 발송 기록을 삭제합니다. 되돌릴 수 없습니다.\n(참고: 실수 정정용)')) return;
+  try {
+    const res = await fetch(`${API}/b2b/shipments/${shipmentId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || '실패');
+    document.getElementById('b2b-ship-modal').remove();
+    b2bOpenShipmentModal(invoiceNo);
+    loadB2BInvoiceList();
+  } catch (err) {
+    alert('삭제 실패: ' + err.message);
   }
 }
 

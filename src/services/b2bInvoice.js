@@ -307,6 +307,30 @@ class B2BInvoiceService {
     ];
     await this.sheets.appendData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A:P`, [invoiceRow]);
 
+    // 6-b. Supabase에도 인보이스 동기화 (실패해도 Sheets 기준으로 계속 진행)
+    try {
+      const B2BRepo = require('../db/b2bRepository');
+      const repo = new B2BRepo();
+      await repo.createInvoice({
+        InvoiceNo: invoiceNo,
+        BuyerID: data.buyerId,
+        BuyerName: buyer.Name,
+        Date: invoiceDate,
+        DueDate: dueDate,
+        Items: items,
+        Subtotal: subtotal,
+        Tax: tax,
+        Shipping: shipping,
+        Total: total,
+        Currency: currency,
+        Status: 'CREATED',
+        DriveFileId: driveFileId,
+        DriveUrl: driveUrl,
+      });
+    } catch (err) {
+      console.warn('[B2B] Supabase 동기화 실패 (마이그레이션 미적용?):', err.message);
+    }
+
     // 7. 구매자 통계 업데이트 (TotalOrders, TotalRevenue)
     await this._updateBuyerStats(data.buyerId);
 
@@ -682,6 +706,13 @@ class B2BInvoiceService {
       const buyerId = rows[rowIndex][1];
       await this._updateBuyerStats(buyerId);
     }
+
+    // Supabase에도 반영
+    try {
+      const B2BRepo = require('../db/b2bRepository');
+      const repo = new B2BRepo();
+      await repo.updateInvoiceStatus(invoiceNo, status);
+    } catch { /* 미마이그레이션 시 무시 */ }
 
     console.log(`✅ 인보이스 ${invoiceNo} → ${status}`);
     return { invoiceNo, status };
