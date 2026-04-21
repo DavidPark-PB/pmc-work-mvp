@@ -129,9 +129,10 @@ function start() {
     sendEveningOwnerSummary().catch(e => console.error('[scheduler] evening error:', e));
   }, { timezone: TZ });
 
-  // 매일 새벽 4시 — 네이버/쇼피/알리바바 상품 동기화
+  // 매일 새벽 4시 — 네이버/쇼피/알리바바/eBay/Shopify 상품 동기화
   cron.schedule('0 4 * * *', async () => {
     const sync = require('./platformSync');
+    const productSync = require('./productSync');
     const results = {};
     try { results.naver = await sync.syncNaverList(); }
     catch (e) { results.naver = { error: e.message }; }
@@ -139,7 +140,22 @@ function start() {
     catch (e) { results.shopee = { error: e.message }; }
     try { results.alibaba = await sync.syncAlibabaAll(); }
     catch (e) { results.alibaba = { error: e.message }; }
+    // eBay/Shopify — productSync (ebay_products/shopify_products 테이블 갱신)
+    // 전투 상황판이 DB 스냅샷을 읽으므로 자동 동기화 필수.
+    try { results.ebayShopify = await productSync.syncPlatformProducts(['ebay', 'shopify']); }
+    catch (e) { results.ebayShopify = { error: e.message }; }
     console.log('[scheduler] 4am platform sync done:', JSON.stringify(results));
+  }, { timezone: TZ });
+
+  // 매일 12시·18시 KST — eBay 가격 중간 재동기화 (활발한 거래 시간대)
+  cron.schedule('0 12,18 * * *', async () => {
+    try {
+      const productSync = require('./productSync');
+      const r = await productSync.syncPlatformProducts(['ebay']);
+      console.log('[scheduler] midday eBay resync:', JSON.stringify(r));
+    } catch (e) {
+      console.error('[scheduler] midday eBay resync error:', e.message);
+    }
   }, { timezone: TZ });
 
   // 매시 정각 (09~21시 사이) — 네이버 detail 보강 (배치 100)

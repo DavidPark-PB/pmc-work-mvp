@@ -2062,7 +2062,24 @@ router.get('/battle/data', async (req, res) => {
       uniqueSellers,
     };
 
-    const response = { items: battleItems, summary, timestamp: new Date().toISOString() };
+    // 가격 데이터의 신선도 — ebay_products.updated_at 최대값
+    let ebayLastSyncedAt = null;
+    try {
+      const { getClient } = require('../../db/supabaseClient');
+      const { data } = await getClient()
+        .from('ebay_products')
+        .select('updated_at')
+        .order('updated_at', { ascending: false })
+        .limit(1);
+      ebayLastSyncedAt = data?.[0]?.updated_at || null;
+    } catch { /* 조회 실패는 그냥 null */ }
+
+    const response = {
+      items: battleItems,
+      summary,
+      timestamp: new Date().toISOString(),
+      ebayLastSyncedAt,
+    };
 
     battleCache = response;
     battleCacheTime = Date.now();
@@ -2074,11 +2091,25 @@ router.get('/battle/data', async (req, res) => {
   }
 });
 
-// POST /api/battle/refresh — 가격 전투 새로고침
+// POST /api/battle/refresh — 가격 전투 캐시 무효화 + (옵션) eBay 재동기화
+// body: { syncEbay: boolean } — true면 실제 eBay API 호출해서 ebay_products 테이블 갱신
 router.post('/battle/refresh', async (req, res) => {
   try {
+    const { syncEbay } = req.body || {};
     battleCache = null;
     battleCacheTime = 0;
+
+    if (syncEbay) {
+      try {
+        const { syncPlatformProducts } = require('../../services/productSync');
+        const r = await syncPlatformProducts(['ebay']);
+        return res.json({ success: true, synced: r, timestamp: new Date().toISOString() });
+      } catch (e) {
+        console.error('[battle/refresh] eBay sync 실패:', e.message);
+        return res.status(500).json({ success: false, error: 'eBay 동기화 실패: ' + e.message });
+      }
+    }
+
     res.json({ success: true, timestamp: new Date().toISOString() });
   } catch (error) {
     res.status(500).json({ error: error.message });

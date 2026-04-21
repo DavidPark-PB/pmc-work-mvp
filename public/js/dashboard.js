@@ -3386,6 +3386,7 @@ async function loadBattle() {
     _battleText = await _battleRes.text();
     battleData = JSON.parse(_battleText);
 
+    renderBattleFreshness(battleData.ebayLastSyncedAt);
     renderBattleStats(battleData.summary);
     renderBattleTable(battleData.items);
     populateBattleSellerFilter(battleData.summary.uniqueSellers || []);
@@ -3480,6 +3481,57 @@ function setupRepricingEvents() {
       execBtn.disabled = false;
     }
   };
+}
+
+function renderBattleFreshness(iso) {
+  const el = document.getElementById('battleFreshness');
+  if (!el) return;
+  el.style.display = 'flex';
+  let ageText, color, bg;
+  if (!iso) {
+    ageText = '⚠️ eBay 가격 데이터 없음 — 동기화 필요';
+    color = '#c62828'; bg = '#ffebee';
+  } else {
+    const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    const fmt = mins < 60
+      ? `${mins}분 전`
+      : mins < 1440
+      ? `${Math.floor(mins / 60)}시간 ${mins % 60}분 전`
+      : `${Math.floor(mins / 1440)}일 전`;
+    if (mins < 60)       { color = '#2e7d32'; bg = '#e8f5e9'; }
+    else if (mins < 360) { color = '#ef6c00'; bg = '#fff3e0'; }
+    else                 { color = '#c62828'; bg = '#ffebee'; }
+    ageText = `🕐 내 가격 데이터 기준: <strong>${fmt}</strong> <span style="opacity:0.7;">(${new Date(iso).toLocaleString('ko-KR')})</span>`;
+  }
+  el.style.background = bg;
+  el.style.color = color;
+  el.innerHTML = `
+    <div>${ageText}${!iso || (Date.now() - new Date(iso).getTime()) > 60*60*1000 ? ' — 표시된 내 가격이 실제 리스팅과 다를 수 있습니다.' : ''}</div>
+    <button id="battleSyncBtn" onclick="battleSyncEbay()" style="padding:5px 12px;background:${color};color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">🔄 eBay 가격 지금 재동기화</button>
+  `;
+}
+
+async function battleSyncEbay() {
+  const btn = document.getElementById('battleSyncBtn');
+  if (!btn) return;
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '동기화 중... (1~3분)';
+  try {
+    const res = await fetch(`${API}/battle/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ syncEbay: true }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || '실패');
+    alert('✓ eBay 가격 재동기화 완료');
+    loadBattle();
+  } catch (err) {
+    alert('재동기화 실패: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
 }
 
 function renderBattleStats(summary) {
