@@ -94,6 +94,9 @@ function navigateTo(page) {
     case 'feedback':     if (window.pmcFeedback)   pmcFeedback.load();   break;
     case 'workspace':    if (window.pmcWorkspace)  pmcWorkspace.load();  break;
     case 'staff-admin':  if (window.pmcStaffAdmin) pmcStaffAdmin.load(); break;
+    case 'competitors':  if (window.pmcCompetitors) pmcCompetitors.load(); break;
+    case 'prospects-list':  if (window.pmcProspectsList)   pmcProspectsList.load();   break;
+    case 'prospects-active':if (window.pmcProspectsActive) pmcProspectsActive.load(); break;
   }
 }
 
