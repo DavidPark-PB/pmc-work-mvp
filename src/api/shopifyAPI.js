@@ -29,6 +29,40 @@ class ShopifyAPI {
   }
 
   /**
+   * 429 (rate limit) / 5xx에 대한 지수 백오프 재시도 래퍼.
+   * Retry-After 헤더 존중, 최대 4회 시도 (1s → 2s → 4s → 8s).
+   * 401/403 등 인증 에러는 즉시 throw.
+   */
+  async _request(config, maxRetries = 4) {
+    let lastErr;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await axios({
+          ...config,
+          headers: { ...(config.headers || {}), ...this.getHeaders() },
+          timeout: config.timeout || 30000,
+        });
+      } catch (err) {
+        const status = err.response?.status;
+        // 인증/권한 에러는 재시도해도 소용없음 → 즉시 실패
+        if (status === 401 || status === 403 || status === 404) throw err;
+        // 429·5xx만 재시도
+        if (status === 429 || (status >= 500 && status < 600)) {
+          if (attempt === maxRetries) throw err;
+          const retryAfter = parseFloat(err.response?.headers?.['retry-after']);
+          const baseDelay = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s, 8s
+          const delay = Number.isFinite(retryAfter) ? retryAfter * 1000 : baseDelay;
+          await this.sleep(delay);
+          lastErr = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr;
+  }
+
+  /**
    * 모든 상품 가져오기 (페이지네이션 처리)
    * @param {number} limit - 한 번에 가져올 상품 수 (최대 250)
    * @returns {Promise<Array>} 모든 상품 배열
@@ -41,7 +75,7 @@ class ShopifyAPI {
       console.log('🔄 Shopify에서 상품 데이터 가져오는 중...');
 
       while (url) {
-        const response = await axios.get(url, { headers: this.getHeaders() });
+        const response = await this._request({ method: 'get', url });
         const products = response.data.products;
 
         allProducts = allProducts.concat(products);
@@ -129,7 +163,7 @@ class ShopifyAPI {
   async getProductCount() {
     try {
       const url = `${this.baseUrl}/products/count.json`;
-      const response = await axios.get(url, { headers: this.getHeaders() });
+      const response = await this._request({ method: 'get', url });
       return response.data.count;
     } catch (error) {
       console.error('❌ 상품 수 확인 실패:', error.message);
@@ -272,7 +306,7 @@ class ShopifyAPI {
       const allOrders = [];
 
       while (url) {
-        const response = await axios.get(url, { headers: this.getHeaders() });
+        const response = await this._request({ method: 'get', url });
         const orders = response.data.orders || [];
         allOrders.push(...orders);
 
@@ -329,29 +363,29 @@ class ShopifyAPI {
   async uploadImagesToCDN(imageUrls) {
     if (!imageUrls || imageUrls.length === 0) return [];
 
-    // Retry up to 3 times with delay for rate limiting
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        if (attempt > 1) await this.sleep(2000 * attempt);
-        const images = imageUrls.map(url => ({ src: url }));
-        const res = await axios.post(`${this.baseUrl}/products.json`, {
+    try {
+      const images = imageUrls.map(url => ({ src: url }));
+      const res = await this._request({
+        method: 'post',
+        url: `${this.baseUrl}/products.json`,
+        data: {
           product: {
             title: `_cdn_upload_${Date.now()}`,
             status: 'draft',
             images,
-          }
-        }, { headers: this.getHeaders(), timeout: 30000 });
-
-        const product = res.data.product;
-        const cdnUrls = (product.images || []).map(img => img.src);
-        console.log(`[Shopify CDN] Uploaded ${cdnUrls.length} images (draft product ${product.id} kept for CDN)`);
-        return cdnUrls;
-      } catch (err) {
-        const status = err.response?.status;
-        const msg = err.response?.data?.errors || err.message;
-        console.warn(`[Shopify CDN] Attempt ${attempt}/3 failed (${status}): ${msg}`);
-        if (attempt === 3) throw new Error('Shopify CDN 업로드 실패: ' + msg);
-      }
+          },
+        },
+        timeout: 30000,
+      });
+      const product = res.data.product;
+      const cdnUrls = (product.images || []).map(img => img.src);
+      console.log(`[Shopify CDN] Uploaded ${cdnUrls.length} images (draft product ${product.id} kept for CDN)`);
+      return cdnUrls;
+    } catch (err) {
+      const status = err.response?.status;
+      const msg = err.response?.data?.errors || err.message;
+      console.warn(`[Shopify CDN] Upload failed (${status}): ${msg}`);
+      throw new Error('Shopify CDN 업로드 실패: ' + msg);
     }
   }
 

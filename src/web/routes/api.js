@@ -97,7 +97,7 @@ let platformCache = null;
 let platformCacheTime = 0;
 let analysisCache = null;
 let analysisCacheTime = 0;
-const CACHE_TTL = 60000;
+const CACHE_TTL = 600000; // 10분 — 플랫폼 상태는 자주 안 바뀜, 429 방지
 const ANALYSIS_CACHE_TTL = 120000; // 2분
 let battleCache = null;
 let battleCacheTime = 0;
@@ -1490,10 +1490,19 @@ async function getPlatformStatuses() {
     try {
       switch (p.key) {
         case 'shopify': {
-          const api = getShopifyAPI();
-          const count = await api.getProductCount();
-          productCount = count || 0;
-          status = 'connected';
+          // DB (shopify_products)에서 카운트 — 라이브 API 대신 사용해 429 방지.
+          // shopify_products는 4am 플랫폼 동기화로 갱신됨.
+          try {
+            const dbCount = await dataSource.getPlatformProductCount('shopify');
+            productCount = dbCount || 0;
+            status = dbCount > 0 ? 'connected' : 'disconnected';
+          } catch (e) {
+            // DB도 실패하면 라이브 한 번 시도 (token/credential 확인 용도)
+            const api = getShopifyAPI();
+            const count = await api.getProductCount();
+            productCount = count || 0;
+            status = 'connected';
+          }
           break;
         }
         case 'ebay': {
