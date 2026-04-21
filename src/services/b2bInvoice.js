@@ -648,6 +648,10 @@ class B2BInvoiceService {
       obj.Total = Number(obj.Total) || 0;
       // Items JSON 파싱
       try { obj.ItemsParsed = JSON.parse(obj.Items || '[]'); } catch { obj.ItemsParsed = []; }
+      // DriveUrl 정규화 — 과거 로컬 fallback(/data/invoices/...)이나 깨진 값은 API 경로로 교정
+      if (obj.DriveUrl && !/^https?:\/\//i.test(obj.DriveUrl)) {
+        obj.DriveUrl = `/api/b2b/invoices/${obj.InvoiceNo}/download`;
+      }
       return obj;
     });
 
@@ -753,25 +757,7 @@ class B2BInvoiceService {
       }
     }
 
-    // 로컬 파일 확인
-    const localPath = path.join(__dirname, '../../data/invoices', `${invoiceNo}.xlsx`);
-    const fs = require('fs');
-    if (fs.existsSync(localPath)) {
-      const buffer = fs.readFileSync(localPath);
-      if (format === 'pdf') {
-        try {
-          const pdfBuffer = await this.drive.convertXlsxToPdf(buffer, `temp-${invoiceNo}`);
-          return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
-        } catch {
-          // PDF 변환 실패 시 xlsx 반환
-        }
-      }
-      return {
-        buffer,
-        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        fileName: `${invoiceNo}.xlsx`,
-      };
-    }
+    // 로컬 파일 fallback 제거 (Fly.io ephemeral disk라 항상 false였음) → 바로 재생성
 
     // 재생성
     const buyers = await this.getBuyers();
