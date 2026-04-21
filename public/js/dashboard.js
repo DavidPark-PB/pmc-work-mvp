@@ -6274,10 +6274,11 @@ function setupB2BPage() {
 
     // 구매자 추가/취소/저장
     document.getElementById('b2bAddBuyerBtn').addEventListener('click', () => {
+      b2bResetBuyerForm();
       document.getElementById('b2bBuyerForm').style.display = 'block';
-      document.getElementById('b2bBuyerForm').dataset.editId = '';
     });
     document.getElementById('b2bBuyerCancelBtn').addEventListener('click', () => {
+      b2bResetBuyerForm();
       document.getElementById('b2bBuyerForm').style.display = 'none';
     });
     document.getElementById('b2bBuyerSaveBtn').addEventListener('click', b2bSaveBuyer);
@@ -6375,13 +6376,17 @@ function b2bRecalcTotal() {
 }
 
 // ─── 인보이스 생성 ───
+let _b2bCreating = false;
 async function b2bCreateInvoice() {
+  if (_b2bCreating) return;   // 중복 생성 방지 (더블클릭·빠른 연타)
+
   const buyerId = document.getElementById('b2bBuyerSelect').value;
   if (!buyerId) { alert('구매자를 선택하세요'); return; }
 
   const items = b2bInvoiceItems.filter(i => i && i.sku);
   if (items.length === 0) { alert('상품을 1개 이상 추가하세요'); return; }
 
+  _b2bCreating = true;
   const btn = document.getElementById('b2bCreateBtn');
   btn.disabled = true; btn.textContent = '생성 중...';
 
@@ -6427,6 +6432,7 @@ async function b2bCreateInvoice() {
     document.getElementById('b2bCreateResult').innerHTML =
       `<div style="padding:10px;background:#ffebee;border-radius:6px;font-size:12px;color:#c62828">${err.message}</div>`;
   } finally {
+    _b2bCreating = false;
     btn.disabled = false; btn.textContent = '인보이스 생성';
   }
 }
@@ -6466,6 +6472,7 @@ async function loadB2BInvoiceList() {
             <a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="background:#0288d1;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">XLSX</a>
             ${inv.Status !== 'PAID' ? `<button onclick="b2bMarkPaid('${inv.InvoiceNo}')" style="background:#27ae60;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">PAID</button>` : ''}
             <button onclick="b2bSendWhatsApp('${inv.InvoiceNo}')" style="background:#25d366;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">WA</button>
+            <button onclick="b2bVoidInvoice('${inv.InvoiceNo}')" title="무효화" style="background:#c62828;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🚫</button>
           </div>
         </td>
       </tr>`;
@@ -6502,6 +6509,23 @@ async function b2bSendWhatsApp(invoiceNo) {
   }
 }
 
+async function b2bVoidInvoice(invoiceNo) {
+  const reason = prompt(`${invoiceNo} 을(를) 무효화합니다. 되돌릴 수 없습니다.\n사유를 입력하세요 (예: 중복 생성, 바이어 취소):`);
+  if (reason === null) return;
+  if (!reason.trim()) { alert('사유를 반드시 입력하세요'); return; }
+  try {
+    const res = await fetch(`${API}/b2b/invoices/${invoiceNo}/void`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || '무효화 실패');
+    loadB2BInvoiceList();
+  } catch (err) {
+    alert('무효화 실패: ' + err.message);
+  }
+}
+
 // ─── 구매자 관리 ───
 async function loadB2BBuyers() {
   const tbody = document.getElementById('b2bBuyerListBody');
@@ -6520,6 +6544,7 @@ async function loadB2BBuyers() {
     tbody.innerHTML = buyers.map(b => {
       const extCount = Object.values(b.ExternalIds || {}).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
       const mapBtn = `<button onclick="b2bOpenMappingModal('${b.BuyerID}', ${JSON.stringify(b.Name || '').replace(/"/g,'&quot;')})" style="padding:3px 8px;background:${extCount > 0 ? '#2a4a6a' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🔗 ${extCount > 0 ? `맵핑 ${extCount}` : '맵핑 없음'}</button>`;
+      const editBtn = `<button onclick="b2bEditBuyer('${b.BuyerID}')" title="수정" style="padding:3px 8px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;margin-right:4px;">✏️</button>`;
       return `<tr>
         <td style="font-weight:600">${b.BuyerID}</td>
         <td>${b.Name}</td>
@@ -6529,12 +6554,53 @@ async function loadB2BBuyers() {
         <td>${b.PaymentTerms || ''}</td>
         <td style="text-align:right">${b.TotalOrders}</td>
         <td style="text-align:right;font-weight:600">${Number(b.TotalRevenue).toFixed(2)}</td>
-        <td style="text-align:center">${mapBtn}</td>
+        <td style="text-align:center;white-space:nowrap">${editBtn}${mapBtn}</td>
       </tr>`;
     }).join('');
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="8" class="empty" style="color:#c62828">${err.message}</td></tr>`;
   }
+}
+
+function b2bResetBuyerForm() {
+  const form = document.getElementById('b2bBuyerForm');
+  if (!form) return;
+  form.dataset.editId = '';
+  ['b2bBuyerName', 'b2bBuyerEmail', 'b2bBuyerWhatsapp', 'b2bBuyerCountry', 'b2bBuyerAddress', 'b2bBuyerNotes'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  if (document.getElementById('b2bBuyerCurrency')) document.getElementById('b2bBuyerCurrency').value = 'USD';
+  if (document.getElementById('b2bBuyerTerms')) document.getElementById('b2bBuyerTerms').value = 'Net 30';
+  const banner = document.getElementById('b2bBuyerEditBanner');
+  if (banner) banner.remove();
+}
+
+function b2bEditBuyer(buyerId) {
+  const buyer = (b2bBuyersCache || []).find(b => b.BuyerID === buyerId);
+  if (!buyer) { alert('바이어 정보를 찾을 수 없습니다. 새로고침 후 다시 시도하세요.'); return; }
+  // WhatsApp 형식 검증 힌트: +국가코드 포함 권장
+  document.getElementById('b2bBuyerName').value = buyer.Name || '';
+  document.getElementById('b2bBuyerEmail').value = buyer.Email || '';
+  document.getElementById('b2bBuyerWhatsapp').value = buyer.WhatsApp || '';
+  document.getElementById('b2bBuyerCountry').value = buyer.Country || '';
+  document.getElementById('b2bBuyerAddress').value = buyer.Address || '';
+  if (document.getElementById('b2bBuyerCurrency')) document.getElementById('b2bBuyerCurrency').value = buyer.Currency || 'USD';
+  if (document.getElementById('b2bBuyerTerms')) document.getElementById('b2bBuyerTerms').value = buyer.PaymentTerms || 'Net 30';
+  document.getElementById('b2bBuyerNotes').value = buyer.Notes || '';
+  const form = document.getElementById('b2bBuyerForm');
+  form.style.display = 'block';
+  form.dataset.editId = buyerId;
+  // 편집 모드 배너
+  let banner = document.getElementById('b2bBuyerEditBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'b2bBuyerEditBanner';
+    banner.style.cssText = 'padding:8px 12px;background:#0f2a3a;border:1px solid #1565c0;border-radius:6px;color:#64b5f6;font-size:12px;margin-bottom:10px;';
+    form.insertBefore(banner, form.firstChild);
+  }
+  banner.textContent = `✏️ ${buyerId} · ${buyer.Name} 수정 중`;
+  form.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function b2bSaveBuyer() {
@@ -6564,11 +6630,8 @@ async function b2bSaveBuyer() {
     const data = await res.json();
 
     if (data.success) {
+      b2bResetBuyerForm();
       document.getElementById('b2bBuyerForm').style.display = 'none';
-      // 폼 리셋
-      ['b2bBuyerName', 'b2bBuyerEmail', 'b2bBuyerWhatsapp', 'b2bBuyerCountry', 'b2bBuyerAddress', 'b2bBuyerNotes'].forEach(id => {
-        document.getElementById(id).value = '';
-      });
       loadB2BBuyers();
       loadB2BBuyerSelect();
     } else {

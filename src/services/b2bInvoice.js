@@ -633,6 +633,20 @@ class B2BInvoiceService {
       return obj;
     });
 
+    // voided 제외 (Supabase 마이그레이션 025 적용 시) — includeVoided 옵션으로 오버라이드 가능
+    if (!filters.includeVoided) {
+      try {
+        const B2BRepo = require('../db/b2bRepository');
+        const repo = new B2BRepo();
+        const { data } = await repo.db
+          .from('b2b_invoices')
+          .select('invoice_no')
+          .not('voided_at', 'is', null);
+        const voidedSet = new Set((data || []).map(r => r.invoice_no));
+        if (voidedSet.size > 0) invoices = invoices.filter(i => !voidedSet.has(i.InvoiceNo));
+      } catch { /* migration 025 미적용 — 필터 스킵 */ }
+    }
+
     // 필터
     if (filters.buyerId) invoices = invoices.filter(i => i.BuyerID === filters.buyerId);
     if (filters.status) invoices = invoices.filter(i => i.Status === filters.status);

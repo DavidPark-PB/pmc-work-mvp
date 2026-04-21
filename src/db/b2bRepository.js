@@ -185,24 +185,43 @@ class B2BRepository {
 
   // ─── Invoices ───
 
-  async getInvoices() {
-    const { data, error } = await this.db
+  async getInvoices({ includeVoided = false } = {}) {
+    let q = this.db
       .from('b2b_invoices')
       .select('*')
       .order('invoice_date', { ascending: false });
-    if (error) throw error;
-
+    if (!includeVoided) q = q.is('voided_at', null);
+    const { data, error } = await q;
+    if (error && error.code !== '42703') throw error; // column missing = migration not applied
     return (data || []).map(this._toInvoiceFormat);
   }
 
-  async getInvoicesByBuyer(buyerId) {
-    const { data, error } = await this.db
+  async getInvoicesByBuyer(buyerId, { includeVoided = false } = {}) {
+    let q = this.db
       .from('b2b_invoices')
       .select('*')
       .eq('buyer_id', buyerId)
       .order('invoice_date', { ascending: false });
-    if (error) throw error;
+    if (!includeVoided) q = q.is('voided_at', null);
+    const { data, error } = await q;
+    if (error && error.code !== '42703') throw error;
     return (data || []).map(this._toInvoiceFormat);
+  }
+
+  async voidInvoice(invoiceNo, { userId, reason }) {
+    const { data, error } = await this.db
+      .from('b2b_invoices')
+      .update({
+        voided_at: new Date().toISOString(),
+        voided_by: userId || null,
+        void_reason: reason || null,
+      })
+      .eq('invoice_no', invoiceNo)
+      .is('voided_at', null)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
   }
 
   async createInvoice(invoice) {
@@ -255,12 +274,13 @@ class B2BRepository {
     return `INV-${year}-${String(last + 1).padStart(4, '0')}`;
   }
 
-  // Revenue summary (for B2B analytics)
+  // Revenue summary (for B2B analytics) — voided 제외
   async getRevenueSummary() {
     const { data, error } = await this.db
       .from('b2b_invoices')
-      .select('buyer_id, buyer_name, total, currency, status');
-    if (error) throw error;
+      .select('buyer_id, buyer_name, total, currency, status, voided_at')
+      .is('voided_at', null);
+    if (error && error.code !== '42703') throw error;
 
     let totalUSD = 0, totalKRW = 0;
     const buyerMap = {};
@@ -301,6 +321,9 @@ class B2BRepository {
       DriveUrl: r.drive_url,
       SentVia: r.sent_via,
       SentAt: r.sent_at,
+      VoidedAt: r.voided_at || null,
+      VoidedBy: r.voided_by || null,
+      VoidReason: r.void_reason || null,
     };
   }
 }

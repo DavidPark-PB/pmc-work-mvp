@@ -3235,6 +3235,15 @@ function getB2BService() {
   return _b2bInstance;
 }
 
+// ─── B2B 라우트 가드: 로그인 필수, 쓰기는 admin만 ───
+router.use('/b2b', (req, res, next) => {
+  if (!req.user) return res.status(401).json({ success: false, error: 'Authentication required' });
+  if (req.method !== 'GET' && !req.user.isAdmin) {
+    return res.status(403).json({ success: false, error: '관리자 권한이 필요합니다' });
+  }
+  next();
+});
+
 // ─── 구매자 ───
 
 // GET /api/b2b/buyers — 구매자 목록
@@ -3280,7 +3289,7 @@ router.get('/b2b/prices', async (req, res) => {
 
 // ─── 인보이스 ───
 
-// GET /api/b2b/invoices — 인보이스 목록
+// GET /api/b2b/invoices — 인보이스 목록 (service.getInvoices가 voided 자동 제외)
 router.get('/b2b/invoices', async (req, res) => {
   try {
     const { buyerId, status, fromDate, toDate } = req.query;
@@ -3289,6 +3298,32 @@ router.get('/b2b/invoices', async (req, res) => {
   } catch (error) {
     console.error('❌ B2B invoices 조회 에러:', error.message);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /api/b2b/invoices/:id/void — 인보이스 무효화 (admin)
+router.post('/b2b/invoices/:id/void', async (req, res) => {
+  try {
+    const invoiceNo = req.params.id;
+    const reason = (req.body?.reason || '').trim();
+    if (!reason) return res.status(400).json({ success: false, error: '무효화 사유를 입력하세요' });
+
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+
+    // Supabase에 없으면 Sheets에서 가져와 upsert (old invoice 대응)
+    const sheetInvoices = await getB2BService().getInvoices({});
+    const inv = (sheetInvoices || []).find(i => i.InvoiceNo === invoiceNo);
+    if (!inv) return res.status(404).json({ success: false, error: '인보이스를 찾을 수 없습니다' });
+    try {
+      await repo.createInvoice(inv);  // upsert by invoice_no
+    } catch { /* 이미 있으면 무시 */ }
+
+    const voided = await repo.voidInvoice(invoiceNo, { userId: req.user?.id, reason });
+    res.json({ success: true, invoice: voided });
+  } catch (e) {
+    console.error('❌ B2B invoice void 에러:', e.message);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
