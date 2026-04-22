@@ -76,6 +76,7 @@ router.get('/', async (req, res) => {
       user: req.user,
       status: req.query.status,
       scope: req.query.scope,
+      statusGroup: req.query.statusGroup,
     });
     // attachmentCount 주입 (N+1 방지)
     const ids = (data || []).map(r => r.id);

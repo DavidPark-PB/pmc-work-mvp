@@ -98,11 +98,12 @@
               <option value="mine">내 요청만</option>
             </select>
             <select id="po-filter" style="padding:6px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-              <option value="">전체 상태</option>
+              <option value="active" selected>🔄 진행 중 (기본)</option>
               <option value="pending">대기중</option>
               <option value="approved">승인됨</option>
-              <option value="ordered">주문완료</option>
-              <option value="rejected">반려됨</option>
+              <option value="completed">✅ 주문완료</option>
+              <option value="rejected">🚫 반려</option>
+              <option value="">🗃 전체</option>
             </select>
           </div>
         </div>
@@ -116,10 +117,15 @@
   }
 
   async function refresh() {
-    const status = document.getElementById('po-filter')?.value;
+    const filterVal = document.getElementById('po-filter')?.value;
     const scope = document.getElementById('po-scope')?.value;
     const params = new URLSearchParams();
-    if (status) params.set('status', status);
+    // active/completed/rejected = statusGroup (서버 IN 쿼리) / pending·approved = 기존 status 그대로
+    if (filterVal === 'active' || filterVal === 'completed' || filterVal === 'rejected') {
+      params.set('statusGroup', filterVal);
+    } else if (filterVal) {
+      params.set('status', filterVal);
+    }
     if (scope) params.set('scope', scope);
     const res = await fetch('/api/purchase-requests?' + params);
     const { data } = await res.json();

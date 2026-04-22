@@ -7,7 +7,7 @@ const { getClient } = require('./supabaseClient');
  * 발주 목록 조회 — 모든 직원이 전체 목록 열람 가능 (중복 구매 방지 목적).
  * scope='mine' 파라미터로 본인 요청만 필터 가능.
  */
-async function listRequests({ user, status, scope }) {
+async function listRequests({ user, status, scope, statusGroup }) {
   const baseCols = `
     id, product_name, quantity, estimated_price, priority, reason,
     requested_by, requested_at, status, decision_by, decision_at,
@@ -26,6 +26,10 @@ async function listRequests({ user, status, scope }) {
     let q = getClient().from('purchase_requests').select(cols);
     if (scope === 'mine') q = q.eq('requested_by', user.id);
     if (status) q = q.eq('status', status);
+    // 그룹 필터 — active=진행중(pending+approved), completed=주문완료, rejected=반려, all=전체
+    else if (statusGroup === 'active') q = q.in('status', ['pending', 'approved']);
+    else if (statusGroup === 'completed') q = q.eq('status', 'ordered');
+    else if (statusGroup === 'rejected') q = q.eq('status', 'rejected');
     return q.order('requested_at', { ascending: false });
   }
 
