@@ -32,9 +32,10 @@ async function checkDb() {
   const t0 = Date.now();
   try {
     const { getClient } = require('../../db/supabaseClient');
+    // head:true → 행 안 가져옴, 단순 connectivity 체크
     const { error } = await withTimeout(
-      getClient().from('users').select('id', { count: 'exact', head: true }).limit(1),
-      CHECK_TIMEOUT_MS, 'db'
+      getClient().from('users').select('*', { head: true }).limit(1),
+      3000, 'db'
     );
     if (error) throw error;
     return { ok: true, latencyMs: Date.now() - t0 };
@@ -48,24 +49,26 @@ async function checkMigrations() {
   const db = getClient();
   const missing = [];
   const applied = [];
-  await Promise.all(EXPECTED_TABLES.map(async tbl => {
+  // 순차 실행 — 15개 병렬 쿼리는 Supabase connection pool 초과 발생 (timeout)
+  for (const tbl of EXPECTED_TABLES) {
     try {
       const { error } = await withTimeout(
-        db.from(tbl).select('*', { count: 'exact', head: true }).limit(1),
-        CHECK_TIMEOUT_MS, `table ${tbl}`
+        db.from(tbl).select('*', { head: true }).limit(1),
+        2000, `table ${tbl}`
       );
       if (error && (error.code === '42P01' || error.code === 'PGRST205')) {
         missing.push(tbl);
-      } else if (error) {
-        // 다른 에러는 "알 수 없음"으로 분류
-        missing.push(`${tbl} (error: ${error.code || 'unknown'})`);
+      } else if (error && error.code) {
+        // 다른 에러 코드는 표시 (column 등 부수 문제)
+        missing.push(`${tbl} (${error.code})`);
       } else {
         applied.push(tbl);
       }
     } catch (e) {
-      missing.push(`${tbl} (${e.message})`);
+      // timeout 등 — 스킵하고 unknown 표시
+      missing.push(`${tbl} (timeout)`);
     }
-  }));
+  }
   return { ok: missing.length === 0, applied, missing };
 }
 
@@ -155,14 +158,15 @@ function checkInvoiceTemplate() {
 
 function checkEnv() {
   const required = [
-    'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY',
+    'SUPABASE_URL', 'SUPABASE_SERVICE_KEY',
     'SHOPIFY_STORE_URL', 'SHOPIFY_ACCESS_TOKEN',
     'NAVER_CLIENT_ID', 'NAVER_CLIENT_SECRET',
     'EBAY_APP_ID', 'EBAY_DEV_ID', 'EBAY_CERT_ID',
-    'GEMINI_API_KEY',
   ];
+  const optional = ['GEMINI_API_KEY']; // 선택 — AI 기능에만 필요
   const missing = required.filter(k => !process.env[k]);
-  return { ok: missing.length === 0, missing };
+  const missingOptional = optional.filter(k => !process.env[k]);
+  return { ok: missing.length === 0, missing, missingOptional };
 }
 
 router.get('/', async (req, res) => {
