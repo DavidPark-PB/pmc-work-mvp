@@ -43,12 +43,13 @@ class OrderSync {
     await this.ensureSheet();
 
     // 2. 플랫폼별 주문 수집 (병렬) — awaiting shipment / unfulfilled 주문만
+    //    days 범위로 최근 주문만 (Shopify는 오래된 unfulfilled 주문이 1000건+ 쌓여있을 수 있음)
     const [ebayOrders, shopifyOrders] = await Promise.all([
       this.fetchEbayOrders().catch(err => {
         errors.push(`eBay: ${err.message}`);
         return [];
       }),
-      this.fetchShopifyOrders().catch(err => {
+      this.fetchShopifyOrders(days).catch(err => {
         errors.push(`Shopify: ${err.message}`);
         return [];
       }),
@@ -303,10 +304,16 @@ class OrderSync {
   }
 
   /**
-   * Shopify 주문 가져오기 — unfulfilled(미배송) 주문만 수집
+   * Shopify 주문 가져오기 — 최근 N일 내 unfulfilled(미배송) 주문만
+   * 날짜 필터 없으면 과거 수년치 unfulfilled가 전부 딸려 옴 (Shopify는 수동 close 안 하면 open 유지)
    */
-  async fetchShopifyOrders() {
-    const orders = await this.shopify.getOrders({ fulfillment_status: 'unfulfilled', status: 'open' });
+  async fetchShopifyOrders(days = 30) {
+    const createdAtMin = new Date(Date.now() - Math.max(1, days) * 86400000).toISOString();
+    const orders = await this.shopify.getOrders({
+      fulfillment_status: 'unfulfilled',
+      status: 'open',
+      created_at_min: createdAtMin,
+    });
 
     const result = [];
     for (const order of orders) {
