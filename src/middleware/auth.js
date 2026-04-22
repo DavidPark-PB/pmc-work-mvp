@@ -38,6 +38,10 @@ const PUBLIC_PATHS = [
   '/api/auth/login',
   '/api/auth/logout',
   '/favicon.ico',
+  '/health.html',        // 시스템 상태 공개 페이지
+];
+const PUBLIC_API_PREFIXES = [
+  '/api/health',         // 헬스체크 (Fly·모니터링용 인증 없이 접근)
 ];
 const PUBLIC_PREFIXES = ['/css/', '/fonts/', '/images/'];
 
@@ -159,6 +163,7 @@ async function authGuard(req, res, next) {
   const urlPath = req.path;
   if (PUBLIC_PATHS.includes(urlPath)) return next();
   if (PUBLIC_PREFIXES.some(p => urlPath.startsWith(p))) return next();
+  if (PUBLIC_API_PREFIXES.some(p => urlPath.startsWith(p))) return next();
 
   const token = req.cookies && req.cookies[COOKIE_NAME];
   const session = verifySessionToken(token);

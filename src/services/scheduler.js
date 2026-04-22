@@ -157,11 +157,11 @@ function start() {
     }
   }, { timezone: TZ });
 
-  // 매시 정각 (09~21시 사이) — 네이버 detail 보강 (배치 100)
-  cron.schedule('0 9-21 * * *', async () => {
+  // 매일 10시·18시 KST — 네이버 detail 보강 (배치 200) · 하루 2회로 축소
+  cron.schedule('0 10,18 * * *', async () => {
     try {
       const sync = require('./platformSync');
-      const r = await sync.enrichNaverDetails(100);
+      const r = await sync.enrichNaverDetails(200);
       if (r.synced > 0 || r.remaining > 0) {
         console.log(`[scheduler] naver enrich: ${r.synced} synced, ${r.remaining} remaining`);
       }
@@ -188,11 +188,14 @@ function start() {
       const recurringRepo = require('../db/recurringRepository');
       const expenseRepo = require('../db/expenseRepository');
       const due = await recurringRepo.listDue();
-      let fired = 0;
-      for (const r of due) {
-        try { await recurringRepo.fire(r, { expenseRepo }); fired++; }
-        catch (e) { console.warn(`[scheduler] recurring fire fail id=${r.id}:`, e.message); }
-      }
+      // 병렬 실행 — 각 fire는 독립적
+      const results = await Promise.allSettled(
+        due.map(r => recurringRepo.fire(r, { expenseRepo }))
+      );
+      const fired = results.filter(x => x.status === 'fulfilled').length;
+      results.forEach((x, i) => {
+        if (x.status === 'rejected') console.warn(`[scheduler] recurring fire fail id=${due[i].id}:`, x.reason?.message || x.reason);
+      });
       if (due.length > 0) console.log(`[scheduler] recurring: ${fired}/${due.length}건 발행`);
     } catch (e) {
       console.error('[scheduler] recurring error:', e.message);

@@ -75,9 +75,13 @@ function getEbayAPI() {
   }
   return _ebayInstance;
 }
+let _naverInstance = null;
 function getNaverAPI() {
-  const NaverAPI = require('../../api/naverAPI');
-  return new NaverAPI();
+  if (!_naverInstance) {
+    const NaverAPI = require('../../api/naverAPI');
+    _naverInstance = new NaverAPI();
+  }
+  return _naverInstance;
 }
 function getAlibabaAPI() {
   const AlibabaAPI = require('../../api/alibabaAPI');
@@ -97,7 +101,7 @@ let platformCache = null;
 let platformCacheTime = 0;
 let analysisCache = null;
 let analysisCacheTime = 0;
-const CACHE_TTL = 600000; // 10분 — 플랫폼 상태는 자주 안 바뀜, 429 방지
+const CACHE_TTL = 1800000; // 30분 — 플랫폼 상태는 거의 안 바뀜, 서버 부하·429 최소화
 const ANALYSIS_CACHE_TTL = 120000; // 2분
 let battleCache = null;
 let battleCacheTime = 0;
@@ -370,11 +374,10 @@ router.get('/revenue/summary', async (req, res) => {
           return await api.getRevenueSummary(days);
         } catch (e) { return { error: e.message }; }
       })(),
-      // Naver
+      // Naver — 싱글톤이라 토큰은 내부 캐시됨. getRevenueSummary 내부에서 lazy init
       (async () => {
         try {
           const api = getNaverAPI();
-          await api.getToken();
           return await api.getRevenueSummary(days);
         } catch (e) { return { error: e.message }; }
       })(),

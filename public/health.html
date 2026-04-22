@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>PMC 시스템 상태</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR', sans-serif; background: #0f0f23; color: #e0e0e0; min-height: 100vh; padding: 24px; }
+  .container { max-width: 900px; margin: 0 auto; }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+  h1 { font-size: 22px; color: #fff; }
+  .summary { padding: 20px 24px; border-radius: 12px; margin-bottom: 20px; font-size: 16px; font-weight: 600; }
+  .summary.ok { background: linear-gradient(135deg, #2e7d32, #4caf50); }
+  .summary.degraded { background: linear-gradient(135deg, #ef6c00, #ff9800); }
+  .summary.down { background: linear-gradient(135deg, #c62828, #e94560); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .card { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 10px; padding: 14px 16px; }
+  .card h3 { font-size: 13px; color: #fff; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge.ok { background: #2e7d32; color: #fff; }
+  .badge.err { background: #c62828; color: #fff; }
+  .detail { font-size: 11px; color: #aaa; margin-top: 4px; line-height: 1.5; word-break: break-word; }
+  .detail code { background: #0f0f23; padding: 1px 6px; border-radius: 3px; font-size: 10px; color: #81d4fa; }
+  .hint { color: #ffa726; margin-top: 4px; font-size: 11px; }
+  .missing-list { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .missing-item { background: #3a1a1a; color: #ff8a80; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-family: monospace; }
+  .applied-count { color: #81c784; font-size: 11px; }
+  button { padding: 8px 16px; background: #7c4dff; color: #fff; border: 0; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  button:hover { background: #6b3dff; }
+  .loading { text-align: center; padding: 60px; color: #888; font-size: 14px; }
+  .time { color: #666; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🩺 PMC 시스템 상태</h1>
+    <button onclick="load()">🔄 새로고침</button>
+  </div>
+  <div id="app"><div class="loading">⏳ 진단 중...</div></div>
+  <div style="margin-top:20px;text-align:center;">
+    <a href="/" style="color:#81d4fa;font-size:12px;">← 대시보드로</a>
+  </div>
+</div>
+<script>
+const SUMMARY = {
+  ok: { label: '✅ 전체 정상', cls: 'ok' },
+  degraded: { label: '⚠️ 일부 문제', cls: 'degraded' },
+  down: { label: '🚨 다수 오프라인', cls: 'down' },
+};
+
+const HINTS = {
+  db: {
+    fix: 'Supabase 연결 확인 + SUPABASE_SERVICE_ROLE_KEY 환경변수 체크',
+  },
+  migrations: {
+    fix: 'Supabase SQL Editor에서 빠진 마이그레이션 파일(supabase/migrations/) 실행',
+  },
+  sheets: {
+    fix: 'config/credentials.json (service account) · Google Sheets API 활성화 확인',
+  },
+  ebay: {
+    fix: 'flyctl secrets set EBAY_ACCESS_TOKEN=... (eBay Developer에서 재발급)',
+  },
+  shopify: {
+    fix: '마스터 동기화 한 번 실행 or shopify_products 테이블 마이그레이션 확인',
+  },
+  naver: {
+    fix: 'NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 환경변수 확인',
+  },
+  storage: {
+    fix: 'Supabase Dashboard → Storage에서 누락된 버킷 New bucket으로 생성 (Public 체크 해제)',
+  },
+  invoiceTemplate: {
+    fix: 'templates/b2b_invoice_master.xlsx 파일 재배포 필요',
+  },
+  env: {
+    fix: 'flyctl secrets set KEY=value 로 누락 환경변수 세팅',
+  },
+};
+
+const LABELS = {
+  db: 'Supabase DB',
+  migrations: '마이그레이션',
+  sheets: 'Google Sheets',
+  ebay: 'eBay API',
+  shopify: 'Shopify DB',
+  naver: 'Naver API',
+  storage: 'Storage 버킷',
+  invoiceTemplate: 'B2B 인보이스 템플릿',
+  env: '환경변수',
+};
+
+function esc(s) { return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function renderCard(key, data) {
+  const label = LABELS[key] || key;
+  const ok = data && data.ok;
+  let detail = '';
+  if (!ok) {
+    if (key === 'migrations' && data.missing?.length) {
+      detail = `<div class="applied-count">${data.applied?.length || 0}개 적용됨</div>
+        <div class="missing-list">${data.missing.map(m => `<span class="missing-item">${esc(m)}</span>`).join('')}</div>`;
+    } else if (key === 'env' && data.missing?.length) {
+      detail = `<div class="missing-list">${data.missing.map(m => `<span class="missing-item">${esc(m)}</span>`).join('')}</div>`;
+    } else if (key === 'storage' && data.buckets) {
+      detail = Object.entries(data.buckets).map(([n, s]) =>
+        `<div><span class="badge ${s.ok ? 'ok' : 'err'}">${s.ok ? '✓' : '✕'}</span> <code>${n}</code>${s.error ? ` <span class="hint">${esc(s.error)}</span>` : ''}</div>`
+      ).join('');
+    } else {
+      detail = `<div class="detail">${esc(data.error || '알 수 없는 오류')}</div>`;
+    }
+    if (HINTS[key]) detail += `<div class="hint">💡 ${HINTS[key].fix}</div>`;
+  } else {
+    if (key === 'db') detail = `<div class="detail">${data.latencyMs}ms</div>`;
+    else if (key === 'migrations') detail = `<div class="applied-count">${data.applied?.length || 0}개 전부 적용됨</div>`;
+    else if (key === 'sheets') detail = `<div class="detail">${data.latencyMs}ms · 탭 ${data.tabs}개</div>`;
+    else if (key === 'ebay') detail = `<div class="detail">활성 상품 ${data.total}개</div>`;
+    else if (key === 'shopify') detail = `<div class="detail">DB 캐시 ${data.dbCount}개 <span class="hint">${esc(data.note || '')}</span></div>`;
+    else if (key === 'storage') detail = Object.entries(data.buckets || {}).map(([n]) => `<div>✓ <code>${n}</code></div>`).join('');
+    else if (key === 'invoiceTemplate') detail = `<div class="detail">${Math.round(data.size/1024)}KB</div>`;
+    else if (key === 'env') detail = `<div class="detail">모두 설정됨</div>`;
+  }
+  return `<div class="card">
+    <h3>${label} <span class="badge ${ok ? 'ok' : 'err'}">${ok ? 'OK' : 'ERROR'}</span></h3>
+    ${detail}
+  </div>`;
+}
+
+async function load() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="loading">⏳ 진단 중...</div>';
+  try {
+    const res = await fetch('/api/health');
+    const data = await res.json();
+    const summary = SUMMARY[data.status] || SUMMARY.down;
+    const time = new Date(data.timestamp).toLocaleString('ko-KR');
+    const cards = Object.entries(data.checks).map(([k, v]) => renderCard(k, v)).join('');
+    app.innerHTML = `
+      <div class="summary ${summary.cls}">
+        ${summary.label}
+        <div class="time">${time} · ${data.elapsedMs}ms 소요</div>
+      </div>
+      <div class="grid">${cards}</div>
+    `;
+  } catch (err) {
+    app.innerHTML = `<div class="card"><h3>❌ 헬스체크 자체 실패</h3><div class="detail">${esc(err.message)}</div></div>`;
+  }
+}
+
+load();
+</script>
+</body>
+</html>

@@ -78,13 +78,16 @@
   </div>
 
   <script>
+  // 유저 로드 완료를 기다리는 공용 Promise — 다른 IIFE에서 중복 fetch 방지
+  window.__pmcUserReady = new Promise(resolve => { window.__resolvePmcUser = resolve; });
+
   // ── 유저 메뉴 & 비밀번호 변경 ──
   (async function loadCurrentUser() {
     try {
       const res = await fetch('/api/auth/me');
-      if (!res.ok) return;
+      if (!res.ok) { window.__resolvePmcUser(null); return; }
       const { user } = await res.json();
-      if (!user) return;
+      if (!user) { window.__resolvePmcUser(null); return; }
       document.getElementById('userMenuName').textContent = user.displayName || user.username;
       const roleEl = document.getElementById('userMenuRole');
       roleEl.textContent = user.isAdmin ? '사장' : '직원';
@@ -102,7 +105,12 @@
       document.querySelectorAll('[data-admin-only]').forEach(el => {
         el.style.display = user.isAdmin ? '' : 'none';
       });
-    } catch (e) { console.error('[auth/me]', e); }
+      // 다른 IIFE들이 이 유저를 기다릴 수 있게 promise resolve
+      window.__resolvePmcUser(user);
+    } catch (e) {
+      console.error('[auth/me]', e);
+      window.__resolvePmcUser(null);
+    }
   })();
 
   function toggleUserMenu(e) {
@@ -295,7 +303,8 @@
   });
 
   setInterval(() => { updateNotifBadge(); updateOrdersBadge(); }, 30000);
-  setTimeout(() => { updateNotifBadge(); updateOrdersBadge(); }, 1000);
+  // 초기 배지 — 유저 로드 즉시 (1초 setTimeout 대체, auth/me 결과 재사용)
+  window.__pmcUserReady.then(user => { if (user) { updateNotifBadge(); updateOrdersBadge(); } });
 
   // ── 📡 실시간 이벤트 스트림 (SSE) + 데스크탑 알림 + 알림음 + 탭 타이틀 ──
   (function setupRealtime() {
@@ -475,12 +484,12 @@
       };
     }
 
-    // 유저 확인 후 시작
-    fetch('/api/auth/me').then(r => r.json()).then(({ user }) => {
+    // 유저 확인 후 시작 — loadCurrentUser가 이미 fetch한 결과 재사용 (중복 호출 제거)
+    window.__pmcUserReady.then(user => {
       if (!user) return;
       ensureNotificationPermission();
       connect();
-    }).catch(()=>{});
+    });
   })();
   </script>
 
