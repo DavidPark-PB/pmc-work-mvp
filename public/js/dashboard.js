@@ -6377,9 +6377,74 @@ async function loadB2BBuyerSelect() {
 }
 
 // ─── 상품 행 추가 ───
+// ─── 카탈로그 자동완성 (수동 인보이스 폼용) ───
+let _b2bCatalog = null;   // { bySku: {...}, byName: {...} }
+async function b2bLoadCatalogForAutocomplete() {
+  if (_b2bCatalog) return _b2bCatalog;
+  _b2bCatalog = { bySku: {}, byName: {}, list: [] };   // 선 세팅 — 중복 로드 방지
+  try {
+    const tabsRes = await fetch(`${API}/catalog/tabs`);
+    const { tabs = [] } = await tabsRes.json();
+    // 모든 탭 병렬 조회
+    const results = await Promise.all(tabs.map(async tab => {
+      try {
+        const r = await fetch(`${API}/catalog/prices?tab=${encodeURIComponent(tab)}`);
+        const j = await r.json();
+        return j.items || [];
+      } catch { return []; }
+    }));
+    const allItems = results.flat();
+
+    const seenKey = new Set();
+    for (const it of allItems) {
+      const sku = (it.setCode || '').trim();
+      const name = (it.name || '').trim();
+      const price = Number(it.usdPrice || 0);
+      if (!sku && !name) continue;
+      const key = (sku + '|' + name).toLowerCase();
+      if (seenKey.has(key)) continue;
+      seenKey.add(key);
+      const entry = { sku, name, price };
+      if (sku) _b2bCatalog.bySku[sku.toLowerCase()] = entry;
+      if (name) _b2bCatalog.byName[name.toLowerCase()] = entry;
+      _b2bCatalog.list.push(entry);
+    }
+
+    // datalist 구성 — SKU 기반 자동완성 (option value=SKU, label에 상품명+가격)
+    let dl = document.getElementById('b2bCatalogSkuList');
+    if (!dl) {
+      dl = document.createElement('datalist');
+      dl.id = 'b2bCatalogSkuList';
+      document.body.appendChild(dl);
+    }
+    let dlName = document.getElementById('b2bCatalogNameList');
+    if (!dlName) {
+      dlName = document.createElement('datalist');
+      dlName.id = 'b2bCatalogNameList';
+      document.body.appendChild(dlName);
+    }
+    dl.innerHTML = _b2bCatalog.list
+      .filter(it => it.sku)
+      .map(it => `<option value="${String(it.sku).replace(/"/g,'&quot;')}">${String(it.name || '').replace(/"/g,'&quot;')}${it.price ? ' — $' + it.price : ''}</option>`)
+      .join('');
+    dlName.innerHTML = _b2bCatalog.list
+      .filter(it => it.name)
+      .map(it => `<option value="${String(it.name).replace(/"/g,'&quot;')}">${it.sku || ''}${it.price ? ' — $' + it.price : ''}</option>`)
+      .join('');
+
+    console.log(`[B2B] 카탈로그 자동완성 로드: ${_b2bCatalog.list.length}건`);
+  } catch (e) {
+    console.warn('[B2B] 카탈로그 로드 실패:', e.message);
+  }
+  return _b2bCatalog;
+}
+
 function b2bAddItemRow() {
   const emptyRow = document.querySelector('.b2b-empty-row');
   if (emptyRow) emptyRow.remove();
+
+  // 카탈로그 선 로드 (첫 호출 시 비동기 — 결과 도착하면 datalist attach 됨)
+  b2bLoadCatalogForAutocomplete();
 
   const idx = b2bInvoiceItems.length;
   b2bInvoiceItems.push({ sku: '', name: '', qty: 1, price: 0 });
@@ -6388,8 +6453,8 @@ function b2bAddItemRow() {
   const tr = document.createElement('tr');
   tr.id = `b2b-item-${idx}`;
   tr.innerHTML = `
-    <td><input type="text" data-idx="${idx}" data-field="sku" value="" placeholder="SKU" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></td>
-    <td><input type="text" data-idx="${idx}" data-field="name" value="" placeholder="상품명" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></td>
+    <td><input type="text" list="b2bCatalogSkuList" data-idx="${idx}" data-field="sku" value="" placeholder="SKU (타이핑→자동완성)" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></td>
+    <td><input type="text" list="b2bCatalogNameList" data-idx="${idx}" data-field="name" value="" placeholder="상품명 (카탈로그에서 선택 가능)" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></td>
     <td><input type="number" data-idx="${idx}" data-field="qty" value="1" min="1" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;text-align:right"></td>
     <td><input type="number" data-idx="${idx}" data-field="price" value="0" min="0" step="0.01" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;text-align:right"></td>
     <td style="text-align:right;font-weight:600" id="b2b-item-total-${idx}">0.00</td>
@@ -6397,7 +6462,7 @@ function b2bAddItemRow() {
   `;
   tbody.appendChild(tr);
 
-  // 입력 이벤트
+  // 입력 이벤트 + 카탈로그 매칭 자동 채움
   tr.querySelectorAll('input').forEach(inp => {
     inp.addEventListener('input', () => {
       const i = parseInt(inp.dataset.idx);
@@ -6405,6 +6470,29 @@ function b2bAddItemRow() {
       if (field === 'qty') b2bInvoiceItems[i].qty = parseInt(inp.value) || 0;
       else if (field === 'price') b2bInvoiceItems[i].price = parseFloat(inp.value) || 0;
       else b2bInvoiceItems[i][field] = inp.value;
+
+      // 카탈로그 exact match — SKU/이름 둘 다 체크
+      if ((field === 'sku' || field === 'name') && _b2bCatalog) {
+        const key = inp.value.trim().toLowerCase();
+        const match = (field === 'sku' ? _b2bCatalog.bySku[key] : _b2bCatalog.byName[key]);
+        if (match) {
+          // 다른 필드 자동 채움 (이미 값 있으면 덮어쓰지 않음)
+          const otherField = field === 'sku' ? 'name' : 'sku';
+          const otherInput = tr.querySelector(`[data-field="${otherField}"]`);
+          const otherVal = match[otherField];
+          if (otherInput && !otherInput.value && otherVal) {
+            otherInput.value = otherVal;
+            b2bInvoiceItems[i][otherField] = otherVal;
+          }
+          // 단가도 0이면 자동 세팅
+          const priceInput = tr.querySelector('[data-field="price"]');
+          if (priceInput && (!priceInput.value || Number(priceInput.value) === 0) && match.price > 0) {
+            priceInput.value = match.price;
+            b2bInvoiceItems[i].price = match.price;
+          }
+        }
+      }
+
       b2bRecalcTotal();
     });
   });
