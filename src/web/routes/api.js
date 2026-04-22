@@ -3275,12 +3275,10 @@ function getB2BService() {
   return _b2bInstance;
 }
 
-// ─── B2B 라우트 가드: 로그인 필수, 쓰기는 admin만 ───
+// ─── B2B 라우트 가드: 로그인 필수. 쓰기도 직원 허용 (인보이스 생성·발송·입금은 직원 업무)
+// 치명적 작업(void/delete)은 해당 엔드포인트에서 개별 requireAdmin 체크.
 router.use('/b2b', (req, res, next) => {
   if (!req.user) return res.status(401).json({ success: false, error: 'Authentication required' });
-  if (req.method !== 'GET' && !req.user.isAdmin) {
-    return res.status(403).json({ success: false, error: '관리자 권한이 필요합니다' });
-  }
   next();
 });
 
@@ -3518,7 +3516,7 @@ router.get('/b2b/invoices/:id/shipments', async (req, res) => {
   }
 });
 
-// DELETE /api/b2b/shipments/:shipmentId — 실수 정정용 (admin)
+// DELETE /api/b2b/shipments/:shipmentId — 실수 정정용
 router.delete('/b2b/shipments/:shipmentId', async (req, res) => {
   try {
     const id = parseInt(req.params.shipmentId, 10);

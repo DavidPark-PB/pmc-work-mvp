@@ -6447,8 +6447,9 @@ async function b2bCreateInvoice() {
   const buyerId = document.getElementById('b2bBuyerSelect').value;
   if (!buyerId) { alert('구매자를 선택하세요'); return; }
 
-  const items = b2bInvoiceItems.filter(i => i && i.sku);
-  if (items.length === 0) { alert('상품을 1개 이상 추가하세요'); return; }
+  // SKU는 선택 — 상품명·수량·단가만 있으면 유효
+  const items = b2bInvoiceItems.filter(i => i && (i.name || i.sku) && Number(i.qty) > 0 && Number(i.price) > 0);
+  if (items.length === 0) { alert('상품을 1개 이상 추가하세요 (상품명·수량·단가 필수)'); return; }
 
   _b2bCreating = true;
   const btn = document.getElementById('b2bCreateBtn');

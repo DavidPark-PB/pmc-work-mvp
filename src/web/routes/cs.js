@@ -39,25 +39,28 @@ router.get('/templates/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/cs/templates — admin only
-router.post('/templates', requireAdmin, async (req, res) => {
+// POST /api/cs/templates — 로그인한 직원 누구나 (CS는 직원 업무)
+router.post('/templates', async (req, res) => {
   try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
     const created = await repo.create({ ...req.body, createdBy: req.user.id });
     res.json({ data: created });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// PATCH /api/cs/templates/:id — admin only
-router.patch('/templates/:id', requireAdmin, async (req, res) => {
+// PATCH /api/cs/templates/:id — 직원 허용
+router.patch('/templates/:id', async (req, res) => {
   try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
     const updated = await repo.update(parseInt(req.params.id, 10), req.body || {});
     res.json({ data: updated });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
-// DELETE /api/cs/templates/:id — admin only
-router.delete('/templates/:id', requireAdmin, async (req, res) => {
+// DELETE /api/cs/templates/:id — 직원 허용
+router.delete('/templates/:id', async (req, res) => {
   try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
     await repo.remove(parseInt(req.params.id, 10));
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
