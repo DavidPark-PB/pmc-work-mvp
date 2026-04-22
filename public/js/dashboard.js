@@ -6793,6 +6793,8 @@ async function b2bOpenShipmentModal(invoiceNo) {
     </tr>
   `).join('');
 
+  // 인보이스 상세 모달에서도 편집 가능하도록 shipments를 전역에 노출
+  window._b2bInvoiceShipments = shipments;
   const shipmentHistory = shipments.length === 0
     ? '<div style="padding:20px;text-align:center;color:#888;">발송 이력 없음</div>'
     : shipments.map(s => `
@@ -6802,7 +6804,10 @@ async function b2bOpenShipmentModal(invoiceNo) {
             <strong>${s.shippedAt}</strong> · <span style="color:#1565c0;font-weight:600;">${s.carrier}</span>
             <code style="background:#fff;padding:1px 6px;border-radius:3px;margin-left:4px;">${s.trackingNumber}</code>
           </div>
-          <button onclick="b2bDeleteShipment(${s.id}, '${invoiceNo}')" style="background:transparent;border:1px solid #c62828;color:#c62828;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;">삭제</button>
+          <div style="display:flex;gap:4px;">
+            <button onclick="b2bEditShipmentFromInvoice(${s.id}, '${invoiceNo}')" style="background:#7c4dff;color:#fff;border:0;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;">✏️ 수정</button>
+            <button onclick="b2bDeleteShipment(${s.id}, '${invoiceNo}')" style="background:transparent;border:1px solid #c62828;color:#c62828;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;">🗑 삭제</button>
+          </div>
         </div>
         <div style="color:#555;font-size:11px;margin-top:3px;">
           ${(s.items || []).map(i => `${i.sku}×${i.qty}`).join(', ')}
@@ -6973,6 +6978,68 @@ function b2bEditShipmentFromToday(shipmentId) {
   `;
   m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
   document.body.appendChild(m);
+}
+
+function b2bEditShipmentFromInvoice(shipmentId, invoiceNo) {
+  const s = (window._b2bInvoiceShipments || []).find(x => x.id === shipmentId);
+  if (!s) { alert('발송 정보를 찾을 수 없습니다.'); return; }
+  // 같은 편집 모달 재사용 — 저장 후 인보이스 모달 다시 열어서 최신 반영
+  const existing = document.getElementById('b2b-ship-edit-modal');
+  if (existing) existing.remove();
+  const m = document.createElement('div');
+  m.id = 'b2b-ship-edit-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3001;display:flex;align-items:center;justify-content:center;padding:16px;';
+  const itemsSummary = (s.items || []).map(i => `${i.sku}×${i.qty}`).join(', ');
+  m.innerHTML = `
+    <div style="background:#fff;border-radius:12px;padding:20px;width:480px;max-width:96vw;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div>
+          <h3 style="font-size:15px;font-weight:700;margin:0;">✏️ 발송 기록 수정</h3>
+          <p style="font-size:11px;color:#888;margin:2px 0 0;">${invoiceNo} · ${itemsSummary}</p>
+        </div>
+        <button onclick="document.getElementById('b2b-ship-edit-modal').remove()" style="background:#2a2a4a;color:#fff;border:0;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;">닫기</button>
+      </div>
+      <div style="display:grid;grid-template-columns:110px 130px 1fr;gap:8px;margin-bottom:8px;">
+        <input type="date" id="shipEditDate" value="${s.shippedAt || ''}" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+        <select id="shipEditCarrier" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+          ${['FedEx','DHL','UPS','EMS','Other'].map(c => `<option value="${c}" ${s.carrier === c ? 'selected' : ''}>${c}</option>`).join('')}
+        </select>
+        <input type="text" id="shipEditTracking" value="${(s.trackingNumber || '').replace(/"/g,'&quot;')}" placeholder="송장번호" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+      </div>
+      <input type="text" id="shipEditNotes" value="${(s.notes || '').replace(/"/g,'&quot;')}" placeholder="메모 (선택)" style="width:100%;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;margin-bottom:10px;">
+      <p style="font-size:10px;color:#888;margin:0 0 8px;">※ 수량·SKU 수정이 필요하면 이 발송을 삭제하고 다시 추가하세요.</p>
+      <button onclick="b2bSaveShipmentEditFromInvoice(${shipmentId}, '${invoiceNo}')" id="shipEditSaveBtn" style="padding:8px 14px;background:#7c4dff;color:#fff;border:0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">✓ 저장</button>
+    </div>
+  `;
+  m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+  document.body.appendChild(m);
+}
+
+async function b2bSaveShipmentEditFromInvoice(shipmentId, invoiceNo) {
+  const btn = document.getElementById('shipEditSaveBtn');
+  const tracking = document.getElementById('shipEditTracking').value.trim();
+  if (!tracking) { alert('송장번호를 입력하세요'); return; }
+  btn.disabled = true; btn.textContent = '저장 중...';
+  try {
+    const res = await fetch(`${API}/b2b/shipments/${shipmentId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        shippedAt: document.getElementById('shipEditDate').value || undefined,
+        carrier: document.getElementById('shipEditCarrier').value,
+        trackingNumber: tracking,
+        notes: document.getElementById('shipEditNotes').value.trim() || null,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || '저장 실패');
+    document.getElementById('b2b-ship-edit-modal').remove();
+    // 인보이스 모달 재로드 (shipment 최신 반영)
+    document.getElementById('b2b-ship-modal')?.remove();
+    b2bOpenShipmentModal(invoiceNo);
+  } catch (err) {
+    alert('저장 실패: ' + err.message);
+    btn.disabled = false; btn.textContent = '✓ 저장';
+  }
 }
 
 async function b2bSaveShipmentEdit(shipmentId) {
