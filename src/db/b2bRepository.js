@@ -422,6 +422,19 @@ class B2BRepository {
     if (error) throw error;
   }
 
+  async updateShipment(id, patch) {
+    const update = {};
+    if (patch.shippedAt !== undefined) update.shipped_at = patch.shippedAt || new Date().toISOString().slice(0, 10);
+    if (patch.carrier !== undefined) update.carrier = String(patch.carrier || '').slice(0, 40) || 'FedEx';
+    if (patch.trackingNumber !== undefined) update.tracking_number = String(patch.trackingNumber || '').trim().slice(0, 100);
+    if (patch.notes !== undefined) update.notes = patch.notes ? String(patch.notes).trim().slice(0, 500) : null;
+    if (Array.isArray(patch.items)) update.items = patch.items;
+    if (Object.keys(update).length === 0) throw new Error('변경할 내용이 없습니다');
+    const { data, error } = await this.db.from('b2b_shipments').update(update).eq('id', id).select().single();
+    if (error) throw error;
+    return this._toShipmentFormat(data);
+  }
+
   async listShipmentsByDate(date) {
     const { data, error } = await this.db
       .from('b2b_shipments')

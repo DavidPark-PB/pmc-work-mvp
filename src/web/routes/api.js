@@ -3516,6 +3516,23 @@ router.get('/b2b/invoices/:id/shipments', async (req, res) => {
   }
 });
 
+// PATCH /api/b2b/shipments/:shipmentId — carrier·tracking·notes·date 수정
+router.patch('/b2b/shipments/:shipmentId', async (req, res) => {
+  try {
+    const id = parseInt(req.params.shipmentId, 10);
+    const { carrier, trackingNumber, shippedAt, notes } = req.body || {};
+    if (trackingNumber !== undefined && !String(trackingNumber).trim()) {
+      return res.status(400).json({ success: false, error: '송장번호는 비울 수 없습니다' });
+    }
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    const updated = await repo.updateShipment(id, { carrier, trackingNumber, shippedAt, notes });
+    res.json({ success: true, shipment: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // DELETE /api/b2b/shipments/:shipmentId — 실수 정정용
 router.delete('/b2b/shipments/:shipmentId', async (req, res) => {
   try {
