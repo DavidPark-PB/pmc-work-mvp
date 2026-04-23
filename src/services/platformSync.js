@@ -161,6 +161,14 @@ async function syncShopeeAll() {
   const shopIds = shopee.shopIds || [];
   if (shopIds.length === 0) return { synced: 0, total: 0, error: 'SHOPEE_SHOP_IDS 미설정' };
 
+  // Gate: Shopee refresh token 만료 상태면 sync 자체를 건너뛰어서
+  // invalid_access_token 재시도 루프가 Shopee 보안 플래그를 올리지 않게 함.
+  await shopee._ensureLoaded();
+  if (!shopee.hasUsableTokens()) {
+    console.warn('[shopeeSync] skipped — 모든 토큰이 dead (재인증 필요: /api/shopee/oauth-url)');
+    return { synced: 0, total: 0, skipped: true, reason: 'tokens_need_reauth' };
+  }
+
   let synced = 0;
   let total = 0;
   const pageSize = 50; // Shopee API 권장

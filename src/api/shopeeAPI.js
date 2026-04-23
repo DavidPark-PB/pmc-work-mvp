@@ -7,6 +7,20 @@ function _isInvalidToken(result) {
   return err === 'invalid_access_token' || err === 'invalid_acceess_token';
 }
 
+// Shop·merchant 재인증 없이는 절대 회복 불가능한 에러 — dead 플래그로 격리해 반복 호출 차단.
+// (Shopee 보안 시스템이 반복 실패를 abnormal behavior 로 플래그)
+function _isPermanentShopeeError(body) {
+  if (!body) return false;
+  const err = String(body.error || '');
+  const msg = String(body.message || '');
+  if (err === 'refresh_token_expired' || err === 'refresh_token_not_exist') return true;
+  if (err === 'error_auth' || err === 'error_shop_auth' || err === 'invalid_partner_shop') return true;
+  if (/refresh_token.*expire/i.test(msg)) return true;
+  if (/no\s+linked/i.test(msg)) return true;                // "Partner and shop has no linked"
+  if (/shop.*not.*found|invalid.*shop_id/i.test(msg)) return true;
+  return false;
+}
+
 /**
  * Shopee Open Platform API 클래스 (CB 셀러용)
  * Shopee Partner API를 사용하여 동남아 시장 상품 관리
@@ -123,6 +137,8 @@ class ShopeeAPI {
         this.accessToken = merchant.accessToken;
         this.refreshToken = merchant.refreshToken;
       }
+      this._merchantDeadUntil = merchant?.metadata?.deadUntil || null;
+      this._shopDeadUntil = {};
       for (const shopId of this.shopIds) {
         const saved = await loadToken(`shopee_shop_${shopId}`);
         if (saved?.accessToken && saved?.refreshToken) {
@@ -131,6 +147,7 @@ class ShopeeAPI {
             refreshToken: saved.refreshToken,
           };
         }
+        this._shopDeadUntil[shopId] = saved?.metadata?.deadUntil || null;
       }
       const firstShop = this.shopTokens[this.shopIds[0]];
       if (firstShop) {
@@ -142,35 +159,82 @@ class ShopeeAPI {
     }
   }
 
+  _isDead(deadUntil) {
+    if (!deadUntil) return false;
+    return new Date(deadUntil).getTime() > Date.now();
+  }
+
+  hasUsableTokens() {
+    if (!this._merchantDeadUntil && this.accessToken) {
+      if (!this._isDead(this._merchantDeadUntil)) return true;
+    }
+    for (const shopId of this.shopIds) {
+      const t = this.shopTokens[shopId];
+      if (t?.accessToken && !this._isDead(this._shopDeadUntil?.[shopId])) return true;
+    }
+    return false;
+  }
+
   async _refreshTokens() {
-    const { saveToken } = require('../services/tokenStore');
+    await this._ensureLoaded();
+    const { saveToken, loadToken } = require('../services/tokenStore');
     const refreshPath = '/api/v2/auth/access_token/get';
+    const DEAD_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h cooldown after expired refresh
+
+    const markDead = async (platformKey, existing, reason) => {
+      const deadUntil = new Date(Date.now() + DEAD_WINDOW_MS).toISOString();
+      try {
+        await saveToken(platformKey, {
+          accessToken: existing?.accessToken || null,
+          refreshToken: existing?.refreshToken || null,
+          expiresAt: existing?.expiresAt || null,
+          metadata: { deadUntil, reason, markedAt: new Date().toISOString() },
+        });
+      } catch (e) { console.warn(`[shopee] markDead ${platformKey}:`, e.message); }
+      console.warn(`[shopee] ${platformKey} marked dead until ${deadUntil} (${reason}) — Shopee Partner Console 재인증 필요`);
+    };
 
     // Refresh merchant token
-    try {
-      const timestamp = Math.floor(Date.now() / 1000);
-      const sign = this._signPublic(refreshPath, timestamp);
-      const r = await axios.post(`${this.baseUrl}${refreshPath}`, {
-        refresh_token: this.refreshToken,
-        merchant_id: this.merchantId,
-        partner_id: this.partnerId,
-      }, { params: { partner_id: this.partnerId, timestamp, sign } });
+    const merchantCurrent = await loadToken('shopee');
+    if (merchantCurrent?.metadata?.deadUntil && new Date(merchantCurrent.metadata.deadUntil).getTime() > Date.now()) {
+      console.log(`[shopee] merchant refresh skipped (dead until ${merchantCurrent.metadata.deadUntil}) — /api/shopee/oauth-url 로 재인증`);
+    } else if (!this.refreshToken) {
+      console.warn('[shopee] merchant refresh_token 없음 — skip');
+    } else {
+      try {
+        const timestamp = Math.floor(Date.now() / 1000);
+        const sign = this._signPublic(refreshPath, timestamp);
+        const r = await axios.post(`${this.baseUrl}${refreshPath}`, {
+          refresh_token: this.refreshToken,
+          merchant_id: this.merchantId,
+          partner_id: this.partnerId,
+        }, { params: { partner_id: this.partnerId, timestamp, sign } });
 
-      if (r.data?.error || !r.data?.access_token) {
-        console.error('Shopee merchant refresh rejected:', r.data?.error, r.data?.message);
-      } else {
-        this.accessToken = r.data.access_token;
-        this.refreshToken = r.data.refresh_token;
-        process.env.SHOPEE_ACCESS_TOKEN = this.accessToken;
-        process.env.SHOPEE_REFRESH_TOKEN = this.refreshToken;
-        await saveToken('shopee', {
-          accessToken: this.accessToken,
-          refreshToken: this.refreshToken,
-          expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
-        });
+        if (_isPermanentShopeeError(r.data)) {
+          await markDead('shopee', { accessToken: this.accessToken, refreshToken: this.refreshToken }, 'refresh_token_expired');
+        } else if (r.data?.error || !r.data?.access_token) {
+          console.error('Shopee merchant refresh rejected:', r.data?.error, r.data?.message);
+        } else {
+          this.accessToken = r.data.access_token;
+          this.refreshToken = r.data.refresh_token;
+          process.env.SHOPEE_ACCESS_TOKEN = this.accessToken;
+          process.env.SHOPEE_REFRESH_TOKEN = this.refreshToken;
+          await saveToken('shopee', {
+            accessToken: this.accessToken,
+            refreshToken: this.refreshToken,
+            expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+            metadata: null, // clear dead flag on success
+          });
+          this._merchantDeadUntil = null;
+        }
+      } catch (e) {
+        const body = e.response?.data;
+        if (_isPermanentShopeeError(body)) {
+          await markDead('shopee', { accessToken: this.accessToken, refreshToken: this.refreshToken }, body?.error || 'permanent_error');
+        } else {
+          console.error('Shopee merchant token refresh failed:', body || e.message);
+        }
       }
-    } catch (e) {
-      console.error('Shopee merchant token refresh failed:', e.response?.data || e.message);
     }
 
     // Refresh each shop token individually (each shop has independent refresh_token)
@@ -178,6 +242,14 @@ class ShopeeAPI {
     for (const shopId of this.shopIds) {
       const shopToken = this.shopTokens[shopId];
       if (!shopToken?.refreshToken) continue;
+
+      const key = `shopee_shop_${shopId}`;
+      const saved = await loadToken(key);
+      if (saved?.metadata?.deadUntil && new Date(saved.metadata.deadUntil).getTime() > Date.now()) {
+        console.log(`[shopee] shop ${shopId} refresh skipped (dead until ${saved.metadata.deadUntil})`);
+        continue;
+      }
+
       try {
         const ts2 = Math.floor(Date.now() / 1000);
         const sign2 = this._signPublic(refreshPath, ts2);
@@ -187,6 +259,11 @@ class ShopeeAPI {
           partner_id: this.partnerId,
         }, { params: { partner_id: this.partnerId, timestamp: ts2, sign: sign2 } });
 
+        if (_isPermanentShopeeError(r2.data)) {
+          await markDead(key, shopToken, r2.data?.error || 'permanent_error');
+          this._shopDeadUntil[shopId] = new Date(Date.now() + DEAD_WINDOW_MS).toISOString();
+          continue;
+        }
         if (r2.data?.error || !r2.data?.access_token) {
           console.error(`Shopee shop ${shopId} refresh rejected:`, r2.data?.error, r2.data?.message);
           continue;
@@ -195,14 +272,22 @@ class ShopeeAPI {
         this.shopTokens[shopId] = { accessToken: r2.data.access_token, refreshToken: r2.data.refresh_token };
         process.env[`SHOPEE_SHOP_${shopId}_ACCESS_TOKEN`] = r2.data.access_token;
         process.env[`SHOPEE_SHOP_${shopId}_REFRESH_TOKEN`] = r2.data.refresh_token;
-        await saveToken(`shopee_shop_${shopId}`, {
+        await saveToken(key, {
           accessToken: r2.data.access_token,
           refreshToken: r2.data.refresh_token,
           expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+          metadata: null, // clear dead flag on success
         });
+        this._shopDeadUntil[shopId] = null;
         refreshedCount++;
       } catch (e) {
-        console.error(`Shopee shop ${shopId} refresh error:`, e.response?.data?.message || e.message);
+        const body = e.response?.data;
+        if (_isPermanentShopeeError(body)) {
+          await markDead(key, shopToken, body?.error || 'permanent_error');
+          this._shopDeadUntil[shopId] = new Date(Date.now() + DEAD_WINDOW_MS).toISOString();
+        } else {
+          console.error(`Shopee shop ${shopId} refresh error:`, body?.message || e.message);
+        }
       }
     }
 

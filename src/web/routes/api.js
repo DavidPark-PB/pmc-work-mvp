@@ -4131,6 +4131,127 @@ router.get('/alibaba/oauth-url', (req, res) => {
   res.json({ url });
 });
 
+// ─────────────────────────────────────────────────────────
+// Shopee OAuth (shop 단위 재인증 — refresh_token 만료 시 사용)
+// ─────────────────────────────────────────────────────────
+
+// GET /api/shopee/oauth-url — Shopee 인증 URL (shop 단위)
+// 브라우저에서 이 URL 클릭 → Shopee 로그인 → 권한 동의 → /oauth-callback 으로 자동 이동
+router.get('/shopee/oauth-url', (req, res) => {
+  const crypto = require('crypto');
+  const partnerId = parseInt(process.env.SHOPEE_PARTNER_ID);
+  const partnerKey = process.env.SHOPEE_PARTNER_KEY;
+  if (!partnerId || !partnerKey) return res.status(400).json({ error: 'SHOPEE_PARTNER_ID / SHOPEE_PARTNER_KEY 미설정' });
+
+  const host = req.get('host') || 'localhost:3000';
+  const protocol = req.protocol || 'http';
+  const redirect = `${protocol}://${host}/api/shopee/oauth-callback`;
+  const path = '/api/v2/shop/auth_partner';
+  const timestamp = Math.floor(Date.now() / 1000);
+  const sign = crypto.createHmac('sha256', partnerKey)
+    .update(`${partnerId}${path}${timestamp}`)
+    .digest('hex');
+  const baseUrl = process.env.SHOPEE_ENV === 'test'
+    ? 'https://partner.test-stable.shopeemobile.com'
+    : 'https://partner.shopeemobile.com';
+  const url = `${baseUrl}${path}?partner_id=${partnerId}&timestamp=${timestamp}&sign=${sign}&redirect=${encodeURIComponent(redirect)}`;
+  res.json({ url, note: 'CB 셀러는 각 shop 마다 별도로 인증 필요. 첫 shop 인증 후 다른 shop 들도 순차 인증하세요.' });
+});
+
+// GET /api/shopee/oauth-callback — Shopee 에서 code 받아 access/refresh token 발급
+router.get('/shopee/oauth-callback', async (req, res) => {
+  const crypto = require('crypto');
+  const axios = require('axios');
+  try {
+    const code = String(req.query.code || '').trim();
+    const shopIdRaw = req.query.shop_id || req.query.shopid;
+    const mainAccountId = req.query.main_account_id;
+    if (!code) return res.status(400).send('Shopee OAuth: code 없음');
+    if (!shopIdRaw && !mainAccountId) return res.status(400).send('Shopee OAuth: shop_id 또는 main_account_id 없음');
+
+    const partnerId = parseInt(process.env.SHOPEE_PARTNER_ID);
+    const partnerKey = process.env.SHOPEE_PARTNER_KEY;
+    const baseUrl = process.env.SHOPEE_ENV === 'test'
+      ? 'https://partner.test-stable.shopeemobile.com'
+      : 'https://partner.shopeemobile.com';
+    const path = '/api/v2/auth/token/get';
+    const timestamp = Math.floor(Date.now() / 1000);
+    const sign = crypto.createHmac('sha256', partnerKey).update(`${partnerId}${path}${timestamp}`).digest('hex');
+
+    const body = { code, partner_id: partnerId };
+    const isShop = !!shopIdRaw;
+    if (isShop) body.shop_id = parseInt(shopIdRaw);
+    else body.main_account_id = parseInt(mainAccountId);
+
+    const r = await axios.post(`${baseUrl}${path}`, body, {
+      params: { partner_id: partnerId, timestamp, sign },
+      timeout: 15000,
+    });
+
+    if (r.data?.error || !r.data?.access_token) {
+      return res.status(400).send(`Shopee OAuth 실패: ${r.data?.error || 'no access_token'} / ${r.data?.message || ''}`);
+    }
+
+    const { saveToken } = require('../../services/tokenStore');
+    const platformKey = isShop ? `shopee_shop_${parseInt(shopIdRaw)}` : 'shopee';
+    await saveToken(platformKey, {
+      accessToken: r.data.access_token,
+      refreshToken: r.data.refresh_token,
+      expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000),
+      metadata: null, // dead 플래그 자동 clear
+    });
+
+    // In-memory env 도 업데이트 (서버 재시작 없이 즉시 반영)
+    if (isShop) {
+      const sid = parseInt(shopIdRaw);
+      process.env[`SHOPEE_SHOP_${sid}_ACCESS_TOKEN`] = r.data.access_token;
+      process.env[`SHOPEE_SHOP_${sid}_REFRESH_TOKEN`] = r.data.refresh_token;
+    } else {
+      process.env.SHOPEE_ACCESS_TOKEN = r.data.access_token;
+      process.env.SHOPEE_REFRESH_TOKEN = r.data.refresh_token;
+    }
+
+    // Shopee API 싱글톤 재로드 강제 (다음 호출 시 새 토큰 읽게)
+    _shopeeInstance = null;
+
+    const targetLabel = isShop ? `Shop ${shopIdRaw}` : `Merchant ${mainAccountId}`;
+    res.send(`
+      <h2>✅ Shopee ${targetLabel} 인증 완료!</h2>
+      <p>새 access_token 이 DB 에 저장되었습니다. dead 플래그가 제거됐고 다음 호출부터 정상 작동합니다.</p>
+      <p>다른 shop 도 인증하려면 <a href="/api/shopee/oauth-url">/api/shopee/oauth-url</a> 다시 호출 후 반환 URL 열기.</p>
+      <p><a href="/">대시보드로 돌아가기</a></p>
+    `);
+  } catch (e) {
+    console.error('[shopee/oauth-callback]', e.response?.data || e.message);
+    res.status(500).send('Shopee OAuth 오류: ' + (e.response?.data?.message || e.message));
+  }
+});
+
+// GET /api/shopee/token-status — 각 토큰의 dead 상태 확인 (재인증 대상 파악용)
+router.get('/shopee/token-status', async (req, res) => {
+  try {
+    const { loadToken } = require('../../services/tokenStore');
+    const partnerId = parseInt(process.env.SHOPEE_PARTNER_ID);
+    const shopIds = (process.env.SHOPEE_SHOP_IDS || '').split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+    const keys = ['shopee', ...shopIds.map(s => `shopee_shop_${s}`)];
+    const rows = await Promise.all(keys.map(async k => {
+      const t = await loadToken(k);
+      const deadUntil = t?.metadata?.deadUntil || null;
+      const dead = deadUntil && new Date(deadUntil).getTime() > Date.now();
+      return {
+        key: k,
+        hasAccessToken: !!t?.accessToken,
+        hasRefreshToken: !!t?.refreshToken,
+        expiresAt: t?.expiresAt || null,
+        dead: !!dead,
+        deadUntil: dead ? deadUntil : null,
+        reason: t?.metadata?.reason || null,
+      };
+    }));
+    res.json({ partnerId, shopIds, tokens: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // POST /api/sync/products — 멀티 플랫폼 상품 동기화
 router.post('/sync/products', async (req, res) => {
   try {
