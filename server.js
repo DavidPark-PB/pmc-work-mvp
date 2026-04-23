@@ -109,6 +109,7 @@ app.use('/api/weekly-meetings', require('./src/web/routes/weeklyMeetings'));
 app.use('/api/competitors', require('./src/web/routes/competitors'));
 app.use('/api/prospects', require('./src/web/routes/prospects'));
 app.use('/api/health', require('./src/web/routes/health'));
+app.use('/api/stocktake', require('./src/web/routes/stocktake'));
 app.use('/api/cs', require('./src/web/routes/cs'));
 app.use('/api/resources', require('./src/web/routes/resources'));
 
