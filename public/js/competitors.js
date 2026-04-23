@@ -8,6 +8,7 @@
   let filterPlatform = '';
   let filterThreat = '';
   let searchQuery = '';
+  let accioEnabled = false;
 
   const PLATFORMS = [
     { key: 'ebay', label: 'eBay' },
@@ -33,7 +34,22 @@
     if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r => r.json())).user;
     if (!user) return;
     renderShell();
+    checkAccio();
     await refresh();
+  }
+
+  async function checkAccio() {
+    try {
+      const r = await fetch('/api/accio/health');
+      const j = await r.json();
+      accioEnabled = !!(j.enabled && j.healthy);
+    } catch { accioEnabled = false; }
+  }
+
+  function extractAsinFromUrl(url) {
+    if (!url) return null;
+    const m = String(url).match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    return m ? m[1].toUpperCase() : null;
   }
 
   function renderShell() {
@@ -143,6 +159,7 @@
         <td style="padding:10px;text-align:center;">${c.storeUrl ? `<a href="${esc(c.storeUrl)}" target="_blank" rel="noopener" style="color:#81d4fa;text-decoration:none;">🔗 열기</a>` : '<span style="color:#666;">-</span>'}</td>
         <td style="padding:10px;text-align:center;font-size:11px;color:#aaa;">${c.lastCheckedAt || '-'}</td>
         <td style="padding:10px;text-align:center;white-space:nowrap;">
+          ${(accioEnabled && c.platform === 'amazon') ? `<button onclick="pmcCompetitors.openJs(${c.id})" title="Junglescout 리서치" style="padding:3px 8px;background:#ff9800;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:10px;margin-right:3px;">🔍 JS</button>` : ''}
           <button onclick="pmcCompetitors.touchChecked(${c.id})" title="지금 확인함" style="padding:3px 8px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:10px;margin-right:3px;">⏱</button>
           <button onclick="pmcCompetitors.openEdit(${c.id})" title="수정" style="padding:3px 8px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:10px;margin-right:3px;">✏️</button>
           <button onclick="pmcCompetitors.del(${c.id})" title="삭제" style="padding:3px 8px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:10px;">🗑</button>
@@ -302,10 +319,126 @@
     } catch (e) { alert('삭제 실패: ' + e.message); }
   }
 
+  // ── Junglescout Amazon 리서치 (Accio) ──
+  async function openJs(id) {
+    const c = cached.find(x => x.id === id);
+    if (!c) return;
+    let asin = extractAsinFromUrl(c.storeUrl) || '';
+    if (!asin) {
+      asin = prompt(`"${c.name}" 의 Amazon ASIN 을 입력하세요 (10자, 예: B00I26U9WS):`, '') || '';
+      asin = asin.trim().toUpperCase();
+    }
+    if (!/^[A-Z0-9]{10}$/.test(asin)) { alert('ASIN 형식이 올바르지 않습니다 (10자 영숫자)'); return; }
+
+    document.getElementById('js-modal')?.remove();
+    const m = document.createElement('div');
+    m.id = 'js-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:20px;width:820px;max-width:95vw;max-height:92vh;overflow:auto;color:#e0e0e0;" onclick="event.stopPropagation()">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h2 style="color:#fff;font-size:16px;margin:0;">🔍 Junglescout 리서치 <span style="color:#888;font-size:12px;font-weight:400;">ASIN ${esc(asin)} · ${esc(c.name)}</span></h2>
+          <button onclick="pmcCompetitors.closeJs()" style="background:transparent;border:0;color:#888;cursor:pointer;font-size:20px;">✕</button>
+        </div>
+        <div id="js-body" style="min-height:160px;">
+          <div style="padding:40px;text-align:center;color:#888;">⏳ 로딩 중 (Junglescout 호출, 10~20초)…</div>
+        </div>
+      </div>`;
+    m.addEventListener('click', (e) => { if (e.target === m) closeJs(); });
+    document.body.appendChild(m);
+
+    try {
+      const r = await fetch('/api/accio/js/research', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asin }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || '리서치 실패');
+      renderJsResult(j);
+    } catch (e) {
+      const body = document.getElementById('js-body');
+      if (body) body.innerHTML = `<div style="padding:20px;color:#ff8a80;">❌ ${esc(e.message)}</div>`;
+    }
+  }
+
+  function closeJs() { document.getElementById('js-modal')?.remove(); }
+
+  function renderJsResult(j) {
+    const body = document.getElementById('js-body');
+    if (!body) return;
+    const sales = j.sales;
+    const keywordsRaw = j.keywords;
+
+    // Jungle Scout sales estimates shape (best-effort extraction)
+    let salesSummary = '<div style="color:#666;">판매량 데이터 없음</div>';
+    if (sales && !sales.error) {
+      const daily = sales.daily_sales || sales.daily || sales.data?.daily || [];
+      const total = sales.total_units || sales.total || (Array.isArray(daily) ? daily.reduce((s, d) => s + (d.units || d.estimated_units || 0), 0) : 0);
+      const days = Array.isArray(daily) ? daily.length : 0;
+      const avg = days > 0 ? Math.round(total / days) : 0;
+      salesSummary = `
+        <div style="display:flex;gap:20px;">
+          <div><div style="font-size:11px;color:#888;">최근 ${j.range.start} ~ ${j.range.end}</div><div style="font-size:20px;color:#81c784;font-weight:600;">${total.toLocaleString()} 개</div><div style="font-size:11px;color:#888;">총 추정 판매량</div></div>
+          <div><div style="font-size:11px;color:#888;">일평균</div><div style="font-size:20px;color:#fff;font-weight:600;">${avg.toLocaleString()}</div><div style="font-size:11px;color:#888;">개/일</div></div>
+        </div>`;
+    } else if (sales?.error) {
+      salesSummary = `<div style="color:#ff8a80;font-size:12px;">판매량 조회 실패: ${esc(sales.error)}</div>`;
+    }
+
+    // Keywords shape (best-effort extraction)
+    let kwRows = '';
+    let kwList = [];
+    if (keywordsRaw && !keywordsRaw.error) {
+      kwList = keywordsRaw.keywords || keywordsRaw.data?.keywords || keywordsRaw.data || (Array.isArray(keywordsRaw) ? keywordsRaw : []);
+      if (!Array.isArray(kwList)) kwList = [];
+      const top = kwList.slice(0, 15);
+      kwRows = top.map(k => {
+        const name = k.name || k.keyword || k.phrase || '-';
+        const volume = k.monthly_search_volume || k.search_volume || k.volume || '-';
+        const organic = k.organic_rank || k.rank || '-';
+        const sponsored = k.sponsored_rank || k.ppc_rank || '-';
+        return `<tr style="border-bottom:1px solid #2a2a4a;">
+          <td style="padding:6px 8px;color:#fff;">${esc(String(name))}</td>
+          <td style="padding:6px 8px;text-align:right;color:#81d4fa;">${typeof volume === 'number' ? volume.toLocaleString() : esc(String(volume))}</td>
+          <td style="padding:6px 8px;text-align:center;color:#aaa;">${esc(String(organic))}</td>
+          <td style="padding:6px 8px;text-align:center;color:#aaa;">${esc(String(sponsored))}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    body.innerHTML = `
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:14px;margin-bottom:14px;">
+        <div style="font-size:12px;color:#888;margin-bottom:8px;">판매량 추정 (Jungle Scout)</div>
+        ${salesSummary}
+      </div>
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;overflow:hidden;">
+        <div style="padding:10px 14px;font-size:12px;color:#888;border-bottom:1px solid #2a2a4a;">키워드 (${kwList.length}개 중 상위 ${Math.min(15, kwList.length)})</div>
+        ${kwList.length > 0 ? `
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead><tr style="background:#1a1a2e;">
+              <th style="padding:8px;text-align:left;color:#888;">키워드</th>
+              <th style="padding:8px;text-align:right;color:#888;">검색량/월</th>
+              <th style="padding:8px;text-align:center;color:#888;">Organic</th>
+              <th style="padding:8px;text-align:center;color:#888;">Sponsored</th>
+            </tr></thead>
+            <tbody>${kwRows}</tbody>
+          </table>` : (keywordsRaw?.error
+            ? `<div style="padding:14px;color:#ff8a80;font-size:12px;">키워드 조회 실패: ${esc(keywordsRaw.error)}</div>`
+            : '<div style="padding:14px;color:#666;">키워드 데이터 없음</div>')}
+      </div>
+      <div style="margin-top:12px;text-align:right;">
+        <details style="display:inline-block;text-align:left;">
+          <summary style="cursor:pointer;color:#888;font-size:11px;">원본 응답 보기</summary>
+          <pre style="margin-top:6px;padding:10px;background:#0f0f23;border-radius:4px;color:#aaa;font-size:10px;max-height:240px;overflow:auto;white-space:pre-wrap;">${esc(JSON.stringify(j, null, 2))}</pre>
+        </details>
+      </div>`;
+  }
+
   window.pmcCompetitors = {
     load, refresh,
     onPlatformChange, onThreatChange, onSearch,
     openAdd, openEdit, closeModal, save,
     touchChecked, del,
+    openJs, closeJs,
   };
 })();

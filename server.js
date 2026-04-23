@@ -112,6 +112,7 @@ app.use('/api/health', require('./src/web/routes/health'));
 app.use('/api/stocktake', require('./src/web/routes/stocktake'));
 app.use('/api/cs', require('./src/web/routes/cs'));
 app.use('/api/resources', require('./src/web/routes/resources'));
+app.use('/api/accio', require('./src/web/routes/accio'));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

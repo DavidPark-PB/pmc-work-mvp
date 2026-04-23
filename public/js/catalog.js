@@ -2,7 +2,7 @@
  * 카탈로그 가격 관리 — Google Sheets 3시트 (USD/KRW/EURO) 동시 관리
  */
 (function() {
-  let state = { tab: '', tabs: [], rates: null, items: [], category: '', search: '', loading: false };
+  let state = { tab: '', tabs: [], rates: null, items: [], category: '', search: '', loading: false, accioEnabled: false };
 
   function esc(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function fmtMoney(n, sym) {
@@ -13,7 +13,16 @@
 
   async function load() {
     renderShell();
+    checkAccio();
     await refresh();
+  }
+
+  async function checkAccio() {
+    try {
+      const r = await fetch('/api/accio/health');
+      const j = await r.json();
+      state.accioEnabled = !!(j.enabled && j.healthy);
+    } catch { state.accioEnabled = false; }
   }
 
   function renderShell() {
@@ -175,11 +184,15 @@
     const imgInner = it.image
       ? `<img src="/api/img-proxy?url=${encodeURIComponent(it.image)}" onerror="this.src='${esc(it.image)}';this.onerror=null;" style="width:52px;height:52px;object-fit:contain;background:#fff;border-radius:4px;">`
       : '<div style="width:52px;height:52px;background:#0f0f23;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#555;font-size:10px;">없음</div>';
+    const aiBtn = (state.accioEnabled && it.image)
+      ? `<button onclick="pmcCatalog.openAiImage(${it.rowIndex}, '${it.side}')" title="Accio AI 이미지 생성" style="display:block;margin-top:2px;padding:1px 6px;background:#7c4dff;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;width:100%;">🎨 AI</button>`
+      : '';
     const imgCell = `
       <div style="position:relative;display:inline-block;">
         ${imgInner}
         ${manualBadge}
         <button onclick="pmcCatalog.editImage(${it.rowIndex}, '${it.side}')" title="이미지 URL 수정" style="display:block;margin-top:2px;padding:1px 6px;background:#2a2a4a;color:#aaa;border:0;border-radius:3px;cursor:pointer;font-size:10px;width:100%;">수정</button>
+        ${aiBtn}
       </div>`;
     return `
       <tr style="border-bottom:1px solid #2a2a4a;">
@@ -339,9 +352,136 @@
     renderTable();
   }
 
+  // ── AI 이미지 생성 (Accio Gateway) ──
+  let aiPollTimer = null;
+  function openAiImage(rowIndex, side) {
+    const it = state.items.find(x => x.rowIndex === rowIndex && x.side === side);
+    if (!it || !it.image) { alert('이미지가 있는 상품만 AI 생성 가능합니다'); return; }
+    document.getElementById('ai-modal')?.remove();
+    const m = document.createElement('div');
+    m.id = 'ai-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:20px;width:560px;max-width:95vw;max-height:92vh;overflow:auto;color:#e0e0e0;" onclick="event.stopPropagation()">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h2 style="color:#fff;font-size:16px;margin:0;">🎨 AI 이미지 생성 <span style="color:#888;font-size:12px;font-weight:400;">${esc(it.name)}</span></h2>
+          <button onclick="pmcCatalog.closeAiImage()" style="background:transparent;border:0;color:#888;cursor:pointer;font-size:20px;">✕</button>
+        </div>
+        <div style="display:flex;gap:12px;margin-bottom:12px;">
+          <div style="flex:0 0 140px;">
+            <div style="font-size:11px;color:#888;margin-bottom:4px;">원본</div>
+            <img src="/api/img-proxy?url=${encodeURIComponent(it.image)}" onerror="this.src='${esc(it.image)}';this.onerror=null;" style="width:140px;height:140px;object-fit:contain;background:#fff;border-radius:6px;">
+          </div>
+          <div id="ai-result-pane" style="flex:1;min-height:140px;display:flex;align-items:center;justify-content:center;border:1px dashed #333;border-radius:6px;background:#0f0f23;color:#666;font-size:12px;">
+            생성 결과가 여기에 표시됩니다
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-bottom:8px;">
+          <div>
+            <label style="font-size:11px;color:#888;">모드</label>
+            <select id="ai-mode" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:13px;">
+              <option value="scene" selected>장면/모델 생성</option>
+              <option value="color">색상 변형</option>
+              <option value="logo">로고 삽입</option>
+              <option value="translate">이미지 번역</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:#888;">프롬프트 (선택)</label>
+            <input id="ai-prompt" type="text" placeholder="예: on a wooden table, natural light" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:13px;">
+          </div>
+        </div>
+        <div id="ai-status" style="font-size:12px;color:#888;margin-bottom:8px;min-height:16px;"></div>
+        <div style="display:flex;gap:6px;justify-content:flex-end;">
+          <button onclick="pmcCatalog.closeAiImage()" style="padding:7px 14px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">닫기</button>
+          <button id="ai-gen-btn" onclick="pmcCatalog.runAiImage('${it.image.replace(/'/g,"\\'")}')" style="padding:7px 14px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">생성</button>
+        </div>
+      </div>`;
+    m.addEventListener('click', (e) => { if (e.target === m) closeAiImage(); });
+    document.body.appendChild(m);
+  }
+
+  function closeAiImage() {
+    if (aiPollTimer) { clearTimeout(aiPollTimer); aiPollTimer = null; }
+    document.getElementById('ai-modal')?.remove();
+  }
+
+  async function runAiImage(imageUrl) {
+    const status = document.getElementById('ai-status');
+    const btn = document.getElementById('ai-gen-btn');
+    const pane = document.getElementById('ai-result-pane');
+    const mode = document.getElementById('ai-mode').value;
+    const prompt = document.getElementById('ai-prompt').value.trim();
+    btn.disabled = true; btn.textContent = '생성 중...';
+    status.textContent = '요청 중…';
+    pane.innerHTML = '<div style="color:#888;">⏳ 처리 중 (보통 15~45초)</div>';
+    try {
+      const r = await fetch('/api/accio/image/generate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageUrl, mode, prompt: prompt || undefined }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || '요청 실패');
+      status.textContent = `요청 접수 — key=${j.requestKey.slice(0, 12)}… 폴링 중`;
+      pollAiImage(j.requestKey, Date.now() + 90 * 1000);
+    } catch (e) {
+      status.textContent = '';
+      pane.innerHTML = `<div style="color:#ff8a80;padding:12px;">❌ ${esc(e.message)}</div>`;
+      btn.disabled = false; btn.textContent = '다시 시도';
+    }
+  }
+
+  async function pollAiImage(key, deadline) {
+    const status = document.getElementById('ai-status');
+    const btn = document.getElementById('ai-gen-btn');
+    const pane = document.getElementById('ai-result-pane');
+    if (!status || !pane) return;
+    if (Date.now() > deadline) {
+      status.textContent = '';
+      pane.innerHTML = '<div style="color:#ff8a80;padding:12px;">⏱ 타임아웃 (90초). 다시 시도하세요.</div>';
+      if (btn) { btn.disabled = false; btn.textContent = '다시 시도'; }
+      return;
+    }
+    try {
+      const r = await fetch('/api/accio/image/result?key=' + encodeURIComponent(key));
+      const j = await r.json();
+      if (j.status === 'done' && j.imageUrl) {
+        status.textContent = '✓ 완료';
+        pane.innerHTML = `
+          <div style="width:100%;text-align:center;">
+            <img src="${esc(j.imageUrl)}" style="max-width:100%;max-height:320px;background:#fff;border-radius:6px;">
+            <div style="margin-top:8px;display:flex;gap:6px;justify-content:center;">
+              <button onclick="pmcCatalog.copyAiUrl('${j.imageUrl.replace(/'/g,"\\'")}')" style="padding:6px 14px;background:#4caf50;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">📋 URL 복사</button>
+              <a href="${esc(j.imageUrl)}" target="_blank" rel="noopener" style="padding:6px 14px;background:#2a2a4a;border-radius:4px;color:#fff;text-decoration:none;font-size:12px;">새 탭 열기</a>
+            </div>
+          </div>`;
+        if (btn) { btn.disabled = false; btn.textContent = '다시 생성'; }
+        return;
+      }
+      if (j.status === 'failed') {
+        status.textContent = '';
+        pane.innerHTML = '<div style="color:#ff8a80;padding:12px;">❌ Accio 가 생성 실패를 반환했습니다.</div>';
+        if (btn) { btn.disabled = false; btn.textContent = '다시 시도'; }
+        return;
+      }
+      status.textContent = `⏳ 진행 중… ${Math.round((deadline - Date.now()) / 1000)}초 남음`;
+      aiPollTimer = setTimeout(() => pollAiImage(key, deadline), 3000);
+    } catch (e) {
+      status.textContent = '';
+      pane.innerHTML = `<div style="color:#ff8a80;padding:12px;">❌ 폴링 실패: ${esc(e.message)}</div>`;
+      if (btn) { btn.disabled = false; btn.textContent = '다시 시도'; }
+    }
+  }
+
+  async function copyAiUrl(url) {
+    try { await navigator.clipboard.writeText(url); showSaveToast('URL 복사됨'); }
+    catch { prompt('수동 복사:', url); }
+  }
+
   window.pmcCatalog = {
     load, refresh, onTabChange, setCategory, savePrice,
     openFxModal, closeFxModal, saveFx, resetFxAuto, editImage,
     onSearch, clearSearch,
+    openAiImage, closeAiImage, runAiImage, copyAiUrl,
   };
 })();
