@@ -39,6 +39,11 @@
       "command": "node",
       "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/dashboard-server.js"],
       "env": {}
+    },
+    "accio": {
+      "command": "node",
+      "args": ["/Users/parksungmin/pmc-work-mvp/mcp-servers/accio-server.js"],
+      "env": { "ACCIO_PORT": "4097" }
     }
   }
 }
