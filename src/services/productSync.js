@@ -118,7 +118,9 @@ async function fetchEbayItems() {
   const allItems = [];
   let page = 1;
 
-  while (page <= 25) {
+  // 활성 상품 8000+ 개 처리 위해 100페이지까지 (200개씩 = 최대 20,000개).
+  // 안전장치 — 비정상적으로 많을 때 무한 루프 방지.
+  while (page <= 100) {
     const result = await ebay.getActiveListings(page, 200);
     if (!result.items || result.items.length === 0) break;
 
