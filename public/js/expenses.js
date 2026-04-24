@@ -112,9 +112,14 @@
       ? '전 직원 지출을 확인·편집·삭제할 수 있습니다. 직원이 등록한 지출을 승인·확정하세요.'
       : '발주/구매한 금액과 영수증을 등록하세요. 재무 담당이 확인 후 승인합니다. 본인이 등록한 내역만 보입니다.';
     el.innerHTML = `
-      <div style="margin-bottom:16px;">
-        <h1 style="font-size:22px;color:#fff;">${title} <span style="font-size:13px;color:${hasFinance ? '#81c784' : '#888'};font-weight:400;">· ${hasFinance ? '재무 권한' : '본인 등록분만'}</span></h1>
-        <p style="color:#888;font-size:13px;">${desc}</p>
+      <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+        <div>
+          <h1 style="font-size:22px;color:#fff;">${title} <span style="font-size:13px;color:${hasFinance ? '#81c784' : '#888'};font-weight:400;">· ${hasFinance ? '재무 권한' : '본인 등록분만'}</span></h1>
+          <p style="color:#888;font-size:13px;margin:4px 0 0;">${desc}</p>
+        </div>
+        ${hasFinance ? `
+          <button type="button" onclick="pmcExpenses.reorganizeReceipts()" title="영수증을 결제일(paid_at) 기준 YYYY-MM 폴더로 이동. 1회만 실행." style="padding:7px 14px;background:#2a4a6a;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">📁 영수증 월별 정리</button>
+        ` : ''}
       </div>
 
       <!-- 탭 바 -->
@@ -1397,12 +1402,31 @@
     }).then(r => r.ok ? (refreshPurchases(), refresh()) : r.json().then(j => alert(j.error || '실패')));
   }
 
+  async function reorganizeReceipts() {
+    if (!confirm('기존 영수증을 결제일(paid_at) 기준 YYYY-MM 폴더로 이동합니다. 시간이 좀 걸릴 수 있습니다.\n\n계속하시겠어요?')) return;
+    try {
+      const r = await fetch('/api/expenses/reorganize-receipts', { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || '실패');
+      const msg = `✅ 영수증 월별 정리 완료
+━━━━━━━━━━━━━━━━━━
+전체 영수증: ${j.total}개
+이동 완료: ${j.moved}개
+이미 정리됨: ${j.skipped}개
+실패: ${j.failed}개${j.failed > 0 ? '\n\n실패 항목:\n' + j.errors.map(e => `• #${e.id}: ${e.error}`).join('\n') : ''}`;
+      alert(msg);
+    } catch (e) {
+      alert('❌ 실패: ' + e.message);
+    }
+  }
+
   window.pmcExpenses = {
     load, refresh, edit, del,
     onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater,
     closeEditModal, saveEditModal, replaceReceiptInModal, deleteReceiptInModal,
     onCsvPick, closeCsvModal, confirmCsv, csvRecalc, csvToggleAll, csvSkipDup,
     toggleRecurring, recRunNow, recToggleActive, recDelete,
+    reorganizeReceipts,
     onCardChange: onCardSelectChange,
     // Tab switching
     switchTab,
