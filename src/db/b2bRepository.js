@@ -74,7 +74,7 @@ class B2BRepository {
       address: buyer.Address || buyer.address || '',
       country: buyer.Country || buyer.country || '',
       currency: buyer.Currency || buyer.currency || 'USD',
-      payment_terms: buyer.PaymentTerms || buyer.paymentTerms || 'Net 30',
+      payment_terms: buyer.PaymentTerms || buyer.paymentTerms || '',
       notes: buyer.Notes || buyer.notes || '',
       total_orders: parseInt(buyer.TotalOrders || buyer.totalOrders) || 0,
       total_revenue: parseFloat(buyer.TotalRevenue || buyer.totalRevenue) || 0,

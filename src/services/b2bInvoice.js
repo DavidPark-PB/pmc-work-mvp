@@ -107,7 +107,8 @@ class B2BInvoiceService {
       data.address || '',
       data.country || '',
       data.currency || 'USD',
-      data.paymentTerms || 'Net 30',
+      // PaymentTerms 입력 안 하면 빈 값 — 인보이스 생성 시 표준 문구 자동 사용
+      data.paymentTerms || '',
       data.notes || '',
       '0',
       '0',
@@ -190,21 +191,59 @@ class B2BInvoiceService {
    * 다음 문서 번호 생성.
    *   docType='INVOICE' (기본) → INV-2026-0001
    *   docType='QUOTE'          → Q-2026-0001
+   * Sheets + Supabase 양쪽 모두 확인해 max 번호 기준 +1. 둘 중 한쪽이 앞서있어도 중복 방지.
    */
   async _getNextInvoiceNo(docType = 'INVOICE') {
-    const rows = await this.sheets.readData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A:A`);
     const year = new Date().getFullYear();
-    const prefix = String(docType).toUpperCase() === 'QUOTE' ? `Q-${year}-` : `INV-${year}-`;
+    const isQuote = String(docType).toUpperCase() === 'QUOTE';
+    const prefix = isQuote ? `Q-${year}-` : `INV-${year}-`;
+
+    const extractNum = (cell) => {
+      if (!cell) return 0;
+      const s = String(cell).trim();
+      if (!s.startsWith(prefix)) return 0;
+      const rest = s.slice(prefix.length);
+      const n = parseInt(rest, 10);
+      return Number.isFinite(n) ? n : 0;
+    };
 
     let maxNum = 0;
-    if (rows) {
-      rows.forEach(r => {
-        if (r[0] && r[0].startsWith(prefix)) {
-          const num = parseInt(r[0].replace(prefix, ''), 10) || 0;
-          if (num > maxNum) maxNum = num;
-        }
-      });
+
+    // 1) Sheets 스캔 (header 스킵, trim, 안전 파싱)
+    try {
+      const rows = await this.sheets.readData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A:A`);
+      if (rows) {
+        rows.forEach((r, idx) => {
+          if (idx === 0) return; // header row
+          const n = extractNum(r && r[0]);
+          if (n > maxNum) maxNum = n;
+        });
+      }
+    } catch (e) {
+      console.warn('[_getNextInvoiceNo] Sheets 스캔 실패:', e.message);
     }
+
+    // 2) Supabase 크로스체크 — Sheet 보다 앞서 있을 수 있음 (생성 직후 Sheet write 실패 등)
+    try {
+      const B2BRepo = require('../db/b2bRepository');
+      const repo = new B2BRepo();
+      const client = repo.db;
+      const { data, error } = await client
+        .from('b2b_invoices')
+        .select('invoice_no')
+        .like('invoice_no', `${prefix}%`)
+        .order('invoice_no', { ascending: false })
+        .limit(5);
+      if (!error && data) {
+        for (const r of data) {
+          const n = extractNum(r.invoice_no);
+          if (n > maxNum) maxNum = n;
+        }
+      }
+    } catch (e) {
+      console.warn('[_getNextInvoiceNo] Supabase 크로스체크 실패:', e.message);
+    }
+
     return `${prefix}${String(maxNum + 1).padStart(4, '0')}`;
   }
 
@@ -515,23 +554,39 @@ class B2BInvoiceService {
 
     // 1) 바이어 정보 (B7~B11) — B컬럼이 5.43 로 좁아서 긴 주소가 올바로 안보임.
     //    B:F 로 확장 merge + wrapText 로 안정적 렌더.
-    const emailPhone = [buyer.Email, buyer.Phone || buyer.WhatsApp].filter(Boolean).join(' / ');
-    ws.getCell('B7').value = `Messrs. :${buyer.Name || ''}`;
-    ws.getCell('B8').value = buyer.Address || '';
+    //    필드 lookup 은 케이스 혼용 방어 (일부 legacy 데이터가 lowercase).
+    const pick = (...keys) => {
+      for (const k of keys) {
+        const v = buyer && buyer[k];
+        if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+      }
+      return '';
+    };
+    const buyerName    = pick('Name', 'name');
+    const buyerAddress = pick('Address', 'address');
+    const buyerEmail   = pick('Email', 'email');
+    const buyerPhone   = pick('Phone', 'phone') || pick('WhatsApp', 'whatsapp');
+    const buyerNotes   = pick('Notes', 'notes');
+
+    const emailPhone = [buyerEmail, buyerPhone].filter(Boolean).join(' / ');
+    ws.getCell('B7').value = buyerName ? `Messrs. :${buyerName}` : 'Messrs. :';
+    ws.getCell('B8').value = buyerAddress;
     ws.getCell('B9').value = emailPhone;
-    // VAT/EORI — buyer 스키마에 없어서 Notes에서 추출 (있으면). 없으면 공백
-    const vatMatch  = (buyer.Notes || '').match(/VAT\s*[:\-]?\s*(\S+)/i);
-    const eoriMatch = (buyer.Notes || '').match(/EORI\s*[:\-]?\s*(\S+)/i);
+    // VAT/EORI — buyer 스키마에 없어서 Notes에서 추출 (있으면). 없으면 템플릿 샘플 클리어.
+    const vatMatch  = buyerNotes.match(/VAT\s*[:\-]?\s*(\S+)/i);
+    const eoriMatch = buyerNotes.match(/EORI\s*[:\-]?\s*(\S+)/i);
     ws.getCell('B10').value = vatMatch  ? `VAT: ${vatMatch[1]}`   : '';
     ws.getCell('B11').value = eoriMatch ? `EORI: ${eoriMatch[1]}` : '';
 
-    // B7, B8, B9, B11 을 B:F 로 merge + wrap (B10 은 템플릿상 이미 B:C merge — 건너뜀)
+    // B7, B8, B9, B11 을 B:F 로 merge + wrap (B10 은 템플릿상 이미 B:C merge — 건너뜀).
+    // horizontal 은 템플릿 원본 그대로 유지 (override 하지 않음 — 기존 왼쪽 정렬 유지).
     for (const r of [7, 8, 9, 11]) {
       const range = `B${r}:F${r}`;
       try { ws.unMergeCells(range); } catch {}
       try { ws.mergeCells(range); } catch {}
       const c = ws.getCell(`B${r}`);
-      c.alignment = { ...(c.alignment || {}), wrapText: true, vertical: 'middle', horizontal: 'left' };
+      const prev = c.alignment || {};
+      c.alignment = { ...prev, wrapText: true, vertical: prev.vertical || 'middle' };
     }
     // 긴 주소가 잘리지 않도록 B8 행 높이 확장 (최소 28)
     const row8 = ws.getRow(8);
@@ -548,7 +603,10 @@ class B2BInvoiceService {
       ws.getCell('C18').value = 'Validity';
       ws.getCell('E18').value = validUntil ? formatDate(validUntil) : 'Within 14 days';
     } else {
-      ws.getCell('E18').value = buyer.PaymentTerms || '100% T/T in advance';
+      // PaymentTerms 가 'Net 30' 처럼 legacy default 면 무시하고 표준 문구 사용
+      const pt = (pick('PaymentTerms', 'paymentTerms') || '').trim();
+      const looksGeneric = !pt || /^net\s*\d+$/i.test(pt);
+      ws.getCell('E18').value = looksGeneric ? '100% T/T in advance' : pt;
     }
     ws.getCell('E19').value = 'Asap after payment';
     ws.getCell('E20').value = 'Republic of Korea';
@@ -578,16 +636,18 @@ class B2BInvoiceService {
       }
     }
 
-    // 5) 배송 (row 29) — 템플릿 formula 덮어쓰고 우리 시스템 값 주입
+    // 5) 배송 (row 29) — 템플릿 formula 덮어쓰고 flat 금액 주입.
+    //    이전엔 ceil(amount/100) × $100 으로 표시해 수동 입력 금액이 왜곡됨.
+    //    이제 항상 "1 × amount = amount" 로 단순 표기.
     const shippingAmount = Number(shipping) || 0;
     if (shippingAmount > 0) {
-      ws.getCell('G29').value = Math.max(1, Math.ceil(shippingAmount / 100));
-      ws.getCell('I29').value = 100;
+      ws.getCell('G29').value = 1;
+      ws.getCell('I29').value = shippingAmount;
       ws.getCell('J29').value = shippingAmount;
     } else {
-      ws.getCell('G29').value = 0;
-      ws.getCell('I29').value = 0;
-      ws.getCell('J29').value = 0;
+      ws.getCell('G29').value = null;
+      ws.getCell('I29').value = null;
+      ws.getCell('J29').value = null;
     }
 
     // 6) TOTAL (row 30) — 템플릿 SUM formula 그대로 둬도 되지만 명시적으로 값도 세팅
