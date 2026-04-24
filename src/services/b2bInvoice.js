@@ -521,6 +521,161 @@ class B2BInvoiceService {
   }
 
   /**
+   * 수기 인보이스 저장 — 이미 발행된 인보이스를 수동 등록.
+   * Excel 생성 안 함. 원본 파일(PDF/이미지)은 Supabase Storage 에 저장.
+   *   data.buyerId          — 선택 (buyer 매칭된 경우)
+   *   data.buyerName        — 필수 (buyerId 없을 때 사용)
+   *   data.invoiceNo?       — 있으면 그대로, 없으면 자동 생성
+   *   data.invoiceDate, dueDate
+   *   data.items[]          — {sku?, name, qty, price}
+   *   data.subtotal, tax, shipping, total, currency, docType
+   *   data.status?          — 기본 'SENT' (이미 보낸 인보이스)
+   *   data.originalFile     — { buffer, mimeType, filename } (선택)
+   *   data.notes
+   */
+  async saveManualInvoice(data) {
+    await this._ensureSheets();
+    const docType = String(data.docType || 'INVOICE').toUpperCase();
+    const isQuote = docType === 'QUOTE';
+
+    // 1. 구매자 매칭 (buyerId 우선, 없으면 buyerName 으로 fuzzy match)
+    let buyer = null;
+    let buyerId = data.buyerId || '';
+    const buyerName = String(data.buyerName || '').trim();
+    if (buyerId || buyerName) {
+      const buyers = await this.getBuyers();
+      if (buyerId) buyer = buyers.find(b => b.BuyerID === buyerId);
+      if (!buyer && buyerName) {
+        const lc = buyerName.toLowerCase();
+        buyer = buyers.find(b => (b.Name || '').toLowerCase() === lc)
+             || buyers.find(b => (b.Name || '').toLowerCase().includes(lc));
+      }
+      if (buyer) buyerId = buyer.BuyerID;
+    }
+    if (!buyerId) throw new Error('구매자를 선택하거나 이름을 입력하세요');
+
+    // 2. 인보이스 번호 — 제공된 거 있으면 그대로, 없으면 자동
+    const today = new Date();
+    const invoiceDate = data.invoiceDate || today.toISOString().split('T')[0];
+    const dueDate = data.dueDate || invoiceDate;
+    let invoiceNo = String(data.invoiceNo || '').trim();
+    if (!invoiceNo) {
+      invoiceNo = await this._getNextInvoiceNo(docType);
+    }
+
+    // 3. items 정규화 + 금액 재계산
+    const items = (data.items || []).map(it => ({
+      sku: String(it.sku || '').trim(),
+      name: String(it.name || '').trim(),
+      qty: Number(it.qty) || 0,
+      price: Number(it.price) || 0,
+      total: Number(it.total) || (Number(it.qty) || 0) * (Number(it.price) || 0),
+    })).filter(it => it.name || it.sku);
+    const subtotal = items.reduce((s, i) => s + i.total, 0) || Number(data.subtotal) || 0;
+    const tax = Number(data.tax) || 0;
+    const shipping = Number(data.shipping) || 0;
+    const total = Number(data.total) || (subtotal + tax + shipping);
+    const currency = String(data.currency || buyer?.Currency || 'USD').toUpperCase();
+    const status = String(data.status || 'SENT').toUpperCase();
+
+    // 4. 원본 파일 Supabase Storage 업로드 (있으면)
+    let originalPath = null;
+    let originalMime = null;
+    if (data.originalFile?.buffer) {
+      const { getClient } = require('../db/supabaseClient');
+      const db = getClient();
+      const crypto = require('crypto');
+      const safeName = (data.originalFile.filename || 'manual').replace(/[\\/\x00-\x1f]/g, '_').slice(0, 150);
+      const key = `${invoiceNo}-${crypto.randomBytes(4).toString('hex')}-${safeName}`;
+      try {
+        await db.storage.from('b2b-manual').upload(key, data.originalFile.buffer, {
+          contentType: data.originalFile.mimeType || 'application/octet-stream',
+          upsert: false,
+        });
+        originalPath = key;
+        originalMime = data.originalFile.mimeType || null;
+      } catch (e) {
+        console.warn('[saveManualInvoice] 원본 업로드 실패 (버킷 b2b-manual 없음?):', e.message);
+      }
+    }
+
+    // 5. Sheet 기록 (기존 flow 와 동일 shape — DriveUrl 에 다운로드 API 경로)
+    const driveUrl = originalPath ? `/api/b2b/invoices/${invoiceNo}/manual-download` : '';
+    const invoiceRow = [
+      invoiceNo,
+      buyerId,
+      buyer?.Name || buyerName,
+      invoiceDate,
+      dueDate,
+      JSON.stringify(items),
+      subtotal.toFixed(2),
+      tax.toFixed(2),
+      shipping.toFixed(2),
+      total.toFixed(2),
+      currency,
+      status,
+      '',                // DriveFileId
+      driveUrl,
+      '',
+      '',
+    ];
+    await this.sheets.appendData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A:P`, [invoiceRow]);
+
+    // 6. Supabase 기록 (is_manual=true)
+    try {
+      const B2BRepo = require('../db/b2bRepository');
+      const repo = new B2BRepo();
+      await repo.createInvoice({
+        InvoiceNo: invoiceNo,
+        BuyerID: buyerId,
+        BuyerName: buyer?.Name || buyerName,
+        Date: invoiceDate,
+        DueDate: dueDate,
+        Items: items,
+        Subtotal: subtotal,
+        Tax: tax,
+        Shipping: shipping,
+        Total: total,
+        Currency: currency,
+        Status: status,
+        DocType: docType,
+        DriveUrl: driveUrl,
+        IsManual: true,
+        OriginalFilePath: originalPath,
+        OriginalMimeType: originalMime,
+      });
+    } catch (err) {
+      console.warn('[saveManualInvoice] Supabase 동기화 실패:', err.message);
+    }
+
+    // 7. 매출 집계 (견적서는 제외, 일반 인보이스는 반영)
+    if (!isQuote) {
+      await this._updateBuyerStats(buyerId).catch(() => {});
+    }
+
+    console.log(`✅ 수기 ${isQuote ? '견적서' : '인보이스'} 등록: ${invoiceNo} → ${buyer?.Name || buyerName} (${currency} ${total.toFixed(2)})`);
+
+    return {
+      invoiceNo,
+      buyerId,
+      buyerName: buyer?.Name || buyerName,
+      date: invoiceDate,
+      dueDate,
+      items,
+      subtotal,
+      tax,
+      shipping,
+      total,
+      currency,
+      status,
+      docType,
+      isManual: true,
+      originalFilePath: originalPath,
+      driveUrl,
+    };
+  }
+
+  /**
    * Excel 인보이스 빌드 — MASTER 템플릿(templates/b2b_invoice_master.xlsx) 로드 후 데이터 주입.
    * CCOREA 로고·서식·폰트·테두리는 템플릿에서 상속. 양식 변경 시 xlsx 파일만 교체하면 됨.
    */

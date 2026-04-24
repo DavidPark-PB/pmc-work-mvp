@@ -6331,6 +6331,8 @@ function setupB2BPage() {
     document.getElementById('b2bCreateBtn').addEventListener('click', () => b2bCreateInvoice('INVOICE'));
     const quoteBtn = document.getElementById('b2bCreateQuoteBtn');
     if (quoteBtn) quoteBtn.addEventListener('click', () => b2bCreateInvoice('QUOTE'));
+    const manualBtn = document.getElementById('b2bManualBtn');
+    if (manualBtn) manualBtn.addEventListener('click', b2bOpenManualUpload);
 
     // 인보이스 목록 필터/새로고침
     document.getElementById('b2bListRefresh').addEventListener('click', loadB2BInvoiceList);
@@ -6623,8 +6625,12 @@ async function loadB2BInvoiceList() {
 
     tbody.innerHTML = invoices.map(inv => {
       const isQuote = (inv.DocType || (inv.InvoiceNo && inv.InvoiceNo.startsWith('Q-') ? 'QUOTE' : 'INVOICE')).toUpperCase() === 'QUOTE';
+      const isManual = !!inv.IsManual;
       const docBadge = isQuote
         ? `<span style="background:#7c4dff;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;margin-right:4px;">📋 견적</span>`
+        : '';
+      const manualBadge = isManual
+        ? `<span style="background:#ff9800;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;margin-right:4px;">📎 수기</span>`
         : '';
       const statusColor = inv.Status === 'PAID' ? '#27ae60' : inv.Status === 'FULFILLED' ? '#2e7d32' : inv.Status === 'PARTIALLY_SHIPPED' ? '#f39c12' : inv.Status === 'SENT' ? '#f39c12' : '#888';
       const paidAmt = Number(inv.PaidAmount || 0);
@@ -6635,7 +6641,7 @@ async function loadB2BInvoiceList() {
       const overdueBadge = (!isQuote && inv.IsOverdue) ? `<span style="background:#c62828;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;margin-left:4px;">⏰ 연체</span>` : '';
       const paidBadge = isQuote ? '' : `<span style="background:${payColor};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600;">💰 ${paidPct}%</span>`;
       return `<tr${inv.IsOverdue && !isQuote ? ' style="background:#fff5f5;"' : ''}>
-        <td style="font-weight:600">${docBadge}${inv.InvoiceNo}</td>
+        <td style="font-weight:600">${manualBadge}${docBadge}${inv.InvoiceNo}</td>
         <td>${inv.BuyerName}</td>
         <td>${inv.Date}</td>
         <td>${inv.DueDate}${overdueBadge}</td>
@@ -6648,7 +6654,9 @@ async function loadB2BInvoiceList() {
           <div style="display:flex;gap:4px;flex-wrap:wrap">
             <button onclick="b2bOpenShipmentModal('${inv.InvoiceNo}')" title="발송 관리" style="background:#1565c0;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🚚 발송</button>
             <button onclick="b2bOpenPaymentModal('${inv.InvoiceNo}', ${total}, ${paidAmt})" title="입금 기록" style="background:#f39c12;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">💰 입금</button>
-            <a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="background:#0288d1;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">XLSX</a>
+            ${isManual
+              ? `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/manual-download" style="background:#ff9800;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">📎 원본</a>`
+              : `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="background:#0288d1;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">XLSX</a>`}
             ${paidStatus !== 'PAID' ? `<button onclick="b2bMarkPaid('${inv.InvoiceNo}')" style="background:#27ae60;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">PAID</button>` : ''}
             <button onclick="b2bSendWhatsApp('${inv.InvoiceNo}')" style="background:#25d366;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">WA</button>
             <button onclick="b2bVoidInvoice('${inv.InvoiceNo}')" title="무효화" style="background:#c62828;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🚫</button>
@@ -7425,6 +7433,257 @@ async function b2bSaveBuyer() {
     alert('저장 에러: ' + err.message);
   } finally {
     btn.disabled = false; btn.textContent = '저장';
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// 수기 인보이스 업로드 + AI 파싱
+// ═══════════════════════════════════════════════════
+
+let _b2bManualFile = null; // 현재 선택된 File 객체 보관
+
+function b2bOpenManualUpload() {
+  document.getElementById('b2b-manual-modal')?.remove();
+  _b2bManualFile = null;
+  const m = document.createElement('div');
+  m.id = 'b2b-manual-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  m.innerHTML = `
+    <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:20px;width:720px;max-width:95vw;max-height:92vh;overflow:auto;color:#e0e0e0;" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="color:#fff;font-size:16px;margin:0;">📎 수기 인보이스 등록 <span style="color:#888;font-size:12px;font-weight:400;">· PDF / 이미지 → AI 파싱</span></h2>
+        <button onclick="b2bCloseManualUpload()" style="background:transparent;border:0;color:#888;cursor:pointer;font-size:20px;">✕</button>
+      </div>
+      <div id="b2b-manual-step-1">
+        <div style="margin-bottom:10px;color:#aaa;font-size:12px;">
+          기존에 발행한 인보이스/견적서 파일(PDF, JPG, PNG)을 올리면 Claude 가 내용을 읽어 자동으로 필드를 채웁니다. 검토·수정 후 목록에 등록.
+        </div>
+        <input type="file" id="b2b-manual-file" accept="application/pdf,image/jpeg,image/png,image/webp" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:10px;">
+        <div id="b2b-manual-status" style="font-size:12px;color:#888;margin-bottom:10px;min-height:16px;"></div>
+        <div style="text-align:right;">
+          <button onclick="b2bCloseManualUpload()" style="padding:7px 14px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;margin-right:4px;">취소</button>
+          <button id="b2b-manual-parse-btn" onclick="b2bParseManual()" style="padding:7px 18px;background:#ff9800;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">🤖 AI 로 읽기</button>
+        </div>
+      </div>
+      <div id="b2b-manual-step-2" style="display:none;"></div>
+    </div>`;
+  m.addEventListener('click', (e) => { if (e.target === m) b2bCloseManualUpload(); });
+  document.body.appendChild(m);
+
+  document.getElementById('b2b-manual-file').addEventListener('change', (ev) => {
+    _b2bManualFile = ev.target.files?.[0] || null;
+    const st = document.getElementById('b2b-manual-status');
+    if (_b2bManualFile) st.innerHTML = `<span style="color:#81c784;">선택됨: ${_b2bManualFile.name} (${(_b2bManualFile.size/1024/1024).toFixed(2)} MB)</span>`;
+    else st.innerHTML = '';
+  });
+}
+
+function b2bCloseManualUpload() {
+  document.getElementById('b2b-manual-modal')?.remove();
+  _b2bManualFile = null;
+}
+
+async function b2bParseManual() {
+  if (!_b2bManualFile) { alert('파일을 선택하세요'); return; }
+  const btn = document.getElementById('b2b-manual-parse-btn');
+  const status = document.getElementById('b2b-manual-status');
+  btn.disabled = true; btn.textContent = '읽는 중...';
+  status.innerHTML = '<span style="color:#888;">⏳ Claude 로 파싱 중 (30~60초 소요)…</span>';
+  try {
+    const fd = new FormData();
+    fd.append('file', _b2bManualFile);
+    const r = await fetch(`${API}/b2b/invoices/manual/parse`, { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!j.success) throw new Error(j.error || '파싱 실패');
+    b2bRenderManualForm(j.parsed);
+  } catch (e) {
+    status.innerHTML = `<span style="color:#ff8a80;">❌ ${e.message}</span>`;
+    btn.disabled = false; btn.textContent = '🤖 AI 로 읽기';
+  }
+}
+
+function b2bRenderManualForm(parsed) {
+  const step1 = document.getElementById('b2b-manual-step-1');
+  const step2 = document.getElementById('b2b-manual-step-2');
+  if (step1) step1.style.display = 'none';
+  if (!step2) return;
+
+  const buyerOpts = ['<option value="">(신규/미선택)</option>'].concat(
+    (b2bBuyersCache || []).map(b => `<option value="${b.BuyerID}">${b.Name} (${b.BuyerID})</option>`)
+  ).join('');
+
+  // buyer name 자동 매칭 시도
+  let suggestedBuyerId = '';
+  if (parsed.buyerName) {
+    const nameLc = parsed.buyerName.toLowerCase();
+    const hit = (b2bBuyersCache || []).find(b => (b.Name || '').toLowerCase() === nameLc)
+            || (b2bBuyersCache || []).find(b => nameLc.includes((b.Name || '').toLowerCase()) || (b.Name || '').toLowerCase().includes(nameLc));
+    if (hit) suggestedBuyerId = hit.BuyerID;
+  }
+
+  const itemRows = (parsed.items || []).map((it, i) => `
+    <tr data-idx="${i}">
+      <td><input type="text" class="bm-it-sku" value="${(it.sku || '').replace(/"/g,'&quot;')}" style="width:100%;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></td>
+      <td><input type="text" class="bm-it-name" value="${(it.name || '').replace(/"/g,'&quot;')}" style="width:100%;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></td>
+      <td><input type="number" class="bm-it-qty" value="${it.qty || 0}" step="1" style="width:70px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;text-align:right;"></td>
+      <td><input type="number" class="bm-it-price" value="${it.price || 0}" step="0.01" style="width:90px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;text-align:right;"></td>
+      <td style="text-align:center;"><button type="button" onclick="this.closest('tr').remove()" style="padding:3px 8px;background:#c62828;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">✕</button></td>
+    </tr>
+  `).join('');
+
+  step2.style.display = 'block';
+  step2.innerHTML = `
+    <div style="background:#0f0f23;padding:10px;border-radius:6px;margin-bottom:12px;font-size:11px;color:#888;">
+      ✓ AI 파싱 완료. 내용 확인하고 수정 후 <strong>등록</strong> 누르세요.
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
+      <div>
+        <label style="font-size:11px;color:#888;">문서 타입</label>
+        <select id="bm-docType" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          <option value="INVOICE" ${parsed.docType !== 'QUOTE' ? 'selected' : ''}>📄 인보이스</option>
+          <option value="QUOTE" ${parsed.docType === 'QUOTE' ? 'selected' : ''}>📋 견적서</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:11px;color:#888;">문서 번호</label>
+        <input type="text" id="bm-invoiceNo" value="${(parsed.invoiceNo || '').replace(/"/g,'&quot;')}" placeholder="비우면 자동 생성" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#888;">통화</label>
+        <select id="bm-currency" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          ${['USD','EUR','KRW','JPY','GBP'].map(c => `<option value="${c}" ${parsed.currency === c ? 'selected' : ''}>${c}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px;">
+      <div>
+        <label style="font-size:11px;color:#888;">구매자 매칭 (기존 등록)</label>
+        <select id="bm-buyerId" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">${buyerOpts}</select>
+      </div>
+      <div>
+        <label style="font-size:11px;color:#888;">발행일</label>
+        <input type="date" id="bm-invoiceDate" value="${parsed.invoiceDate || ''}" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+      </div>
+      <div>
+        <label style="font-size:11px;color:#888;">만기/유효일</label>
+        <input type="date" id="bm-dueDate" value="${parsed.dueDate || ''}" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+      </div>
+    </div>
+    <div style="margin-bottom:8px;">
+      <label style="font-size:11px;color:#888;">구매자명 (매칭 안하면 이걸로 저장)</label>
+      <input type="text" id="bm-buyerName" value="${(parsed.buyerName || '').replace(/"/g,'&quot;')}" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+    </div>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:8px;font-size:11px;">
+      <thead><tr style="background:#0f0f23;">
+        <th style="padding:6px;text-align:left;color:#888;width:20%;">SKU</th>
+        <th style="padding:6px;text-align:left;color:#888;">상품명</th>
+        <th style="padding:6px;text-align:center;color:#888;width:80px;">수량</th>
+        <th style="padding:6px;text-align:center;color:#888;width:100px;">단가</th>
+        <th style="padding:6px;width:36px;"></th>
+      </tr></thead>
+      <tbody id="bm-items">${itemRows || '<tr><td colspan="5" style="padding:20px;text-align:center;color:#666;">상품 없음</td></tr>'}</tbody>
+    </table>
+    <button type="button" onclick="b2bManualAddRow()" style="padding:4px 12px;background:#2a4a6a;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:11px;margin-bottom:10px;">+ 품목 추가</button>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
+      <div><label style="font-size:11px;color:#888;">Subtotal</label><input type="number" id="bm-subtotal" value="${parsed.subtotal || 0}" step="0.01" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;text-align:right;"></div>
+      <div><label style="font-size:11px;color:#888;">Tax</label><input type="number" id="bm-tax" value="${parsed.tax || 0}" step="0.01" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;text-align:right;"></div>
+      <div><label style="font-size:11px;color:#888;">Shipping</label><input type="number" id="bm-shipping" value="${parsed.shipping || 0}" step="0.01" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;text-align:right;"></div>
+      <div><label style="font-size:11px;color:#81c784;">Total</label><input type="number" id="bm-total" value="${parsed.total || 0}" step="0.01" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #81c784;border-radius:4px;color:#fff;font-size:12px;text-align:right;font-weight:700;"></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+      <div>
+        <label style="font-size:11px;color:#888;">상태 (등록 후)</label>
+        <select id="bm-status" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          <option value="SENT" selected>SENT (발송 완료)</option>
+          <option value="PAID">PAID (결제 완료)</option>
+          <option value="CREATED">CREATED (미발송)</option>
+          <option value="FULFILLED">FULFILLED (배송 완료)</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:11px;color:#888;">비고</label>
+        <input type="text" id="bm-notes" value="${(parsed.notes || '').replace(/"/g,'&quot;')}" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+      </div>
+    </div>
+
+    <div id="bm-save-status" style="font-size:12px;min-height:16px;margin-bottom:6px;"></div>
+    <div style="text-align:right;">
+      <button onclick="b2bCloseManualUpload()" style="padding:7px 14px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;margin-right:4px;">취소</button>
+      <button id="bm-save-btn" onclick="b2bSaveManualInvoice()" style="padding:7px 20px;background:#4caf50;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">✓ 목록에 등록</button>
+    </div>
+  `;
+
+  // 자동 buyer 매칭 적용
+  if (suggestedBuyerId) document.getElementById('bm-buyerId').value = suggestedBuyerId;
+}
+
+function b2bManualAddRow() {
+  const tbody = document.getElementById('bm-items');
+  if (!tbody) return;
+  // 빈 row 제거 (상품 없음 placeholder)
+  if (tbody.querySelector('td[colspan]')) tbody.innerHTML = '';
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" class="bm-it-sku" style="width:100%;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></td>
+    <td><input type="text" class="bm-it-name" style="width:100%;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></td>
+    <td><input type="number" class="bm-it-qty" value="1" step="1" style="width:70px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;text-align:right;"></td>
+    <td><input type="number" class="bm-it-price" value="0" step="0.01" style="width:90px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;text-align:right;"></td>
+    <td style="text-align:center;"><button type="button" onclick="this.closest('tr').remove()" style="padding:3px 8px;background:#c62828;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">✕</button></td>
+  `;
+  tbody.appendChild(tr);
+}
+
+async function b2bSaveManualInvoice() {
+  const itemsTbody = document.getElementById('bm-items');
+  const items = [];
+  if (itemsTbody) {
+    itemsTbody.querySelectorAll('tr[data-idx], tr:not([data-idx])').forEach(tr => {
+      const sku = tr.querySelector('.bm-it-sku')?.value || '';
+      const name = tr.querySelector('.bm-it-name')?.value || '';
+      const qty = parseFloat(tr.querySelector('.bm-it-qty')?.value) || 0;
+      const price = parseFloat(tr.querySelector('.bm-it-price')?.value) || 0;
+      if (name || sku) items.push({ sku, name, qty, price });
+    });
+  }
+
+  const payload = {
+    docType: document.getElementById('bm-docType').value,
+    invoiceNo: document.getElementById('bm-invoiceNo').value.trim(),
+    buyerId: document.getElementById('bm-buyerId').value,
+    buyerName: document.getElementById('bm-buyerName').value.trim(),
+    invoiceDate: document.getElementById('bm-invoiceDate').value || undefined,
+    dueDate: document.getElementById('bm-dueDate').value || undefined,
+    items,
+    subtotal: parseFloat(document.getElementById('bm-subtotal').value) || 0,
+    tax: parseFloat(document.getElementById('bm-tax').value) || 0,
+    shipping: parseFloat(document.getElementById('bm-shipping').value) || 0,
+    total: parseFloat(document.getElementById('bm-total').value) || 0,
+    currency: document.getElementById('bm-currency').value,
+    status: document.getElementById('bm-status').value,
+    notes: document.getElementById('bm-notes').value.trim(),
+  };
+
+  if (!payload.buyerId && !payload.buyerName) { alert('구매자를 매칭하거나 이름을 입력하세요'); return; }
+  if (items.length === 0) { alert('상품이 1개 이상 필요합니다'); return; }
+
+  const btn = document.getElementById('bm-save-btn');
+  const st = document.getElementById('bm-save-status');
+  btn.disabled = true; btn.textContent = '저장 중...';
+  st.innerHTML = '<span style="color:#888;">⏳ 저장 중…</span>';
+  try {
+    const fd = new FormData();
+    fd.append('payload', JSON.stringify(payload));
+    if (_b2bManualFile) fd.append('file', _b2bManualFile);
+    const r = await fetch(`${API}/b2b/invoices/manual`, { method: 'POST', body: fd });
+    const j = await r.json();
+    if (!j.success) throw new Error(j.error || '저장 실패');
+    st.innerHTML = `<span style="color:#4caf50;">✓ ${j.invoice.invoiceNo} 등록 완료</span>`;
+    setTimeout(() => { b2bCloseManualUpload(); loadB2BInvoiceList(); }, 1500);
+  } catch (e) {
+    st.innerHTML = `<span style="color:#ff8a80;">❌ ${e.message}</span>`;
+    btn.disabled = false; btn.textContent = '✓ 목록에 등록';
   }
 }
 

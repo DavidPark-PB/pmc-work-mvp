@@ -3674,6 +3674,70 @@ router.post('/b2b/invoices', async (req, res) => {
   }
 });
 
+// ── 수기 인보이스 (업로드 + AI 파싱 + 저장) ──────────────────
+const manualUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
+});
+
+// POST /api/b2b/invoices/manual/parse — PDF/이미지 → Claude → JSON
+router.post('/b2b/invoices/manual/parse', manualUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: '파일을 선택하세요' });
+    const { parseManualInvoice } = require('../../services/b2bInvoiceParser');
+    const parsed = await parseManualInvoice(req.file.buffer, req.file.mimetype);
+    res.json({ success: true, parsed, fileMeta: {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+    }});
+  } catch (e) {
+    console.error('❌ manual invoice parse:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/b2b/invoices/manual — 편집된 필드 + 원본 파일 저장
+router.post('/b2b/invoices/manual', manualUpload.single('file'), async (req, res) => {
+  try {
+    const body = req.body?.payload ? JSON.parse(req.body.payload) : req.body;
+    const data = { ...body };
+    if (req.file) {
+      data.originalFile = {
+        buffer: req.file.buffer,
+        mimeType: req.file.mimetype,
+        filename: req.file.originalname,
+      };
+    }
+    const result = await getB2BService().saveManualInvoice(data);
+    res.json({ success: true, invoice: result });
+  } catch (e) {
+    console.error('❌ manual invoice save:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/b2b/invoices/:id/manual-download — 원본 파일 signed URL 리다이렉트
+router.get('/b2b/invoices/:id/manual-download', async (req, res) => {
+  try {
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    const invoices = await repo.getInvoices({ includeVoided: true });
+    const inv = invoices.find(i => i.InvoiceNo === req.params.id);
+    if (!inv || !inv.OriginalFilePath) return res.status(404).json({ error: '원본 파일 없음' });
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const filename = inv.OriginalFilePath.split('/').pop() || 'manual-invoice';
+    const { data, error } = await db.storage.from('b2b-manual').createSignedUrl(inv.OriginalFilePath, 300, {
+      download: filename,
+    });
+    if (error || !data?.signedUrl) throw error || new Error('signed URL 생성 실패');
+    res.redirect(data.signedUrl);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/b2b/invoices/:id/download — 인보이스 다운로드
 router.get('/b2b/invoices/:id/download', async (req, res) => {
   try {

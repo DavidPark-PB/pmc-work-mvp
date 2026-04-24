@@ -239,29 +239,32 @@ class B2BRepository {
       currency: invoice.Currency || invoice.currency || 'USD',
       status: invoice.Status || invoice.status || 'CREATED',
       doc_type: (invoice.DocType || invoice.docType || 'INVOICE').toUpperCase(),
+      is_manual: !!(invoice.IsManual || invoice.isManual),
+      original_file_path: invoice.OriginalFilePath || invoice.originalFilePath || null,
+      original_mime_type: invoice.OriginalMimeType || invoice.originalMimeType || null,
       drive_file_id: invoice.DriveFileId || invoice.driveFileId || '',
       drive_url: invoice.DriveUrl || invoice.driveUrl || '',
       sent_via: invoice.SentVia || invoice.sentVia || '',
       sent_at: invoice.SentAt || invoice.sentAt || null,
     };
 
-    const { data, error } = await this.db
+    const upsert = async (payload) => this.db
       .from('b2b_invoices')
-      .upsert(row, { onConflict: 'invoice_no' })
+      .upsert(payload, { onConflict: 'invoice_no' })
       .select();
-    if (error) {
-      // doc_type 컬럼 없는 구버전 DB 호환 — 마이그레이션 032 미적용 시 재시도
-      if (error.code === '42703' && /doc_type/.test(error.message || '')) {
-        const { doc_type, ...legacy } = row;
-        const { data: d2, error: e2 } = await this.db
-          .from('b2b_invoices')
-          .upsert(legacy, { onConflict: 'invoice_no' })
-          .select();
-        if (e2) throw e2;
-        return d2?.[0];
+
+    let { data, error } = await upsert(row);
+    if (error && error.code === '42703') {
+      // 구버전 DB 호환 — 신규 컬럼 하나씩 제거해 재시도
+      const fallback = { ...row };
+      for (const col of ['is_manual', 'original_file_path', 'original_mime_type', 'doc_type']) {
+        if (new RegExp(col).test(error.message || '')) delete fallback[col];
       }
-      throw error;
+      const r2 = await upsert(fallback);
+      if (r2.error) throw r2.error;
+      return r2.data?.[0];
     }
+    if (error) throw error;
     return data?.[0];
   }
 
@@ -498,6 +501,9 @@ class B2BRepository {
       Currency: r.currency,
       Status: r.status,
       DocType: r.doc_type || (r.invoice_no && r.invoice_no.startsWith('Q-') ? 'QUOTE' : 'INVOICE'),
+      IsManual: !!r.is_manual,
+      OriginalFilePath: r.original_file_path || null,
+      OriginalMimeType: r.original_mime_type || null,
       DriveFileId: r.drive_file_id,
       DriveUrl: r.drive_url,
       SentVia: r.sent_via,
