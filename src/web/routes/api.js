@@ -3717,6 +3717,22 @@ router.post('/b2b/invoices/manual', manualUpload.single('file'), async (req, res
   }
 });
 
+// POST /api/b2b/invoices/:id/attach — 기존 인보이스에 외부 파일(PDF/이미지/XLSX) 첨부/교체
+router.post('/b2b/invoices/:id/attach', manualUpload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, error: '파일을 선택하세요' });
+    const result = await getB2BService().attachFileToInvoice(req.params.id, {
+      buffer: req.file.buffer,
+      mimeType: req.file.mimetype,
+      filename: req.file.originalname,
+    });
+    res.json({ success: true, ...result });
+  } catch (e) {
+    console.error('❌ invoice attach:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // GET /api/b2b/invoices/:id/manual-download — 원본 파일 signed URL 리다이렉트
 router.get('/b2b/invoices/:id/manual-download', async (req, res) => {
   try {

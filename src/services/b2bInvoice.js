@@ -676,6 +676,81 @@ class B2BInvoiceService {
   }
 
   /**
+   * 기존 인보이스(자동 생성 or 수기)에 외부 파일(PDF/이미지/XLSX) 첨부.
+   * Supabase Storage 의 b2b-manual 버킷에 저장, invoice 레코드의 original_file_path 갱신.
+   * 기존 첨부가 있으면 교체하고 이전 파일은 삭제.
+   */
+  async attachFileToInvoice(invoiceNo, file) {
+    if (!invoiceNo) throw new Error('invoiceNo 필요');
+    if (!file?.buffer) throw new Error('파일이 없습니다');
+
+    const { getClient } = require('../db/supabaseClient');
+    const db = getClient();
+    const crypto = require('crypto');
+
+    // 기존 invoice 조회 (Sheets 우선 — 소스 of truth)
+    const existing = await this.getInvoices({ statusGroup: 'all' });
+    const inv = (existing || []).find(i => i.InvoiceNo === invoiceNo);
+    if (!inv) throw new Error(`인보이스 ${invoiceNo} 없음`);
+
+    const safeName = (file.filename || 'file').replace(/[\\/\x00-\x1f]/g, '_').slice(0, 150);
+    const key = `${invoiceNo}-${crypto.randomBytes(4).toString('hex')}-${safeName}`;
+    const { error: upErr } = await db.storage.from('b2b-manual').upload(key, file.buffer, {
+      contentType: file.mimeType || 'application/octet-stream',
+      upsert: false,
+    });
+    if (upErr) throw new Error(`Storage 업로드 실패: ${upErr.message} (버킷 b2b-manual 없음?)`);
+
+    // 기존 첨부 삭제
+    let prevPath = inv.OriginalFilePath || null;
+    try {
+      const B2BRepo = require('../db/b2bRepository');
+      const repo = new B2BRepo();
+      // Supabase 에 record 가 있으면 기존 path 조회 시도
+      const all = await repo.getInvoices({ includeVoided: true });
+      const dbInv = all.find(i => i.InvoiceNo === invoiceNo);
+      if (dbInv?.OriginalFilePath) prevPath = dbInv.OriginalFilePath;
+    } catch {}
+    if (prevPath && prevPath !== key) {
+      try { await db.storage.from('b2b-manual').remove([prevPath]); } catch {}
+    }
+
+    // Supabase 레코드 갱신 — 없으면 생성 (Sheets 에만 있는 구형 인보이스 호환)
+    try {
+      const B2BRepo = require('../db/b2bRepository');
+      const repo = new B2BRepo();
+      await repo.createInvoice({
+        InvoiceNo: invoiceNo,
+        BuyerID: inv.BuyerID,
+        BuyerName: inv.BuyerName,
+        Date: inv.Date,
+        DueDate: inv.DueDate,
+        Items: inv.Items || inv.ItemsParsed || [],
+        Subtotal: inv.Subtotal,
+        Tax: inv.Tax,
+        Shipping: inv.Shipping,
+        Total: inv.Total,
+        Currency: inv.Currency,
+        Status: inv.Status,
+        DocType: inv.DocType,
+        IsManual: !!inv.IsManual,
+        OriginalFilePath: key,
+        OriginalMimeType: file.mimeType || null,
+        DriveUrl: inv.DriveUrl || `/api/b2b/invoices/${invoiceNo}/manual-download`,
+      });
+    } catch (err) {
+      console.warn('[attachFileToInvoice] Supabase 업데이트 실패:', err.message);
+    }
+
+    return {
+      invoiceNo,
+      originalFilePath: key,
+      originalMimeType: file.mimeType || null,
+      filename: safeName,
+    };
+  }
+
+  /**
    * Excel 인보이스 빌드 — MASTER 템플릿(templates/b2b_invoice_master.xlsx) 로드 후 데이터 주입.
    * CCOREA 로고·서식·폰트·테두리는 템플릿에서 상속. 양식 변경 시 xlsx 파일만 교체하면 됨.
    */

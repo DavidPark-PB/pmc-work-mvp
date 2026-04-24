@@ -6657,6 +6657,10 @@ async function loadB2BInvoiceList() {
             ${isManual
               ? `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/manual-download" style="background:#ff9800;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">📎 원본</a>`
               : `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="background:#0288d1;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">XLSX</a>`}
+            ${inv.OriginalFilePath && !isManual
+              ? `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/manual-download" style="background:#81c784;color:#1a1a2e;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:700">📎 첨부</a>`
+              : ''}
+            <button onclick="b2bAttachFile('${inv.InvoiceNo}', ${inv.OriginalFilePath ? 'true' : 'false'})" title="${inv.OriginalFilePath ? '첨부 파일 교체' : '파일 첨부'}" style="background:#4caf50;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">${inv.OriginalFilePath ? '🔁' : '📎'}</button>
             ${paidStatus !== 'PAID' ? `<button onclick="b2bMarkPaid('${inv.InvoiceNo}')" style="background:#27ae60;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">PAID</button>` : ''}
             <button onclick="b2bSendWhatsApp('${inv.InvoiceNo}')" style="background:#25d366;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">WA</button>
             <button onclick="b2bVoidInvoice('${inv.InvoiceNo}')" title="무효화" style="background:#c62828;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🚫</button>
@@ -7434,6 +7438,40 @@ async function b2bSaveBuyer() {
   } finally {
     btn.disabled = false; btn.textContent = '저장';
   }
+}
+
+// ═══════════════════════════════════════════════════
+// 기존 인보이스에 파일 첨부 (AI 파싱 없이 파일만)
+// ═══════════════════════════════════════════════════
+async function b2bAttachFile(invoiceNo, hasExisting) {
+  if (hasExisting && !confirm(`인보이스 ${invoiceNo} 의 첨부 파일을 교체합니다. 기존 파일은 삭제돼요.\n\n계속?`)) return;
+
+  // 임시 file input 생성 후 trigger
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.pdf,image/*,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  input.style.display = 'none';
+  document.body.appendChild(input);
+
+  input.addEventListener('change', async () => {
+    const f = input.files?.[0];
+    document.body.removeChild(input);
+    if (!f) return;
+
+    try {
+      const fd = new FormData();
+      fd.append('file', f);
+      const r = await fetch(`${API}/b2b/invoices/${invoiceNo}/attach`, { method: 'POST', body: fd });
+      const j = await r.json();
+      if (!j.success) throw new Error(j.error || '업로드 실패');
+      alert(`✅ ${invoiceNo} 에 "${f.name}" 첨부 완료`);
+      loadB2BInvoiceList();
+    } catch (e) {
+      alert('❌ 첨부 실패: ' + e.message);
+    }
+  });
+
+  input.click();
 }
 
 // ═══════════════════════════════════════════════════
