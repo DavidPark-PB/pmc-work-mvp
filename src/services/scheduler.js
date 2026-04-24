@@ -202,8 +202,28 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // 매일 새벽 3:30 — 만료된 shared_uploads 정리 (DB + Supabase Storage)
+  cron.schedule('30 3 * * *', async () => {
+    try {
+      const uploadRepo = require('../db/sharedUploadRepository');
+      const expired = await uploadRepo.deleteExpired();
+      if (expired.length > 0) {
+        const paths = expired.map(r => r.storage_path).filter(Boolean);
+        if (paths.length > 0) {
+          try {
+            const db = getClient();
+            await db.storage.from('shared-uploads').remove(paths);
+          } catch (e) { console.warn('[scheduler] shared-uploads storage remove:', e.message); }
+        }
+        console.log(`[scheduler] shared uploads: ${expired.length}개 만료 정리`);
+      }
+    } catch (e) {
+      console.error('[scheduler] shared uploads cleanup error:', e.message);
+    }
+  }, { timezone: TZ });
+
   scheduled = true;
-  console.log('[scheduler] 활성화 — 9시(digest)·17시(summary)·4시(platform sync)·매시(naver enrich)·3시(recurring)');
+  console.log('[scheduler] 활성화 — 9시(digest)·17시(summary)·4시(platform sync)·매시(naver enrich)·3시(recurring)·3:30(uploads cleanup)');
 }
 
 module.exports = { start, sendMorningDigest, sendEveningOwnerSummary };

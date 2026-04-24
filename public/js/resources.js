@@ -6,6 +6,7 @@
   let user = null;
   let folders = [];
   let resources = [];
+  let uploads = [];
   let allTags = [];
   let folderFilter = '';
   let tagFilter = '';
@@ -44,9 +45,21 @@
     if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r => r.json())).user;
     if (!user) return;
     renderShell();
-    await Promise.all([loadFolders(), loadTags(), refreshResources()]);
+    await Promise.all([loadFolders(), loadTags(), refreshResources(), refreshUploads()]);
     renderFolders();
     renderTagChips();
+  }
+
+  async function refreshUploads() {
+    try {
+      const res = await fetch('/api/resources/uploads');
+      const j = await res.json();
+      uploads = j.data || [];
+      renderUploads();
+    } catch (e) {
+      const host = document.getElementById('res-uploads-list');
+      if (host) host.innerHTML = `<div style="padding:14px;color:#ff8a80;font-size:12px;">로드 실패: ${esc(e.message)}</div>`;
+    }
   }
 
   async function loadFolders() {
@@ -105,8 +118,33 @@
 
     el.innerHTML = `
       <div style="margin-bottom:12px;">
-        <h1 style="font-size:22px;color:#fff;">📁 자료실 <span style="color:#888;font-weight:400;font-size:13px;">· 구글 드라이브 동기화</span></h1>
-        <p style="color:#888;font-size:13px;">Drive 폴더를 등록하면 매일 새벽 파일 목록이 자동 동기화됩니다. 태그·파일명으로 빠르게 검색하세요.</p>
+        <h1 style="font-size:22px;color:#fff;">📁 자료실 <span style="color:#888;font-weight:400;font-size:13px;">· 구글 드라이브 동기화 + 직접 업로드</span></h1>
+        <p style="color:#888;font-size:13px;">Drive 는 대용량·영구 보관용. 직접 업로드는 일반 공지·양식용 (자동 만료).</p>
+      </div>
+
+      <!-- 직접 업로드 영역 (전 직원) -->
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <h3 style="color:#fff;font-size:14px;margin:0;">📎 직접 업로드 <span style="color:#888;font-weight:400;font-size:11px;">· 10MB↓ 30일 / 10MB↑ 7일 자동 만료</span></h3>
+        </div>
+        <form id="res-upload-form" enctype="multipart/form-data">
+          <div style="display:grid;grid-template-columns:2fr 1.5fr 120px 100px;gap:6px;margin-bottom:6px;">
+            <input type="file" id="res-up-files" multiple required style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+            <input type="text" id="res-up-tags" placeholder="태그, 콤마, 분리 (선택)" style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+            <select id="res-up-days" style="padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+              <option value="">자동 (용량 기준)</option>
+              <option value="7">7일</option>
+              <option value="14">14일</option>
+              <option value="30">30일</option>
+              <option value="60">60일</option>
+            </select>
+            <button type="submit" id="res-up-btn" style="padding:7px 12px;background:#4caf50;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">업로드</button>
+          </div>
+          <input type="text" id="res-up-desc" placeholder="설명 (선택, 공지 내용 등)" maxlength="1000" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+        </form>
+        <div style="color:#666;font-size:10px;margin-top:6px;">※ 최대 50MB · 최대 10개 · 중요 자료는 Drive 에 올리세요 (자동 삭제됨).</div>
+        <div id="res-up-status" style="margin-top:6px;font-size:12px;"></div>
+        <div id="res-uploads-list" style="margin-top:12px;"></div>
       </div>
 
       ${adminSection}
@@ -132,6 +170,87 @@
     if (user.isAdmin) {
       document.getElementById('res-folder-form').addEventListener('submit', submitFolder);
     }
+    document.getElementById('res-upload-form').addEventListener('submit', submitUpload);
+  }
+
+  async function submitUpload(e) {
+    e.preventDefault();
+    const btn = document.getElementById('res-up-btn');
+    const status = document.getElementById('res-up-status');
+    const filesInput = document.getElementById('res-up-files');
+    const tagsInput = document.getElementById('res-up-tags');
+    const daysInput = document.getElementById('res-up-days');
+    const descInput = document.getElementById('res-up-desc');
+
+    const files = filesInput.files;
+    if (!files || !files.length) { status.innerHTML = '<span style="color:#ff8a80;">파일을 선택하세요</span>'; return; }
+
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    if (tagsInput.value.trim()) fd.append('tags', tagsInput.value.trim());
+    if (daysInput.value) fd.append('days', daysInput.value);
+    if (descInput.value.trim()) fd.append('description', descInput.value.trim());
+
+    btn.disabled = true; btn.textContent = '업로드 중...';
+    status.innerHTML = '<span style="color:#888;">⏳ 업로드 중…</span>';
+    try {
+      const r = await fetch('/api/resources/uploads', { method: 'POST', body: fd });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || '업로드 실패');
+      status.innerHTML = `<span style="color:#4caf50;">✓ ${j.data.length}개 업로드 완료</span>`;
+      filesInput.value = ''; tagsInput.value = ''; daysInput.value = ''; descInput.value = '';
+      await refreshUploads();
+      setTimeout(() => { status.innerHTML = ''; }, 3000);
+    } catch (e) {
+      status.innerHTML = `<span style="color:#ff8a80;">❌ ${esc(e.message)}</span>`;
+    } finally {
+      btn.disabled = false; btn.textContent = '업로드';
+    }
+  }
+
+  function renderUploads() {
+    const host = document.getElementById('res-uploads-list');
+    if (!host) return;
+    if (!uploads.length) {
+      host.innerHTML = '<div style="padding:14px;color:#666;font-size:11px;text-align:center;border-top:1px dashed #2a2a4a;">업로드된 파일 없음</div>';
+      return;
+    }
+    host.innerHTML = `
+      <div style="border-top:1px solid #2a2a4a;padding-top:10px;">
+        <div style="color:#fff;font-size:12px;font-weight:600;margin-bottom:6px;">업로드된 파일 ${uploads.length}개</div>
+        ${uploads.map(u => {
+          const canDelete = u.uploadedBy === user.id || user.isAdmin;
+          const tagsHtml = (u.tags || []).map(t => `<span style="color:#81d4fa;">#${esc(t)}</span>`).join(' ');
+          const expiryColor = u.daysLeft <= 3 ? '#ff8a80' : (u.daysLeft <= 7 ? '#ffd54f' : '#81c784');
+          return `
+            <div style="padding:8px 10px;border-bottom:1px solid #2a2a4a;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+              <div style="font-size:22px;min-width:28px;text-align:center;">${iconForMime(u.mimeType)}</div>
+              <div style="flex:1;min-width:180px;">
+                <div style="color:#fff;font-size:13px;"><strong>${esc(u.originalName)}</strong></div>
+                <div style="color:#888;font-size:11px;margin-top:2px;">
+                  ${fmtSize(u.sizeBytes)} · ${esc(u.uploaderName || '?')} · ${dt(u.uploadedAt)}
+                  · <span style="color:${expiryColor};">${u.daysLeft}일 후 만료</span>
+                  ${tagsHtml ? ' · ' + tagsHtml : ''}
+                </div>
+                ${u.description ? `<div style="color:#ccc;font-size:11px;margin-top:2px;">${esc(u.description)}</div>` : ''}
+              </div>
+              <div style="display:flex;gap:4px;">
+                <a href="/api/resources/uploads/${u.id}/download" style="padding:5px 12px;background:#2a4a6a;border-radius:4px;color:#fff;text-decoration:none;font-size:11px;">⬇ 다운로드</a>
+                ${canDelete ? `<button type="button" onclick="pmcResources.deleteUpload(${u.id}, '${esc(u.originalName).replace(/'/g,"\\'")}')" style="padding:5px 10px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑</button>` : ''}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>`;
+  }
+
+  async function deleteUpload(id, name) {
+    if (!confirm(`"${name}" 삭제?`)) return;
+    try {
+      const r = await fetch(`/api/resources/uploads/${id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error((await r.json()).error || '삭제 실패');
+      await refreshUploads();
+    } catch (e) { alert('삭제 실패: ' + e.message); }
   }
 
   function onSearchInput() {
@@ -308,5 +427,6 @@
   window.pmcResources = {
     load, onSearchInput, onFolderFilter, setTagFilter,
     syncFolder, syncAll, toggleFolderActive, deleteFolder, editTags,
+    deleteUpload,
   };
 })();
