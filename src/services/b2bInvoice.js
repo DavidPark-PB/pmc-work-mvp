@@ -863,9 +863,11 @@ class B2BInvoiceService {
     ws.getCell('E19').value = 'Asap after payment';
     ws.getCell('E20').value = 'Republic of Korea';
 
-    // 4) 품목 — 행 23~28 (최대 6개)
+    // 4) 품목 — 행 23~42 (최대 20개; 템플릿 확장 2026-04-24)
     const ITEM_FIRST_ROW = 23;
-    const ITEM_LAST_ROW = 28;
+    const ITEM_LAST_ROW = 42;
+    const SHIPPING_ROW = 43;
+    const TOTAL_ROW = 44;
     const maxItems = ITEM_LAST_ROW - ITEM_FIRST_ROW + 1;
     if ((items || []).length > maxItems) {
       throw new Error(`품목 수 초과 (${items.length}개). 템플릿 최대 ${maxItems}개. 인보이스 분할 필요.`);
@@ -888,22 +890,21 @@ class B2BInvoiceService {
       }
     }
 
-    // 5) 배송 (row 29) — 템플릿 formula 덮어쓰고 flat 금액 주입.
-    //    이전엔 ceil(amount/100) × $100 으로 표시해 수동 입력 금액이 왜곡됨.
-    //    이제 항상 "1 × amount = amount" 로 단순 표기.
+    // 5) 배송 (row 43) — 템플릿 formula 덮어쓰고 flat 금액 주입.
+    //    "1 × amount = amount" 로 단순 표기.
     const shippingAmount = Number(shipping) || 0;
     if (shippingAmount > 0) {
-      ws.getCell('G29').value = 1;
-      ws.getCell('I29').value = shippingAmount;
-      ws.getCell('J29').value = shippingAmount;
+      ws.getCell(`G${SHIPPING_ROW}`).value = 1;
+      ws.getCell(`I${SHIPPING_ROW}`).value = shippingAmount;
+      ws.getCell(`J${SHIPPING_ROW}`).value = shippingAmount;
     } else {
-      ws.getCell('G29').value = null;
-      ws.getCell('I29').value = null;
-      ws.getCell('J29').value = null;
+      ws.getCell(`G${SHIPPING_ROW}`).value = null;
+      ws.getCell(`I${SHIPPING_ROW}`).value = null;
+      ws.getCell(`J${SHIPPING_ROW}`).value = null;
     }
 
-    // 6) TOTAL (row 30) — 템플릿 SUM formula 그대로 둬도 되지만 명시적으로 값도 세팅
-    ws.getCell('J30').value = Number(total) || 0;
+    // 6) TOTAL (row 44) — formula 있지만 명시적으로 값도 세팅
+    ws.getCell(`J${TOTAL_ROW}`).value = Number(total) || 0;
 
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
