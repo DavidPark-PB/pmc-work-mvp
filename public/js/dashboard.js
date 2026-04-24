@@ -7505,8 +7505,15 @@ function b2bOpenManualUpload() {
       </div>
       <div id="b2b-manual-step-2" style="display:none;"></div>
     </div>`;
-  m.addEventListener('click', (e) => { if (e.target === m) b2bCloseManualUpload(); });
   document.body.appendChild(m);
+  // 백드롭 클릭으로 닫히지 않도록 — 작성 중 실수 방지.
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') {
+      if (confirm('작성 중인 내용이 있으면 사라집니다. 닫으시겠어요?')) b2bCloseManualUpload();
+    }
+  };
+  document.addEventListener('keydown', onKey);
+  m._escHandler = onKey;
 
   document.getElementById('b2b-manual-file').addEventListener('change', (ev) => {
     _b2bManualFile = ev.target.files?.[0] || null;
@@ -7517,7 +7524,9 @@ function b2bOpenManualUpload() {
 }
 
 function b2bCloseManualUpload() {
-  document.getElementById('b2b-manual-modal')?.remove();
+  const m = document.getElementById('b2b-manual-modal');
+  if (m?._escHandler) document.removeEventListener('keydown', m._escHandler);
+  m?.remove();
   _b2bManualFile = null;
 }
 
@@ -8005,7 +8014,15 @@ async function b2bOpenAutoInvoice() {
     </div>
   `;
   document.body.appendChild(m);
-  m.addEventListener('click', (e) => { if (e.target === m) b2bCloseAutoInvoice(); });
+  // 백드롭 클릭만으로 닫히지 않게 — 작성 중 실수로 닫혀 데이터 날아가는 문제 방지.
+  // 닫으려면 상단 "닫기" 버튼 또는 ESC.
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') {
+      if (confirm('작성 중인 내용이 있으면 사라집니다. 닫으시겠어요?')) b2bCloseAutoInvoice();
+    }
+  };
+  document.addEventListener('keydown', onKey);
+  m._escHandler = onKey;
   // 만기일 기본: 30일 뒤
   const d = new Date(); d.setDate(d.getDate() + 30);
   document.getElementById('auto-due').value = d.toISOString().slice(0, 10);
@@ -8014,7 +8031,9 @@ async function b2bOpenAutoInvoice() {
 }
 
 function b2bCloseAutoInvoice() {
-  document.getElementById('b2b-auto-modal')?.remove();
+  const m = document.getElementById('b2b-auto-modal');
+  if (m?._escHandler) document.removeEventListener('keydown', m._escHandler);
+  m?.remove();
 }
 
 function b2bAutoSwitchMode(mode) {
