@@ -6327,8 +6327,10 @@ function setupB2BPage() {
       document.getElementById(id).addEventListener('input', b2bRecalcTotal);
     });
 
-    // 인보이스 생성 버튼
-    document.getElementById('b2bCreateBtn').addEventListener('click', b2bCreateInvoice);
+    // 인보이스 / 견적서 생성 버튼
+    document.getElementById('b2bCreateBtn').addEventListener('click', () => b2bCreateInvoice('INVOICE'));
+    const quoteBtn = document.getElementById('b2bCreateQuoteBtn');
+    if (quoteBtn) quoteBtn.addEventListener('click', () => b2bCreateInvoice('QUOTE'));
 
     // 인보이스 목록 필터/새로고침
     document.getElementById('b2bListRefresh').addEventListener('click', loadB2BInvoiceList);
@@ -6530,8 +6532,12 @@ function b2bRecalcTotal() {
 
 // ─── 인보이스 생성 ───
 let _b2bCreating = false;
-async function b2bCreateInvoice() {
+async function b2bCreateInvoice(docType) {
   if (_b2bCreating) return;   // 중복 생성 방지 (더블클릭·빠른 연타)
+
+  const type = String(docType || 'INVOICE').toUpperCase();
+  const isQuote = type === 'QUOTE';
+  const docLabel = isQuote ? '견적서' : '인보이스';
 
   const buyerId = document.getElementById('b2bBuyerSelect').value;
   if (!buyerId) { alert('구매자를 선택하세요'); return; }
@@ -6541,7 +6547,8 @@ async function b2bCreateInvoice() {
   if (items.length === 0) { alert('상품을 1개 이상 추가하세요 (상품명·수량·단가 필수)'); return; }
 
   _b2bCreating = true;
-  const btn = document.getElementById('b2bCreateBtn');
+  const btn = document.getElementById(isQuote ? 'b2bCreateQuoteBtn' : 'b2bCreateBtn');
+  const originalText = btn.textContent;
   btn.disabled = true; btn.textContent = '생성 중...';
 
   try {
@@ -6553,6 +6560,7 @@ async function b2bCreateInvoice() {
       currency: document.getElementById('b2bCurrency').value,
       dueDate: document.getElementById('b2bDueDate').value || undefined,
       notes: document.getElementById('b2bNotes').value,
+      docType: type,
     };
 
     const res = await fetch(`${API}/b2b/invoices`, {
@@ -6566,7 +6574,7 @@ async function b2bCreateInvoice() {
       const inv = data.invoice;
       document.getElementById('b2bCreateResult').innerHTML =
         `<div style="padding:10px;background:#e8f5e9;border-radius:6px;font-size:12px;color:#2e7d32">
-          <strong>${inv.invoiceNo}</strong> 생성 완료! (${inv.currency} ${inv.total.toFixed(2)})
+          <strong>${docLabel} ${inv.invoiceNo}</strong> 생성 완료! (${inv.currency} ${inv.total.toFixed(2)})
           ${inv.driveUrl && inv.driveUrl.startsWith('http') ? `<a href="${inv.driveUrl}" target="_blank" style="margin-left:8px">Drive에서 보기</a>` : ''}
           <a href="${API}/b2b/invoices/${inv.invoiceNo}/download" style="margin-left:8px">다운로드</a>
         </div>`;
@@ -6587,7 +6595,7 @@ async function b2bCreateInvoice() {
       `<div style="padding:10px;background:#ffebee;border-radius:6px;font-size:12px;color:#c62828">${err.message}</div>`;
   } finally {
     _b2bCreating = false;
-    btn.disabled = false; btn.textContent = '인보이스 생성';
+    btn.disabled = false; btn.textContent = originalText;
   }
 }
 
@@ -6614,16 +6622,20 @@ async function loadB2BInvoiceList() {
     }
 
     tbody.innerHTML = invoices.map(inv => {
+      const isQuote = (inv.DocType || (inv.InvoiceNo && inv.InvoiceNo.startsWith('Q-') ? 'QUOTE' : 'INVOICE')).toUpperCase() === 'QUOTE';
+      const docBadge = isQuote
+        ? `<span style="background:#7c4dff;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;margin-right:4px;">📋 견적</span>`
+        : '';
       const statusColor = inv.Status === 'PAID' ? '#27ae60' : inv.Status === 'FULFILLED' ? '#2e7d32' : inv.Status === 'PARTIALLY_SHIPPED' ? '#f39c12' : inv.Status === 'SENT' ? '#f39c12' : '#888';
       const paidAmt = Number(inv.PaidAmount || 0);
       const total = Number(inv.Total || 0);
       const paidPct = total > 0 ? Math.round((paidAmt / total) * 100) : 0;
       const paidStatus = inv.PaymentStatus || (inv.Status === 'PAID' ? 'PAID' : 'UNPAID');
       const payColor = paidStatus === 'PAID' ? '#27ae60' : paidStatus === 'PARTIAL' ? '#f39c12' : '#888';
-      const overdueBadge = inv.IsOverdue ? `<span style="background:#c62828;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;margin-left:4px;">⏰ 연체</span>` : '';
-      const paidBadge = `<span style="background:${payColor};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600;">💰 ${paidPct}%</span>`;
-      return `<tr${inv.IsOverdue ? ' style="background:#fff5f5;"' : ''}>
-        <td style="font-weight:600">${inv.InvoiceNo}</td>
+      const overdueBadge = (!isQuote && inv.IsOverdue) ? `<span style="background:#c62828;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:700;margin-left:4px;">⏰ 연체</span>` : '';
+      const paidBadge = isQuote ? '' : `<span style="background:${payColor};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600;">💰 ${paidPct}%</span>`;
+      return `<tr${inv.IsOverdue && !isQuote ? ' style="background:#fff5f5;"' : ''}>
+        <td style="font-weight:600">${docBadge}${inv.InvoiceNo}</td>
         <td>${inv.BuyerName}</td>
         <td>${inv.Date}</td>
         <td>${inv.DueDate}${overdueBadge}</td>

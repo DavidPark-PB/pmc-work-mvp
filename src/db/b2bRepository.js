@@ -238,6 +238,7 @@ class B2BRepository {
       total: parseFloat(invoice.Total || invoice.total) || 0,
       currency: invoice.Currency || invoice.currency || 'USD',
       status: invoice.Status || invoice.status || 'CREATED',
+      doc_type: (invoice.DocType || invoice.docType || 'INVOICE').toUpperCase(),
       drive_file_id: invoice.DriveFileId || invoice.driveFileId || '',
       drive_url: invoice.DriveUrl || invoice.driveUrl || '',
       sent_via: invoice.SentVia || invoice.sentVia || '',
@@ -248,7 +249,19 @@ class B2BRepository {
       .from('b2b_invoices')
       .upsert(row, { onConflict: 'invoice_no' })
       .select();
-    if (error) throw error;
+    if (error) {
+      // doc_type 컬럼 없는 구버전 DB 호환 — 마이그레이션 032 미적용 시 재시도
+      if (error.code === '42703' && /doc_type/.test(error.message || '')) {
+        const { doc_type, ...legacy } = row;
+        const { data: d2, error: e2 } = await this.db
+          .from('b2b_invoices')
+          .upsert(legacy, { onConflict: 'invoice_no' })
+          .select();
+        if (e2) throw e2;
+        return d2?.[0];
+      }
+      throw error;
+    }
     return data?.[0];
   }
 
@@ -278,7 +291,7 @@ class B2BRepository {
   async getRevenueSummary() {
     const { data, error } = await this.db
       .from('b2b_invoices')
-      .select('buyer_id, buyer_name, total, currency, status, voided_at')
+      .select('buyer_id, buyer_name, total, currency, status, voided_at, doc_type, invoice_no')
       .is('voided_at', null);
     if (error && error.code !== '42703') throw error;
 
@@ -286,6 +299,9 @@ class B2BRepository {
     const buyerMap = {};
 
     (data || []).forEach(inv => {
+      // 견적서는 매출 집계 제외
+      const docType = (inv.doc_type || (inv.invoice_no && inv.invoice_no.startsWith('Q-') ? 'QUOTE' : 'INVOICE')).toUpperCase();
+      if (docType === 'QUOTE') return;
       const amount = parseFloat(inv.total) || 0;
       if (inv.currency === 'KRW') totalKRW += amount;
       else totalUSD += amount;
@@ -481,6 +497,7 @@ class B2BRepository {
       Total: r.total,
       Currency: r.currency,
       Status: r.status,
+      DocType: r.doc_type || (r.invoice_no && r.invoice_no.startsWith('Q-') ? 'QUOTE' : 'INVOICE'),
       DriveFileId: r.drive_file_id,
       DriveUrl: r.drive_url,
       SentVia: r.sent_via,

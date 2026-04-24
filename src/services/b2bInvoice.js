@@ -187,12 +187,14 @@ class B2BInvoiceService {
   // ────────────────────── 인보이스 생성 ──────────────────────
 
   /**
-   * 다음 인보이스 번호 생성 (INV-2026-0001 형식)
+   * 다음 문서 번호 생성.
+   *   docType='INVOICE' (기본) → INV-2026-0001
+   *   docType='QUOTE'          → Q-2026-0001
    */
-  async _getNextInvoiceNo() {
+  async _getNextInvoiceNo(docType = 'INVOICE') {
     const rows = await this.sheets.readData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A:A`);
     const year = new Date().getFullYear();
-    const prefix = `INV-${year}-`;
+    const prefix = String(docType).toUpperCase() === 'QUOTE' ? `Q-${year}-` : `INV-${year}-`;
 
     let maxNum = 0;
     if (rows) {
@@ -225,17 +227,20 @@ class B2BInvoiceService {
     const buyer = buyers.find(b => b.BuyerID === data.buyerId);
     if (!buyer) throw new Error(`구매자 ${data.buyerId} 없음`);
 
-    // 2. 인보이스 번호 생성
-    const invoiceNo = await this._getNextInvoiceNo();
+    const docType = String(data.docType || 'INVOICE').toUpperCase();
+    const isQuote = docType === 'QUOTE';
+
+    // 2. 문서 번호 생성
+    const invoiceNo = await this._getNextInvoiceNo(docType);
     const today = new Date();
     const invoiceDate = today.toISOString().split('T')[0];
 
-    // 만기일: dueDate 지정 또는 PaymentTerms에서 계산
+    // 만기일/유효일: dueDate 지정 또는 PaymentTerms에서 계산. 견적서는 기본 14일.
     let dueDate = data.dueDate;
     if (!dueDate) {
-      const netDays = parseInt((buyer.PaymentTerms || '').replace(/\D/g, ''), 10) || 30;
+      const defaultDays = isQuote ? 14 : (parseInt((buyer.PaymentTerms || '').replace(/\D/g, ''), 10) || 30);
       const due = new Date(today);
-      due.setDate(due.getDate() + netDays);
+      due.setDate(due.getDate() + defaultDays);
       dueDate = due.toISOString().split('T')[0];
     }
 
@@ -253,11 +258,13 @@ class B2BInvoiceService {
     const total = subtotal + tax + shipping;
     const currency = data.currency || buyer.Currency || 'USD';
 
-    // 4. Excel 인보이스 생성
+    // 4. Excel 인보이스/견적서 생성
     const xlsxBuffer = await this._buildInvoiceXlsx({
       invoiceNo, invoiceDate, dueDate,
       buyer, items, subtotal, tax, shipping, total, currency,
       notes: data.notes || '',
+      docType,
+      validUntil: isQuote ? dueDate : undefined,
     });
 
     // 5. Drive 업로드 시도 — 실패 시 API 다운로드 엔드포인트로 fallback.
@@ -318,6 +325,7 @@ class B2BInvoiceService {
         Total: total,
         Currency: currency,
         Status: 'CREATED',
+        DocType: docType,
         DriveFileId: driveFileId,
         DriveUrl: driveUrl,
       });
@@ -325,10 +333,13 @@ class B2BInvoiceService {
       console.warn('[B2B] Supabase 동기화 실패 (마이그레이션 미적용?):', err.message);
     }
 
-    // 7. 구매자 통계 업데이트 (TotalOrders, TotalRevenue)
-    await this._updateBuyerStats(data.buyerId);
+    // 7. 구매자 통계 업데이트 — 견적서는 매출 집계 제외
+    if (!isQuote) {
+      await this._updateBuyerStats(data.buyerId);
+    }
 
-    console.log(`✅ 인보이스 생성 완료: ${invoiceNo} → ${buyer.Name} (${currency} ${total.toFixed(2)})`);
+    const docLabel = isQuote ? '견적서' : '인보이스';
+    console.log(`✅ ${docLabel} 생성 완료: ${invoiceNo} → ${buyer.Name} (${currency} ${total.toFixed(2)})`);
 
     return {
       invoiceNo,
@@ -343,6 +354,7 @@ class B2BInvoiceService {
       total,
       currency,
       status: 'CREATED',
+      docType,
       driveFileId,
       driveUrl,
       xlsxBuffer,
@@ -465,6 +477,7 @@ class B2BInvoiceService {
       currency: invoiceCurrency,
       dueDate: data.dueDate,
       notes,
+      docType: data.docType || 'INVOICE',
     });
   }
 
@@ -472,7 +485,7 @@ class B2BInvoiceService {
    * Excel 인보이스 빌드 — MASTER 템플릿(templates/b2b_invoice_master.xlsx) 로드 후 데이터 주입.
    * CCOREA 로고·서식·폰트·테두리는 템플릿에서 상속. 양식 변경 시 xlsx 파일만 교체하면 됨.
    */
-  async _buildInvoiceXlsx({ invoiceNo, invoiceDate, dueDate, buyer, items, subtotal, tax, shipping, total, currency, notes }) {
+  async _buildInvoiceXlsx({ invoiceNo, invoiceDate, dueDate, buyer, items, subtotal, tax, shipping, total, currency, notes, docType = 'INVOICE', validUntil }) {
     const fs = require('fs');
     const templatePath = path.join(__dirname, '../../templates/b2b_invoice_master.xlsx');
     if (!fs.existsSync(templatePath)) {
@@ -484,6 +497,8 @@ class B2BInvoiceService {
     const ws = workbook.getWorksheet('MASTER');
     if (!ws) throw new Error('MASTER 시트를 템플릿에서 찾을 수 없습니다');
 
+    const isQuote = String(docType).toUpperCase() === 'QUOTE';
+
     // 날짜 포맷: "2026-04-22" → "Apr.22,2026"
     const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const formatDate = iso => {
@@ -493,7 +508,13 @@ class B2BInvoiceService {
       return `${MONTHS[d.getMonth()]}.${d.getDate()},${d.getFullYear()}`;
     };
 
-    // 1) 바이어 정보 (B7~B11)
+    // 0) 문서 타입 — 템플릿의 "INVOICE" 제목을 견적서일 때 교체 (B5:K6 merged)
+    if (isQuote) {
+      ws.getCell('B5').value = ' QUOTATION';
+    }
+
+    // 1) 바이어 정보 (B7~B11) — B컬럼이 5.43 로 좁아서 긴 주소가 올바로 안보임.
+    //    B:F 로 확장 merge + wrapText 로 안정적 렌더.
     const emailPhone = [buyer.Email, buyer.Phone || buyer.WhatsApp].filter(Boolean).join(' / ');
     ws.getCell('B7').value = `Messrs. :${buyer.Name || ''}`;
     ws.getCell('B8').value = buyer.Address || '';
@@ -504,14 +525,31 @@ class B2BInvoiceService {
     ws.getCell('B10').value = vatMatch  ? `VAT: ${vatMatch[1]}`   : '';
     ws.getCell('B11').value = eoriMatch ? `EORI: ${eoriMatch[1]}` : '';
 
-    // 2) 인보이스 번호 (I7:J7 merged)
+    // B7, B8, B9, B11 을 B:F 로 merge + wrap (B10 은 템플릿상 이미 B:C merge — 건너뜀)
+    for (const r of [7, 8, 9, 11]) {
+      const range = `B${r}:F${r}`;
+      try { ws.unMergeCells(range); } catch {}
+      try { ws.mergeCells(range); } catch {}
+      const c = ws.getCell(`B${r}`);
+      c.alignment = { ...(c.alignment || {}), wrapText: true, vertical: 'middle', horizontal: 'left' };
+    }
+    // 긴 주소가 잘리지 않도록 B8 행 높이 확장 (최소 28)
+    const row8 = ws.getRow(8);
+    if (!row8.height || row8.height < 28) row8.height = 28;
+
+    // 2) 인보이스/견적서 번호 (I7:J7 merged)
     ws.getCell('I7').value = invoiceNo;
 
     // 3) 조건 (E열 = 값, D = ':' , C = 라벨)
     ws.getCell('E15').value = formatDate(invoiceDate);
     ws.getCell('E16').value = 'FOB';
     ws.getCell('E17').value = 'Export Standard Packing';
-    ws.getCell('E18').value = buyer.PaymentTerms || '100% T/T in advance';
+    if (isQuote) {
+      ws.getCell('C18').value = 'Validity';
+      ws.getCell('E18').value = validUntil ? formatDate(validUntil) : 'Within 14 days';
+    } else {
+      ws.getCell('E18').value = buyer.PaymentTerms || '100% T/T in advance';
+    }
     ws.getCell('E19').value = 'Asap after payment';
     ws.getCell('E20').value = 'Republic of Korea';
 
