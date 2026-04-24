@@ -863,35 +863,43 @@ class B2BInvoiceService {
     ws.getCell('E19').value = 'Asap after payment';
     ws.getCell('E20').value = 'Republic of Korea';
 
-    // 4) 품목 — 행 23~42 (최대 20개; 템플릿 확장 2026-04-24)
+    // 4) 품목 — 템플릿상 기본 20행(23~42). 실제 품목 수만큼만 채우고
+    //    남는 빈 행은 splice 로 삭제해서 shipping/TOTAL 이 마지막 품목 바로 밑에 붙음.
     const ITEM_FIRST_ROW = 23;
-    const ITEM_LAST_ROW = 42;
-    const SHIPPING_ROW = 43;
-    const TOTAL_ROW = 44;
-    const maxItems = ITEM_LAST_ROW - ITEM_FIRST_ROW + 1;
-    if ((items || []).length > maxItems) {
-      throw new Error(`품목 수 초과 (${items.length}개). 템플릿 최대 ${maxItems}개. 인보이스 분할 필요.`);
+    const TEMPLATE_ITEM_LAST_ROW = 42;
+    const TEMPLATE_MAX_ITEMS = TEMPLATE_ITEM_LAST_ROW - ITEM_FIRST_ROW + 1; // 20
+    const itemList = items || [];
+    if (itemList.length > TEMPLATE_MAX_ITEMS) {
+      throw new Error(`품목 수 초과 (${itemList.length}개). 템플릿 최대 ${TEMPLATE_MAX_ITEMS}개. 인보이스 분할 필요.`);
     }
-    for (let i = 0; i < maxItems; i++) {
+    const itemCount = Math.max(1, itemList.length); // 최소 1행 유지 (Shipping/TOTAL 스타일 보존)
+
+    // 1. 품목 데이터 기입 — 1..itemCount 행만
+    for (let i = 0; i < itemCount; i++) {
       const row = ITEM_FIRST_ROW + i;
-      const it = items[i];
+      const it = itemList[i];
+      ws.getCell(`B${row}`).value = i + 1; // NO. 자동 번호
       if (it) {
-        ws.getCell(`C${row}`).value = it.name || it.sku || '';    // C:F merged
-        ws.getCell(`G${row}`).value = Number(it.qty) || 0;        // G:H merged
+        ws.getCell(`C${row}`).value = it.name || it.sku || '';
+        ws.getCell(`G${row}`).value = Number(it.qty) || 0;
         ws.getCell(`I${row}`).value = Number(it.price) || 0;
         const itemTotal = Number(it.total) || (Number(it.qty) || 0) * (Number(it.price) || 0);
         ws.getCell(`J${row}`).value = itemTotal;
-      } else {
-        // 빈 행 — NO. 열(B)은 템플릿 값 유지, 값 셀만 비움
-        ws.getCell(`C${row}`).value = '';
-        ws.getCell(`G${row}`).value = '';
-        ws.getCell(`I${row}`).value = '';
-        ws.getCell(`J${row}`).value = '';
       }
     }
 
-    // 5) 배송 (row 43) — 템플릿 formula 덮어쓰고 flat 금액 주입.
-    //    "1 × amount = amount" 로 단순 표기.
+    // 2. 남는 빈 행 제거 — shipping/TOTAL 이 위로 올라옴
+    const rowsToRemove = TEMPLATE_MAX_ITEMS - itemCount;
+    if (rowsToRemove > 0) {
+      ws.spliceRows(ITEM_FIRST_ROW + itemCount, rowsToRemove);
+    }
+
+    // 이제 shipping / TOTAL 의 실제 행 번호
+    const SHIPPING_ROW = ITEM_FIRST_ROW + itemCount;         // 마지막 품목 + 1
+    const TOTAL_ROW = SHIPPING_ROW + 1;
+
+    // 3. Shipping 행 NO. 컬럼 (B) 자동 번호 + 금액 주입 ("1 × amount = amount")
+    ws.getCell(`B${SHIPPING_ROW}`).value = itemCount + 1;
     const shippingAmount = Number(shipping) || 0;
     if (shippingAmount > 0) {
       ws.getCell(`G${SHIPPING_ROW}`).value = 1;
@@ -903,8 +911,12 @@ class B2BInvoiceService {
       ws.getCell(`J${SHIPPING_ROW}`).value = null;
     }
 
-    // 6) TOTAL (row 44) — formula 있지만 명시적으로 값도 세팅
+    // 4. TOTAL 행 — formula 는 spliceRows 후에도 참조 범위가 자동 갱신되지만
+    //    명시적 값으로 세팅해 안전하게.
     ws.getCell(`J${TOTAL_ROW}`).value = Number(total) || 0;
+    // 총 수량 G 셀 — 남아있는 formula 가 있을 수 있으므로 합계 직접 주입
+    const totalQty = itemList.reduce((s, it) => s + (Number(it?.qty) || 0), 0);
+    if (totalQty > 0) ws.getCell(`G${TOTAL_ROW}`).value = totalQty;
 
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
