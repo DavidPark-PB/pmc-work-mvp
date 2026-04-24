@@ -415,8 +415,12 @@ class B2BInvoiceService {
     const buyer = buyers.find(b => b.BuyerID === data.buyerId);
     if (!buyer) throw new Error(`구매자 ${data.buyerId} 없음`);
 
-    const shippingRule = (buyer.ShippingRule && Object.keys(buyer.ShippingRule).length > 0)
-      ? buyer.ShippingRule
+    // 배송 규칙: buyer 저장값 → override (이번 인보이스만) → 기본값 순
+    const sr = (data.shippingRuleOverride && typeof data.shippingRuleOverride === 'object' && Object.keys(data.shippingRuleOverride).length > 0)
+      ? data.shippingRuleOverride
+      : buyer.ShippingRule;
+    const shippingRule = (sr && Object.keys(sr).length > 0)
+      ? sr
       : { perBoxes: 30, rate: 120, currency: 'USD' };
 
     let items = [];
@@ -505,6 +509,24 @@ class B2BInvoiceService {
       if (shipping > 0) {
         memoExtra.push(`배송비 = ${perBoxes}박스 × ${chunks}묶음 (${totalBoxes}박스)`);
       }
+    }
+
+    // 추가 수수료 라인 — 각 수수료는 qty=1 라인아이템으로 품목 뒤에 추가됨.
+    //   data.extraFees: [{ name: string, amount: number }]
+    const extraFees = Array.isArray(data.extraFees) ? data.extraFees : [];
+    for (const fee of extraFees) {
+      const name = String(fee?.name || '').trim();
+      const amount = Number(fee?.amount);
+      if (!name || !Number.isFinite(amount) || amount === 0) continue;
+      items.push({ sku: '', name, qty: 1, price: amount });
+      memoExtra.push(`수수료: ${name} ${amount.toFixed(2)}`);
+    }
+
+    // 할인 — 마지막 라인아이템으로 음수 price 추가. 0/미입력 시 스킵.
+    const discount = Number(data.discount);
+    if (Number.isFinite(discount) && discount > 0) {
+      items.push({ sku: '', name: 'Discount', qty: 1, price: -discount });
+      memoExtra.push(`할인 ${discount.toFixed(2)}`);
     }
 
     const notes = [data.notes, ...memoExtra].filter(Boolean).join(' · ');

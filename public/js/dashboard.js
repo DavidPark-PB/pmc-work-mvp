@@ -7924,6 +7924,18 @@ let _autoCatalogTabs = null;
 let _autoCatalogCache = {};
 let _autoLines = [];
 let _autoBuyers = [];
+let _autoShippingRule = null;   // {perBoxes, rate, currency} — override for this invoice only
+let _autoExtraFees = [];        // [{name, amount}]
+let _autoDiscount = 0;
+const B2B_DRAFT_KEY = 'b2bAutoDraft-v1';
+
+function b2bAutoPresets() {
+  return [
+    { label: 'USD 100 / 30박스', perBoxes: 30, rate: 100, currency: 'USD' },
+    { label: 'USD 120 / 30박스', perBoxes: 30, rate: 120, currency: 'USD' },
+    { label: 'KRW 130,000 / 30박스', perBoxes: 30, rate: 130000, currency: 'KRW' },
+  ];
+}
 
 async function b2bOpenAutoInvoice() {
   if (!_autoBuyers.length) {
@@ -7943,6 +7955,9 @@ async function b2bOpenAutoInvoice() {
   }
 
   _autoLines = [];
+  _autoShippingRule = null;
+  _autoExtraFees = [];
+  _autoDiscount = 0;
   const existing = document.getElementById('b2b-auto-modal');
   if (existing) existing.remove();
 
@@ -7956,7 +7971,7 @@ async function b2bOpenAutoInvoice() {
         <button type="button" onclick="b2bCloseAutoInvoice()" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">닫기</button>
       </div>
 
-      <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:10px;">
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-bottom:8px;">
         <div>
           <label style="font-size:11px;color:#aaa;">거래처</label>
           <select id="auto-buyer" onchange="b2bAutoOnBuyerChange()" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
@@ -7968,9 +7983,25 @@ async function b2bOpenAutoInvoice() {
           <label style="font-size:11px;color:#aaa;">만기일</label>
           <input type="date" id="auto-due" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
         </div>
-        <div>
-          <label style="font-size:11px;color:#aaa;">배송비 규칙</label>
-          <div id="auto-shipping-info" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#ffb74d;font-size:11px;min-height:32px;line-height:16px;">거래처 선택 후 표시</div>
+      </div>
+
+      <!-- 배송비 규칙 (이번 인보이스용) -->
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;padding:8px 10px;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:11px;color:#ffb74d;font-weight:600;">🚚 배송비 규칙:</span>
+          <select id="auto-sr-ccy" onchange="b2bAutoSrChange()" style="padding:4px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+            <option value="USD">USD</option>
+            <option value="KRW">KRW</option>
+            <option value="EUR">EUR</option>
+          </select>
+          <input type="number" id="auto-sr-rate" min="0" step="1" onchange="b2bAutoSrChange()" style="width:90px;padding:4px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;text-align:right;">
+          <span style="color:#888;font-size:11px;">/</span>
+          <input type="number" id="auto-sr-boxes" min="1" step="1" onchange="b2bAutoSrChange()" style="width:60px;padding:4px 6px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;text-align:right;">
+          <span style="color:#888;font-size:11px;">박스</span>
+          <span id="auto-sr-default-tag" style="margin-left:8px;color:#81c784;font-size:10px;"></span>
+        </div>
+        <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">
+          ${b2bAutoPresets().map((p, i) => `<button type="button" onclick="b2bAutoSrPreset(${i})" style="padding:3px 10px;background:#2a4a6a;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">${p.label}</button>`).join('')}
         </div>
       </div>
 
@@ -8000,12 +8031,27 @@ async function b2bOpenAutoInvoice() {
         <div style="padding:20px;text-align:center;color:#666;font-size:12px;">거래처를 선택하면 미정산 주문이 표시됩니다.</div>
       </div>
 
+      <!-- 추가 수수료 + 할인 -->
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;padding:8px 10px;margin-top:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <span style="font-size:11px;color:#81c784;font-weight:600;">💰 추가 수수료 / 할인</span>
+          <button type="button" onclick="b2bAutoAddFee()" style="padding:3px 10px;background:#2a4a6a;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">+ 수수료 추가</button>
+        </div>
+        <div id="auto-fees" style="margin-bottom:6px;"></div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:11px;color:#e94560;font-weight:600;min-width:40px;">할인</span>
+          <input type="number" id="auto-discount" min="0" step="0.01" placeholder="0" oninput="b2bAutoRecalc()" style="width:140px;padding:4px 8px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;text-align:right;">
+          <span style="color:#888;font-size:10px;">총액에서 차감 (통화는 배송비 규칙과 동일)</span>
+        </div>
+      </div>
+
       <!-- 합계 + 생성 -->
       <div style="margin-top:10px;padding:10px;background:#0f0f23;border-radius:6px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
         <div id="auto-summary" style="color:#ccc;font-size:13px;">합계: -</div>
         <div style="display:flex;gap:6px;align-items:center;">
           <label style="color:#aaa;font-size:11px;cursor:pointer;"><input type="checkbox" id="auto-ship-override" onchange="b2bAutoRecalc()"> 배송비 수동 입력</label>
           <input type="number" id="auto-ship-amount" step="1" placeholder="배송비" style="display:none;padding:5px 8px;width:100px;background:#1a1a2e;border:1px solid #555;border-radius:4px;color:#fff;font-size:12px;" oninput="b2bAutoRecalc()">
+          <button type="button" id="auto-draft-btn" onclick="b2bAutoSaveDraft()" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">💾 임시저장</button>
           <button type="button" id="auto-create-btn" onclick="b2bAutoCreateInvoice()" style="padding:8px 18px;background:#2e7d32;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">생성</button>
         </div>
       </div>
@@ -8018,7 +8064,7 @@ async function b2bOpenAutoInvoice() {
   // 닫으려면 상단 "닫기" 버튼 또는 ESC.
   const onKey = (ev) => {
     if (ev.key === 'Escape') {
-      if (confirm('작성 중인 내용이 있으면 사라집니다. 닫으시겠어요?')) b2bCloseAutoInvoice();
+      if (confirm('작성 중인 내용이 있으면 사라집니다. 닫으시겠어요?\n(임시저장 해두면 다음에 이어서 작성할 수 있어요)')) b2bCloseAutoInvoice();
     }
   };
   document.addEventListener('keydown', onKey);
@@ -8028,12 +8074,102 @@ async function b2bOpenAutoInvoice() {
   document.getElementById('auto-due').value = d.toISOString().slice(0, 10);
 
   if ((_autoCatalogTabs || []).length > 0) b2bAutoLoadCatalog();
+
+  // 임시저장된 작업 있으면 복원 제안
+  const draft = b2bAutoLoadDraft();
+  if (draft) {
+    const savedAt = new Date(draft.savedAt).toLocaleString('ko-KR');
+    const buyerName = (_autoBuyers.find(b => b.BuyerID === draft.buyerId)?.Name) || draft.buyerId || '(미선택)';
+    const lineCount = (draft.lines || []).length;
+    const feeCount = (draft.extraFees || []).length;
+    if (confirm(`💾 임시저장된 작업이 있습니다.\n\n저장 시각: ${savedAt}\n거래처: ${buyerName}\n품목 ${lineCount}개 · 수수료 ${feeCount}개\n\n복원하시겠어요?\n\n(취소 = 새로 시작, 임시저장본 유지됨)`)) {
+      b2bAutoRestoreDraft(draft);
+    }
+  }
 }
 
 function b2bCloseAutoInvoice() {
   const m = document.getElementById('b2b-auto-modal');
   if (m?._escHandler) document.removeEventListener('keydown', m._escHandler);
   m?.remove();
+}
+
+// 임시저장 — localStorage 에 현재 폼 상태 직렬화. 새 모달 열 때 restore 제안.
+function b2bAutoSaveDraft() {
+  const draft = {
+    savedAt: new Date().toISOString(),
+    buyerId: document.getElementById('auto-buyer')?.value || '',
+    dueDate: document.getElementById('auto-due')?.value || '',
+    shippingRule: _autoShippingRule,
+    shippingOverride: {
+      enabled: !!document.getElementById('auto-ship-override')?.checked,
+      amount: Number(document.getElementById('auto-ship-amount')?.value) || 0,
+    },
+    lines: _autoLines,
+    extraFees: _autoExtraFees,
+    discount: Number(document.getElementById('auto-discount')?.value) || 0,
+    modeOrders: document.getElementById('auto-pane-orders')?.style.display !== 'none',
+  };
+  try {
+    localStorage.setItem(B2B_DRAFT_KEY, JSON.stringify(draft));
+    const btn = document.getElementById('auto-draft-btn');
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = '✓ 저장됨';
+      btn.style.background = '#4caf50';
+      setTimeout(() => { btn.textContent = orig; btn.style.background = '#7c4dff'; }, 1800);
+    }
+  } catch (e) {
+    alert('임시저장 실패: ' + e.message);
+  }
+}
+
+function b2bAutoLoadDraft() {
+  try {
+    const raw = localStorage.getItem(B2B_DRAFT_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+function b2bAutoClearDraft() {
+  try { localStorage.removeItem(B2B_DRAFT_KEY); } catch {}
+}
+
+function b2bAutoRestoreDraft(draft) {
+  if (!draft) return;
+  const buyerSel = document.getElementById('auto-buyer');
+  if (buyerSel && draft.buyerId) buyerSel.value = draft.buyerId;
+  const due = document.getElementById('auto-due');
+  if (due && draft.dueDate) due.value = draft.dueDate;
+
+  if (draft.shippingRule) {
+    _autoShippingRule = draft.shippingRule;
+    document.getElementById('auto-sr-ccy').value = draft.shippingRule.currency || 'USD';
+    document.getElementById('auto-sr-rate').value = draft.shippingRule.rate || 120;
+    document.getElementById('auto-sr-boxes').value = draft.shippingRule.perBoxes || 30;
+    const tag = document.getElementById('auto-sr-default-tag');
+    if (tag) tag.textContent = '(임시저장 복원)';
+  }
+
+  _autoLines = Array.isArray(draft.lines) ? draft.lines : [];
+  _autoExtraFees = Array.isArray(draft.extraFees) ? draft.extraFees : [];
+  _autoDiscount = Number(draft.discount) || 0;
+
+  const discEl = document.getElementById('auto-discount');
+  if (discEl) discEl.value = _autoDiscount || '';
+
+  const chk = document.getElementById('auto-ship-override');
+  const amt = document.getElementById('auto-ship-amount');
+  if (chk && draft.shippingOverride?.enabled) {
+    chk.checked = true;
+    if (amt) amt.value = draft.shippingOverride.amount || 0;
+  }
+
+  b2bAutoRenderLines();
+  b2bAutoRenderFees();
+  b2bAutoOnBuyerChange(); // buyer 자동 트리거 (shipping 표시 갱신)
+  if (draft.modeOrders) b2bAutoSwitchMode('orders');
 }
 
 function b2bAutoSwitchMode(mode) {
@@ -8056,18 +8192,68 @@ function b2bAutoSwitchMode(mode) {
 
 async function b2bAutoOnBuyerChange() {
   const bid = document.getElementById('auto-buyer').value;
-  const info = document.getElementById('auto-shipping-info');
-  if (!bid) { info.textContent = '거래처 선택 후 표시'; info.style.color = '#888'; return; }
-  const buyer = _autoBuyers.find(b => b.BuyerID === bid);
-  const sr = buyer?.ShippingRule || {};
-  const perBoxes = sr.perBoxes || 30;
-  const rate = sr.rate || 120;
-  const ccy = sr.currency || 'USD';
-  info.style.color = '#ffb74d';
-  info.innerHTML = `<strong>${ccy} ${Number(rate).toLocaleString('ko-KR')}</strong> / ${perBoxes}박스`;
-  // 주문 탭 열려있으면 재로드
+  const buyer = bid ? _autoBuyers.find(b => b.BuyerID === bid) : null;
+  const sr = buyer?.ShippingRule || { perBoxes: 30, rate: 120, currency: 'USD' };
+  // 사용자가 아직 override 안 했으면 buyer 값으로 UI 세팅
+  if (!_autoShippingRule) {
+    document.getElementById('auto-sr-ccy').value = sr.currency || 'USD';
+    document.getElementById('auto-sr-rate').value = sr.rate || 120;
+    document.getElementById('auto-sr-boxes').value = sr.perBoxes || 30;
+    const tag = document.getElementById('auto-sr-default-tag');
+    if (tag) tag.textContent = buyer ? `(거래처 기본값)` : '';
+  }
   if (document.getElementById('auto-pane-orders').style.display !== 'none') b2bAutoLoadBuyerOrders();
   b2bAutoRecalc();
+}
+
+function b2bAutoSrChange() {
+  _autoShippingRule = {
+    currency: document.getElementById('auto-sr-ccy').value,
+    rate: Number(document.getElementById('auto-sr-rate').value) || 0,
+    perBoxes: Math.max(1, parseInt(document.getElementById('auto-sr-boxes').value, 10) || 30),
+  };
+  const tag = document.getElementById('auto-sr-default-tag');
+  if (tag) tag.textContent = '(이번 인보이스만 변경)';
+  b2bAutoRecalc();
+}
+
+function b2bAutoSrPreset(idx) {
+  const p = b2bAutoPresets()[idx];
+  if (!p) return;
+  document.getElementById('auto-sr-ccy').value = p.currency;
+  document.getElementById('auto-sr-rate').value = p.rate;
+  document.getElementById('auto-sr-boxes').value = p.perBoxes;
+  b2bAutoSrChange();
+}
+
+function b2bAutoAddFee() {
+  _autoExtraFees.push({ name: '', amount: 0 });
+  b2bAutoRenderFees();
+}
+
+function b2bAutoRemoveFee(idx) {
+  _autoExtraFees.splice(idx, 1);
+  b2bAutoRenderFees();
+  b2bAutoRecalc();
+}
+
+function b2bAutoUpdateFee(idx, field, value) {
+  if (!_autoExtraFees[idx]) return;
+  _autoExtraFees[idx][field] = field === 'amount' ? (Number(value) || 0) : value;
+  b2bAutoRecalc();
+}
+
+function b2bAutoRenderFees() {
+  const host = document.getElementById('auto-fees');
+  if (!host) return;
+  if (_autoExtraFees.length === 0) { host.innerHTML = ''; return; }
+  host.innerHTML = _autoExtraFees.map((f, i) => `
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
+      <input type="text" value="${(f.name || '').replace(/"/g,'&quot;')}" oninput="b2bAutoUpdateFee(${i}, 'name', this.value)" placeholder="수수료 항목명 (예: 환전 수수료)" style="flex:1;padding:4px 8px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+      <input type="number" value="${f.amount}" step="0.01" oninput="b2bAutoUpdateFee(${i}, 'amount', this.value)" placeholder="금액" style="width:120px;padding:4px 8px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;text-align:right;">
+      <button type="button" onclick="b2bAutoRemoveFee(${i})" style="padding:3px 8px;background:transparent;border:0;color:#e94560;cursor:pointer;font-size:13px;">×</button>
+    </div>
+  `).join('');
 }
 
 async function b2bAutoLoadCatalog() {
@@ -8155,15 +8341,19 @@ function b2bAutoRenderLines() {
 function b2bAutoRecalc() {
   const buyerId = document.getElementById('auto-buyer')?.value;
   const buyer = _autoBuyers.find(b => b.BuyerID === buyerId);
-  const sr = buyer?.ShippingRule || {};
+  // UI 가 override 모드면 UI 값, 아니면 buyer 기본값 사용
+  const uiRule = _autoShippingRule;
+  const sr = uiRule || buyer?.ShippingRule || { perBoxes: 30, rate: 120, currency: 'USD' };
   const perBoxes = sr.perBoxes || 30;
-  const rate = sr.rate || 120;
-  const ccy = sr.currency || 'USD';
+  const rate = Number(sr.rate) || 0;
+  const ccy = String(sr.currency || 'USD').toUpperCase();
 
-  // 카탈로그 모드에서는 _autoLines에서 합계 계산 (USD 기반)
+  const discount = Math.max(0, Number(document.getElementById('auto-discount')?.value) || 0);
+  const feesTotal = _autoExtraFees.reduce((s, f) => s + (Number(f.amount) || 0), 0);
+
+  // 주문 모드
   const isOrders = document.getElementById('auto-pane-orders')?.style.display !== 'none';
   if (isOrders) {
-    // 주문 모드 합계는 체크된 주문에서
     const checks = document.querySelectorAll('#auto-pane-orders input[type="checkbox"]:checked');
     let subTotal = 0; let count = 0; let ccyOrd = '';
     checks.forEach(cb => {
@@ -8171,13 +8361,14 @@ function b2bAutoRecalc() {
       ccyOrd = ccyOrd || cb.dataset.currency || 'USD';
       count++;
     });
+    const final = subTotal + feesTotal - discount;
     const sum = document.getElementById('auto-summary');
-    if (sum) sum.innerHTML = `선택 ${count}건 · 소계 <strong>${ccyOrd} ${subTotal.toFixed(2)}</strong> · 배송비 포함 (플랫폼 주문)`;
+    if (sum) sum.innerHTML = `선택 ${count}건 · 소계 ${ccyOrd} ${subTotal.toFixed(2)}${feesTotal ? ` + 수수료 ${feesTotal.toFixed(2)}` : ''}${discount ? ` − 할인 ${discount.toFixed(2)}` : ''} · <strong style="color:#81c784;">${ccyOrd} ${final.toFixed(2)}</strong>`;
     return;
   }
 
   const totalBoxes = _autoLines.reduce((s, l) => s + (parseInt(l.boxes, 10) || 0), 0);
-  const subtotal = _autoLines.reduce((s, l) => s + (Number(l.usdPrice) || 0) * (parseInt(l.boxes, 10) || 0), 0);
+  const subtotalUsd = _autoLines.reduce((s, l) => s + (Number(l.usdPrice) || 0) * (parseInt(l.boxes, 10) || 0), 0);
   const overrideChecked = document.getElementById('auto-ship-override')?.checked;
   document.getElementById('auto-ship-amount').style.display = overrideChecked ? 'inline-block' : 'none';
   let shipping = 0;
@@ -8187,9 +8378,17 @@ function b2bAutoRecalc() {
     const chunks = totalBoxes > 0 ? Math.ceil(totalBoxes / perBoxes) : 0;
     shipping = chunks * rate;
   }
-  // 표시는 shipping_rule 통화로, 물품은 USD로 (서버가 최종 통일)
+
+  const fmtCcy = (ccy === 'USD' ? '$' : (ccy === 'EUR' ? '€' : '₩'));
+  const fmtNum = (v) => (ccy === 'KRW' ? Math.round(v).toLocaleString('ko-KR') : Number(v).toFixed(2));
+
+  // 서버는 subtotal(USD) 를 invoiceCurrency 로 환산. 여기선 UI 상 대략적인 합계만 표시.
+  const parts = [`${_autoLines.length}품목`, `${totalBoxes}박스`, `상품 $${subtotalUsd.toFixed(2)}`, `배송 ${fmtCcy}${fmtNum(shipping)}`];
+  if (feesTotal) parts.push(`수수료 ${fmtCcy}${fmtNum(feesTotal)}`);
+  if (discount) parts.push(`<span style="color:#e94560">− 할인 ${fmtCcy}${fmtNum(discount)}</span>`);
+
   const sum = document.getElementById('auto-summary');
-  if (sum) sum.innerHTML = `${_autoLines.length}품목 · ${totalBoxes}박스 · 상품 $${subtotal.toFixed(2)} + 배송 ${ccy === 'USD' ? '$' + shipping.toFixed(2) : ccy + ' ' + shipping.toLocaleString('ko-KR')}`;
+  if (sum) sum.innerHTML = parts.join(' · ');
 }
 
 async function b2bAutoLoadBuyerOrders() {
@@ -8247,7 +8446,12 @@ async function b2bAutoCreateInvoice() {
   const shippingOverride = overrideChecked ? Number(document.getElementById('auto-ship-amount').value) || 0 : null;
 
   const isOrders = document.getElementById('auto-pane-orders').style.display !== 'none';
-  const payload = { buyerId, dueDate, shippingOverride };
+  const payload = {
+    buyerId, dueDate, shippingOverride,
+    shippingRuleOverride: _autoShippingRule || null,
+    extraFees: _autoExtraFees.filter(f => f.name && Number(f.amount)),
+    discount: Math.max(0, Number(document.getElementById('auto-discount')?.value) || 0),
+  };
 
   if (isOrders) {
     payload.mode = 'orders';
@@ -8277,8 +8481,11 @@ async function b2bAutoCreateInvoice() {
     const inv = j.invoice;
     result.innerHTML = `✅ ${inv.invoiceNo} 생성 완료 · ${inv.currency} ${Number(inv.total).toFixed(2)} · <a href="${API}/b2b/invoices/${inv.invoiceNo}/download" style="color:#81d4fa">📥 XLSX 다운로드</a>${inv.driveUrl && inv.driveUrl.startsWith('http') ? ` · <a href="${inv.driveUrl}" target="_blank" style="color:#81d4fa">Drive에서 보기</a>` : ''}`;
     result.style.display = 'block';
+    // 임시저장 drafts clear (생성 성공)
+    b2bAutoClearDraft();
     // 인보이스 리스트 갱신 (B2B 탭 열려있으면)
     if (typeof loadB2BInvoices === 'function') loadB2BInvoices();
+    if (typeof loadB2BInvoiceList === 'function') loadB2BInvoiceList();
   } catch (e) {
     err.textContent = e.message || '네트워크 오류';
     err.style.display = 'block';
