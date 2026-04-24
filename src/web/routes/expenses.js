@@ -269,7 +269,10 @@ router.post('/:id/receipt', (req, res, next) => {
     const storage = getClient().storage.from(RECEIPT_BUCKET);
     const clean = sanitizeFileName(f.originalname);
     const rand = crypto.randomBytes(6).toString('hex');
-    const newPath = `${id}/${Date.now()}-${rand}-${clean}`;
+    // 지출일(paid_at) 기준으로 YYYY-MM 폴더로 묶음 (월별 정리 편의)
+    const paidIso = String(existing.paidAt || new Date().toISOString()).slice(0, 10);
+    const monthFolder = paidIso.slice(0, 7); // 'YYYY-MM'
+    const newPath = `${monthFolder}/${id}/${Date.now()}-${rand}-${clean}`;
 
     const { error: upErr } = await storage.upload(newPath, f.buffer, {
       contentType: f.mimetype,
@@ -343,6 +346,55 @@ router.delete('/:id', async (req, res) => {
     await repo.deleteExpense(id);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/expenses/reorganize-receipts — 기존 영수증을 paid_at 기반 YYYY-MM 폴더로 이동 (재무만)
+// 새 업로드는 이미 YYYY-MM 폴더로 저장되므로 최초 1회만 실행하면 됨.
+router.post('/reorganize-receipts', async (req, res) => {
+  try {
+    if (!req.user?.canManageFinance) return res.status(403).json({ error: '재무 권한 필요' });
+    const list = await repo.listExpenses({ limit: 5000 });
+    const storage = getClient().storage.from(RECEIPT_BUCKET);
+    const withReceipt = list.filter(e => e.receiptPath);
+
+    let moved = 0;
+    let skipped = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const exp of withReceipt) {
+      const oldPath = exp.receiptPath;
+      const paidIso = String(exp.paidAt || '').slice(0, 10);
+      const monthFolder = paidIso.slice(0, 7);
+      if (!monthFolder || monthFolder.length !== 7) { skipped++; continue; }
+
+      // 이미 YYYY-MM/ 로 시작하면 스킵
+      if (oldPath.startsWith(`${monthFolder}/`)) { skipped++; continue; }
+
+      // 파일명 부분만 추출 (기존은 `${id}/${Date.now()}-${rand}-${clean}`)
+      const leaf = oldPath.split('/').pop();
+      const newPath = `${monthFolder}/${exp.id}/${leaf}`;
+
+      try {
+        const { error: mvErr } = await storage.move(oldPath, newPath);
+        if (mvErr) throw mvErr;
+        await repo.setReceipt(exp.id, {
+          path: newPath,
+          name: exp.receiptName,
+          mime: exp.receiptMime,
+          size: exp.receiptSize,
+        });
+        moved++;
+      } catch (e) {
+        failed++;
+        errors.push({ id: exp.id, from: oldPath, error: e.message });
+      }
+    }
+
+    res.json({ total: withReceipt.length, moved, skipped, failed, errors: errors.slice(0, 20) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;
