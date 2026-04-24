@@ -7341,6 +7341,7 @@ async function loadB2BBuyers() {
       const extCount = Object.values(b.ExternalIds || {}).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
       const mapBtn = `<button onclick="b2bOpenMappingModal('${b.BuyerID}', ${JSON.stringify(b.Name || '').replace(/"/g,'&quot;')})" style="padding:3px 8px;background:${extCount > 0 ? '#2a4a6a' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🔗 ${extCount > 0 ? `맵핑 ${extCount}` : '맵핑 없음'}</button>`;
       const editBtn = `<button onclick="b2bEditBuyer('${b.BuyerID}')" title="수정" style="padding:3px 8px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;margin-right:4px;">✏️</button>`;
+      const delBtn = `<button onclick="b2bDeleteBuyer('${b.BuyerID}', ${JSON.stringify(b.Name || '').replace(/"/g,'&quot;')})" title="삭제" style="padding:3px 8px;background:#c62828;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;margin-right:4px;">🗑</button>`;
       return `<tr>
         <td style="font-weight:600">${b.BuyerID}</td>
         <td>${b.Name}</td>
@@ -7350,7 +7351,7 @@ async function loadB2BBuyers() {
         <td>${b.PaymentTerms || ''}</td>
         <td style="text-align:right">${b.TotalOrders}</td>
         <td style="text-align:right;font-weight:600">${Number(b.TotalRevenue).toFixed(2)}</td>
-        <td style="text-align:center;white-space:nowrap">${editBtn}${mapBtn}</td>
+        <td style="text-align:center;white-space:nowrap">${editBtn}${delBtn}${mapBtn}</td>
       </tr>`;
     }).join('');
   } catch (err) {
@@ -7397,6 +7398,25 @@ function b2bEditBuyer(buyerId) {
   }
   banner.textContent = `✏️ ${buyerId} · ${buyer.Name} 수정 중`;
   form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function b2bDeleteBuyer(buyerId, name) {
+  if (!confirm(`정말 삭제하시겠어요?\n\n${buyerId} · ${name}\n\n(연결된 인보이스가 있으면 다시 확인 후 '강제 삭제' 옵션)`)) return;
+  try {
+    let res = await fetch(`${API}/b2b/buyers/${encodeURIComponent(buyerId)}`, { method: 'DELETE' });
+    let j = await res.json();
+    if (res.status === 409 && j.code === 'HAS_INVOICES') {
+      if (!confirm(`⚠️ 이 구매자에 인보이스 ${j.invoiceCount}건이 연결돼 있습니다.\n\n강제 삭제하면 구매자 목록에서만 제거되고 인보이스는 그대로 유지됩니다. 계속?`)) return;
+      res = await fetch(`${API}/b2b/buyers/${encodeURIComponent(buyerId)}?force=1`, { method: 'DELETE' });
+      j = await res.json();
+    }
+    if (!j.success) throw new Error(j.error || '삭제 실패');
+    alert(`✅ ${buyerId} 삭제됨`);
+    loadB2BBuyers();
+    loadB2BBuyerSelect();
+  } catch (e) {
+    alert('❌ 삭제 실패: ' + e.message);
+  }
 }
 
 async function b2bSaveBuyer() {

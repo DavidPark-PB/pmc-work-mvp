@@ -159,6 +159,44 @@ class B2BInvoiceService {
     return obj;
   }
 
+  /**
+   * 구매자 삭제 — Sheets 행 비우고 Supabase 레코드 제거.
+   * 기존 인보이스가 있으면 기본적으로 막고, { force: true } 옵션 시에만 진행.
+   */
+  async deleteBuyer(buyerId, { force = false } = {}) {
+    await this._ensureSheets();
+    const rows = await this.sheets.readData(SPREADSHEET_ID, `'${BUYERS_SHEET}'!A:M`);
+    if (!rows || rows.length <= 1) throw new Error('구매자 데이터 없음');
+    const rowIndex = rows.findIndex((r, i) => i > 0 && r[0] === buyerId);
+    if (rowIndex === -1) throw new Error(`구매자 ${buyerId} 없음`);
+
+    // 기존 인보이스 체크 (안전 장치)
+    const invoiceRows = await this.sheets.readData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A:B`);
+    const invCount = (invoiceRows || []).filter((r, i) => i > 0 && r[1] === buyerId).length;
+    if (invCount > 0 && !force) {
+      const e = new Error(`이 구매자에 인보이스 ${invCount}건이 연결돼 있습니다. 강제 삭제하려면 force=true.`);
+      e.code = 'HAS_INVOICES';
+      e.invoiceCount = invCount;
+      throw e;
+    }
+
+    // Sheets: 행 내용 비움 (행 자체는 남지만 A열 비면 getBuyers 에서 필터됨)
+    const sheetRow = rowIndex + 1;
+    await this.sheets.clearData(SPREADSHEET_ID, `'${BUYERS_SHEET}'!A${sheetRow}:M${sheetRow}`);
+
+    // Supabase
+    try {
+      const { getClient } = require('../db/supabaseClient');
+      const db = getClient();
+      await db.from('b2b_buyers').delete().eq('buyer_id', buyerId);
+    } catch (e) {
+      console.warn('[deleteBuyer] Supabase 삭제 실패 (없을 수 있음):', e.message);
+    }
+
+    console.log(`✅ 구매자 삭제: ${buyerId}${force ? ' (강제, 연결 인보이스 유지)' : ''}`);
+    return { buyerId, invoiceCount: invCount };
+  }
+
   // ────────────────────── B2B 가격표 ──────────────────────
 
   /**

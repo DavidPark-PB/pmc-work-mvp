@@ -3298,6 +3298,18 @@ router.get('/b2b/buyers', async (req, res) => {
   }
 });
 
+// DELETE /api/b2b/buyers/:id — 구매자 삭제 (?force=1 이면 연결된 인보이스 있어도 진행)
+router.delete('/b2b/buyers/:id', async (req, res) => {
+  try {
+    const force = String(req.query.force || '') === '1';
+    const result = await getB2BService().deleteBuyer(req.params.id, { force });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    const status = error.code === 'HAS_INVOICES' ? 409 : 500;
+    res.status(status).json({ success: false, error: error.message, code: error.code, invoiceCount: error.invoiceCount });
+  }
+});
+
 // POST /api/b2b/buyers — 구매자 생성/수정
 router.post('/b2b/buyers', async (req, res) => {
   try {
