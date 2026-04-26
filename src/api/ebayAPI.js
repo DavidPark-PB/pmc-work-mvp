@@ -952,23 +952,27 @@ class EbayAPI {
       'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
     };
 
-    let response;
+    let item;          // 대표 변형 (single 이거나 item group 의 첫 번째)
+    let variants = []; // 모든 변형 (multi-variant 인 경우 채워짐)
+
     try {
-      response = await axios.get(url, { headers, timeout: 15000 });
+      const response = await axios.get(url, { headers, timeout: 15000 });
+      item = response.data;
+      variants = [item];
     } catch (err) {
       const errData = err.response?.data;
       const errMsg = errData?.errors?.[0]?.longMessage || errData?.errors?.[0]?.message || '';
 
-      // Item Group (멀티 배리언트) → get_items_by_item_group으로 재시도
+      // Item Group (멀티 변형) → 그룹 전체 가져와 min/max 계산
       if (errMsg.includes('item_group') || errMsg.includes('item group')) {
-        console.log('Browse API: Item Group 감지, 그룹 조회 시도...');
         try {
           const groupUrl = `https://api.ebay.com/buy/browse/v1/item/get_items_by_item_group?item_group_id=${itemId}`;
           const groupResp = await axios.get(groupUrl, { headers, timeout: 15000 });
-          // 첫 번째 item 사용
           const items = groupResp.data?.items;
           if (items && items.length > 0) {
-            response = { data: items[0] };
+            variants = items;
+            item = items[0]; // 대표값 = 첫 번째 (일반적으로 최저가)
+            console.log(`Browse API: Item Group ${itemId} → ${items.length}개 변형`);
           } else {
             throw new Error('Item Group에서 상품을 찾을 수 없음');
           }
@@ -983,33 +987,54 @@ class EbayAPI {
       }
     }
 
-    const item = response.data;
-
     // Browse API 응답 → 공통 포맷 변환
     const specifics = {};
     if (Array.isArray(item.localizedAspects)) {
-      item.localizedAspects.forEach(a => {
-        specifics[a.name] = a.value;
-      });
+      item.localizedAspects.forEach(a => { specifics[a.name] = a.value; });
     }
 
     const images = [];
     if (item.image?.imageUrl) images.push(item.image.imageUrl);
     if (Array.isArray(item.additionalImages)) {
-      item.additionalImages.forEach(img => {
-        if (img.imageUrl) images.push(img.imageUrl);
-      });
+      item.additionalImages.forEach(img => { if (img.imageUrl) images.push(img.imageUrl); });
     }
+
+    // ── 변형 통계: min/max price + 총 재고 ─────────────────
+    const variantPrices = variants
+      .map(v => parseFloat(v.price?.value))
+      .filter(n => Number.isFinite(n) && n > 0);
+    const priceMin = variantPrices.length ? Math.min(...variantPrices) : (parseFloat(item.price?.value) || 0);
+    const priceMax = variantPrices.length ? Math.max(...variantPrices) : priceMin;
+    const variantCount = variants.length;
+
+    // 재고: 모든 변형의 estimatedAvailableQuantity 합산
+    const totalAvailable = variants.reduce((sum, v) => {
+      const q = parseInt(v.estimatedAvailabilities?.[0]?.estimatedAvailableQuantity);
+      return sum + (Number.isFinite(q) ? q : 0);
+    }, 0);
+    // estimatedAvailableQuantity 가 모두 누락된 경우 null (unknown), 0 이면 품절
+    const anyHasAvailability = variants.some(v => v.estimatedAvailabilities?.[0]?.estimatedAvailableQuantity !== undefined);
+    const quantityAvailable = anyHasAvailability ? totalAvailable : null;
+
+    let status = 'active';
+    if (quantityAvailable === 0) status = 'out_of_stock';
+    // ended 상태는 Browse API 가 404 로 반환하므로 catch 단계에서 처리됨 (여기 도달 안 함)
 
     return {
       itemId: item.legacyItemId || itemId,
       title: item.title || '',
       description: item.description || item.shortDescription || '',
-      price: parseFloat(item.price?.value) || 0,
+      price: parseFloat(item.price?.value) || priceMin,
       currency: item.price?.currency || 'USD',
       shippingCost: parseFloat(item.shippingOptions?.[0]?.shippingCost?.value) || 0,
       quantitySold: parseInt(item.estimatedAvailabilities?.[0]?.soldQuantity) || 0,
-      quantityAvailable: parseInt(item.estimatedAvailabilities?.[0]?.estimatedAvailableQuantity) || 0,
+      quantityAvailable,
+      // 신규: 변형 정보
+      priceMin,
+      priceMax,
+      variantCount,
+      status,
+      // 기존
       seller: item.seller?.username || '',
       sellerFeedbackScore: parseInt(item.seller?.feedbackScore) || 0,
       listingStatus: item.buyingOptions?.includes('FIXED_PRICE') ? 'Active' : 'Unknown',

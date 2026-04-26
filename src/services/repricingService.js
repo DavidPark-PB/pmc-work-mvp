@@ -225,15 +225,33 @@ class RepricingService {
     const itemIds = normalizedListings.map(l => l.itemId).filter(Boolean);
     const allKeys = [...new Set([...skus, ...itemIds])];
     let compRows = [];
+    // 신규 컬럼 (price_min/max, status, override) 함께 조회. 마이그레이션 034 미적용 시 fallback.
+    const FULL_SELECT = 'id, sku, competitor_id, competitor_price, competitor_shipping, competitor_url, seller_id, seller_feedback, tracked_at, price_min, price_max, variant_count, quantity_available, status, manual_price_override, manual_shipping_override';
+    const LEGACY_SELECT = 'id, sku, competitor_id, competitor_price, competitor_shipping, competitor_url, seller_id, seller_feedback, tracked_at';
     for (let i = 0; i < allKeys.length; i += 500) {
       const chunk = allKeys.slice(i, i + 500);
-      const { data } = await db
-        .from('competitor_prices')
-        .select('sku, competitor_id, competitor_price, competitor_shipping, competitor_url, seller_id, seller_feedback, tracked_at')
-        .in('sku', chunk)
-        .order('tracked_at', { ascending: false });
+      let { data, error } = await db.from('competitor_prices')
+        .select(FULL_SELECT).in('sku', chunk).order('tracked_at', { ascending: false });
+      if (error && error.code === '42703') {
+        ({ data } = await db.from('competitor_prices')
+          .select(LEGACY_SELECT).in('sku', chunk).order('tracked_at', { ascending: false }));
+      }
       if (data) compRows = compRows.concat(data);
     }
+
+    // 헬퍼: override 가 있으면 그 값을 effective price/shipping 으로 사용
+    const effPrice = (c) => {
+      const o = c.manual_price_override;
+      return Number.isFinite(Number(o)) && Number(o) > 0 ? Number(o) : Number(c.competitor_price) || 0;
+    };
+    const effShipping = (c) => {
+      const o = c.manual_shipping_override;
+      return Number.isFinite(Number(o)) ? Number(o) : Number(c.competitor_shipping) || 0;
+    };
+    const isAlive = (c) => {
+      const s = String(c.status || 'active');
+      return s !== 'out_of_stock' && s !== 'ended';
+    };
 
     // Fetch Korean product titles from products table
     const { data: productRows } = await db
@@ -247,7 +265,8 @@ class RepricingService {
       productTitleMap[p.sku] = p.title_ko || p.title || null;
     });
 
-    // Build competitor list: sku → collect all, sort by total asc, keep top 3
+    // Build competitor list: sku → collect all, sort by EFFECTIVE total asc (override > raw),
+    // keep top 3 (포함 모두 — 품절도 표시용으로는 유지, 단 cheapest 계산은 활성만)
     const compListAll = {};
     (compRows || []).forEach(c => {
       if (!compListAll[c.sku]) compListAll[c.sku] = [];
@@ -256,35 +275,44 @@ class RepricingService {
     const compList = {};
     Object.keys(compListAll).forEach(sku => {
       compListAll[sku].sort((a, b) =>
-        (parseFloat(a.competitor_price) + parseFloat(a.competitor_shipping || 0)) -
-        (parseFloat(b.competitor_price) + parseFloat(b.competitor_shipping || 0))
+        (effPrice(a) + effShipping(a)) - (effPrice(b) + effShipping(b))
       );
-      compList[sku] = compListAll[sku].slice(0, 3); // Keep cheapest 3
+      compList[sku] = compListAll[sku].slice(0, 3);
     });
 
     const dashboard = normalizedListings.map(p => {
-      // Match by SKU or itemId (CSV imports use eBay item ID as SKU)
       const competitors = compList[p.sku] || compList[p.itemId] || [];
-      const cheapest = competitors[0] || null;
+      // 활성(품절 아닌) 경쟁사 중 최저가 사용
+      const aliveComps = competitors.filter(isAlive);
+      const cheapest = aliveComps[0] || null;
+      const allOutOfStock = competitors.length > 0 && aliveComps.length === 0;
       return {
         sku: p.sku,
         itemId: p.itemId,
-        // title_ko (DB 한국어) → title (DB 영어) → eBay listing title
         title: productTitleMap[p.sku] || p.title,
         myPrice: p.price,
         myShipping: p.shipping,
         quantity: p.quantity ?? 0,
         competitors: competitors.map(c => ({
+          id: c.id,
           itemId: c.competitor_id || null,
-          price: parseFloat(c.competitor_price),
-          shipping: parseFloat(c.competitor_shipping || 0),
-          total: parseFloat(c.competitor_price) + parseFloat(c.competitor_shipping || 0),
+          price: effPrice(c),
+          shipping: effShipping(c),
+          total: effPrice(c) + effShipping(c),
+          rawPrice: Number(c.competitor_price) || 0,
+          rawShipping: Number(c.competitor_shipping || 0),
           url: c.competitor_url || null,
           seller: c.seller_id || '',
+          // 신규: 변형 + 재고
+          priceMin: c.price_min != null ? Number(c.price_min) : null,
+          priceMax: c.price_max != null ? Number(c.price_max) : null,
+          variantCount: Number(c.variant_count || 1),
+          quantityAvailable: c.quantity_available != null ? Number(c.quantity_available) : null,
+          status: c.status || 'active',
+          hasOverride: c.manual_price_override != null,
         })),
-        cheapestTotal: cheapest
-          ? parseFloat(cheapest.competitor_price) + parseFloat(cheapest.competitor_shipping || 0)
-          : null,
+        cheapestTotal: cheapest ? effPrice(cheapest) + effShipping(cheapest) : null,
+        allOutOfStock,
         lastTracked: cheapest?.tracked_at || null,
         recentChanges: [],
       };

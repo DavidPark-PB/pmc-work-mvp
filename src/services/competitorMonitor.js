@@ -83,7 +83,17 @@ async function runCompetitorMonitor() {
         continue;
       }
 
-      const updates = { tracked_at: new Date().toISOString() };
+      const updates = {
+        tracked_at: new Date().toISOString(),
+        last_refreshed_at: new Date().toISOString(),
+        // 신규: 변형 + 재고 정보 (마이그레이션 034 미적용 시 PostgREST 가 무시)
+        price_min: live.priceMin ?? null,
+        price_max: live.priceMax ?? null,
+        variant_count: live.variantCount ?? 1,
+        quantity_available: live.quantityAvailable ?? null,
+        // status 는 live 의 status (active/out_of_stock) 우선
+        status: live.status || 'active',
+      };
       const oldPrice = parseFloat(comp.competitor_price) || 0;
       const newPrice = parseFloat(live.price) || 0;
       const newShipping = parseFloat(live.shippingCost) || 0;
@@ -155,7 +165,13 @@ async function runCompetitorMonitor() {
         updates.seller_id = live.seller;
       }
 
-      await db.from('competitor_prices').update(updates).eq('id', comp.id);
+      // 마이그레이션 034 미적용 시 신규 컬럼 제거 후 재시도
+      const { error: upErr } = await db.from('competitor_prices').update(updates).eq('id', comp.id);
+      if (upErr && upErr.code === '42703') {
+        const legacy = { ...updates };
+        ['price_min','price_max','variant_count','quantity_available','last_refreshed_at'].forEach(k => delete legacy[k]);
+        await db.from('competitor_prices').update(legacy).eq('id', comp.id);
+      }
     }
 
     // Rate limit pause between batches

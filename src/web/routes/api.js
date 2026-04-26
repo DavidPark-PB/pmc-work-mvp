@@ -2236,20 +2236,33 @@ router.post('/battle/add-competitor', async (req, res) => {
       competitor_url: item ? (item.viewItemURL || `https://www.ebay.com/itm/${itemId}`) : `https://www.ebay.com/itm/${itemId}`,
       seller_id: item ? (item.seller || '') : '',
       seller_feedback: item ? (item.sellerFeedbackScore || 0) : 0,
+      title: item ? (item.title || '') : '',
       tracked_at: new Date().toISOString(),
+      // 신규: 변형 + 재고 (마이그레이션 034)
+      price_min: item?.priceMin ?? null,
+      price_max: item?.priceMax ?? null,
+      variant_count: item?.variantCount ?? 1,
+      quantity_available: item?.quantityAvailable ?? null,
+      status: item?.status || 'active',
+      last_refreshed_at: new Date().toISOString(),
     };
-    // Check if exists, then update or insert (upsert requires unique constraint)
-    const compId = row.competitor_id;
-    const { data: existing } = await db.from('competitor_prices')
-      .select('id').eq('sku', mySku).eq('competitor_id', compId).limit(1);
-
-    if (existing && existing.length > 0) {
-      const { error: updateErr } = await db.from('competitor_prices').update(row).eq('id', existing[0].id);
-      if (updateErr) console.error('[add-competitor] Update error:', updateErr.message);
-    } else {
-      const { error: insertErr } = await db.from('competitor_prices').insert(row);
-      if (insertErr) console.error('[add-competitor] Insert error:', insertErr.message);
-    }
+    const upsertWithFallback = async (payload) => {
+      const compId = payload.competitor_id;
+      const { data: existing } = await db.from('competitor_prices')
+        .select('id').eq('sku', mySku).eq('competitor_id', compId).limit(1);
+      const op = existing && existing.length > 0
+        ? db.from('competitor_prices').update(payload).eq('id', existing[0].id)
+        : db.from('competitor_prices').insert(payload);
+      const { error } = await op;
+      if (error && error.code === '42703') {
+        // 마이그레이션 034 미적용 → 신규 컬럼 빼고 재시도
+        const legacy = { ...payload };
+        ['price_min','price_max','variant_count','quantity_available','status','last_refreshed_at','title'].forEach(k => delete legacy[k]);
+        return upsertWithFallback(legacy);
+      }
+      if (error) console.error('[add-competitor] DB error:', error.message);
+    };
+    await upsertWithFallback(row);
 
     // 캐시 초기화
     battleCache = null;
@@ -2268,6 +2281,115 @@ router.post('/battle/add-competitor', async (req, res) => {
     });
   } catch (e) {
     console.error('[add-competitor]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/battle/competitor/:id/refresh — 즉시 Browse API 재조회 + DB 갱신
+router.post('/battle/competitor/:id/refresh', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ success: false, error: 'invalid id' });
+
+    const { data: comp, error: fErr } = await db.from('competitor_prices')
+      .select('*').eq('id', id).maybeSingle();
+    if (fErr || !comp) return res.status(404).json({ success: false, error: 'competitor 없음' });
+
+    const ebay = getEbayAPI();
+    let item = null;
+    try { item = await ebay._fetchViaBrowseAPI(comp.competitor_id); }
+    catch (e) {
+      // 404 = ended listing
+      const isGone = /not\s*found|404/i.test(e.message || '');
+      const updates = {
+        status: isGone ? 'ended' : 'error',
+        last_refreshed_at: new Date().toISOString(),
+      };
+      await db.from('competitor_prices').update(updates).eq('id', id).then(() => {})
+        .catch(err => { if (err.code !== '42703') throw err; });
+      return res.json({ success: true, status: updates.status, error: e.message });
+    }
+
+    const updates = {
+      competitor_price: item.price || 0,
+      competitor_shipping: item.shippingCost || 0,
+      title: item.title || comp.title || '',
+      seller_id: comp.seller_id || item.seller || '',
+      tracked_at: new Date().toISOString(),
+      last_refreshed_at: new Date().toISOString(),
+      price_min: item.priceMin ?? null,
+      price_max: item.priceMax ?? null,
+      variant_count: item.variantCount ?? 1,
+      quantity_available: item.quantityAvailable ?? null,
+      status: item.status || 'active',
+    };
+    let { error: uErr } = await db.from('competitor_prices').update(updates).eq('id', id);
+    if (uErr && uErr.code === '42703') {
+      const legacy = { ...updates };
+      ['price_min','price_max','variant_count','quantity_available','status','last_refreshed_at','title'].forEach(k => delete legacy[k]);
+      await db.from('competitor_prices').update(legacy).eq('id', id);
+    }
+    battleCache = null; battleCacheTime = 0;
+
+    res.json({
+      success: true,
+      itemId: item.itemId,
+      price: item.price,
+      shipping: item.shippingCost,
+      priceMin: item.priceMin,
+      priceMax: item.priceMax,
+      variantCount: item.variantCount,
+      quantityAvailable: item.quantityAvailable,
+      status: item.status,
+    });
+  } catch (e) {
+    console.error('[battle/refresh]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PATCH /api/battle/competitor/:id/override — 수동 가격 고정 (변형 리스팅용)
+router.patch('/battle/competitor/:id/override', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { price, shipping } = req.body || {};
+    if (!Number.isFinite(Number(price)) || Number(price) <= 0) {
+      return res.status(400).json({ success: false, error: '유효한 가격 필요' });
+    }
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const updates = {
+      manual_price_override: Number(price),
+      manual_shipping_override: shipping != null && shipping !== '' ? Number(shipping) : null,
+    };
+    const { error } = await db.from('competitor_prices').update(updates).eq('id', id);
+    if (error) {
+      if (error.code === '42703') return res.status(400).json({ success: false, error: '마이그레이션 034 미적용' });
+      throw error;
+    }
+    battleCache = null; battleCacheTime = 0;
+    res.json({ success: true, ...updates });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// DELETE /api/battle/competitor/:id/override — 수동 고정 해제
+router.delete('/battle/competitor/:id/override', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { error } = await db.from('competitor_prices').update({
+      manual_price_override: null,
+      manual_shipping_override: null,
+    }).eq('id', id);
+    if (error && error.code !== '42703') throw error;
+    battleCache = null; battleCacheTime = 0;
+    res.json({ success: true });
+  } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });

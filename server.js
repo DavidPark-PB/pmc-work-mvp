@@ -164,7 +164,7 @@ app.listen(PORT, () => {
   console.log(`SKU 점수 자동 업데이트: ${next2AM.toLocaleString('ko-KR')} 예약됨`);
 });
 
-// Competitor Monitor — every 6 hours (Browse API only, no Shopping API rate limit issues)
+// Competitor Monitor — every 2 hours (가격·재고 정확도 개선, Browse API 무료)
 setInterval(async () => {
   try {
     const { runCompetitorMonitor } = require('./src/services/competitorMonitor');
@@ -173,7 +173,7 @@ setInterval(async () => {
   } catch (e) {
     console.error('[CompetitorMonitor] error:', e.message);
   }
-}, 6 * 60 * 60 * 1000);
+}, 2 * 60 * 60 * 1000);
 
 // ===== AI Agent Scheduling (margin / sourcing / operations) =====
 // 2026-04 정리: 8개 → 3개. 나머지 5개는 실질 가치 부족으로 제거.

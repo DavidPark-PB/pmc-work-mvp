@@ -3647,24 +3647,35 @@ function renderBattleTable(items) {
     // Frontend calculation — ignore backend cache
     const myTotal = (item.myPrice || 0) + (item.myShipping || 0);
     let cheapestComp = null;
-    if (hasComp) {
-      cheapestComp = item.competitors.reduce((a, b) => (a.total < b.total ? a : b));
+    // 활성(품절 아닌) 경쟁사만 비교 대상
+    const aliveComps = item.competitors.filter(c => c.status !== 'out_of_stock' && c.status !== 'ended');
+    if (aliveComps.length > 0) {
+      cheapestComp = aliveComps.reduce((a, b) => (a.total < b.total ? a : b));
     }
     const cheapestTotal = cheapestComp ? cheapestComp.total : null;
     const diff = cheapestTotal ? +(myTotal - cheapestTotal).toFixed(2) : null;
     const losing = diff !== null && diff > 0;
     const killPrice = losing ? +Math.max(0.99, cheapestTotal - 2.00 - (item.myShipping || 0)).toFixed(2) : null;
 
-    // Override backend values
+    // 모든 경쟁사 품절: 가격 인상 기회 (백엔드 플래그 또는 프론트 계산)
+    const allOutOfStock = !!item.allOutOfStock || (hasComp && aliveComps.length === 0);
+
     item.diff = diff;
     item.losing = losing;
     item.killPrice = killPrice;
     item.myTotal = +myTotal.toFixed(2);
     item.cheapestTotal = cheapestTotal;
+    item.allOutOfStock = allOutOfStock;
 
-    // Raise price: 내가 $5 이상 싸면 경쟁사 - $2로 올리기 추천
+    // 일반 raise: 내가 $5 이상 싸면 경쟁사 - $2로 올리기 추천
     const winning = diff !== null && diff < -5;
-    const raisePrice = winning ? +Math.max(item.myPrice, cheapestTotal - 2.00 - (item.myShipping || 0)).toFixed(2) : null;
+    let raisePrice = winning ? +Math.max(item.myPrice, cheapestTotal - 2.00 - (item.myShipping || 0)).toFixed(2) : null;
+    // 경쟁사 모두 품절 → 무조건 raise 추천 (현재 가격 + 10% 또는 기존 highest competitor)
+    if (allOutOfStock && !raisePrice) {
+      const highestSeen = item.competitors.reduce((m, c) => Math.max(m, c.total || 0), 0);
+      const target = highestSeen > 0 ? highestSeen + 5 : item.myPrice * 1.1;
+      raisePrice = +Math.max(item.myPrice, target - (item.myShipping || 0)).toFixed(2);
+    }
     item.raisePrice = raisePrice;
 
     const rowClass = losing ? 'battle-row-losing' : (hasComp ? 'battle-row-winning' : '');
@@ -3676,21 +3687,36 @@ function renderBattleTable(items) {
       ? '<span class="battle-status losing">패배</span>'
       : (hasComp ? '<span class="battle-status winning">승리</span>' : '<span class="battle-status neutral">-</span>');
 
-    // 경쟁사 셀: 최대 3명 세로 나열
+    // 경쟁사 셀: 최대 3명 세로 나열 (품절·변형 범위·수동 고정 표시)
     const compCell = hasComp
       ? item.competitors.map((c, idx) => {
-          const iLose = item.myTotal > c.total;
-          const badge = iLose
-            ? '<span style="color:#c62828;font-size:9px;font-weight:700">▼</span>'
-            : '<span style="color:#2e7d32;font-size:9px;font-weight:700">▲</span>';
+          const isOOS = c.status === 'out_of_stock';
+          const isEnded = c.status === 'ended';
+          const dim = isOOS || isEnded ? 'opacity:0.55;' : (idx > 0 ? 'opacity:0.75;' : '');
+          const iLose = !isOOS && !isEnded && item.myTotal > c.total;
+          const badge = isOOS ? '<span style="background:#c62828;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700">품절</span>'
+            : (isEnded ? '<span style="background:#888;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700">종료</span>'
+              : (iLose ? '<span style="color:#c62828;font-size:9px;font-weight:700">▼</span>'
+                       : '<span style="color:#2e7d32;font-size:9px;font-weight:700">▲</span>'));
           const link = c.url
             ? `<a href="${esc(c.url)}" target="_blank" style="font-size:10px;color:#1565c0;margin-left:3px;text-decoration:none" title="경쟁사 리스팅 열기">🔗</a>`
             : '';
           const sellerTag = c.seller ? `<span style="font-size:8px;color:#5c6bc0;background:#e8eaf6;padding:0 3px;border-radius:2px;margin-left:2px">${esc(c.seller.slice(0,15))}</span>` : '';
           const label = c.itemId ? `<span style="font-size:9px;color:#999;margin-left:2px">${esc(c.itemId.slice(0, 13))}</span>` : '';
+          // 변형 정보: 2개 이상이면 범위 표시
+          const variantInfo = (c.variantCount > 1 && c.priceMin != null && c.priceMax != null && c.priceMin !== c.priceMax)
+            ? `<div style="font-size:9px;color:#7c4dff;margin-left:14px">└ 범위 \$${c.priceMin.toFixed(2)}~\$${c.priceMax.toFixed(2)} (${c.variantCount} 변형)${c.hasOverride ? ' · 🎯 수동 고정' : ''}</div>`
+            : (c.hasOverride ? `<div style="font-size:9px;color:#7c4dff;margin-left:14px">└ 🎯 수동 고정</div>` : '');
+          // 액션 버튼들
+          const refreshBtn = c.id ? `<button onclick="battleRefreshComp(${c.id},this)" style="font-size:8px;padding:0 3px;background:none;border:1px solid #1565c0;color:#1565c0;border-radius:2px;cursor:pointer;margin-left:2px" title="가격 즉시 갱신">🔄</button>` : '';
+          const overrideBtn = c.id ? `<button onclick="battleOverridePrice(${c.id}, ${c.priceMin || 0}, ${c.priceMax || 0}, ${c.rawPrice || 0}, ${c.rawShipping || 0}, ${c.hasOverride ? 1 : 0})" style="font-size:8px;padding:0 3px;background:${c.hasOverride ? '#7c4dff' : 'none'};border:1px solid #7c4dff;color:${c.hasOverride ? '#fff' : '#7c4dff'};border-radius:2px;cursor:pointer;margin-left:2px" title="가격 수동 고정">💰</button>` : '';
           const delBtn = `<button onclick="battleDeleteCompetitor('${esc(item.sku)}','${esc(c.itemId || '')}',this)" style="font-size:8px;padding:0 3px;background:none;border:1px solid #c62828;color:#c62828;border-radius:2px;cursor:pointer;margin-left:2px" title="경쟁사 삭제">✕</button>`;
-          return `<div style="padding:1px 0;${idx > 0 ? 'opacity:0.75;' : ''}">
-            ${badge} <span style="font-size:11px;font-weight:${idx===0?'700':'400'}">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=<b>\$${c.total.toFixed(2)}</b></span>${sellerTag}${label}${link}${delBtn}
+          const priceText = (isOOS || isEnded)
+            ? `<s style="color:#999">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=\$${c.total.toFixed(2)}</s>`
+            : `<span style="font-weight:${idx===0?'700':'400'}">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=<b>\$${c.total.toFixed(2)}</b></span>`;
+          return `<div style="padding:1px 0;${dim}">
+            ${badge} <span style="font-size:11px">${priceText}</span>${sellerTag}${label}${link}${refreshBtn}${overrideBtn}${delBtn}
+            ${variantInfo}
           </div>`;
         }).join('')
       : '<span style="color:#ccc;font-size:11px">없음</span>';
@@ -3736,6 +3762,7 @@ function renderBattleTable(items) {
                      id="kill-${esc(item.itemId || item.sku)}">↓내리기</button>`
           : (item.raisePrice && item.raisePrice > item.myPrice
             ? `<div style="font-weight:700;color:#2e7d32">$${item.raisePrice.toFixed(2)}</div>
+               ${item.allOutOfStock ? '<div style="font-size:9px;color:#ff9800;font-weight:600">📈 경쟁사 모두 품절</div>' : ''}
                <button class="kill-price-btn" style="background:#2e7d32" onclick="applyKillPrice('${esc(item.itemId)}', ${item.raisePrice}, '${esc(item.sku)}')"
                        id="raise-${esc(item.itemId || item.sku)}">↑올리기</button>`
             : (hasComp ? '<span style="color:#888;font-size:11px">적정</span>' : '-'))
@@ -3880,6 +3907,71 @@ async function runSellerScan() {
   } finally {
     btn.disabled = false;
     btn.textContent = '스캔 시작';
+  }
+}
+
+// 경쟁사 가격 즉시 갱신 — Browse API 직접 호출
+async function battleRefreshComp(compId, btn) {
+  if (!compId) return;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const r = await fetch(`${API}/battle/competitor/${compId}/refresh`, { method: 'POST' });
+    const d = await r.json();
+    if (!d.success) throw new Error(d.error || '갱신 실패');
+    if (typeof loadBattle === 'function') loadBattle(); else location.reload();
+  } catch (e) {
+    alert('갱신 실패: ' + e.message);
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
+// 경쟁사 가격 수동 고정 — 변형 리스팅에서 추적할 가격 픽
+async function battleOverridePrice(compId, priceMin, priceMax, currentPrice, currentShipping, hasOverride) {
+  if (!compId) return;
+  const rangeText = (priceMin && priceMax && priceMin !== priceMax)
+    ? `\n\n변형 가격 범위: $${priceMin.toFixed(2)} ~ $${priceMax.toFixed(2)}`
+    : '';
+
+  // 이미 고정돼 있으면 해제 옵션 제공
+  if (hasOverride) {
+    const action = prompt(`현재 수동 고정 상태입니다.${rangeText}\n\n새 가격 입력 (해제하려면 'reset' 입력):`, currentPrice.toFixed(2));
+    if (action === null) return;
+    if (action.trim().toLowerCase() === 'reset') {
+      try {
+        const r = await fetch(`${API}/battle/competitor/${compId}/override`, { method: 'DELETE' });
+        const d = await r.json();
+        if (!d.success) throw new Error(d.error);
+        alert('수동 고정 해제됨');
+        if (typeof loadBattle === 'function') loadBattle();
+      } catch (e) { alert('해제 실패: ' + e.message); }
+      return;
+    }
+  }
+
+  const priceInput = !hasOverride
+    ? prompt(`경쟁사가 추적할 가격을 입력하세요.${rangeText}\n\n예: ${(priceMax || currentPrice).toFixed(2)}`, (priceMax || currentPrice).toFixed(2))
+    : prompt(`새 가격:`, currentPrice.toFixed(2));
+  if (!priceInput) return;
+  const price = Number(priceInput);
+  if (!Number.isFinite(price) || price <= 0) { alert('유효한 숫자가 아닙니다'); return; }
+
+  const shippingInput = prompt(`배송비 (그대로 두려면 빈값):`, String(currentShipping || ''));
+  if (shippingInput === null) return;
+  const shipping = shippingInput.trim() === '' ? null : Number(shippingInput);
+
+  try {
+    const r = await fetch(`${API}/battle/competitor/${compId}/override`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ price, shipping }),
+    });
+    const d = await r.json();
+    if (!d.success) throw new Error(d.error);
+    alert(`✅ 수동 고정: $${price.toFixed(2)}${shipping != null ? ' + $' + Number(shipping).toFixed(2) + ' 배송' : ''}`);
+    if (typeof loadBattle === 'function') loadBattle();
+  } catch (e) {
+    alert('저장 실패: ' + e.message);
   }
 }
 
