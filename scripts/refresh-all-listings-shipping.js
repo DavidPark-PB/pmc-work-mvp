@@ -50,7 +50,8 @@ async function processOne(ebay, db, row, stats) {
       // ended listing
       try { await db.from('ebay_products').update({ status: 'ended', updated_at: new Date().toISOString() }).eq('item_id', row.item_id); } catch {}
       stats.ended++;
-    } else if (/rate.?limit|429|quota/i.test(msg)) {
+    } else if (/rate.?limit|429|quota|too many requests|request limit|errorId.*2001/i.test(msg)) {
+      // eBay Browse API: errorId 2001 "Too many requests" = 일일 5000 한도 초과
       stats.rateLimitHits++;
       throw new Error('RATE_LIMIT'); // 상위에서 caught
     }
@@ -102,6 +103,11 @@ async function main() {
       } catch (e) {
         if (String(e.message) === 'RATE_LIMIT') {
           rateLimitCount++;
+          if (rateLimitCount >= 3) {
+            console.error(`\n[!] RATE LIMIT 3회 누적 — 일일 한도(5000) 도달 추정. 즉시 종료.`);
+            console.error(`내일 다시 실행하면 남은 row 부터 이어서 처리됩니다 (updated_at 오래된 순 정렬).`);
+            return;
+          }
           console.warn(`[${i}] RATE LIMIT — 5분 휴식 (#${rateLimitCount}/3)`);
           await sleep(5 * 60 * 1000);
           continue;
