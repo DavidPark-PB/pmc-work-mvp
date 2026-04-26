@@ -193,7 +193,7 @@ class RepricingService {
       for (let offset = 0; ; offset += PAGE) {
         const { data, error } = await db
           .from('ebay_products')
-          .select('item_id, sku, title, price_usd, shipping_usd, stock')
+          .select('item_id, sku, title, price_usd, shipping_usd, stock, updated_at')
           .neq('status', 'ended')
           .range(offset, offset + PAGE - 1);
         if (error) throw error;
@@ -216,6 +216,7 @@ class RepricingService {
       price: parseFloat(r.price_usd) || 0,
       shipping: parseFloat(r.shipping_usd) || 0,
       quantity: parseInt(r.stock) || 0,
+      lastSyncedAt: r.updated_at || null,
     })).filter(l => l.sku && l.price > 0);
 
     if (normalizedListings.length === 0) return [];
@@ -296,6 +297,7 @@ class RepricingService {
         title: productTitleMap[p.sku] || p.title,
         myPrice: p.price,
         myShipping: p.shipping,
+        myLastSyncedAt: p.lastSyncedAt,
         quantity: p.quantity ?? 0,
         competitors: competitors.map(c => ({
           id: c.id,

@@ -3735,6 +3735,14 @@ function renderBattleTable(items) {
       ? `<a href="https://www.ebay.com/itm/${esc(item.itemId)}" target="_blank" style="font-size:11px;color:#2e7d32;font-weight:600;white-space:nowrap">내 리스팅 🔗</a>`
       : '';
 
+    // 마지막 갱신 표시 — 24h+ 빨강, 6~24h 노랑, 6h 미만 회색
+    const lastSync = item.myLastSyncedAt ? formatBattleRelTime(item.myLastSyncedAt) : null;
+    const syncBadge = lastSync ? `<div style="font-size:10px;color:${lastSync.color};font-weight:${lastSync.bold ? '600' : '400'};margin-top:2px">${lastSync.icon} ${lastSync.text}</div>` : '';
+    // 내 리스팅 새로고침 버튼
+    const myRefreshBtn = item.itemId
+      ? `<button onclick="battleRefreshMyListing('${esc(item.itemId)}',this)" style="padding:2px 6px;background:#2e7d32;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;margin-left:4px" title="가격/재고 즉시 갱신">🔄</button>`
+      : '';
+
     return `<tr class="${rowClass}">
       <td>${statusBadge}</td>
       <td>
@@ -3752,7 +3760,9 @@ function renderBattleTable(items) {
         <div style="margin-top:4px;display:flex;align-items:center;gap:4px">
           <span style="font-size:10px;color:#888">재고:</span>
           <input type="number" value="${item.quantity || 0}" min="0" style="width:40px;padding:2px 4px;font-size:11px;border:1px solid #ddd;border-radius:3px;text-align:center" onchange="battleUpdateStock('${esc(item.itemId)}',this.value,this)">
+          ${myRefreshBtn}
         </div>
+        ${syncBadge}
         <div style="margin-top:2px">${myLink}</div>
       </td>
       <td class="battle-price-cell" style="min-width:160px">${compCell}${addCompBtn}</td>
@@ -3911,6 +3921,40 @@ async function runSellerScan() {
   } finally {
     btn.disabled = false;
     btn.textContent = '스캔 시작';
+  }
+}
+
+// 마지막 갱신 시각 → 상대 시간 + 색상/굵기 강조
+function formatBattleRelTime(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  const minutes = Math.max(0, (Date.now() - t) / 60000);
+  let text, color = '#999', bold = false, icon = '🕒';
+  if (minutes < 60) text = Math.round(minutes) + '분 전';
+  else if (minutes < 60 * 24) text = Math.round(minutes / 60) + '시간 전';
+  else if (minutes < 60 * 24 * 7) text = Math.round(minutes / (60 * 24)) + '일 전';
+  else if (minutes < 60 * 24 * 30) text = Math.round(minutes / (60 * 24 * 7)) + '주 전';
+  else text = Math.round(minutes / (60 * 24 * 30)) + '개월 전';
+  // 색상: 6h 미만 회색, 6~24h 노랑, 24h+ 빨강 + 굵게 + 경고 아이콘
+  if (minutes >= 60 * 24) { color = '#c62828'; bold = true; icon = '🟡'; }
+  else if (minutes >= 60 * 6) { color = '#f39c12'; }
+  return { text: '갱신: ' + text, color, bold, icon };
+}
+
+// 내 eBay 리스팅 즉시 갱신 — Browse API 로 fresh fetch + ebay_products 업데이트
+async function battleRefreshMyListing(itemId, btn) {
+  if (!itemId) return;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const r = await fetch(`${API}/battle/listing/${encodeURIComponent(itemId)}/refresh`, { method: 'POST' });
+    const d = await r.json();
+    if (!d.success) throw new Error(d.error || '갱신 실패');
+    if (typeof loadBattle === 'function') loadBattle(); else location.reload();
+  } catch (e) {
+    alert('갱신 실패: ' + e.message);
+    btn.disabled = false; btn.textContent = orig;
   }
 }
 

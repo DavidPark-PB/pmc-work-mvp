@@ -2285,6 +2285,62 @@ router.post('/battle/add-competitor', async (req, res) => {
   }
 });
 
+// POST /api/battle/listing/:itemId/refresh — 내 eBay 리스팅 즉시 Browse API 갱신
+router.post('/battle/listing/:itemId/refresh', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const itemId = String(req.params.itemId || '').trim();
+    if (!/^\d{9,15}$/.test(itemId)) return res.status(400).json({ success: false, error: 'invalid itemId' });
+
+    const ebay = getEbayAPI();
+    let item = null;
+    try {
+      item = await ebay._fetchViaBrowseAPI(itemId);
+    } catch (e) {
+      // 404 = ended
+      const isGone = /not\s*found|404/i.test(e.message || '');
+      const updates = { status: isGone ? 'ended' : 'active', updated_at: new Date().toISOString() };
+      await db.from('ebay_products').update(updates).eq('item_id', itemId);
+      battleCache = null; battleCacheTime = 0;
+      return res.json({ success: true, status: updates.status, error: e.message });
+    }
+
+    const updates = {
+      price_usd: item.price || 0,
+      shipping_usd: item.shippingCost || 0,
+      stock: Number.isFinite(item.quantityAvailable) ? item.quantityAvailable : null,
+      ebay_api_stock: Number.isFinite(item.quantityAvailable) ? item.quantityAvailable : null,
+      title: item.title || null,
+      status: item.status === 'out_of_stock' ? 'active' : (item.status || 'active'),
+      updated_at: new Date().toISOString(),
+    };
+    // null stock 처리 (마이그레이션 따라 컬럼 없을 수 있음)
+    if (updates.stock === null) delete updates.stock;
+    if (updates.ebay_api_stock === null) delete updates.ebay_api_stock;
+
+    const { error: uErr } = await db.from('ebay_products').update(updates).eq('item_id', itemId);
+    if (uErr) {
+      // 일부 컬럼이 없을 수 있음 (예: title, ebay_api_stock 누락 시 그냥 핵심만)
+      const minimal = { price_usd: updates.price_usd, shipping_usd: updates.shipping_usd, updated_at: updates.updated_at };
+      await db.from('ebay_products').update(minimal).eq('item_id', itemId);
+    }
+    battleCache = null; battleCacheTime = 0;
+
+    res.json({
+      success: true,
+      itemId,
+      price: item.price,
+      shipping: item.shippingCost,
+      stock: item.quantityAvailable,
+      status: updates.status,
+    });
+  } catch (e) {
+    console.error('[battle/listing/refresh]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/battle/competitor/:id/refresh — 즉시 Browse API 재조회 + DB 갱신
 router.post('/battle/competitor/:id/refresh', async (req, res) => {
   try {
