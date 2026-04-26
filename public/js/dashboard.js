@@ -3708,8 +3708,9 @@ function renderBattleTable(items) {
             ? `<div style="font-size:9px;color:#7c4dff;margin-left:14px">└ 범위 \$${c.priceMin.toFixed(2)}~\$${c.priceMax.toFixed(2)} (${c.variantCount} 변형)${c.hasOverride ? ' · 🎯 수동 고정' : ''}</div>`
             : (c.hasOverride ? `<div style="font-size:9px;color:#7c4dff;margin-left:14px">└ 🎯 수동 고정</div>` : '');
           // 액션 버튼들
-          const refreshBtn = c.id ? `<button onclick="battleRefreshComp(${c.id},this)" style="font-size:8px;padding:0 3px;background:none;border:1px solid #1565c0;color:#1565c0;border-radius:2px;cursor:pointer;margin-left:2px" title="가격 즉시 갱신">🔄</button>` : '';
-          const overrideBtn = c.id ? `<button onclick="battleOverridePrice(${c.id}, ${c.priceMin || 0}, ${c.priceMax || 0}, ${c.rawPrice || 0}, ${c.rawShipping || 0}, ${c.hasOverride ? 1 : 0})" style="font-size:8px;padding:0 3px;background:${c.hasOverride ? '#7c4dff' : 'none'};border:1px solid #7c4dff;color:${c.hasOverride ? '#fff' : '#7c4dff'};border-radius:2px;cursor:pointer;margin-left:2px" title="가격 수동 고정">💰</button>` : '';
+          // c.id 가 UUID 라 따옴표로 감싸야 JavaScript 파싱 깨지지 않음
+          const refreshBtn = c.id ? `<button onclick="battleRefreshComp('${c.id}',this)" style="font-size:8px;padding:0 3px;background:none;border:1px solid #1565c0;color:#1565c0;border-radius:2px;cursor:pointer;margin-left:2px" title="가격 즉시 갱신">🔄</button>` : '';
+          const overrideBtn = c.id ? `<button onclick="battleOverridePrice('${c.id}', ${c.priceMin || 0}, ${c.priceMax || 0}, ${c.rawPrice || 0}, ${c.rawShipping || 0}, ${c.hasOverride ? 1 : 0})" style="font-size:8px;padding:0 3px;background:${c.hasOverride ? '#7c4dff' : 'none'};border:1px solid #7c4dff;color:${c.hasOverride ? '#fff' : '#7c4dff'};border-radius:2px;cursor:pointer;margin-left:2px" title="가격 수동 고정">💰</button>` : '';
           const delBtn = `<button onclick="battleDeleteCompetitor('${esc(item.sku)}','${esc(c.itemId || '')}',this)" style="font-size:8px;padding:0 3px;background:none;border:1px solid #c62828;color:#c62828;border-radius:2px;cursor:pointer;margin-left:2px" title="경쟁사 삭제">✕</button>`;
           const priceText = (isOOS || isEnded)
             ? `<s style="color:#999">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=\$${c.total.toFixed(2)}</s>`

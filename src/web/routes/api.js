@@ -2290,8 +2290,9 @@ router.post('/battle/competitor/:id/refresh', async (req, res) => {
   try {
     const { getClient } = require('../../db/supabaseClient');
     const db = getClient();
-    const id = parseInt(req.params.id, 10);
-    if (!Number.isFinite(id)) return res.status(400).json({ success: false, error: 'invalid id' });
+    // competitor_prices.id 는 UUID (문자열). parseInt 하면 안 됨.
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ success: false, error: 'invalid id' });
 
     const { data: comp, error: fErr } = await db.from('competitor_prices')
       .select('*').eq('id', id).maybeSingle();
@@ -2353,7 +2354,8 @@ router.post('/battle/competitor/:id/refresh', async (req, res) => {
 // PATCH /api/battle/competitor/:id/override — 수동 가격 고정 (변형 리스팅용)
 router.patch('/battle/competitor/:id/override', async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ success: false, error: 'invalid id' });
     const { price, shipping } = req.body || {};
     if (!Number.isFinite(Number(price)) || Number(price) <= 0) {
       return res.status(400).json({ success: false, error: '유효한 가격 필요' });
@@ -2379,7 +2381,8 @@ router.patch('/battle/competitor/:id/override', async (req, res) => {
 // DELETE /api/battle/competitor/:id/override — 수동 고정 해제
 router.delete('/battle/competitor/:id/override', async (req, res) => {
   try {
-    const id = parseInt(req.params.id, 10);
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ success: false, error: 'invalid id' });
     const { getClient } = require('../../db/supabaseClient');
     const db = getClient();
     const { error } = await db.from('competitor_prices').update({

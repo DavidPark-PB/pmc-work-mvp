@@ -239,14 +239,18 @@ class RepricingService {
       if (data) compRows = compRows.concat(data);
     }
 
-    // 헬퍼: override 가 있으면 그 값을 effective price/shipping 으로 사용
+    // 헬퍼: override 가 있으면 그 값을 effective price/shipping 으로 사용.
+    // 주의: Number(null) === 0 + isFinite(0) === true 라서 null 체크를 명시적으로 해야
+    //       null override 가 0 으로 잘못 매핑되지 않음.
     const effPrice = (c) => {
       const o = c.manual_price_override;
-      return Number.isFinite(Number(o)) && Number(o) > 0 ? Number(o) : Number(c.competitor_price) || 0;
+      if (o != null && Number.isFinite(Number(o)) && Number(o) > 0) return Number(o);
+      return Number(c.competitor_price) || 0;
     };
     const effShipping = (c) => {
       const o = c.manual_shipping_override;
-      return Number.isFinite(Number(o)) ? Number(o) : Number(c.competitor_shipping) || 0;
+      if (o != null && Number.isFinite(Number(o))) return Number(o);
+      return Number(c.competitor_shipping) || 0;
     };
     const isAlive = (c) => {
       const s = String(c.status || 'active');
