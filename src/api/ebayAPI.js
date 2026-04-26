@@ -241,10 +241,11 @@ class EbayAPI {
     while ((match = itemRegex.exec(xml)) !== null) {
       const itemXml = match[1];
 
-      // GetMyeBaySelling returns WRONG shipping costs (transaction-based, not listing setting)
-      // Use fixed default $3.90 (shipping profile 281980037014)
-      // This is correct for 95%+ of listings
-      const minShip = 3.90;
+      // GetMyeBaySelling returns WRONG shipping costs (transaction-based, not listing setting).
+      // 이전엔 $3.90 으로 하드코딩 → 사장님이 4.90 으로 바꿔도 sync 시 덮어쓰기 됨.
+      // 이제 null 로 두고 productSync 가 shipping_usd 를 omit → 기존 DB 값 유지.
+      // 정확한 값은 /api/battle/listing/:itemId/refresh (Browse API) 로 갱신.
+      const shippingCost = null;
 
       // Extract price from <SellingStatus><CurrentPrice> only (not from transactions)
       const sellingStatusMatch = itemXml.match(/<SellingStatus>[\s\S]*?<CurrentPrice[^>]*>([\d.]+)<\/CurrentPrice>/);
@@ -257,7 +258,7 @@ class EbayAPI {
         price: accuratePrice,
         quantity: this.extractValue(itemXml, 'Quantity'),
         quantitySold: this.extractValue(itemXml, 'QuantitySold'),
-        shippingCost: minShip,
+        shippingCost,
         listingType: this.extractValue(itemXml, 'ListingType'),
         viewUrl: this.extractValue(itemXml, 'ViewItemURL'),
         imageUrl: this.extractValue(itemXml, 'GalleryURL')

@@ -70,12 +70,11 @@ function getConflictColumn(platform) {
 
 function mapToRow(platform, item) {
   if (platform === 'ebay') {
-    return {
+    const row = {
       item_id: String(item.itemId),
       sku: item.sku || String(item.itemId),
       title: (item.title || '').slice(0, 500),
       price_usd: parseFloat(item.price) || 0,
-      shipping_usd: parseFloat(item.shippingCost) || 0,
       ebay_api_stock: parseInt(item.quantity) || 0,
       sales_count: parseInt(item.salesCount) || 0,
       status: 'active',
@@ -83,6 +82,12 @@ function mapToRow(platform, item) {
       // NOTE: stock is NOT included — preserves manual edits
       // ebay_api_stock tracks eBay's actual quantity separately
     };
+    // shipping_usd 은 Trading API 가 정확한 값 못 줄 때 (null) omit → 기존 DB 값 유지.
+    // /api/battle/listing/:itemId/refresh (Browse API) 로 별도 갱신.
+    if (item.shippingCost != null && Number.isFinite(parseFloat(item.shippingCost))) {
+      row.shipping_usd = parseFloat(item.shippingCost);
+    }
+    return row;
   }
   if (platform === 'shopify') {
     return {
