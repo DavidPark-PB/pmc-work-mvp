@@ -3654,14 +3654,23 @@ function renderBattleTable(items) {
     }
     const cheapestTotal = cheapestComp ? cheapestComp.total : null;
     const diff = cheapestTotal ? +(myTotal - cheapestTotal).toFixed(2) : null;
+    // 최소 $2 버퍼 보장: diff 가 -2 보다 크면 (= 너무 close 또는 패배) 킬프라이스 활성.
+    //   diff > 0  : 진짜 패배
+    //   -2 < diff <= 0 : 동률·근접 (1불 차이 같은 case)
+    //   diff <= -2 : 충분한 우위, 적정
+    const MIN_BUFFER = 2.00;
     const losing = diff !== null && diff > 0;
-    const killPrice = losing ? +Math.max(0.99, cheapestTotal - 2.00 - (item.myShipping || 0)).toFixed(2) : null;
+    const tooClose = diff !== null && diff <= 0 && diff > -MIN_BUFFER;
+    const needsKill = losing || tooClose;
+    const killPrice = needsKill ? +Math.max(0.99, cheapestTotal - MIN_BUFFER - (item.myShipping || 0)).toFixed(2) : null;
 
     // 모든 경쟁사 품절: 가격 인상 기회 (백엔드 플래그 또는 프론트 계산)
     const allOutOfStock = !!item.allOutOfStock || (hasComp && aliveComps.length === 0);
 
     item.diff = diff;
     item.losing = losing;
+    item.tooClose = tooClose;
+    item.needsKill = needsKill;
     item.killPrice = killPrice;
     item.myTotal = +myTotal.toFixed(2);
     item.cheapestTotal = cheapestTotal;
@@ -3678,14 +3687,15 @@ function renderBattleTable(items) {
     }
     item.raisePrice = raisePrice;
 
-    const rowClass = losing ? 'battle-row-losing' : (hasComp ? 'battle-row-winning' : '');
+    const rowClass = losing ? 'battle-row-losing' : (tooClose ? 'battle-row-warning' : (hasComp ? 'battle-row-winning' : ''));
 
     const diffClass = diff > 0 ? 'positive' : (diff < 0 ? 'negative' : 'neutral');
     const diffText = diff !== null ? `${diff > 0 ? '+' : ''}$${diff.toFixed(2)}` : '-';
 
     const statusBadge = losing
       ? '<span class="battle-status losing">패배</span>'
-      : (hasComp ? '<span class="battle-status winning">승리</span>' : '<span class="battle-status neutral">-</span>');
+      : (tooClose ? '<span class="battle-status" style="background:#ff9800;color:#fff">근접</span>'
+        : (hasComp ? '<span class="battle-status winning">승리</span>' : '<span class="battle-status neutral">-</span>'));
 
     // 경쟁사 셀: 최대 3명 세로 나열 (품절·변형 범위·수동 고정 표시)
     const compCell = hasComp
@@ -3772,8 +3782,9 @@ function renderBattleTable(items) {
         <div class="battle-diff ${diffClass}">${diffText}</div>
       </td>
       <td style="text-align:center">
-        ${item.losing && item.killPrice > 0
-          ? `<div style="font-weight:700;color:#c62828">$${item.killPrice.toFixed(2)}</div>
+        ${item.needsKill && item.killPrice > 0
+          ? `<div style="font-weight:700;color:${item.losing ? '#c62828' : '#ff9800'}">$${item.killPrice.toFixed(2)}</div>
+             ${item.tooClose ? '<div style="font-size:9px;color:#ff9800">버퍼 \$2 확보</div>' : ''}
              <button class="kill-price-btn" onclick="applyKillPrice('${esc(item.itemId)}', ${item.killPrice}, '${esc(item.sku)}')"
                      id="kill-${esc(item.itemId || item.sku)}">↓내리기</button>`
           : (item.raisePrice && item.raisePrice > item.myPrice
