@@ -2397,6 +2397,59 @@ router.delete('/battle/competitor/:id/override', async (req, res) => {
   }
 });
 
+// GET /api/battle/competitor/:id/find-similar — ended 경쟁사의 셀러가 새 itemId 로 재등록한 리스팅 후보 검색
+// query param 없이도 OK. 같은 셀러의 active 리스팅 전체 → ended row 제목과 fuzzy match → top 10.
+router.get('/battle/competitor/:id/find-similar', async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!id) return res.status(400).json({ success: false, error: 'invalid id' });
+
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data: comp } = await db.from('competitor_prices')
+      .select('id, sku, competitor_id, seller_id, title')
+      .eq('id', id).maybeSingle();
+    if (!comp) return res.status(404).json({ success: false, error: 'competitor 없음' });
+    if (!comp.seller_id) return res.status(400).json({ success: false, error: '셀러 정보 없음 (수동 추가된 row 일 수 있음)' });
+
+    const ebay = getEbayAPI();
+    const candidates = await ebay.findSellerListings(comp.seller_id, 2); // 2 pages 만 — 빠르게
+
+    // 이미 추적 중인 itemId 는 제외
+    const { data: tracked } = await db.from('competitor_prices')
+      .select('competitor_id').eq('sku', comp.sku);
+    const trackedSet = new Set((tracked || []).map(r => r.competitor_id));
+
+    // Token 기반 유사도 (Jaccard)
+    const tokenize = (s) => String(s || '').toLowerCase()
+      .replace(/[\[\](){}\/\\,.;:!?'"]/g, ' ')
+      .split(/\s+/).filter(t => t.length >= 2);
+    const baseTokens = new Set(tokenize(comp.title));
+
+    const scored = candidates
+      .filter(c => !trackedSet.has(c.itemId)) // 이미 추적 중 제외
+      .map(c => {
+        const ts = new Set(tokenize(c.title));
+        const inter = [...baseTokens].filter(t => ts.has(t)).length;
+        const union = new Set([...baseTokens, ...ts]).size;
+        const similarity = union > 0 ? inter / union : 0;
+        return { ...c, similarity };
+      })
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 15);
+
+    res.json({
+      success: true,
+      base: { sku: comp.sku, oldItemId: comp.competitor_id, oldTitle: comp.title, seller: comp.seller_id },
+      candidates: scored,
+      totalSellerListings: candidates.length,
+    });
+  } catch (e) {
+    console.error('[battle/find-similar]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // GET /api/battle/target-sellers — 타겟 셀러 목록
 router.get('/battle/target-sellers', async (req, res) => {
   try {

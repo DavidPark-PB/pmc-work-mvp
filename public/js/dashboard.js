@@ -3698,6 +3698,9 @@ function renderBattleTable(items) {
             : (isEnded ? '<span style="background:#888;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700">종료</span>'
               : (iLose ? '<span style="color:#c62828;font-size:9px;font-weight:700">▼</span>'
                        : '<span style="color:#2e7d32;font-size:9px;font-weight:700">▲</span>'));
+          const findSimilarBtn = (isOOS || isEnded) && c.id && c.seller
+            ? `<button onclick="battleFindSimilar('${c.id}','${esc(item.sku)}')" style="font-size:8px;padding:0 4px;background:#ff9800;color:#fff;border:0;border-radius:2px;cursor:pointer;margin-left:2px;font-weight:600" title="${esc(c.seller)} 의 새 리스팅 찾기">🔍 새 리스팅</button>`
+            : '';
           const link = c.url
             ? `<a href="${esc(c.url)}" target="_blank" style="font-size:10px;color:#1565c0;margin-left:3px;text-decoration:none" title="경쟁사 리스팅 열기">🔗</a>`
             : '';
@@ -3716,7 +3719,7 @@ function renderBattleTable(items) {
             ? `<s style="color:#999">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=\$${c.total.toFixed(2)}</s>`
             : `<span style="font-weight:${idx===0?'700':'400'}">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=<b>\$${c.total.toFixed(2)}</b></span>`;
           return `<div style="padding:1px 0;${dim}">
-            ${badge} <span style="font-size:11px">${priceText}</span>${sellerTag}${label}${link}${refreshBtn}${overrideBtn}${delBtn}
+            ${badge} <span style="font-size:11px">${priceText}</span>${sellerTag}${label}${link}${refreshBtn}${overrideBtn}${findSimilarBtn}${delBtn}
             ${variantInfo}
           </div>`;
         }).join('')
@@ -3973,6 +3976,107 @@ async function battleOverridePrice(compId, priceMin, priceMax, currentPrice, cur
     if (typeof loadBattle === 'function') loadBattle();
   } catch (e) {
     alert('저장 실패: ' + e.message);
+  }
+}
+
+// 셀러의 새 리스팅 검색 — ended/품절 row 의 셀러가 다른 itemId 로 재등록한 것 찾기
+async function battleFindSimilar(compId, mySku) {
+  document.getElementById('battle-find-modal')?.remove();
+  const m = document.createElement('div');
+  m.id = 'battle-find-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  m.innerHTML = `
+    <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:20px;width:820px;max-width:95vw;max-height:92vh;overflow:auto;color:#e0e0e0;" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="color:#fff;font-size:15px;margin:0;">🔍 셀러의 새 리스팅 후보</h2>
+        <button onclick="document.getElementById('battle-find-modal').remove()" style="background:transparent;border:0;color:#888;cursor:pointer;font-size:20px;">✕</button>
+      </div>
+      <div id="battle-find-body" style="min-height:120px;"><div style="padding:30px;text-align:center;color:#888;">⏳ 셀러 active 리스팅 검색 중 (10~30초)…</div></div>
+    </div>`;
+  document.body.appendChild(m);
+
+  try {
+    const r = await fetch(`${API}/battle/competitor/${compId}/find-similar`);
+    const j = await r.json();
+    const body = document.getElementById('battle-find-body');
+    if (!body) return;
+    if (!j.success) { body.innerHTML = `<div style="color:#ff8a80;padding:20px;">❌ ${j.error}</div>`; return; }
+
+    const { base, candidates, totalSellerListings } = j;
+    if (candidates.length === 0) {
+      body.innerHTML = `
+        <div style="background:#0f0f23;padding:12px;border-radius:6px;margin-bottom:10px;font-size:12px;">
+          <div style="color:#888;">기준</div>
+          <div style="color:#fff;">${base.seller} · <code>${base.oldItemId}</code></div>
+          <div style="color:#aaa;font-size:11px;">${base.oldTitle || '(제목 없음)'}</div>
+        </div>
+        <div style="padding:30px;text-align:center;color:#888;">셀러 active 리스팅 ${totalSellerListings}개 중 매칭되는 후보 없음</div>`;
+      return;
+    }
+
+    const rows = candidates.map(c => {
+      const pct = Math.round(c.similarity * 100);
+      const color = pct >= 50 ? '#4caf50' : (pct >= 25 ? '#ff9800' : '#888');
+      return `
+        <tr style="border-bottom:1px solid #2a2a4a;">
+          <td style="padding:6px 8px;text-align:center;">
+            <span style="background:${color};color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;">${pct}%</span>
+          </td>
+          <td style="padding:6px 8px;color:#fff;font-size:11px;">
+            <div>${(c.title || '').replace(/</g,'&lt;').slice(0, 100)}</div>
+            <div style="color:#888;font-size:10px;font-family:monospace;">${c.itemId}</div>
+          </td>
+          <td style="padding:6px 8px;text-align:right;color:#81d4fa;font-size:11px;white-space:nowrap;">$${(c.price || 0).toFixed(2)}<br><span style="color:#888;font-size:10px;">+$${(c.shipping || 0).toFixed(2)}</span></td>
+          <td style="padding:6px 8px;text-align:center;white-space:nowrap;">
+            <a href="https://www.ebay.com/itm/${c.itemId}" target="_blank" style="font-size:10px;color:#1565c0;margin-right:6px;">🔗</a>
+            <button onclick="battleAddSimilar('${mySku.replace(/'/g,"\\'")}','${c.itemId}',this)" style="background:#4caf50;color:#fff;border:0;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">+ 추적</button>
+          </td>
+        </tr>`;
+    }).join('');
+
+    body.innerHTML = `
+      <div style="background:#0f0f23;padding:10px 12px;border-radius:6px;margin-bottom:10px;font-size:12px;">
+        <div style="color:#888;">기준 (사라진/품절 리스팅)</div>
+        <div style="color:#fff;font-weight:600;margin-top:2px;">${base.seller} · <code style="font-size:11px;">${base.oldItemId}</code></div>
+        <div style="color:#aaa;font-size:11px;margin-top:2px;">${(base.oldTitle || '').replace(/</g,'&lt;').slice(0, 150)}</div>
+        <div style="color:#666;font-size:10px;margin-top:4px;">셀러 전체 active ${totalSellerListings}개 → 매칭 상위 ${candidates.length}개</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="background:#0f0f23;">
+            <th style="padding:6px 8px;color:#888;text-align:center;width:60px;">유사도</th>
+            <th style="padding:6px 8px;color:#888;text-align:left;">제목</th>
+            <th style="padding:6px 8px;color:#888;text-align:right;width:100px;">가격</th>
+            <th style="padding:6px 8px;color:#888;text-align:center;width:120px;">동작</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch (e) {
+    const body = document.getElementById('battle-find-body');
+    if (body) body.innerHTML = `<div style="color:#ff8a80;padding:20px;">❌ ${e.message}</div>`;
+  }
+}
+
+// 모달에서 "+ 추적" 클릭 → /battle/add-competitor 로 새 itemId 추가
+async function battleAddSimilar(mySku, itemId, btn) {
+  btn.disabled = true; btn.textContent = '...';
+  try {
+    const r = await fetch(`${API}/battle/add-competitor`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mySku, competitorItemId: itemId }),
+    });
+    const j = await r.json();
+    if (!j.success) throw new Error(j.error);
+    btn.textContent = '✓ 추가됨';
+    btn.style.background = '#2e7d32';
+    setTimeout(() => {
+      document.getElementById('battle-find-modal')?.remove();
+      if (typeof loadBattle === 'function') loadBattle();
+    }, 1200);
+  } catch (e) {
+    alert('추가 실패: ' + e.message);
+    btn.disabled = false; btn.textContent = '+ 추적';
   }
 }
 
