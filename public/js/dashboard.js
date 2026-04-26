@@ -3754,7 +3754,9 @@ function renderBattleTable(items) {
         </div>
       </td>
       <td class="battle-price-cell">
-        <div class="price-main">$${(item.myPrice || 0).toFixed(2)}</div>
+        <div class="price-main" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px" onclick="battleEditMyPrice('${esc(item.itemId)}','${esc(item.sku)}',${item.myPrice || 0})" title="클릭해서 가격 수정">
+          $${(item.myPrice || 0).toFixed(2)} <span style="font-size:10px;color:#7c4dff">✏️</span>
+        </div>
         <div class="price-ship">+$${(item.myShipping || 0).toFixed(2)} 배송</div>
         <div class="price-total">합계 $${(item.myTotal || 0).toFixed(2)}</div>
         <div style="margin-top:4px;display:flex;align-items:center;gap:4px">
@@ -3921,6 +3923,35 @@ async function runSellerScan() {
   } finally {
     btn.disabled = false;
     btn.textContent = '스캔 시작';
+  }
+}
+
+// 내 가격 직접 수정 — 전투 상황판에서 클릭 한 번으로 eBay 가격 변경
+async function battleEditMyPrice(itemId, sku, currentPrice) {
+  if (!itemId) { alert('itemId 가 없습니다'); return; }
+  const input = prompt(`새 가격을 입력하세요 (USD)\n\n현재: $${Number(currentPrice).toFixed(2)}\n\nitemId: ${itemId}\nSKU: ${sku || '(없음)'}\n\neBay 리스팅에 즉시 반영됩니다.`, Number(currentPrice).toFixed(2));
+  if (input === null) return;
+  const newPrice = Number(input);
+  if (!Number.isFinite(newPrice) || newPrice <= 0) { alert('유효한 가격이 아닙니다'); return; }
+  if (Math.abs(newPrice - currentPrice) < 0.01) return; // 변경 없음
+
+  // 큰 변동 (50%+) 한번 더 확인
+  const changePct = Math.abs(newPrice - currentPrice) / currentPrice * 100;
+  if (changePct >= 30) {
+    if (!confirm(`⚠️ 가격이 ${changePct.toFixed(0)}% 변경됩니다.\n\n$${currentPrice.toFixed(2)} → $${newPrice.toFixed(2)}\n\n실수가 아닌가요?`)) return;
+  }
+
+  try {
+    const r = await fetch(`${API}/battle/kill-price`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ itemId, newPrice, sku }),
+    });
+    const d = await r.json();
+    if (!d.success) throw new Error(d.error || '실패');
+    alert(`✅ ${itemId} 가격이 $${newPrice.toFixed(2)} 로 변경됐습니다`);
+    if (typeof loadBattle === 'function') loadBattle();
+  } catch (e) {
+    alert('❌ 변경 실패: ' + e.message);
   }
 }
 
