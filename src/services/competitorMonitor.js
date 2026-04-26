@@ -15,7 +15,7 @@ async function runCompetitorMonitor() {
   let from = 0;
   while (true) {
     const { data } = await db.from('competitor_prices')
-      .select('id, sku, competitor_id, competitor_price, competitor_shipping, seller_id, title, status')
+      .select('id, sku, competitor_id, competitor_price, competitor_shipping, seller_id, title, status, last_refreshed_at')
       .neq('competitor_id', '')
       .not('competitor_id', 'is', null)
       .range(from, from + 999);
@@ -25,8 +25,14 @@ async function runCompetitorMonitor() {
     from += 1000;
   }
 
-  const activeComps = allComps.filter(c => c.status !== 'ended');
-  console.log(`[CompetitorMonitor] ${activeComps.length} active competitors to check`);
+  // active 는 매 사이클 체크. ended 는 24h 마다 1회 재확인 (false-ended self-heal).
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  const activeComps = allComps.filter(c => {
+    if (c.status !== 'ended') return true;
+    const last = c.last_refreshed_at ? new Date(c.last_refreshed_at).getTime() : 0;
+    return last < cutoff;
+  });
+  console.log(`[CompetitorMonitor] ${activeComps.length} competitors to check (incl. stale-ended)`);
 
   if (activeComps.length === 0) return { alerts: [] };
 
@@ -42,12 +48,16 @@ async function runCompetitorMonitor() {
     const batch = itemIds.slice(i, i + 10);
     let items = [];
 
+    const failedIds = new Set();
     for (const bid of batch) {
       try {
         const browseItem = await ebay._fetchViaBrowseAPI(bid);
         if (browseItem) items.push(browseItem);
+        else failedIds.add(bid);
       } catch (e) {
-        // Browse API error for this item — skip, don't mark as ended
+        // Browse API 호출 실패 (네트워크·rate limit·404 등)
+        // — 일시적 실패면 ended 잘못 마킹되면 안 되니까 failedIds 에 기록 후 skip
+        failedIds.add(bid);
         console.warn(`[CompetitorMonitor] Browse API error for ${bid}:`, e.message);
       }
     }
@@ -66,11 +76,17 @@ async function runCompetitorMonitor() {
       const live = itemMap[comp.competitor_id];
 
       if (!live) {
-        // Only mark as ended if we got SOME results from API (not total failure)
+        // 이 itemId 의 fetch 가 실제로 실패했으면 (네트워크/rate limit/일시 오류 등)
+        // ended 마킹 절대 금지 — 다음 사이클 (2h 후) 다시 시도. 실수 ended 누적 방지.
+        if (failedIds.has(comp.competitor_id)) {
+          continue;
+        }
+        // fetch 자체는 성공했는데 응답에 없는 경우만 진짜 ended (드문 케이스)
         if (items.length > 0) {
           await db.from('competitor_prices').update({
             status: 'ended',
             prev_price: comp.competitor_price,
+            last_refreshed_at: new Date().toISOString(),
           }).eq('id', comp.id);
           alerts.push({
             type: 'ended',
@@ -81,6 +97,10 @@ async function runCompetitorMonitor() {
           });
         }
         continue;
+      }
+      // live 객체 있음 → ended 였다면 active 로 자동 복구
+      if (comp.status === 'ended') {
+        console.log(`[CompetitorMonitor] ${comp.competitor_id} 잘못 ended 마킹돼 있었음 → active 복구`);
       }
 
       const updates = {
