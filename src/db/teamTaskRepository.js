@@ -324,18 +324,20 @@ async function deleteTask(id) {
  * - today: recipient-row 기반 집계 (broadcast 1개 × N staff = N slot)
  * - perStaff: 본인 recipient 상태별 집계
  */
-async function getTodayStats() {
+async function getTodayStats({ ownerId } = {}) {
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
   const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
 
   const c = getClient();
 
-  // 오늘 범위의 task
-  const { data: todayTasks, error: e1 } = await c
+  // 오늘 범위의 task. ownerId 가 있으면 그 사장이 지시한 업무만.
+  let q = c
     .from('team_tasks')
-    .select('id, due_date, created_at')
+    .select('id, due_date, created_at, created_by')
     .or(`and(due_date.gte.${todayStart},due_date.lt.${todayEnd}),and(created_at.gte.${todayStart},created_at.lt.${todayEnd})`);
+  if (ownerId) q = q.eq('created_by', ownerId);
+  const { data: todayTasks, error: e1 } = await q;
   if (e1) throw e1;
 
   const taskIds = (todayTasks || []).map(t => t.id);

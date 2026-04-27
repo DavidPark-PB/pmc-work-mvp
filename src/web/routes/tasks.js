@@ -64,10 +64,14 @@ router.get('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/tasks/stats
+// GET /api/tasks/stats?scope=mine|all
+//   scope=mine (default) — 호출한 사장이 직접 지시한 업무만 집계
+//   scope=all            — 모든 owner 의 업무 합계
 router.get('/stats', requireAdmin, async (req, res) => {
   try {
-    const stats = await repo.getTodayStats();
+    const scope = req.query.scope || 'mine';
+    const ownerId = scope === 'all' ? undefined : req.user.id;
+    const stats = await repo.getTodayStats({ ownerId });
     res.json(stats);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
