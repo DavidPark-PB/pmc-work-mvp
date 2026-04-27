@@ -4821,7 +4821,8 @@ router.get('/thumbnail/badge/preview', async (req, res) => {
     const keyword = (req.query.keyword || '').trim();
     const custom = (req.query.custom || '').trim();
     const style = req.query.style || 'redCircle';
-    const useGemini = req.query.useGemini === 'true';
+    // useGemini 명시적 false 가 아니면 Gemini 사용 (기본 활성). 키 없으면 자연스럽게 fallback.
+    const useGemini = req.query.useGemini !== 'false';
 
     if (!keyword && !custom) return res.status(400).json({ error: '키워드 또는 자유 텍스트를 입력하세요' });
 
@@ -4831,10 +4832,13 @@ router.get('/thumbnail/badge/preview', async (req, res) => {
       return res.json({ source: 'svg', data: `data:image/png;base64,${png.toString('base64')}` });
     }
 
-    // SVG 템플릿에 없는 키워드 + Gemini 요청
+    // SVG 템플릿에 없는 키워드 → Gemini 시도 (자유 텍스트 케이스 자동 처리)
     const geminiKey = process.env.GEMINI_API_KEY;
-    if (!useGemini || !geminiKey) {
-      return res.status(400).json({ error: '프리셋에 없는 키워드입니다. Gemini 생성을 체크하거나 프리셋 중에서 선택하세요.' });
+    if (!geminiKey) {
+      return res.status(400).json({ error: 'GEMINI_API_KEY 미설정 — 관리자에게 문의 (프리셋 키워드: ' + (badgeLib.listKeywords() || []).join(', ') + ')' });
+    }
+    if (!useGemini) {
+      return res.status(400).json({ error: '프리셋에 없는 키워드. Gemini 생성을 체크하세요.' });
     }
 
     const cacheKey = `badge:${custom.toLowerCase()}:${style}`;
@@ -5058,10 +5062,12 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
     }
 
     async function doBgRemove(file) {
+      // auto 순서: Gemini 우선 (Fly.io 에서 안정적) → local → removebg.
+      //   이전: local 우선 → @imgly ONNX 모델 메모리/native binding 이슈로 hang 잦음.
       const order = provider === 'auto'
-        ? ['local', ...(geminiKey ? ['gemini'] : []), ...(rembgKey ? ['removebg'] : [])]
+        ? [...(geminiKey ? ['gemini'] : []), 'local', ...(rembgKey ? ['removebg'] : [])]
         : [provider];
-      let lastErr;
+      const errors = [];
       for (const p of order) {
         try {
           if (p === 'local') return { buffer: await callLocalBgRemove(file.buffer, file.mimetype), provider: 'local' };
@@ -5074,11 +5080,11 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
             return { buffer: await callRemoveBg(file.buffer, file.originalname), provider: 'removebg' };
           }
         } catch (e) {
-          lastErr = e;
+          errors.push(`${p}: ${e.message}`);
           console.warn(`[thumbnail] ${p} 누끼 실패:`, e.message);
         }
       }
-      throw lastErr || new Error('모든 누끼 제공자 실패');
+      throw new Error('모든 누끼 제공자 실패 — ' + errors.join(' | '));
     }
 
     const results = [];

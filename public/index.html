@@ -1285,10 +1285,10 @@
             </label>
             <div id="thumbBgOptions" style="display:none;margin-top:6px;display:flex;flex-direction:column;gap:4px;">
               <select id="thumbProvider" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-                <option value="local" selected>로컬 (@imgly, 완전 무료·무제한)</option>
+                <option value="auto" selected>자동 (Gemini → 로컬 → remove.bg, 추천)</option>
+                <option value="gemini">Gemini AI (정확도 가장 좋음, 유료)</option>
+                <option value="local">로컬 (@imgly, 무료지만 Fly 환경에선 실패 가능)</option>
                 <option value="removebg">remove.bg (월 50장 무료)</option>
-                <option value="gemini">Gemini (유료 결제 필요)</option>
-                <option value="auto">자동 (local→gemini→removebg 순서)</option>
               </select>
               <select id="thumbOutputBg" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
                 <option value="transparent">투명 배경 PNG</option>
@@ -1358,7 +1358,7 @@
               </div>
             </div>
             <label style="display:flex;gap:6px;align-items:center;font-size:11px;color:#aaa;margin-top:8px;cursor:pointer;">
-              <input type="checkbox" id="thumbBadgeUseGemini"> 프리셋에 없는 자유 텍스트는 Gemini AI로 생성 (Billing 연결 필요, 건당 ~$0.04)
+              <input type="checkbox" id="thumbBadgeUseGemini" checked> 프리셋에 없는 자유 텍스트는 Gemini AI로 생성 (체크 해제 시 프리셋만 사용)
             </label>
           </div>
         </div>
@@ -3249,7 +3249,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260426e"></script>
+  <script src="/js/dashboard.js?v=20260427a"></script>
   <script src="/js/operations.js?v=20260420a"></script>
   <script src="/js/catalog.js?v=20260424a"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->
