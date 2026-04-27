@@ -3577,7 +3577,7 @@ router.get('/b2b/prices', async (req, res) => {
 // ─── 인보이스 ───
 
 // GET /api/b2b/invoices — 인보이스 목록 + payment_status 주입 (Phase C)
-// statusGroup=active(default) | completed | all — active는 PAID 숨김
+// statusGroup=active(default) | completed | all — active 는 FULFILLED 만 숨김 (배송완료=완료보관소)
 router.get('/b2b/invoices', async (req, res) => {
   try {
     const { buyerId, status, fromDate, toDate } = req.query;
@@ -4023,6 +4023,29 @@ router.post('/b2b/invoices/:id/status', async (req, res) => {
   } catch (error) {
     console.error('❌ B2B invoice 상태 변경 에러:', error.message);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// PATCH /api/b2b/invoices/:id — 인보이스 메타 편집 (날짜·만기·통화·상태)
+router.patch('/b2b/invoices/:id', async (req, res) => {
+  try {
+    const { invoiceDate, dueDate, currency, status } = req.body || {};
+    const result = await getB2BService().updateInvoice(req.params.id, { invoiceDate, dueDate, currency, status });
+    res.json({ success: true, ...result });
+  } catch (e) {
+    console.error('❌ B2B invoice 수정 에러:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// DELETE /api/b2b/invoices/:id — 인보이스 영구 삭제 (Sheet 행 비우기 + DB 삭제)
+router.delete('/b2b/invoices/:id', async (req, res) => {
+  try {
+    const result = await getB2BService().deleteInvoice(req.params.id);
+    res.json({ success: true, ...result });
+  } catch (e) {
+    console.error('❌ B2B invoice 삭제 에러:', e.message);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 

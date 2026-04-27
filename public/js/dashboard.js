@@ -6946,6 +6946,8 @@ async function loadB2BInvoiceList() {
             <button onclick="b2bAttachFile('${inv.InvoiceNo}', ${inv.OriginalFilePath ? 'true' : 'false'})" title="${inv.OriginalFilePath ? '첨부 파일 교체' : '파일 첨부'}" style="background:#4caf50;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">${inv.OriginalFilePath ? '🔁' : '📎'}</button>
             ${paidStatus !== 'PAID' ? `<button onclick="b2bMarkPaid('${inv.InvoiceNo}')" style="background:#27ae60;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">PAID</button>` : ''}
             <button onclick="b2bSendWhatsApp('${inv.InvoiceNo}')" style="background:#25d366;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">WA</button>
+            <button onclick="b2bEditInvoice('${inv.InvoiceNo}','${(inv.Date||'').replace(/'/g,'')}','${(inv.DueDate||'').replace(/'/g,'')}','${inv.Currency||'USD'}','${inv.Status||''}')" title="수정" style="background:#7c4dff;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">✏️</button>
+            <button onclick="b2bDeleteInvoice('${inv.InvoiceNo}')" title="영구 삭제" style="background:#9c1a1a;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🗑</button>
             <button onclick="b2bVoidInvoice('${inv.InvoiceNo}')" title="무효화" style="background:#c62828;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🚫</button>
           </div>
         </td>
@@ -6953,6 +6955,91 @@ async function loadB2BInvoiceList() {
     }).join('');
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="7" class="empty" style="color:#c62828">${err.message}</td></tr>`;
+  }
+}
+
+// 인보이스 메타 편집 — 모달로 발행일/만기/통화/상태 수정
+function b2bEditInvoice(invoiceNo, invoiceDate, dueDate, currency, status) {
+  document.getElementById('b2b-edit-inv-modal')?.remove();
+  const m = document.createElement('div');
+  m.id = 'b2b-edit-inv-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  m.innerHTML = `
+    <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:20px;width:480px;max-width:95vw;color:#e0e0e0;" onclick="event.stopPropagation()">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <h2 style="color:#fff;font-size:16px;margin:0;">✏️ 인보이스 수정 <span style="color:#888;font-size:12px;font-weight:400;">${invoiceNo}</span></h2>
+        <button onclick="document.getElementById('b2b-edit-inv-modal').remove()" style="background:transparent;border:0;color:#888;cursor:pointer;font-size:20px;">✕</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+        <div>
+          <label style="font-size:11px;color:#888;">발행일</label>
+          <input type="date" id="ei-date" value="${invoiceDate || ''}" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:13px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;">만기/유효일</label>
+          <input type="date" id="ei-due" value="${dueDate || ''}" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:13px;">
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;">
+        <div>
+          <label style="font-size:11px;color:#888;">통화</label>
+          <select id="ei-ccy" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:13px;">
+            ${['USD','EUR','KRW','JPY','GBP'].map(c => `<option value="${c}" ${c === currency ? 'selected' : ''}>${c}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#888;">상태</label>
+          <select id="ei-status" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:13px;">
+            ${['CREATED','SENT','PAID','PARTIALLY_SHIPPED','FULFILLED','CANCELLED'].map(s => `<option value="${s}" ${s === status ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div id="ei-msg" style="font-size:12px;min-height:16px;margin-bottom:6px;"></div>
+      <div style="text-align:right;">
+        <button onclick="document.getElementById('b2b-edit-inv-modal').remove()" style="padding:7px 14px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;margin-right:4px;">취소</button>
+        <button onclick="b2bEditInvoiceSave('${invoiceNo}',this)" style="padding:7px 18px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">저장</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+}
+
+async function b2bEditInvoiceSave(invoiceNo, btn) {
+  const payload = {
+    invoiceDate: document.getElementById('ei-date').value || undefined,
+    dueDate: document.getElementById('ei-due').value || undefined,
+    currency: document.getElementById('ei-ccy').value,
+    status: document.getElementById('ei-status').value,
+  };
+  btn.disabled = true; btn.textContent = '저장 중...';
+  try {
+    const r = await fetch(`${API}/b2b/invoices/${encodeURIComponent(invoiceNo)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!d.success) throw new Error(d.error || '저장 실패');
+    document.getElementById('b2b-edit-inv-modal').remove();
+    if (typeof loadB2BInvoiceList === 'function') loadB2BInvoiceList();
+    if (typeof loadB2BArchive === 'function') loadB2BArchive();
+  } catch (e) {
+    alert('저장 실패: ' + e.message);
+    btn.disabled = false; btn.textContent = '저장';
+  }
+}
+
+// 인보이스 영구 삭제 — 무효화와 다름. Sheet/DB 행 자체 삭제.
+async function b2bDeleteInvoice(invoiceNo, fromArchive) {
+  if (!confirm(`⚠️ 인보이스 ${invoiceNo} 를 영구 삭제합니다.\n\n무효화 (🚫) 와 달리 데이터가 완전히 사라지고 되돌릴 수 없습니다.\n발송·결제 기록도 함께 삭제됩니다.\n\n계속하시겠어요?`)) return;
+  if (!confirm('정말로 삭제? (한 번 더 확인)')) return;
+  try {
+    const r = await fetch(`${API}/b2b/invoices/${encodeURIComponent(invoiceNo)}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (!d.success) throw new Error(d.error || '삭제 실패');
+    alert(`🗑 ${invoiceNo} 삭제 완료`);
+    if (fromArchive && typeof loadB2BArchive === 'function') loadB2BArchive();
+    else if (typeof loadB2BInvoiceList === 'function') loadB2BInvoiceList();
+  } catch (e) {
+    alert('삭제 실패: ' + e.message);
   }
 }
 
@@ -7414,7 +7501,7 @@ async function loadB2BArchive() {
 
     if (filtered.length === 0) {
       summaryHost.innerHTML = '완료된 인보이스가 없습니다.';
-      contentHost.innerHTML = '<div style="padding:40px;text-align:center;color:#888;">PAID 처리된 인보이스가 아직 없습니다. 인보이스 완납(PAID) 시 자동으로 여기 보관됩니다.</div>';
+      contentHost.innerHTML = '<div style="padding:40px;text-align:center;color:#888;">배송 완료된 인보이스가 아직 없습니다. 모든 품목 발송 완료 (FULFILLED) 시 자동으로 여기 보관됩니다.</div>';
       return;
     }
 
@@ -7481,6 +7568,8 @@ async function loadB2BArchive() {
                     <td style="padding:4px;text-align:center;white-space:nowrap;">
                       <a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="padding:2px 6px;background:#0288d1;color:#fff;border-radius:3px;text-decoration:none;font-size:10px;font-weight:600;">XLSX</a>
                       <button onclick="b2bOpenShipmentModal('${inv.InvoiceNo}')" style="padding:2px 6px;background:#1565c0;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;margin-left:2px;">🚚</button>
+                      <button onclick="b2bEditInvoice('${inv.InvoiceNo}','${(inv.Date||'').replace(/'/g,'')}','${(inv.DueDate||'').replace(/'/g,'')}','${inv.Currency||'USD'}','${inv.Status||''}')" style="padding:2px 6px;background:#7c4dff;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;margin-left:2px;" title="수정">✏️</button>
+                      <button onclick="b2bDeleteInvoice('${inv.InvoiceNo}',true)" style="padding:2px 6px;background:#9c1a1a;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;margin-left:2px;" title="영구 삭제">🗑</button>
                     </td>
                   </tr>
                 `).join('')}

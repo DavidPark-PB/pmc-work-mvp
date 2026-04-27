@@ -1008,15 +1008,115 @@ class B2BInvoiceService {
     if (filters.fromDate) invoices = invoices.filter(i => i.Date >= filters.fromDate);
     if (filters.toDate) invoices = invoices.filter(i => i.Date <= filters.toDate);
 
-    // statusGroup: 진행 상태별 필터 (active=진행중 / completed=완료 / all=전체)
-    // 완료=PAID (결제 완료된 것). 메인 목록 기본값은 active로 PAID 숨김.
+    // statusGroup: 진행 상태별 필터.
+    //   active    = CREATED / SENT / PAID / PARTIALLY_SHIPPED — 아직 배송 진행 중
+    //   completed = FULFILLED — 배송 완료된 것만 보관소
+    //   all       = 전체
+    // PAID(결제완료) 도 배송이 안 끝났으면 active 에 남아있어야 한다.
     if (filters.statusGroup === 'active') {
-      invoices = invoices.filter(i => i.Status !== 'PAID');
+      invoices = invoices.filter(i => i.Status !== 'FULFILLED');
     } else if (filters.statusGroup === 'completed') {
-      invoices = invoices.filter(i => i.Status === 'PAID');
+      invoices = invoices.filter(i => i.Status === 'FULFILLED');
     }
 
     return invoices;
+  }
+
+  /**
+   * 인보이스 메타 편집 — 발행일·만기·통화·상태·노트 등 (items 변경은 미지원, totals 도 그대로).
+   *   허용 필드: invoiceDate, dueDate, currency, status, notes
+   * Sheet 컬럼 매핑: A InvoiceNo / D Date / E DueDate / K Currency / L Status
+   * (Notes 는 Sheet 에 별도 컬럼 없어서 Supabase 에만 저장)
+   */
+  async updateInvoice(invoiceNo, fields = {}) {
+    const rows = await this.sheets.readData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A:P`);
+    if (!rows || rows.length <= 1) throw new Error('인보이스 데이터 없음');
+    const rowIndex = rows.findIndex((r, i) => i > 0 && r[0] === invoiceNo);
+    if (rowIndex === -1) throw new Error(`인보이스 ${invoiceNo} 없음`);
+    const sheetRow = rowIndex + 1;
+    const existing = rows[rowIndex];
+
+    // 부분 update 위해 cell range 별 write
+    if (fields.invoiceDate !== undefined) {
+      await this.sheets.writeData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!D${sheetRow}`, [[String(fields.invoiceDate || '')]]);
+      existing[3] = String(fields.invoiceDate || '');
+    }
+    if (fields.dueDate !== undefined) {
+      await this.sheets.writeData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!E${sheetRow}`, [[String(fields.dueDate || '')]]);
+      existing[4] = String(fields.dueDate || '');
+    }
+    if (fields.currency !== undefined) {
+      await this.sheets.writeData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!K${sheetRow}`, [[String(fields.currency || 'USD').toUpperCase()]]);
+      existing[10] = fields.currency;
+    }
+    if (fields.status !== undefined) {
+      await this.sheets.writeData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!L${sheetRow}`, [[String(fields.status)]]);
+      existing[11] = fields.status;
+    }
+
+    // Supabase 도 동기화 (있으면)
+    try {
+      const B2BRepo = require('../db/b2bRepository');
+      const repo = new B2BRepo();
+      await repo.createInvoice({
+        InvoiceNo: invoiceNo,
+        BuyerID: existing[1],
+        BuyerName: existing[2],
+        Date: existing[3],
+        DueDate: existing[4],
+        Items: (() => { try { return JSON.parse(existing[5] || '[]'); } catch { return []; } })(),
+        Subtotal: parseFloat(existing[6]) || 0,
+        Tax: parseFloat(existing[7]) || 0,
+        Shipping: parseFloat(existing[8]) || 0,
+        Total: parseFloat(existing[9]) || 0,
+        Currency: existing[10],
+        Status: existing[11],
+        DriveFileId: existing[12],
+        DriveUrl: existing[13],
+      });
+    } catch (e) { console.warn('[updateInvoice] Supabase 동기화 실패:', e.message); }
+
+    console.log(`✅ 인보이스 ${invoiceNo} 메타 수정`);
+    return { invoiceNo, ...fields };
+  }
+
+  /**
+   * 인보이스 영구 삭제 — Sheet 행 비우기 + Supabase 행 삭제 + 첨부 정리.
+   * 무효화(void)와 다름: 데이터 자체 사라짐. 매출 통계 재계산 위해 buyer stats 갱신.
+   */
+  async deleteInvoice(invoiceNo) {
+    const rows = await this.sheets.readData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A:P`);
+    if (!rows || rows.length <= 1) throw new Error('인보이스 데이터 없음');
+    const rowIndex = rows.findIndex((r, i) => i > 0 && r[0] === invoiceNo);
+    if (rowIndex === -1) throw new Error(`인보이스 ${invoiceNo} 없음`);
+    const sheetRow = rowIndex + 1;
+    const buyerId = rows[rowIndex][1];
+
+    // 1. Sheet 행 비움 (행 자체는 남지만 InvoiceNo 빈 칸 → getInvoices 필터됨)
+    await this.sheets.clearData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A${sheetRow}:P${sheetRow}`);
+
+    // 2. Supabase 삭제
+    try {
+      const { getClient } = require('../db/supabaseClient');
+      const db = getClient();
+      // 첨부 파일 storage 정리
+      const { data: inv } = await db.from('b2b_invoices').select('original_file_path').eq('invoice_no', invoiceNo).maybeSingle();
+      if (inv?.original_file_path) {
+        try { await db.storage.from('b2b-manual').remove([inv.original_file_path]); } catch {}
+      }
+      // shipments / payments 도 cascade 가 없을 수 있으니 명시 삭제
+      await db.from('b2b_shipments').delete().eq('invoice_no', invoiceNo).then(() => {}).catch(() => {});
+      await db.from('b2b_payments').delete().eq('invoice_no', invoiceNo).then(() => {}).catch(() => {});
+      await db.from('b2b_invoices').delete().eq('invoice_no', invoiceNo);
+    } catch (e) { console.warn('[deleteInvoice] Supabase 삭제 실패:', e.message); }
+
+    // 3. buyer 통계 재계산
+    if (buyerId) {
+      try { await this._updateBuyerStats(buyerId); } catch {}
+    }
+
+    console.log(`🗑 인보이스 ${invoiceNo} 영구 삭제`);
+    return { invoiceNo, deleted: true };
   }
 
   /**
