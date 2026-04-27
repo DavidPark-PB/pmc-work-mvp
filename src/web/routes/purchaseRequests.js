@@ -23,7 +23,7 @@ const REJECT_LABELS = {
 };
 
 const ATT_BUCKET = 'task-attachments';
-const MAX_ATT_BYTES = 5 * 1024 * 1024;           // 압축 전 원본 기준 5MB
+const MAX_ATT_BYTES = 15 * 1024 * 1024;          // 압축 전 원본 기준 15MB (iPhone HEIC·고화질 JPEG 수용)
 const MAX_ATT_PER_REQUEST = 5;
 const ALLOWED_IMAGE_MIME = /^image\/(jpeg|jpg|png|webp|heic|heif)$/i;
 
@@ -66,7 +66,8 @@ async function compressImage(buffer) {
 
 function canModifyAttachment(user, request) {
   if (user.isAdmin) return true;
-  return request.requested_by === user.id && request.status === 'pending';
+  // 본인 요청이면 status 무관 첨부 허용 (pending 외 ordered·approved 단계에서도 영수증·증빙 추가 가능)
+  return request.requested_by === user.id;
 }
 
 // GET /api/purchase-requests — 전 직원 조회 (scope=mine 시 본인 요청만)
