@@ -7027,6 +7027,35 @@ async function b2bEditInvoiceSave(invoiceNo, btn) {
   }
 }
 
+// 완료 보관소 → 인보이스 목록 복귀 (FULFILLED → 다른 status)
+async function b2bRestoreFromArchive(invoiceNo) {
+  const STATUSES = [
+    { v: 'PAID', label: 'PAID (결제 완료, 발송 진행 중)' },
+    { v: 'PARTIALLY_SHIPPED', label: 'PARTIALLY_SHIPPED (부분 발송)' },
+    { v: 'SENT', label: 'SENT (발송 전, 인보이스만 보냄)' },
+    { v: 'CREATED', label: 'CREATED (작성만)' },
+  ];
+  const promptText = `${invoiceNo} 를 인보이스 목록으로 되돌립니다.\n\n새 상태를 숫자로 선택하세요:\n` +
+    STATUSES.map((s, i) => `${i + 1}. ${s.label}`).join('\n') + '\n\n(취소 = Cancel, 기본 = 1)';
+  const input = prompt(promptText, '1');
+  if (input === null) return;
+  const idx = parseInt(input, 10) - 1;
+  const newStatus = STATUSES[idx]?.v || 'PAID';
+  try {
+    const r = await fetch(`${API}/b2b/invoices/${encodeURIComponent(invoiceNo)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus }),
+    });
+    const d = await r.json();
+    if (!d.success) throw new Error(d.error || '실패');
+    alert(`✅ ${invoiceNo} → ${newStatus} 로 복귀. 인보이스 목록에서 확인하세요.`);
+    if (typeof loadB2BArchive === 'function') loadB2BArchive();
+    if (typeof loadB2BInvoiceList === 'function') loadB2BInvoiceList();
+  } catch (e) {
+    alert('복귀 실패: ' + e.message);
+  }
+}
+
 // 인보이스 영구 삭제 — 무효화와 다름. Sheet/DB 행 자체 삭제.
 async function b2bDeleteInvoice(invoiceNo, fromArchive) {
   if (!confirm(`⚠️ 인보이스 ${invoiceNo} 를 영구 삭제합니다.\n\n무효화 (🚫) 와 달리 데이터가 완전히 사라지고 되돌릴 수 없습니다.\n발송·결제 기록도 함께 삭제됩니다.\n\n계속하시겠어요?`)) return;
@@ -7568,6 +7597,7 @@ async function loadB2BArchive() {
                     <td style="padding:4px;text-align:center;white-space:nowrap;">
                       <a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="padding:2px 6px;background:#0288d1;color:#fff;border-radius:3px;text-decoration:none;font-size:10px;font-weight:600;">XLSX</a>
                       <button onclick="b2bOpenShipmentModal('${inv.InvoiceNo}')" style="padding:2px 6px;background:#1565c0;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;margin-left:2px;">🚚</button>
+                      <button onclick="b2bRestoreFromArchive('${inv.InvoiceNo}')" style="padding:2px 6px;background:#ff9800;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;margin-left:2px;" title="목록으로 되돌리기">🔙 되돌리기</button>
                       <button onclick="b2bEditInvoice('${inv.InvoiceNo}','${(inv.Date||'').replace(/'/g,'')}','${(inv.DueDate||'').replace(/'/g,'')}','${inv.Currency||'USD'}','${inv.Status||''}')" style="padding:2px 6px;background:#7c4dff;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;margin-left:2px;" title="수정">✏️</button>
                       <button onclick="b2bDeleteInvoice('${inv.InvoiceNo}',true)" style="padding:2px 6px;background:#9c1a1a;color:#fff;border:0;border-radius:3px;cursor:pointer;font-size:10px;font-weight:600;margin-left:2px;" title="영구 삭제">🗑</button>
                     </td>
