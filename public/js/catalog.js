@@ -253,7 +253,12 @@
       it.euroPrice = result.updated.eur;
     }
     renderTable();
-    showSaveToast(`${result.formatted.USD} / ${result.formatted.KRW} / ${result.formatted.EURO} 저장됨`);
+    if (result.partialFailures && result.partialFailures.length > 0) {
+      const fails = result.partialFailures.map(f => `${f.label}: ${f.error}`).join('\n');
+      alert(`⚠️ 일부 시트 갱신 실패\n\n${fails}\n\n성공한 시트는 저장됐고 화면도 갱신됐습니다. 실패한 시트는 권한 문제일 수 있어요.`);
+    } else {
+      showSaveToast(`${result.formatted.USD} / ${result.formatted.KRW} / ${result.formatted.EURO} 저장됨`);
+    }
   }
 
   function showSaveToast(msg) {

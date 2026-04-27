@@ -381,12 +381,27 @@ async function updatePrice({ tab, rowIndex, side, usdPrice }) {
     EURO: `€${eur}`,
   };
 
-  // 3개 시트 병렬 업데이트 (각 통화 전용 탭에 기록)
-  await Promise.all([
+  // 3개 시트 병렬 업데이트 (각 통화 전용 탭에 기록).
+  //   allSettled 로 한 시트 실패가 다른 시트 성공을 막지 않도록 + 어느 게 실패했는지 로그.
+  const writes = await Promise.allSettled([
     s.writeData(SHEET_IDS.USD, rangeUSD, [[fmt.USD]]),
     s.writeData(SHEET_IDS.KRW, rangeKRW, [[fmt.KRW]]),
     s.writeData(SHEET_IDS.EURO, rangeEURO, [[fmt.EURO]]),
   ]);
+  const labels = ['USD', 'KRW', 'EURO'];
+  const failures = writes
+    .map((r, i) => ({ label: labels[i], range: [rangeUSD, rangeKRW, rangeEURO][i], result: r }))
+    .filter(x => x.result.status === 'rejected');
+  if (failures.length > 0) {
+    console.error('[catalog/updatePrice] 일부 시트 업데이트 실패:');
+    for (const f of failures) console.error(`  - ${f.label} (${f.range}):`, f.result.reason?.message || f.result.reason);
+    // 모두 실패면 throw, 일부만 실패면 결과에 포함해 응답 (성공한 USD 는 살아있음)
+    if (failures.length === writes.length) {
+      throw new Error('모든 시트 업데이트 실패: ' + failures.map(f => `${f.label}=${f.result.reason?.message || 'unknown'}`).join('; '));
+    }
+  } else {
+    console.log(`[catalog/updatePrice] ✅ ${tab} row=${rowIndex} side=${side} usd=${usd} → KRW ${krw}, EUR ${eur} 전체 시트 갱신`);
+  }
 
   return {
     tab, rowIndex, side,
@@ -394,6 +409,9 @@ async function updatePrice({ tab, rowIndex, side, usdPrice }) {
     updated: { usd, krw, eur },
     formatted: fmt,
     rates: { usdToKrw: rates.usdToKrw, usdToEur: rates.usdToEur },
+    partialFailures: writes
+      .map((r, i) => ({ label: labels[i], ok: r.status === 'fulfilled', error: r.status === 'rejected' ? (r.reason?.message || String(r.reason)) : null }))
+      .filter(x => !x.ok),
   };
 }
 
