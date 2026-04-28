@@ -339,18 +339,19 @@
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
         osc.connect(gain); gain.connect(audioCtx.destination);
-        // 긴급은 3번, 일반은 2번 beep
-        const beeps = urgent ? 3 : 2;
-        const freq = urgent ? 1100 : 880;
+        // 사무실 큰 소리용: 긴급 5회 / 일반 4회. gain 0.5 (이전 0.15) 로 약 3배 큼.
+        const beeps = urgent ? 5 : 4;
+        const freq = urgent ? 1200 : 950;
+        const peak = urgent ? 0.6 : 0.45;
         for (let i = 0; i < beeps; i++) {
-          const t = now + i * 0.22;
+          const t = now + i * 0.25;
           gain.gain.setValueAtTime(0.0, t);
-          gain.gain.exponentialRampToValueAtTime(0.15, t + 0.02);
-          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+          gain.gain.exponentialRampToValueAtTime(peak, t + 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
         }
         osc.frequency.value = freq;
         osc.start(now);
-        osc.stop(now + beeps * 0.22);
+        osc.stop(now + beeps * 0.25);
       } catch (e) { console.warn('[beep]', e.message); }
     }
 
@@ -460,15 +461,28 @@
     function handleEvent(ev) {
       if (!ev || !ev.type) return;
       if (ev.type === 'connected') { console.log('[SSE] connected'); return; }
-      if (ev.type === 'task_assigned') {
-        const title = ev.urgent ? '🚨 [긴급] 새 업무 지시' : '📋 새 업무 지시';
-        const body = ev.title || '업무가 할당되었습니다';
-        if (document.hidden) bumpTitle();
-        playBeep(ev.urgent);
-        showToast(title, body, ev.linkUrl || '/?page=tasks', ev.urgent);
-        showDesktop(title, body, ev.linkUrl || '/?page=tasks');
-        if (typeof updateNotifBadge === 'function') updateNotifBadge();
-      }
+
+      // 이벤트 타입 → 토스트 메타데이터 (사장님 액션은 사무실 소리 빵빵)
+      const metas = {
+        task_assigned:        { icon: ev.urgent ? '🚨' : '📋', label: ev.urgent ? '[긴급] 새 업무 지시' : '새 업무 지시', link: '/?page=tasks', urgent: ev.urgent },
+        purchase_requested:   { icon: '🛒', label: '발주 요청 도착', link: '/?page=orders', urgent: false },
+        purchase_approved:    { icon: '✅', label: '발주 승인됨', link: '/?page=orders', urgent: false },
+        purchase_rejected:    { icon: '❌', label: '발주 반려됨', link: '/?page=orders', urgent: true },
+        purchase_ordered:     { icon: '🚚', label: '발주 주문 완료', link: '/?page=orders', urgent: false },
+        expense_created:      { icon: '💸', label: '지출 등록됨', link: '/?page=expenses', urgent: false },
+        expense_receipt:      { icon: '🧾', label: '영수증 첨부됨', link: '/?page=expenses', urgent: false },
+        b2b_invoice_created:  { icon: '📄', label: 'B2B 인보이스 발행', link: '/?page=b2b', urgent: false },
+      };
+      const meta = metas[ev.type];
+      if (!meta) return;
+
+      const title = `${meta.icon} ${meta.label}`;
+      const body = ev.title || ev.body || '';
+      if (document.hidden) bumpTitle();
+      playBeep(meta.urgent);
+      showToast(title, body, ev.linkUrl || meta.link, meta.urgent);
+      showDesktop(title, body, ev.linkUrl || meta.link);
+      if (typeof updateNotifBadge === 'function') updateNotifBadge();
     }
 
     // 6) SSE 연결

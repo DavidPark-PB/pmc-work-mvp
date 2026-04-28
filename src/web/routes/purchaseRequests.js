@@ -9,7 +9,8 @@ const sharp = require('sharp');
 const { requireAdmin } = require('../../middleware/auth');
 const repo = require('../../db/purchaseRequestRepository');
 const attRepo = require('../../db/purchaseRequestAttachmentRepository');
-const { notify, notifyAdmins } = require('../../services/notificationService');
+const { notify, notifyAdmins, getAdminIds } = require('../../services/notificationService');
+const sseHub = require('../../services/sseHub');
 const { getClient } = require('../../db/supabaseClient');
 
 const router = express.Router();
@@ -120,14 +121,17 @@ router.post('/', async (req, res) => {
     });
 
     if (!req.user.isAdmin) {
+      const body = `${req.user.displayName} · ${created.product_name} × ${created.quantity}`;
       await notifyAdmins({
         type: 'purchase_requested',
         title: created.priority === 'urgent' ? '[긴급] 새 발주 요청' : '새 발주 요청',
-        body: `${req.user.displayName} · ${created.product_name} × ${created.quantity}`,
+        body,
         linkUrl: '/?page=orders',
         relatedType: 'purchase_request',
         relatedId: created.id,
       });
+      const adminIds = await getAdminIds();
+      sseHub.sendToMany(adminIds, { type: 'purchase_requested', title: body, linkUrl: '/?page=orders' });
     }
 
     res.json({ data: created });
@@ -199,15 +203,17 @@ router.patch('/:id/approve', requireAdmin, async (req, res) => {
       rejection_note: null,
     });
 
+    const aBody = `${existing.product_name} × ${existing.quantity} — 구매 승인`;
     await notify({
       recipientId: existing.requested_by,
       type: 'purchase_approved',
       title: '발주 승인됨',
-      body: `${existing.product_name} × ${existing.quantity} — 구매 승인`,
+      body: aBody,
       linkUrl: '/?page=orders',
       relatedType: 'purchase_request',
       relatedId: id,
     });
+    sseHub.sendTo(existing.requested_by, { type: 'purchase_approved', title: aBody, linkUrl: '/?page=orders' });
 
     res.json({ data: updated });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -232,15 +238,17 @@ router.patch('/:id/reject', requireAdmin, async (req, res) => {
       rejection_note: note?.trim() || null,
     });
 
+    const rBody = `${existing.product_name} — ${REJECT_LABELS[reason]}${note ? ': ' + note : ''}`;
     await notify({
       recipientId: existing.requested_by,
       type: 'purchase_rejected',
       title: '발주 반려됨',
-      body: `${existing.product_name} — ${REJECT_LABELS[reason]}${note ? ': ' + note : ''}`,
+      body: rBody,
       linkUrl: '/?page=orders',
       relatedType: 'purchase_request',
       relatedId: id,
     });
+    sseHub.sendTo(existing.requested_by, { type: 'purchase_rejected', title: rBody, linkUrl: '/?page=orders' });
 
     res.json({ data: updated });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -265,15 +273,17 @@ router.patch('/:id/order', async (req, res) => {
 
     // 요청자에게 알림 (주문자 본인이면 생략)
     if (existing.requested_by && existing.requested_by !== req.user.id) {
+      const oBody = `${existing.product_name} × ${existing.quantity} — ${req.user.displayName} 주문`;
       await notify({
         recipientId: existing.requested_by,
         type: 'purchase_ordered',
         title: '발주 주문완료',
-        body: `${existing.product_name} × ${existing.quantity} — ${req.user.displayName} 주문`,
+        body: oBody,
         linkUrl: '/?page=orders',
         relatedType: 'purchase_request',
         relatedId: id,
       });
+      sseHub.sendTo(existing.requested_by, { type: 'purchase_ordered', title: oBody, linkUrl: '/?page=orders' });
     }
 
     res.json({ data: updated });

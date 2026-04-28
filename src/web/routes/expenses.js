@@ -133,6 +133,20 @@ router.post('/', async (req, res) => {
         createdBy: req.user.id,
       });
     }
+    // 재무·관리자에게 실시간 SSE — 사무실에서 누가 지출 등록했는지 즉시 인지
+    try {
+      const sseHub = require('../../services/sseHub');
+      const { getAdminIds } = require('../../services/notificationService');
+      const adminIds = await getAdminIds();
+      const recipients = adminIds.filter(id => id !== req.user.id); // 본인 빼고
+      const fmtAmt = `${created.currency || 'KRW'} ${Math.round(Math.abs(created.amount)).toLocaleString()}`;
+      sseHub.sendToMany(recipients, {
+        type: 'expense_created',
+        title: `${req.user.displayName || '직원'} · ${created.category || '미분류'} · ${fmtAmt}`,
+        linkUrl: '/?page=expenses',
+      });
+    } catch (e) { console.warn('[expense SSE]', e.message); }
+
     res.json({ data: created });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
