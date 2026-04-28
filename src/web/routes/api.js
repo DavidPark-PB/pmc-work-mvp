@@ -3651,22 +3651,33 @@ async function _ensureInvoiceInSupabase(invoiceNo, repo) {
 }
 
 /** 인보이스별 items에 shippedQty 계산해 주입 */
+// SKU 가 없는 품목 (수기 라인·할인·수수료 등) 도 발송 추적되도록 합성 키 생성.
+// 같은 인보이스 내에서 동일 (sku||name) 항목은 같은 키 → shipped 누적.
+function _itemKey(it) {
+  const sku = (it.sku || it.SKU || '').trim();
+  if (sku) return sku;
+  const name = (it.name || it.Name || '').trim();
+  return name ? '@' + name.slice(0, 80) : '@__unnamed__';
+}
+
 function _injectShippedQty(invoices, shipments) {
   const byInvoice = new Map();
   for (const s of shipments) {
     if (!byInvoice.has(s.invoiceNo)) byInvoice.set(s.invoiceNo, new Map());
     const skuMap = byInvoice.get(s.invoiceNo);
     for (const it of s.items || []) {
-      skuMap.set(it.sku, (skuMap.get(it.sku) || 0) + Number(it.qty || 0));
+      // shipment items 의 sku 도 동일 합성 키 적용 (이전엔 raw it.sku)
+      skuMap.set(_itemKey(it), (skuMap.get(_itemKey(it)) || 0) + Number(it.qty || 0));
     }
   }
   return invoices.map(inv => {
     const skuMap = byInvoice.get(inv.InvoiceNo) || new Map();
     const items = (inv.ItemsParsed || (typeof inv.Items === 'string' ? (() => { try { return JSON.parse(inv.Items); } catch { return []; } })() : inv.Items) || []);
     const enriched = items.map(it => {
-      const sk = it.sku || it.SKU || '';
-      const shipped = skuMap.get(sk) || 0;
-      return { ...it, shippedQty: shipped, remainingQty: Math.max(0, (Number(it.qty || 0)) - shipped) };
+      const key = _itemKey(it);
+      const shipped = skuMap.get(key) || 0;
+      // 프론트에서 sku 필드를 그대로 사용하므로 합성 키를 sku 로 채움 (없을 때만)
+      return { ...it, sku: it.sku || it.SKU || key, shippedQty: shipped, remainingQty: Math.max(0, (Number(it.qty || 0)) - shipped) };
     });
     const totalOrdered = enriched.reduce((s, it) => s + (Number(it.qty || 0)), 0);
     const totalShipped = enriched.reduce((s, it) => s + (Number(it.shippedQty || 0)), 0);
@@ -3682,11 +3693,16 @@ router.post('/b2b/invoices/:id/shipments', async (req, res) => {
     if (!trackingNumber || !String(trackingNumber).trim()) {
       return res.status(400).json({ success: false, error: '송장번호를 입력하세요' });
     }
+    // SKU 빈 항목도 합성 키로 처리 (할인·수수료·수기 라인 등) — _itemKey 와 동일 로직.
     const cleanItems = (Array.isArray(items) ? items : [])
-      .map(i => ({ sku: String(i.sku || '').trim(), qty: Math.max(0, Number(i.qty) || 0) }))
+      .map(i => ({
+        sku: String(i.sku || '').trim() || _itemKey(i),
+        name: String(i.name || '').trim() || undefined,
+        qty: Math.max(0, Number(i.qty) || 0),
+      }))
       .filter(i => i.sku && i.qty > 0);
     if (cleanItems.length === 0) {
-      return res.status(400).json({ success: false, error: '발송할 SKU와 수량을 입력하세요' });
+      return res.status(400).json({ success: false, error: '발송할 수량을 입력하세요 (모든 품목이 0)' });
     }
 
     const B2BRepo = require('../../db/b2bRepository');
@@ -3695,24 +3711,24 @@ router.post('/b2b/invoices/:id/shipments', async (req, res) => {
     const inv = await _ensureInvoiceInSupabase(invoiceNo, repo);
     if (!inv) return res.status(404).json({ success: false, error: '인보이스를 찾을 수 없습니다' });
 
-    // 검증: 각 SKU의 요청 qty ≤ (주문 qty − 기존 shipped qty)
+    // 검증: 각 항목의 요청 qty ≤ (주문 qty − 기존 shipped qty). 합성 키 사용.
     const existingShipments = await repo.listShipmentsByInvoice(invoiceNo);
     const shippedMap = new Map();
     for (const s of existingShipments) {
-      for (const it of s.items || []) shippedMap.set(it.sku, (shippedMap.get(it.sku) || 0) + Number(it.qty || 0));
+      for (const it of s.items || []) shippedMap.set(_itemKey(it), (shippedMap.get(_itemKey(it)) || 0) + Number(it.qty || 0));
     }
     const orderedItems = (() => {
       try { return typeof inv.Items === 'string' ? JSON.parse(inv.Items || '[]') : (inv.Items || inv.ItemsParsed || []); }
       catch { return inv.ItemsParsed || []; }
     })();
-    const orderedMap = new Map(orderedItems.map(it => [it.sku || it.SKU, Number(it.qty || 0)]));
+    const orderedMap = new Map(orderedItems.map(it => [_itemKey(it), Number(it.qty || 0)]));
 
     for (const it of cleanItems) {
       const ordered = orderedMap.get(it.sku) || 0;
       const already = shippedMap.get(it.sku) || 0;
       const remaining = ordered - already;
       if (it.qty > remaining) {
-        return res.status(400).json({ success: false, error: `${it.sku}: 남은 수량 ${remaining}개 초과 (요청 ${it.qty}개)` });
+        return res.status(400).json({ success: false, error: `${it.name || it.sku}: 남은 수량 ${remaining}개 초과 (요청 ${it.qty}개)` });
       }
     }
 
@@ -3730,14 +3746,16 @@ router.post('/b2b/invoices/:id/shipments', async (req, res) => {
     const allShipments = [...existingShipments, created];
     const newShippedMap = new Map();
     for (const s of allShipments) {
-      for (const it of s.items || []) newShippedMap.set(it.sku, (newShippedMap.get(it.sku) || 0) + Number(it.qty || 0));
+      for (const it of s.items || []) newShippedMap.set(_itemKey(it), (newShippedMap.get(_itemKey(it)) || 0) + Number(it.qty || 0));
     }
     let allDone = true;
-    for (const [sku, ordered] of orderedMap) {
-      if ((newShippedMap.get(sku) || 0) < ordered) { allDone = false; break; }
+    for (const [key, ordered] of orderedMap) {
+      if (ordered <= 0) continue; // qty=0 항목 (혹시 있다면) 스킵
+      if ((newShippedMap.get(key) || 0) < ordered) { allDone = false; break; }
     }
     const nextStatus = allDone ? 'FULFILLED' : 'PARTIALLY_SHIPPED';
-    try { await getB2BService().updateInvoiceStatus(invoiceNo, nextStatus); } catch {}
+    try { await getB2BService().updateInvoiceStatus(invoiceNo, nextStatus); } catch (err) { console.warn('[shipment] status 전이 실패:', err.message); }
+    console.log(`[shipment] ${invoiceNo} → ${nextStatus} (배송 ${cleanItems.length}건, allDone=${allDone})`);
 
     res.json({ success: true, shipment: created, invoiceStatus: nextStatus });
   } catch (e) {
