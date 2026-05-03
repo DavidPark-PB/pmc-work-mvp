@@ -7272,7 +7272,30 @@ async function b2bOpenShipmentModal(invoiceNo) {
         </tbody>
       </table>
       <input type="text" id="shipFormNotes" placeholder="메모 (선택)" style="width:100%;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;margin-bottom:8px;">
-      <button onclick="b2bSubmitShipment('${invoiceNo}')" id="shipSubmitBtn" style="padding:8px 16px;background:#1565c0;color:#fff;border:0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">✓ 발송 기록 저장</button>
+
+      <!-- ⚡ FedEx 자동화 (캐리어 = FedEx 일 때만) -->
+      <div id="fedexAutoBox" style="background:#fff;border:1px dashed #7c4dff;border-radius:6px;padding:10px;margin-bottom:8px;">
+        <div style="font-size:12px;font-weight:700;color:#7c4dff;margin-bottom:6px;">⚡ FedEx 자동 견적/라벨</div>
+        <div style="display:grid;grid-template-columns:90px 1fr 70px;gap:6px;margin-bottom:6px;">
+          <input type="number" id="fxWeight" placeholder="무게(kg)" min="0.1" step="0.1" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+          <div style="display:flex;gap:4px;align-items:center;">
+            <input type="number" id="fxLen" placeholder="L" min="1" step="1" style="flex:1;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+            <span style="color:#888">×</span>
+            <input type="number" id="fxWid" placeholder="W" min="1" step="1" style="flex:1;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+            <span style="color:#888">×</span>
+            <input type="number" id="fxHei" placeholder="H (cm)" min="1" step="1" style="flex:1;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;">
+          </div>
+          <input type="number" id="fxBoxes" placeholder="박스" min="1" value="1" step="1" style="padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;text-align:center;">
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+          <button onclick="b2bFedexEstimate('${invoiceNo}', '${inv.BuyerID}')" id="fxEstBtn" style="padding:6px 12px;background:#5e35b1;color:#fff;border:0;border-radius:4px;font-size:11px;cursor:pointer;font-weight:600;">📊 배송료 계산</button>
+          <button onclick="b2bFedexCreateLabel('${invoiceNo}')" id="fxLabelBtn" style="padding:6px 12px;background:#2e7d32;color:#fff;border:0;border-radius:4px;font-size:11px;cursor:pointer;font-weight:600;" disabled>🖨 라벨 생성+저장</button>
+          <span id="fxStatus" style="font-size:11px;color:#888;align-self:center;"></span>
+        </div>
+        <div id="fxRates" style="font-size:11px;"></div>
+      </div>
+
+      <button onclick="b2bSubmitShipment('${invoiceNo}')" id="shipSubmitBtn" style="padding:8px 16px;background:#1565c0;color:#fff;border:0;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">✓ 발송 기록 저장 (수동 송장번호)</button>
     </div>
   `;
 
@@ -7339,6 +7362,150 @@ async function b2bSubmitShipment(invoiceNo) {
   } catch (err) {
     alert('발송 저장 실패: ' + err.message);
     btn.disabled = false; btn.textContent = '✓ 발송 기록 저장';
+  }
+}
+
+// ⚡ FedEx 자동 견적: 무게/치수 입력 → /estimate-rate → 서비스 옵션 라디오 표시
+let _fxSelectedService = null;
+async function b2bFedexEstimate(invoiceNo, buyerId) {
+  _fxSelectedService = null;
+  const weight = Number(document.getElementById('fxWeight').value);
+  const len = Number(document.getElementById('fxLen').value);
+  const wid = Number(document.getElementById('fxWid').value);
+  const hei = Number(document.getElementById('fxHei').value);
+  const boxes = Math.max(1, parseInt(document.getElementById('fxBoxes').value, 10) || 1);
+  const ratesHost = document.getElementById('fxRates');
+  const status = document.getElementById('fxStatus');
+  const labelBtn = document.getElementById('fxLabelBtn');
+  if (!weight || weight <= 0) { ratesHost.innerHTML = '<span style="color:#c62828">무게(kg) 를 입력하세요</span>'; return; }
+  if (!len || !wid || !hei) { ratesHost.innerHTML = '<span style="color:#c62828">치수 (LxWxH) 를 입력하세요</span>'; return; }
+
+  const btn = document.getElementById('fxEstBtn');
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = '계산 중...';
+  status.textContent = '';
+  ratesHost.innerHTML = '<span style="color:#888">FedEx 호출 중...</span>';
+  labelBtn.disabled = true;
+  try {
+    const r = await fetch(`${API}/b2b/shipments/estimate-rate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        buyerId,
+        weightKg: weight,
+        dimensions: { length: len, width: wid, height: hei },
+        packageCount: boxes,
+        currency: 'USD',
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.success) throw new Error(j.error || '견적 실패');
+    if (!j.services || j.services.length === 0) {
+      ratesHost.innerHTML = '<span style="color:#888">견적 가능한 서비스 없음</span>';
+      return;
+    }
+    ratesHost.innerHTML = j.services.map((s, i) => `
+      <label style="display:flex;align-items:center;gap:6px;padding:5px 8px;background:#f0f8ff;border-radius:4px;margin-bottom:3px;cursor:pointer;">
+        <input type="radio" name="fxService" value="${s.serviceType}" data-cost="${s.cost}" data-currency="${s.currency}" onchange="b2bFedexSelectService(this)">
+        <strong style="color:#1565c0;">${s.serviceName}</strong>
+        <span style="color:#2e7d32;font-weight:700;margin-left:auto;">${s.currency} ${s.cost.toFixed(2)}</span>
+        ${s.etaDays ? `<span style="color:#888;font-size:10px;">${s.etaDays}일</span>` : ''}
+      </label>
+    `).join('');
+    status.textContent = `${j.services.length}개 옵션 — 선택하세요`;
+  } catch (e) {
+    ratesHost.innerHTML = `<span style="color:#c62828">${e.message}</span>`;
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
+function b2bFedexSelectService(radio) {
+  _fxSelectedService = {
+    serviceType: radio.value,
+    cost: Number(radio.dataset.cost),
+    currency: radio.dataset.currency,
+  };
+  document.getElementById('fxLabelBtn').disabled = false;
+  document.getElementById('fxStatus').textContent = `선택: ${radio.value}`;
+}
+
+// 🖨 FedEx 라벨 생성 + 저장: 발송 기록을 먼저 만들고 (placeholder tracking) 라벨 발급으로 갱신
+async function b2bFedexCreateLabel(invoiceNo) {
+  if (!_fxSelectedService) { alert('먼저 견적 받고 서비스를 선택하세요'); return; }
+  const items = [];
+  document.querySelectorAll('#b2b-ship-modal .ship-qty').forEach(inp => {
+    const qty = parseInt(inp.value, 10) || 0;
+    if (qty > 0) items.push({ sku: inp.dataset.sku, qty });
+  });
+  if (items.length === 0) { alert('발송할 수량을 입력하세요'); return; }
+
+  const weight = Number(document.getElementById('fxWeight').value);
+  const len = Number(document.getElementById('fxLen').value);
+  const wid = Number(document.getElementById('fxWid').value);
+  const hei = Number(document.getElementById('fxHei').value);
+  const boxes = Math.max(1, parseInt(document.getElementById('fxBoxes').value, 10) || 1);
+
+  const labelBtn = document.getElementById('fxLabelBtn');
+  const status = document.getElementById('fxStatus');
+  labelBtn.disabled = true; const orig = labelBtn.textContent; labelBtn.textContent = '생성 중...';
+  status.textContent = '발송 레코드 생성 중...';
+
+  try {
+    // 1) 발송 레코드 생성 (placeholder tracking)
+    const placeholder = `PENDING-${Date.now()}`;
+    const sRes = await fetch(`${API}/b2b/invoices/${invoiceNo}/shipments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        carrier: 'FedEx',
+        trackingNumber: placeholder,
+        items,
+        notes: document.getElementById('shipFormNotes').value.trim() || undefined,
+        shippedAt: document.getElementById('shipFormDate').value || undefined,
+      }),
+    });
+    const sJson = await sRes.json();
+    if (!sRes.ok || !sJson.success) throw new Error(sJson.error || '발송 생성 실패');
+    const shipmentId = sJson.shipment?.id;
+    if (!shipmentId) throw new Error('shipmentId 응답 누락');
+
+    status.textContent = `FedEx 라벨 생성 중...`;
+    // 2) 라벨 생성
+    const lRes = await fetch(`${API}/b2b/shipments/${shipmentId}/create-label`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        weightKg: weight,
+        dimensions: { length: len, width: wid, height: hei },
+        packageCount: boxes,
+        serviceType: _fxSelectedService.serviceType,
+        currency: _fxSelectedService.currency,
+      }),
+    });
+    const lJson = await lRes.json();
+    if (!lRes.ok || !lJson.success) {
+      // 라벨 실패 시 placeholder 발송 레코드 자동 삭제
+      try { await fetch(`${API}/b2b/shipments/${shipmentId}`, { method: 'DELETE' }); } catch {}
+      throw new Error(lJson.error || '라벨 생성 실패');
+    }
+
+    status.innerHTML = `✓ 운송장 <code>${lJson.trackingNumber}</code> · ${lJson.currency} ${Number(lJson.shippingCost || 0).toFixed(2)}`;
+
+    // 3) 라벨 PDF 새 창에서 열기
+    if (lJson.labelStored) {
+      try {
+        const u = await fetch(`${API}/b2b/shipments/${shipmentId}/label`);
+        const uj = await u.json();
+        if (uj.url) window.open(uj.url, '_blank');
+      } catch {}
+    }
+
+    // 4) 모달 새로고침
+    setTimeout(() => {
+      document.getElementById('b2b-ship-modal').remove();
+      b2bOpenShipmentModal(invoiceNo);
+      if (typeof loadB2BInvoiceList === 'function') loadB2BInvoiceList();
+    }, 1500);
+  } catch (e) {
+    status.innerHTML = `<span style="color:#c62828">${e.message}</span>`;
+    labelBtn.disabled = false; labelBtn.textContent = orig;
   }
 }
 
@@ -7765,7 +7932,9 @@ function b2bResetBuyerForm() {
   const form = document.getElementById('b2bBuyerForm');
   if (!form) return;
   form.dataset.editId = '';
-  ['b2bBuyerName', 'b2bBuyerEmail', 'b2bBuyerWhatsapp', 'b2bBuyerCountry', 'b2bBuyerAddress', 'b2bBuyerNotes'].forEach(id => {
+  ['b2bBuyerName', 'b2bBuyerEmail', 'b2bBuyerWhatsapp', 'b2bBuyerCountry', 'b2bBuyerAddress', 'b2bBuyerNotes',
+   'b2bBuyerAddrStreet', 'b2bBuyerAddrCity', 'b2bBuyerAddrState', 'b2bBuyerAddrZip',
+   'b2bBuyerContactName', 'b2bBuyerContactPhone'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -7784,6 +7953,14 @@ function b2bEditBuyer(buyerId) {
   document.getElementById('b2bBuyerWhatsapp').value = buyer.WhatsApp || '';
   document.getElementById('b2bBuyerCountry').value = buyer.Country || '';
   document.getElementById('b2bBuyerAddress').value = buyer.Address || '';
+  // structured 주소 (FedEx 자동화용) — 백엔드는 camelCase 로 응답
+  const setIf = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
+  setIf('b2bBuyerAddrStreet', buyer.AddressStreet || buyer.address_street);
+  setIf('b2bBuyerAddrCity', buyer.AddressCity || buyer.address_city);
+  setIf('b2bBuyerAddrState', buyer.AddressState || buyer.address_state);
+  setIf('b2bBuyerAddrZip', buyer.AddressZip || buyer.address_zip);
+  setIf('b2bBuyerContactName', buyer.ContactName || buyer.contact_name);
+  setIf('b2bBuyerContactPhone', buyer.ContactPhone || buyer.contact_phone);
   if (document.getElementById('b2bBuyerCurrency')) document.getElementById('b2bBuyerCurrency').value = buyer.Currency || 'USD';
   if (document.getElementById('b2bBuyerTerms')) document.getElementById('b2bBuyerTerms').value = buyer.PaymentTerms || 'Net 30';
   document.getElementById('b2bBuyerNotes').value = buyer.Notes || '';
@@ -7826,15 +8003,23 @@ async function b2bSaveBuyer() {
   btn.disabled = true; btn.textContent = '저장 중...';
 
   try {
+    const v = (id) => document.getElementById(id)?.value || '';
     const body = {
-      name: document.getElementById('b2bBuyerName').value,
-      email: document.getElementById('b2bBuyerEmail').value,
-      whatsapp: document.getElementById('b2bBuyerWhatsapp').value,
-      country: document.getElementById('b2bBuyerCountry').value,
-      address: document.getElementById('b2bBuyerAddress').value,
-      currency: document.getElementById('b2bBuyerCurrency').value,
-      paymentTerms: document.getElementById('b2bBuyerTerms').value,
-      notes: document.getElementById('b2bBuyerNotes').value,
+      name: v('b2bBuyerName'),
+      email: v('b2bBuyerEmail'),
+      whatsapp: v('b2bBuyerWhatsapp'),
+      country: v('b2bBuyerCountry'),
+      address: v('b2bBuyerAddress'),
+      currency: v('b2bBuyerCurrency'),
+      paymentTerms: v('b2bBuyerTerms'),
+      notes: v('b2bBuyerNotes'),
+      // FedEx structured 주소
+      addressStreet: v('b2bBuyerAddrStreet'),
+      addressCity: v('b2bBuyerAddrCity'),
+      addressState: v('b2bBuyerAddrState'),
+      addressZip: v('b2bBuyerAddrZip'),
+      contactName: v('b2bBuyerContactName'),
+      contactPhone: v('b2bBuyerContactPhone'),
     };
 
     const editId = document.getElementById('b2bBuyerForm').dataset.editId;
@@ -8367,7 +8552,7 @@ async function b2bOpenAutoInvoice() {
       _autoBuyers = j.buyers || [];
     } catch {}
   }
-  if (_autoBuyers.length === 0) { alert('거래처가 없습니다. 거래처를 먼저 등록하세요.'); return; }
+  if (_autoBuyers.length === 0) { alert('구매자가 없습니다. 구매자를 먼저 등록하세요.'); return; }
   if (!_autoCatalogTabs) {
     try {
       const r = await fetch(`${API}/catalog/tabs`);
@@ -8395,9 +8580,9 @@ async function b2bOpenAutoInvoice() {
 
       <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-bottom:8px;">
         <div>
-          <label style="font-size:11px;color:#aaa;">거래처</label>
+          <label style="font-size:11px;color:#aaa;">구매자 *</label>
           <select id="auto-buyer" onchange="b2bAutoOnBuyerChange()" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
-            <option value="">선택하세요</option>
+            <option value="">구매자 선택...</option>
             ${_autoBuyers.map(b => `<option value="${b.BuyerID}">${b.BuyerID} · ${b.Name}</option>`).join('')}
           </select>
         </div>
@@ -8450,7 +8635,7 @@ async function b2bOpenAutoInvoice() {
 
       <!-- 주문 탭 -->
       <div id="auto-pane-orders" style="display:none;flex:1;overflow:auto;border:1px solid #2a2a4a;border-radius:4px;min-height:200px;">
-        <div style="padding:20px;text-align:center;color:#666;font-size:12px;">거래처를 선택하면 미정산 주문이 표시됩니다.</div>
+        <div style="padding:20px;text-align:center;color:#666;font-size:12px;">구매자를 선택하면 미정산 주문이 표시됩니다.</div>
       </div>
 
       <!-- 추가 수수료 + 할인 -->
@@ -8495,6 +8680,16 @@ async function b2bOpenAutoInvoice() {
   const d = new Date(); d.setDate(d.getDate() + 30);
   document.getElementById('auto-due').value = d.toISOString().slice(0, 10);
 
+  // 수동 인보이스 폼에서 이미 구매자 골라뒀으면 자동 모달에도 동일하게 채움 — 같은 페이지에서 두 번 고르는 짜증 방지.
+  const manualBuyer = document.getElementById('b2bBuyerSelect')?.value;
+  if (manualBuyer) {
+    const autoBuyer = document.getElementById('auto-buyer');
+    if (autoBuyer) {
+      autoBuyer.value = manualBuyer;
+      if (typeof b2bAutoOnBuyerChange === 'function') b2bAutoOnBuyerChange();
+    }
+  }
+
   if ((_autoCatalogTabs || []).length > 0) b2bAutoLoadCatalog();
 
   // 임시저장된 작업 있으면 복원 제안
@@ -8504,7 +8699,7 @@ async function b2bOpenAutoInvoice() {
     const buyerName = (_autoBuyers.find(b => b.BuyerID === draft.buyerId)?.Name) || draft.buyerId || '(미선택)';
     const lineCount = (draft.lines || []).length;
     const feeCount = (draft.extraFees || []).length;
-    if (confirm(`💾 임시저장된 작업이 있습니다.\n\n저장 시각: ${savedAt}\n거래처: ${buyerName}\n품목 ${lineCount}개 · 수수료 ${feeCount}개\n\n복원하시겠어요?\n\n(취소 = 새로 시작, 임시저장본 유지됨)`)) {
+    if (confirm(`💾 임시저장된 작업이 있습니다.\n\n저장 시각: ${savedAt}\n구매자: ${buyerName}\n품목 ${lineCount}개 · 수수료 ${feeCount}개\n\n복원하시겠어요?\n\n(취소 = 새로 시작, 임시저장본 유지됨)`)) {
       b2bAutoRestoreDraft(draft);
     }
   }
@@ -8816,7 +9011,7 @@ function b2bAutoRecalc() {
 async function b2bAutoLoadBuyerOrders() {
   const buyerId = document.getElementById('auto-buyer').value;
   const host = document.getElementById('auto-pane-orders');
-  if (!buyerId) { host.innerHTML = '<div style="padding:20px;text-align:center;color:#666;font-size:12px;">먼저 거래처를 선택하세요.</div>'; return; }
+  if (!buyerId) { host.innerHTML = '<div style="padding:20px;text-align:center;color:#666;font-size:12px;">먼저 구매자를 선택하세요.</div>'; return; }
   host.innerHTML = '<div style="padding:20px;color:#888;">로딩…</div>';
   try {
     const r = await fetch(`${API}/b2b/buyers/${buyerId}/orders?limit=100`);
@@ -8860,8 +9055,19 @@ async function b2bAutoCreateInvoice() {
   const result = document.getElementById('auto-result');
   err.style.display = 'none'; result.style.display = 'none';
 
-  const buyerId = document.getElementById('auto-buyer').value;
-  if (!buyerId) { err.textContent = '거래처를 선택하세요'; err.style.display = 'block'; return; }
+  const buyerSel = document.getElementById('auto-buyer');
+  const buyerId = buyerSel?.value;
+  if (!buyerId) {
+    err.textContent = '⬆️ 위쪽 "구매자" 드롭다운에서 구매자를 선택하세요';
+    err.style.display = 'block';
+    if (buyerSel) {
+      buyerSel.style.borderColor = '#e94560';
+      buyerSel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      buyerSel.focus();
+      setTimeout(() => { buyerSel.style.borderColor = '#333'; }, 2500);
+    }
+    return;
+  }
 
   const dueDate = document.getElementById('auto-due').value;
   const overrideChecked = document.getElementById('auto-ship-override').checked;

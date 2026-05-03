@@ -14,14 +14,19 @@ class GoogleDriveAPI {
 
   async authenticate() {
     try {
-      const auth = new google.auth.GoogleAuth({
-        keyFile: this.credentialsPath,
+      // env-var 우선 (Railway 등 파일 마운트 불가 호스팅), 없으면 keyFile.
+      const credsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+      const baseConfig = {
         scopes: [
           'https://www.googleapis.com/auth/drive',
           'https://www.googleapis.com/auth/spreadsheets',
         ],
-      });
+      };
+      const authConfig = credsJson
+        ? { ...baseConfig, credentials: JSON.parse(credsJson) }
+        : { ...baseConfig, keyFile: this.credentialsPath };
 
+      const auth = new google.auth.GoogleAuth(authConfig);
       this.auth = await auth.getClient();
       this.drive = google.drive({ version: 'v3', auth: this.auth });
       return true;

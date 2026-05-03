@@ -292,7 +292,14 @@ router.post('/:id/receipt', (req, res, next) => {
       contentType: f.mimetype,
       upsert: false,
     });
-    if (upErr) return res.status(500).json({ error: `Storage 업로드 실패: ${upErr.message}` });
+    if (upErr) {
+      console.error('[expense-receipt] Storage 업로드 실패:', { bucket: RECEIPT_BUCKET, path: newPath, mime: f.mimetype, size: f.size, msg: upErr.message, statusCode: upErr.statusCode });
+      const isBucketMissing = /bucket not found|not found/i.test(upErr.message);
+      const friendly = isBucketMissing
+        ? `Supabase Storage 버킷 "${RECEIPT_BUCKET}" 가 없습니다. 관리자에게 문의 (Supabase 콘솔에서 버킷 생성 필요).`
+        : `Storage 업로드 실패: ${upErr.message}`;
+      return res.status(500).json({ error: friendly });
+    }
 
     // 기존 영수증 있으면 제거
     if (existing.receiptPath) {

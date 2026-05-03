@@ -60,6 +60,23 @@ class B2BRepository {
       TotalRevenue: parseFloat(data.total_revenue) || 0,
       ExternalIds: data.external_ids || {},
       ShippingRule: data.shipping_rule || {},
+      // FedEx 자동화용 structured 주소 (마이그레이션 035)
+      AddressStreet: data.address_street || '',
+      AddressCity: data.address_city || '',
+      AddressState: data.address_state || '',
+      AddressZip: data.address_zip || '',
+      ContactName: data.contact_name || '',
+      ContactPhone: data.contact_phone || '',
+      // 라우트에서 snake_case 도 직접 접근
+      address_street: data.address_street || '',
+      address_city: data.address_city || '',
+      address_state: data.address_state || '',
+      address_zip: data.address_zip || '',
+      contact_name: data.contact_name || '',
+      contact_phone: data.contact_phone || '',
+      address: data.address,
+      country: data.country,
+      name: data.name,
     };
   }
 

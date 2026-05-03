@@ -315,6 +315,8 @@
     let eventSource = null;
 
     // 1) 사운드: 첫 사용자 클릭으로 AudioContext 해제 (autoplay policy)
+    //    AudioContext 는 페이지 간 이전 안 됨 (login.html 클릭 ≠ index.html user gesture).
+    //    그래서 index.html 에서 첫 클릭 (어디든) 시 unlock + 즉시 sticky 배너로 유도.
     function unlockAudio() {
       if (audioUnlocked) return;
       try {
@@ -326,10 +328,33 @@
         src.connect(audioCtx.destination);
         src.start(0);
         audioUnlocked = true;
+        hideEnableBanner();
       } catch {}
     }
     document.addEventListener('click', unlockAudio, { once: true });
     document.addEventListener('keydown', unlockAudio, { once: true });
+
+    // 1b) "🔊 알림 켜기" sticky 배너 — unlock 전까지 화면 상단에 항상 보임.
+    //     클릭 시 unlock + 테스트 비프 → 직원이 "소리가 들리는구나" 직접 확인 후 진입.
+    function showEnableBanner() {
+      if (audioUnlocked) return;
+      if (document.getElementById('pmcEnableBanner')) return;
+      const b = document.createElement('div');
+      b.id = 'pmcEnableBanner';
+      b.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ff9800;color:#fff;padding:14px 20px;text-align:center;font-size:15px;font-weight:700;cursor:pointer;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,.3);';
+      b.innerHTML = '🔊 PMC 알림음 활성화하려면 여기 클릭 (출근 후 1회) — 사장님 업무 지시·발주 알림 소리';
+      b.addEventListener('click', () => {
+        unlockAudio();
+        // 테스트 비프로 "소리 들리는구나" 즉시 확인
+        try { playBeep(false); } catch {}
+        hideEnableBanner();
+      });
+      document.body.appendChild(b);
+    }
+    function hideEnableBanner() {
+      const b = document.getElementById('pmcEnableBanner');
+      if (b) b.remove();
+    }
 
     function playBeep(urgent) {
       try {
@@ -503,6 +528,8 @@
       if (!user) return;
       ensureNotificationPermission();
       connect();
+      // audio 가 unlock 안 됐으면 sticky 배너로 1회 클릭 유도
+      if (!audioUnlocked) showEnableBanner();
     });
   })();
   </script>
@@ -2606,8 +2633,8 @@
             </div>
             <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px">
               <div>
-                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">주소</label>
-                <input type="text" id="b2bBuyerAddress" placeholder="주소" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+                <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">주소 (한 줄, 표시용)</label>
+                <input type="text" id="b2bBuyerAddress" placeholder="123 Main St, Suite 4, NY 10001 USA" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
               </div>
               <div>
                 <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">통화</label>
@@ -2624,6 +2651,39 @@
               <div>
                 <label style="font-size:11px;color:#666;display:block;margin-bottom:3px">비고</label>
                 <input type="text" id="b2bBuyerNotes" placeholder="" style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              </div>
+            </div>
+
+            <!-- FedEx 자동화용 structured 주소 (라벨 생성에 필수) -->
+            <div style="background:#f3eefe;border:1px dashed #7c4dff;border-radius:6px;padding:8px 10px;margin-bottom:10px;">
+              <div style="font-size:11px;color:#7c4dff;font-weight:600;margin-bottom:6px;">📦 FedEx 라벨용 상세 주소 (자동 라벨 생성에 필수)</div>
+              <div style="display:grid;grid-template-columns:2fr 1fr 80px 100px;gap:8px;margin-bottom:6px;">
+                <div>
+                  <label style="font-size:10px;color:#666;display:block;margin-bottom:2px">Street</label>
+                  <input type="text" id="b2bBuyerAddrStreet" placeholder="123 Main St, Suite 4" style="width:100%;padding:5px 7px;border:1px solid #ddd;border-radius:4px;font-size:11px">
+                </div>
+                <div>
+                  <label style="font-size:10px;color:#666;display:block;margin-bottom:2px">City</label>
+                  <input type="text" id="b2bBuyerAddrCity" placeholder="New York" style="width:100%;padding:5px 7px;border:1px solid #ddd;border-radius:4px;font-size:11px">
+                </div>
+                <div>
+                  <label style="font-size:10px;color:#666;display:block;margin-bottom:2px">State</label>
+                  <input type="text" id="b2bBuyerAddrState" placeholder="NY" style="width:100%;padding:5px 7px;border:1px solid #ddd;border-radius:4px;font-size:11px">
+                </div>
+                <div>
+                  <label style="font-size:10px;color:#666;display:block;margin-bottom:2px">ZIP</label>
+                  <input type="text" id="b2bBuyerAddrZip" placeholder="10001" style="width:100%;padding:5px 7px;border:1px solid #ddd;border-radius:4px;font-size:11px">
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <div>
+                  <label style="font-size:10px;color:#666;display:block;margin-bottom:2px">담당자명</label>
+                  <input type="text" id="b2bBuyerContactName" placeholder="John Smith" style="width:100%;padding:5px 7px;border:1px solid #ddd;border-radius:4px;font-size:11px">
+                </div>
+                <div>
+                  <label style="font-size:10px;color:#666;display:block;margin-bottom:2px">담당자 전화 (국가코드 포함)</label>
+                  <input type="text" id="b2bBuyerContactPhone" placeholder="+1-212-555-0100" style="width:100%;padding:5px 7px;border:1px solid #ddd;border-radius:4px;font-size:11px">
+                </div>
               </div>
             </div>
             <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -3263,7 +3323,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260427c"></script>
+  <script src="/js/dashboard.js?v=20260430b"></script>
   <script src="/js/operations.js?v=20260420a"></script>
   <script src="/js/catalog.js?v=20260427a"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->
@@ -3275,14 +3335,14 @@
   <script src="/js/cs.js?v=20260421a"></script>
   <script src="/js/resources.js?v=20260424b"></script>
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-  <script src="/js/stocktake.js?v=20260423a"></script>
+  <script src="/js/stocktake.js?v=20260429a"></script>
   <script src="/js/competitors.js?v=20260424a"></script>
   <script src="/js/prospectsList.js?v=20260421a"></script>
   <script src="/js/prospectsActive.js?v=20260421a"></script>
-  <script src="/js/expenses.js?v=20260424e"></script>
+  <script src="/js/expenses.js?v=20260502a"></script>
   <script src="/js/feedback.js?v=20260420a"></script>
   <script src="/js/workspace.js?v=20260420a"></script>
-  <script src="/js/staff-admin.js?v=20260420b"></script>
+  <script src="/js/staff-admin.js?v=20260502a"></script>
   <script>
   // ===== Inline cost editing for master products =====
   document.addEventListener('click', async (e) => {

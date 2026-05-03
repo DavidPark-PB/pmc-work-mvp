@@ -14,23 +14,27 @@ class GoogleSheetsAPI {
   }
 
   /**
-   * Google Sheets API 인증 및 초기화
+   * Google Sheets API 인증 및 초기화.
+   * 우선순위:
+   *   1) process.env.GOOGLE_CREDENTIALS_JSON (Railway/Heroku 등 파일 시스템 없는 호스팅용 — JSON 문자열)
+   *   2) keyFile (로컬 dev 또는 fly.io 처럼 파일 마운트 가능한 환경)
    */
   async authenticate() {
     try {
-      // Service Account 키 파일로 인증
-      const auth = new google.auth.GoogleAuth({
-        keyFile: this.credentialsPath,
-        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-      });
+      const credsJson = process.env.GOOGLE_CREDENTIALS_JSON;
+      const baseConfig = { scopes: ['https://www.googleapis.com/auth/spreadsheets'] };
+      const authConfig = credsJson
+        ? { ...baseConfig, credentials: JSON.parse(credsJson) }
+        : { ...baseConfig, keyFile: this.credentialsPath };
 
+      const auth = new google.auth.GoogleAuth(authConfig);
       this.auth = await auth.getClient();
       this.sheets = google.sheets({ version: 'v4', auth: this.auth });
 
-      console.log('✅ Google Sheets API 연결 성공!');
+      console.log(`✅ Google Sheets API 연결 성공 (source: ${credsJson ? 'env' : 'keyFile'})`);
       return true;
     } catch (error) {
-      console.error('❌ 인증 실패:', error.message);
+      console.error('❌ Google Sheets 인증 실패:', error.message);
       throw error;
     }
   }

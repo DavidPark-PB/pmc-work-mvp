@@ -40,8 +40,11 @@
     if (!el) return;
     el.innerHTML = `
       <div style="margin-bottom:12px;">
-        <h1 style="font-size:22px;color:#fff;">📦 재고 실사 <span style="color:#888;font-weight:400;font-size:13px;">· 실물 카운트 → 시스템 재고 업데이트</span></h1>
-        <p style="color:#888;font-size:13px;">검색·바코드 스캔으로 상품 찾고 실제 수량 입력하면 DB에 즉시 반영 + 조정 로그 저장.</p>
+        <h1 style="font-size:22px;color:#fff;">📦 재고 실사 <span style="color:#888;font-weight:400;font-size:13px;">· 운영관리 마스터 기준 실물 카운트</span></h1>
+        <p style="color:#888;font-size:13px;">검색·바코드 스캔으로 상품 찾고 실제 수량 입력 → 별도 감사 기록만 저장.</p>
+        <div style="margin-top:8px;padding:10px 12px;background:#1a2a1a;border:1px solid #2d4a2d;border-radius:6px;font-size:12px;color:#a5d6a7;line-height:1.5;">
+          💡 <strong>실사 카운트는 별도 감사 기록으로만 저장됩니다.</strong> 운영관리 마스터 재고는 자동으로 변경되지 않으며, 차이는 사장님이 검토 후 수동 적용합니다.
+        </div>
       </div>
 
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
@@ -171,8 +174,8 @@
             ${selected.barcode ? ` · 📷 <code>${esc(selected.barcode)}</code>` : ' · <span style="color:#666;">바코드 미지정</span>'}
           </div>
           <div style="color:#ccc;font-size:12px;margin-top:4px;">
-            현재 시스템 재고 <strong style="color:#ffb74d;font-size:14px;">${selected.currentStock}개</strong>
-            ${selected.ebayApiStock !== selected.currentStock ? ` <span style="color:#666;font-size:10px;">· eBay API: ${selected.ebayApiStock}개</span>` : ''}
+            운영관리 마스터 재고 <strong style="color:#ffb74d;font-size:14px;">${selected.currentStock}개</strong>
+            ${selected.itemId ? ` <span style="color:#666;font-size:10px;">· eBay ${esc(selected.itemId)}</span>` : ''}
           </div>
         </div>
       </div>

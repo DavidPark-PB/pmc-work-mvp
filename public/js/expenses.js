@@ -363,13 +363,24 @@
     // 영수증 파일이 있으면 뒤이어 업로드
     const receiptInput = document.getElementById('exp-receipt');
     const file = receiptInput?.files?.[0];
-    if (file && created?.id) {
-      const fd = new FormData();
-      fd.append('file', file);
-      const upRes = await fetch('/api/expenses/' + created.id + '/receipt', { method: 'POST', body: fd });
-      if (!upRes.ok) {
-        const err = await upRes.json().catch(() => ({}));
-        alert('지출은 저장됐지만 영수증 업로드 실패: ' + (err.error || ''));
+    if (file) {
+      if (!created?.id) {
+        alert('지출은 저장됐지만 영수증 첨부 실패: 지출 ID 응답 누락 (개발자에게 문의)');
+        console.error('[expense-receipt] created.id missing in POST /api/expenses response', created);
+      } else {
+        const fd = new FormData();
+        fd.append('file', file);
+        try {
+          const upRes = await fetch('/api/expenses/' + created.id + '/receipt', { method: 'POST', body: fd });
+          const upBody = await upRes.json().catch(() => ({}));
+          if (!upRes.ok) {
+            console.error('[expense-receipt] upload failed', upRes.status, upBody);
+            alert(`영수증 업로드 실패 (HTTP ${upRes.status}): ${upBody.error || '알 수 없음'}\n\n파일: ${file.name} (${(file.size/1024).toFixed(1)} KB, ${file.type || '타입 미지정'})\n\n관리자에게 문의 시 콘솔 로그 확인.`);
+          }
+        } catch (e) {
+          console.error('[expense-receipt] network/fetch error', e);
+          alert('영수증 업로드 네트워크 오류: ' + e.message);
+        }
       }
     }
 
@@ -414,9 +425,19 @@
       if (!f) return;
       const fd = new FormData();
       fd.append('file', f);
-      const res = await fetch('/api/expenses/' + id + '/receipt', { method: 'POST', body: fd });
-      if (!res.ok) { alert((await res.json()).error || '업로드 실패'); return; }
-      refresh();
+      try {
+        const res = await fetch('/api/expenses/' + id + '/receipt', { method: 'POST', body: fd });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          console.error('[expense-receipt-later] upload failed', res.status, body);
+          alert(`영수증 업로드 실패 (HTTP ${res.status}): ${body.error || '알 수 없음'}\n\n파일: ${f.name} (${(f.size/1024).toFixed(1)} KB, ${f.type || '타입 미지정'})`);
+          return;
+        }
+        refresh();
+      } catch (e) {
+        console.error('[expense-receipt-later] network/fetch error', e);
+        alert('영수증 업로드 네트워크 오류: ' + e.message);
+      }
     };
     input.click();
   }

@@ -1,6 +1,9 @@
 /**
  * 재고 실사 API — /api/stocktake
- * 직원(로그인한 모든 유저) 사용. admin 전용 제한 없음.
+ *
+ * 마스터: products (운영관리 → 재고관리와 동일 source).
+ * 실사 카운트는 stock_adjustments 에만 기록 — 마스터(products.stock) 자동 변경 X.
+ * 차이는 사장님이 별도 검토 후 수동 적용.
  */
 const express = require('express');
 const crypto = require('crypto');
@@ -17,17 +20,28 @@ router.use(requireAuth);
 
 const REASON_WHITELIST = new Set(['실사', '파손', '분실', '이벤트', '반품', '기타']);
 
-function toItemDto(row) {
+function toItemDto(row, ebay) {
   return {
-    itemId: row.item_id,
-    sku: row.sku || row.item_id,
-    title: row.title || '',
-    imageUrl: row.image_url || '',
-    currentStock: Number(row.stock != null ? row.stock : (row.ebay_api_stock || 0)),
-    ebayApiStock: Number(row.ebay_api_stock || 0),
+    productId: row.id,
+    sku: row.sku || '',
+    itemId: ebay?.item_id || null,
+    title: row.title_ko || row.title || '',
+    imageUrl: ebay?.image_url || '',
+    currentStock: Number(row.stock || 0),
     barcode: row.barcode || '',
-    priceUsd: Number(row.price_usd || 0),
   };
+}
+
+// products.sku 배열로 ebay_products 보조정보 (item_id, image_url) 한 번에 조회.
+async function fetchEbayMap(skus) {
+  if (!skus || skus.length === 0) return {};
+  const db = getClient();
+  const { data } = await db.from('ebay_products')
+    .select('sku, item_id, image_url')
+    .in('sku', skus);
+  const map = {};
+  (data || []).forEach(r => { if (r.sku) map[r.sku] = r; });
+  return map;
 }
 
 // GET /api/stocktake/search?q=... — SKU/바코드/상품명 검색 (상위 20)
@@ -36,36 +50,51 @@ router.get('/search', async (req, res) => {
     const q = String(req.query.q || '').trim();
     if (!q) return res.json({ items: [] });
     const db = getClient();
-    // ebay_products에서 SKU·itemId·title·barcode 매칭
     const pattern = `%${q.replace(/%/g, '')}%`;
-    const { data, error } = await db.from('ebay_products')
-      .select('item_id, sku, title, image_url, stock, ebay_api_stock, barcode, price_usd')
-      .or(`sku.ilike.${pattern},item_id.ilike.${pattern},title.ilike.${pattern},barcode.ilike.${pattern}`)
+    const { data, error } = await db.from('products')
+      .select('id, sku, title, title_ko, stock, barcode, status')
+      .neq('status', 'trashed')
+      .or(`sku.ilike.${pattern},title.ilike.${pattern},title_ko.ilike.${pattern},barcode.ilike.${pattern}`)
       .limit(20);
     if (error) throw error;
-    res.json({ items: (data || []).map(toItemDto) });
+    const rows = data || [];
+    const ebayMap = await fetchEbayMap(rows.map(r => r.sku).filter(Boolean));
+    res.json({ items: rows.map(r => toItemDto(r, ebayMap[r.sku])) });
   } catch (e) {
     console.error('[stocktake/search]', e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-// GET /api/stocktake/item?sku=... or ?barcode=... — 단건 조회 (스캐너용)
+// GET /api/stocktake/item?sku=... or ?barcode=... or ?itemId=... — 단건 조회 (스캐너용)
 router.get('/item', async (req, res) => {
   try {
     const { sku, barcode, itemId } = req.query;
     if (!sku && !barcode && !itemId) return res.status(400).json({ error: 'sku 또는 barcode 또는 itemId 필요' });
     const db = getClient();
-    let query = db.from('ebay_products')
-      .select('item_id, sku, title, image_url, stock, ebay_api_stock, barcode, price_usd')
+
+    // 1. itemId 로 조회 시 ebay_products 에서 sku 찾고 그 sku 로 products 조회 (eBay 만 등록된 경우 fallback).
+    let resolvedSku = sku ? String(sku).trim() : null;
+    if (!resolvedSku && itemId) {
+      const { data: ep } = await db.from('ebay_products')
+        .select('sku').eq('item_id', String(itemId).trim()).limit(1).maybeSingle();
+      if (ep?.sku) resolvedSku = ep.sku;
+    }
+
+    let query = db.from('products')
+      .select('id, sku, title, title_ko, stock, barcode, status')
+      .neq('status', 'trashed')
       .limit(1);
     if (barcode) query = query.eq('barcode', String(barcode).trim());
-    else if (sku) query = query.eq('sku', String(sku).trim());
-    else if (itemId) query = query.eq('item_id', String(itemId).trim());
+    else if (resolvedSku) query = query.eq('sku', resolvedSku);
+    else return res.status(404).json({ error: '상품을 찾을 수 없습니다' });
+
     const { data, error } = await query.maybeSingle();
     if (error && error.code !== 'PGRST116') throw error;
     if (!data) return res.status(404).json({ error: '상품을 찾을 수 없습니다' });
-    res.json({ item: toItemDto(data) });
+
+    const ebayMap = await fetchEbayMap([data.sku]);
+    res.json({ item: toItemDto(data, ebayMap[data.sku]) });
   } catch (e) {
     console.error('[stocktake/item]', e.message);
     res.status(500).json({ error: e.message });
@@ -78,7 +107,7 @@ router.post('/session/start', (req, res) => {
   res.json({ sessionId, startedAt: new Date().toISOString() });
 });
 
-// POST /api/stocktake/adjust — 실사 조정 (시스템 재고 교체 + 로그)
+// POST /api/stocktake/adjust — 실사 카운트 기록 (마스터 자동 업데이트 X, 로그만)
 router.post('/adjust', async (req, res) => {
   try {
     const { sku, actualCount, reason, note, sessionId, barcode } = req.body || {};
@@ -90,33 +119,36 @@ router.post('/adjust', async (req, res) => {
     const cleanReason = reason && REASON_WHITELIST.has(String(reason)) ? String(reason) : '실사';
 
     const db = getClient();
-    // 현재 stock 조회
-    const { data: cur, error: curErr } = await db.from('ebay_products')
-      .select('item_id, sku, title, barcode, stock, ebay_api_stock')
+    const { data: cur, error: curErr } = await db.from('products')
+      .select('id, sku, title, title_ko, barcode, stock')
       .eq('sku', sku).limit(1).maybeSingle();
     if (curErr) throw curErr;
     if (!cur) return res.status(404).json({ error: '해당 SKU 상품을 찾을 수 없습니다' });
 
-    const previousStock = Number(cur.stock != null ? cur.stock : (cur.ebay_api_stock || 0));
-    // stock 업데이트 (수동 편집이라 ebay_api_stock은 건드리지 않음)
-    const { error: updErr } = await db.from('ebay_products')
-      .update({ stock: actual })
-      .eq('sku', sku);
-    if (updErr) throw updErr;
+    const previousStock = Number(cur.stock || 0);
 
-    // 바코드 업데이트 (처음 스캔 시)
+    // 바코드 처음 스캔 시 마스터 보강 (products + ebay_products 동기화).
+    // 이건 "마스터 자동 업데이트 X" 정책 예외 — 식별자 매핑이지 재고 수치 변경이 아님.
     if (barcode && !cur.barcode) {
-      try {
-        await db.from('ebay_products').update({ barcode: String(barcode).trim() }).eq('sku', sku);
-      } catch {}
+      const trimmed = String(barcode).trim();
+      try { await db.from('products').update({ barcode: trimmed }).eq('id', cur.id); } catch {}
+      try { await db.from('ebay_products').update({ barcode: trimmed }).eq('sku', sku); } catch {}
     }
 
-    // 로그 insert
+    // ebay_products.item_id 보조 (로그용)
+    let itemId = null;
+    try {
+      const { data: ep } = await db.from('ebay_products')
+        .select('item_id').eq('sku', sku).limit(1).maybeSingle();
+      itemId = ep?.item_id || null;
+    } catch {}
+
+    // 로그 insert — 마스터(products.stock) 는 변경 안 함.
     const logged = await adjRepo.create({
       sku,
-      itemId: cur.item_id,
+      itemId,
       barcode: barcode || cur.barcode || null,
-      title: cur.title,
+      title: cur.title_ko || cur.title,
       previousStock,
       newStock: actual,
       reason: cleanReason,
@@ -130,6 +162,7 @@ router.post('/adjust', async (req, res) => {
       previous: previousStock,
       new: actual,
       delta: actual - previousStock,
+      masterUpdated: false,
       log: logged,
     });
   } catch (e) {

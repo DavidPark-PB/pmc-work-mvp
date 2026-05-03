@@ -316,8 +316,8 @@ function logoutHandler(req, res) {
 /** GET /api/auth/me — 현재 로그인 유저 정보 */
 function meHandler(req, res) {
   if (!req.user) return res.json({ user: null });
-  const { id, username, displayName, role, isAdmin, platform, uiMode, isLegacy } = req.user;
-  res.json({ user: { id, username, displayName, role, isAdmin, platform, uiMode, isLegacy } });
+  const { id, username, displayName, role, isAdmin, canManageFinance, platform, uiMode, isLegacy } = req.user;
+  res.json({ user: { id, username, displayName, role, isAdmin, canManageFinance, platform, uiMode, isLegacy } });
 }
 
 /** PATCH /api/auth/change-password — 본인 비밀번호 변경 */

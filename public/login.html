@@ -182,6 +182,13 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
       // 필드 비워서 브라우저 "비번 저장" 제안 트리거 최소화 + history 안 남기게 replace
       document.getElementById('username').value = '';
       document.getElementById('password').value = '';
+      // 알림 권한은 origin 단위로 유지 → 로그인 클릭 시 미리 받아서 index.html 진입 시
+      // 데스크탑 팝업이 즉시 작동하도록.
+      try {
+        if ('Notification' in window && Notification.permission === 'default') {
+          await Notification.requestPermission().catch(() => {});
+        }
+      } catch {}
       window.location.replace('/');
       return;
     } else {

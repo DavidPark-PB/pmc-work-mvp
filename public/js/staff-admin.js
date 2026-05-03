@@ -156,6 +156,7 @@
       body: JSON.stringify({ canManageFinance: next }),
     });
     if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+    if (next) alert('✓ 권한 부여 완료\n\n해당 직원이 PMC 페이지를 새로고침(F5) 하거나 로그아웃 → 재로그인 해야 화면에 반영됩니다.');
     refresh();
   }
 

@@ -2035,6 +2035,7 @@ router.get('/battle/data', async (req, res) => {
         title: row.title,
         myPrice: row.myPrice,
         myShipping: row.myShipping || 0,
+        myLastSyncedAt: row.myLastSyncedAt || null,
         quantity: row.quantity || 0,
         myTotal,
         competitors: row.competitors || [],
@@ -3525,6 +3526,26 @@ router.use('/b2b', (req, res, next) => {
 router.get('/b2b/buyers', async (req, res) => {
   try {
     const buyers = await getB2BService().getBuyers();
+    // FedEx structured 주소는 Supabase b2b_buyers 에 별도 저장 — 머지해서 응답.
+    try {
+      const { getClient } = require('../../db/supabaseClient');
+      const db = getClient();
+      const { data: rows } = await db.from('b2b_buyers').select('buyer_id, address_street, address_city, address_state, address_zip, contact_name, contact_phone');
+      const map = {};
+      (rows || []).forEach(r => { map[r.buyer_id] = r; });
+      buyers.forEach(b => {
+        const r = map[b.BuyerID];
+        if (!r) return;
+        b.AddressStreet = r.address_street || '';
+        b.AddressCity = r.address_city || '';
+        b.AddressState = r.address_state || '';
+        b.AddressZip = r.address_zip || '';
+        b.ContactName = r.contact_name || '';
+        b.ContactPhone = r.contact_phone || '';
+      });
+    } catch (e) {
+      console.warn('[buyers] Supabase 머지 실패:', e.message);
+    }
     res.json({ success: true, buyers });
   } catch (error) {
     console.error('❌ B2B buyers 조회 에러:', error.message);
@@ -3553,6 +3574,34 @@ router.post('/b2b/buyers', async (req, res) => {
       result = await getB2BService().updateBuyer(buyerId, data);
     } else {
       result = await getB2BService().createBuyer(data);
+    }
+    // FedEx structured 주소는 Sheets 스키마에 없어서 별도로 Supabase b2b_buyers 에 직접 upsert.
+    // (Sheets 는 기존 컬럼만 유지, Supabase 는 라벨 자동화용 추가 필드 보관.)
+    try {
+      const bid = result?.BuyerID || buyerId;
+      if (bid && (data.addressStreet || data.addressCity || data.addressState || data.addressZip
+                  || data.contactName || data.contactPhone)) {
+        const { getClient } = require('../../db/supabaseClient');
+        const db = getClient();
+        const patch = {
+          buyer_id: bid,
+          address_street: data.addressStreet || null,
+          address_city: data.addressCity || null,
+          address_state: data.addressState || null,
+          address_zip: data.addressZip || null,
+          contact_name: data.contactName || null,
+          contact_phone: data.contactPhone || null,
+          // 핵심 필드도 함께 동기화 (조회는 Supabase 에서 하므로)
+          name: data.name || result?.Name || null,
+          address: data.address || result?.Address || null,
+          country: data.country || result?.Country || null,
+        };
+        // null 제거 — 빈 컬럼 덮어쓰지 않음
+        Object.keys(patch).forEach(k => { if (patch[k] === null && k !== 'buyer_id') delete patch[k]; });
+        await db.from('b2b_buyers').upsert(patch, { onConflict: 'buyer_id' });
+      }
+    } catch (e) {
+      console.warn('[buyers] Supabase structured 주소 upsert 실패:', e.message);
     }
     res.json({ success: true, buyer: result });
   } catch (error) {
@@ -3808,6 +3857,210 @@ router.delete('/b2b/shipments/:shipmentId', async (req, res) => {
     const repo = new B2BRepo();
     await repo.deleteShipment(id);
     res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─── FedEx 자동화 (Phase D — 035 마이그레이션 필요) ───
+
+// 거래처 주소 → FedEx destination 객체. structured 필드 우선, 없으면 fallback.
+function _buyerToFedexDestination(buyer) {
+  if (!buyer) return null;
+  return {
+    street: buyer.address_street || buyer.address || '',
+    city: buyer.address_city || '',
+    state: buyer.address_state || '',
+    zip: buyer.address_zip || '',
+    country: buyer.country || '',
+  };
+}
+
+function _validateFedexDestination(dest) {
+  if (!dest) return '거래처 주소를 찾을 수 없습니다';
+  if (!dest.country) return '거래처 국가가 비어있습니다 (구매자 관리에서 국가 입력 필요)';
+  if (!dest.street) return '거래처 주소(street) 가 비어있습니다 (구매자 관리에서 입력 필요)';
+  return null;
+}
+
+// POST /api/b2b/shipments/estimate-rate — FedEx 견적 (라벨 생성 전 미리보기)
+// body: { buyerId, weightKg, dimensions: {length, width, height}, packageCount, customsValue, currency }
+router.post('/b2b/shipments/estimate-rate', async (req, res) => {
+  try {
+    const { getFedexAPI } = require('../../api/fedexAPI');
+    const fedex = getFedexAPI();
+    if (!fedex.isConfigured()) {
+      return res.status(503).json({ success: false, error: 'FedEx 자격증명이 설정되지 않았습니다 (config/.env)' });
+    }
+    const { buyerId, weightKg, dimensions, packageCount = 1, customsValue, currency = 'USD' } = req.body || {};
+    if (!buyerId) return res.status(400).json({ success: false, error: 'buyerId 가 필요합니다' });
+    if (!weightKg || Number(weightKg) <= 0) return res.status(400).json({ success: false, error: '무게(kg) 가 필요합니다' });
+
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    const buyer = await repo.getBuyerById(buyerId);
+    if (!buyer) return res.status(404).json({ success: false, error: '거래처를 찾을 수 없습니다' });
+
+    const dest = _buyerToFedexDestination(buyer);
+    const valErr = _validateFedexDestination(dest);
+    if (valErr) return res.status(400).json({ success: false, error: valErr });
+
+    const N = Math.max(1, parseInt(packageCount, 10) || 1);
+    const packages = Array.from({ length: N }, () => ({
+      weightKg: Number(weightKg),
+      dimensions: dimensions ? {
+        length: Number(dimensions.length) || 1,
+        width: Number(dimensions.width) || 1,
+        height: Number(dimensions.height) || 1,
+      } : null,
+    }));
+
+    const services = await fedex.getRates({ destination: dest, packages, customsValue, currency });
+    res.json({ success: true, services });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/b2b/shipments/:shipmentId/create-label — FedEx 라벨 생성 + tracking 갱신
+// body: { weightKg, dimensions, packageCount, serviceType, customsValue, currency }
+router.post('/b2b/shipments/:shipmentId/create-label', async (req, res) => {
+  try {
+    const shipmentId = parseInt(req.params.shipmentId);
+    if (!shipmentId) return res.status(400).json({ success: false, error: 'invalid shipmentId' });
+
+    const { getFedexAPI } = require('../../api/fedexAPI');
+    const fedex = getFedexAPI();
+    if (!fedex.isConfigured()) {
+      return res.status(503).json({ success: false, error: 'FedEx 자격증명이 설정되지 않았습니다 (config/.env)' });
+    }
+
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+
+    const { data: ship, error: sErr } = await db.from('b2b_shipments')
+      .select('*').eq('id', shipmentId).maybeSingle();
+    if (sErr || !ship) return res.status(404).json({ success: false, error: '발송 레코드를 찾을 수 없습니다' });
+    if (ship.label_storage_path) return res.status(409).json({ success: false, error: '이미 라벨이 발급된 발송입니다' });
+
+    const B2BRepo = require('../../db/b2bRepository');
+    const repo = new B2BRepo();
+    // invoice → buyer 조회
+    const invoices = await getB2BService().getInvoices({ includeVoided: false });
+    const inv = (invoices || []).find(i => i.InvoiceNo === ship.invoice_no);
+    if (!inv) return res.status(404).json({ success: false, error: '인보이스를 찾을 수 없습니다' });
+    const buyer = await repo.getBuyerById(inv.BuyerID);
+    if (!buyer) return res.status(404).json({ success: false, error: '거래처를 찾을 수 없습니다' });
+
+    const dest = _buyerToFedexDestination(buyer);
+    const valErr = _validateFedexDestination(dest);
+    if (valErr) return res.status(400).json({ success: false, error: valErr });
+
+    const { weightKg, dimensions, packageCount = 1, serviceType, customsValue, currency = 'USD' } = req.body || {};
+    if (!weightKg || Number(weightKg) <= 0) return res.status(400).json({ success: false, error: '무게(kg) 가 필요합니다' });
+    if (!serviceType) return res.status(400).json({ success: false, error: 'serviceType 이 필요합니다 (먼저 견적 받기)' });
+
+    const N = Math.max(1, parseInt(packageCount, 10) || 1);
+    const packages = Array.from({ length: N }, () => ({
+      weightKg: Number(weightKg),
+      dimensions: dimensions ? {
+        length: Number(dimensions.length) || 1,
+        width: Number(dimensions.width) || 1,
+        height: Number(dimensions.height) || 1,
+      } : null,
+    }));
+
+    const recipientContact = {
+      name: buyer.contact_name || buyer.Name || buyer.name || 'Recipient',
+      phone: buyer.contact_phone || buyer.phone || '0000000000',
+      company: buyer.Name || buyer.name || '',
+    };
+
+    // customs value: 명시 입력 없으면 인보이스 합계 사용
+    const totalCustomsValue = Number(customsValue) || Number(inv.Total) || 1;
+
+    const result = await fedex.createShipment({
+      destination: dest,
+      packages,
+      serviceType,
+      customs: {
+        totalValue: totalCustomsValue,
+        currency: currency || inv.Currency || 'USD',
+        countryOfManufacture: 'KR',
+      },
+      recipientContact,
+    });
+
+    if (!result.trackingNumber) {
+      return res.status(502).json({ success: false, error: 'FedEx 응답에 운송장 번호가 없습니다' });
+    }
+
+    // 라벨 PDF 저장 — base64 면 Supabase Storage 업로드, URL 이면 그대로 fetch + 저장
+    let storagePath = null;
+    try {
+      const bucket = 'b2b-shipping-labels';
+      const fname = `${ship.invoice_no}/${result.trackingNumber}.pdf`;
+      let pdfBuffer = null;
+      if (result.labelBase64) {
+        pdfBuffer = Buffer.from(result.labelBase64, 'base64');
+      } else if (result.labelUrl) {
+        const axios = require('axios');
+        const dl = await axios.get(result.labelUrl, { responseType: 'arraybuffer', timeout: 30000 });
+        pdfBuffer = Buffer.from(dl.data);
+      }
+      if (pdfBuffer) {
+        const { error: upErr } = await db.storage.from(bucket).upload(fname, pdfBuffer, {
+          contentType: 'application/pdf',
+          upsert: true,
+        });
+        if (!upErr) storagePath = fname;
+        else console.error('[create-label] Storage 업로드 실패:', upErr.message);
+      }
+    } catch (e) {
+      console.error('[create-label] 라벨 다운로드/업로드 실패:', e.message);
+    }
+
+    // shipments 업데이트
+    const updates = {
+      tracking_number: result.trackingNumber,
+      carrier: 'FedEx',
+      service_type: serviceType,
+      shipping_cost: result.cost || null,
+      currency: result.currency || currency || 'USD',
+      weight_kg: Number(weightKg),
+      dimensions_cm: dimensions ? `${dimensions.length}x${dimensions.width}x${dimensions.height}` : null,
+      package_count: N,
+      label_storage_path: storagePath,
+      fedex_shipment_id: result.shipmentId || null,
+    };
+    const { error: uErr } = await db.from('b2b_shipments').update(updates).eq('id', shipmentId);
+    if (uErr) console.error('[create-label] DB 업데이트 실패:', uErr.message);
+
+    res.json({
+      success: true,
+      trackingNumber: result.trackingNumber,
+      shippingCost: result.cost,
+      currency: result.currency,
+      labelStored: !!storagePath,
+    });
+  } catch (e) {
+    console.error('[create-label]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/b2b/shipments/:shipmentId/label — 라벨 PDF signed URL (15분)
+router.get('/b2b/shipments/:shipmentId/label', async (req, res) => {
+  try {
+    const shipmentId = parseInt(req.params.shipmentId);
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data: ship } = await db.from('b2b_shipments')
+      .select('label_storage_path').eq('id', shipmentId).maybeSingle();
+    if (!ship?.label_storage_path) return res.status(404).json({ success: false, error: '라벨이 없습니다' });
+    const { data, error } = await db.storage.from('b2b-shipping-labels').createSignedUrl(ship.label_storage_path, 900);
+    if (error) throw error;
+    res.json({ success: true, url: data.signedUrl, expiresIn: 900 });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
