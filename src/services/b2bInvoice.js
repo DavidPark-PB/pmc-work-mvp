@@ -1014,10 +1014,10 @@ class B2BInvoiceService {
   async getInvoices(filters = {}) {
     await this._ensureSheets();
     const rows = await this.sheets.readData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A:P`);
-    if (!rows || rows.length <= 1) return [];
+    const sheetRows = (rows && rows.length > 1) ? rows : [[]];
 
-    const headers = rows[0];
-    let invoices = rows.slice(1).filter(r => r[0]).map(row => {
+    const headers = sheetRows[0] || [];
+    let invoices = sheetRows.slice(1).filter(r => r[0]).map(row => {
       const obj = {};
       headers.forEach((h, i) => { obj[h] = row[i] || ''; });
       obj.Subtotal = Number(obj.Subtotal) || 0;
@@ -1032,6 +1032,43 @@ class B2BInvoiceService {
       }
       return obj;
     });
+
+    // Supabase 머지 — Sheets append 가 가끔 실패해서 자동 인보이스가 목록에서 사라지는 문제 방지.
+    // Sheets 에 없는데 Supabase 에는 있는 row 들을 인보이스 목록에 보강.
+    try {
+      const B2BRepo = require('../db/b2bRepository');
+      const mergeRepo = new B2BRepo();
+      const sheetSet = new Set(invoices.map(i => i.InvoiceNo));
+      const { data: supRows } = await mergeRepo.db
+        .from('b2b_invoices')
+        .select('invoice_no, buyer_id, buyer_name, invoice_date, due_date, items, subtotal, tax, shipping, total, currency, status, drive_file_id, drive_url, doc_type, is_manual, voided_at')
+        .order('invoice_no', { ascending: false })
+        .limit(500);
+      for (const r of (supRows || [])) {
+        if (sheetSet.has(r.invoice_no)) continue;
+        invoices.push({
+          InvoiceNo: r.invoice_no,
+          BuyerID: r.buyer_id,
+          BuyerName: r.buyer_name,
+          Date: r.invoice_date,
+          DueDate: r.due_date,
+          Items: typeof r.items === 'string' ? r.items : JSON.stringify(r.items || []),
+          ItemsParsed: Array.isArray(r.items) ? r.items : (typeof r.items === 'string' ? JSON.parse(r.items || '[]') : []),
+          Subtotal: Number(r.subtotal) || 0,
+          Tax: Number(r.tax) || 0,
+          Shipping: Number(r.shipping) || 0,
+          Total: Number(r.total) || 0,
+          Currency: r.currency || 'USD',
+          Status: r.status || 'CREATED',
+          DriveFileId: r.drive_file_id || '',
+          DriveUrl: r.drive_url || `/api/b2b/invoices/${r.invoice_no}/download`,
+          DocType: r.doc_type || 'INVOICE',
+          IsManual: !!r.is_manual,
+          VoidedAt: r.voided_at || null,
+          _fromSupabaseOnly: true, // 디버그용
+        });
+      }
+    } catch (e) { /* Supabase 안 붙어있어도 Sheets 만으로 동작 */ }
 
     // voided 제외 (Supabase 마이그레이션 025 적용 시) — includeVoided 옵션으로 오버라이드 가능
     if (!filters.includeVoided) {

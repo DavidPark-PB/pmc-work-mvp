@@ -9231,13 +9231,20 @@ async function b2bAutoCreateInvoice() {
     const j = await res.json();
     if (!res.ok || !j.success) { err.textContent = j.error || '생성 실패'; err.style.display = 'block'; return; }
     const inv = j.invoice;
-    result.innerHTML = `✅ ${inv.invoiceNo} 생성 완료 · ${inv.currency} ${Number(inv.total).toFixed(2)} · <a href="${API}/b2b/invoices/${inv.invoiceNo}/download" style="color:#81d4fa">📥 XLSX 다운로드</a>${inv.driveUrl && inv.driveUrl.startsWith('http') ? ` · <a href="${inv.driveUrl}" target="_blank" style="color:#81d4fa">Drive에서 보기</a>` : ''}`;
+    result.innerHTML = `✅ ${inv.invoiceNo} 생성 완료 · ${inv.currency} ${Number(inv.total).toFixed(2)} · <a href="${API}/b2b/invoices/${inv.invoiceNo}/download" style="color:#81d4fa">📥 XLSX 다운로드</a>${inv.driveUrl && inv.driveUrl.startsWith('http') ? ` · <a href="${inv.driveUrl}" target="_blank" style="color:#81d4fa">Drive에서 보기</a>` : ''}<br><span style="color:#888;font-size:11px;">잠시 후 인보이스 목록으로 이동합니다…</span>`;
     result.style.display = 'block';
     // 임시저장 drafts clear (생성 성공)
     b2bAutoClearDraft();
     // 인보이스 리스트 갱신 (B2B 탭 열려있으면)
     if (typeof loadB2BInvoices === 'function') loadB2BInvoices();
     if (typeof loadB2BInvoiceList === 'function') loadB2BInvoiceList();
+    // 1.5초 후 모달 닫고 "인보이스 목록" 탭으로 자동 전환 — 사장님이 방금 만든 거 바로 확인 가능
+    setTimeout(() => {
+      b2bCloseAutoInvoice();
+      const listTab = document.querySelector('.b2b-tab[data-tab="b2b-list"]');
+      if (listTab) listTab.click();
+      else if (typeof loadB2BInvoiceList === 'function') loadB2BInvoiceList();
+    }, 1500);
   } catch (e) {
     err.textContent = e.message || '네트워크 오류';
     err.style.display = 'block';
