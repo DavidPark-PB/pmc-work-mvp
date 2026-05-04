@@ -985,6 +985,22 @@ class B2BInvoiceService {
     const totalQty = itemList.reduce((s, it) => s + (Number(it?.qty) || 0), 0);
     if (totalQty > 0) ws.getCell(`G${TOTAL_ROW}`).value = totalQty;
 
+    // 5. 통화별 셀 포맷 동적 적용 — 템플릿의 $ 포맷을 invoice 통화에 맞춰 교체.
+    const ccy = String(currency || 'USD').toUpperCase();
+    const numFmtByCcy = {
+      USD: '"$"#,##0.00',
+      EUR: '"€"#,##0.00',
+      KRW: '"₩"#,##0',     // 원화는 소수점 없음
+      JPY: '"¥"#,##0',     // 엔화도 소수점 없음
+      GBP: '"£"#,##0.00',
+    };
+    const fmt = numFmtByCcy[ccy] || `"${ccy} "#,##0.00`;
+    // 적용 셀: I (단가) + J (합계) — 품목 행 + Shipping 행 + TOTAL 행
+    for (let r = ITEM_FIRST_ROW; r <= TOTAL_ROW; r++) {
+      ws.getCell(`I${r}`).numFmt = fmt;
+      ws.getCell(`J${r}`).numFmt = fmt;
+    }
+
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
   }
