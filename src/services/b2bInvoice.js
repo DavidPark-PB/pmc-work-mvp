@@ -463,7 +463,8 @@ class B2BInvoiceService {
 
     let items = [];
     let totalBoxes = 0;
-    let invoiceCurrency = (shippingRule.currency || buyer.Currency || 'USD').toUpperCase();
+    // 인보이스 통화 우선순위: payload.currency (사용자 명시) > shippingRule.currency > buyer.Currency > USD
+    let invoiceCurrency = (data.currency || shippingRule.currency || buyer.Currency || 'USD').toUpperCase();
     let memoExtra = [];
 
     if (mode === 'catalog') {
@@ -537,8 +538,11 @@ class B2BInvoiceService {
 
     // 배송비 계산 (catalog 모드만 자동, orders 모드는 주문에 이미 포함)
     let shipping = 0;
+    let shippingCurrency = (shippingRule.currency || invoiceCurrency).toUpperCase();
     if (data.shippingOverride != null && data.shippingOverride !== '') {
       shipping = Number(data.shippingOverride) || 0;
+      // shippingOverride 는 invoice 통화로 입력했다고 가정.
+      shippingCurrency = invoiceCurrency;
     } else if (mode === 'catalog') {
       const perBoxes = Math.max(1, parseInt(shippingRule.perBoxes, 10) || 30);
       const rate = Number(shippingRule.rate) || 0;
@@ -547,6 +551,21 @@ class B2BInvoiceService {
       if (shipping > 0) {
         memoExtra.push(`배송비 = ${perBoxes}박스 × ${chunks}묶음 (${totalBoxes}박스)`);
       }
+    }
+    // 배송비 통화 ≠ 인보이스 통화 일 때 환산 (USD ↔ KRW 만 지원)
+    if (shipping > 0 && shippingCurrency !== invoiceCurrency) {
+      try {
+        const catalogService = require('./catalogService');
+        const rates = await catalogService.getRates().catch(() => ({ usd: 1400 }));
+        const usdToKrw = Number(rates.usd) || 1400;
+        if (shippingCurrency === 'USD' && invoiceCurrency === 'KRW') {
+          shipping = Math.round(shipping * usdToKrw);
+          memoExtra.push(`배송비 USD → KRW 환산 (× ${usdToKrw})`);
+        } else if (shippingCurrency === 'KRW' && invoiceCurrency === 'USD') {
+          shipping = Number((shipping / usdToKrw).toFixed(2));
+          memoExtra.push(`배송비 KRW → USD 환산 (÷ ${usdToKrw})`);
+        }
+      } catch (e) { console.warn('[invoice] 배송비 환산 실패:', e.message); }
     }
 
     // 추가 수수료 라인 — 각 수수료는 qty=1 라인아이템으로 품목 뒤에 추가됨.

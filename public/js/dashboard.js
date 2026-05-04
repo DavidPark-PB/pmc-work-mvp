@@ -8333,8 +8333,14 @@ async function b2bSaveManualInvoice() {
     const r = await fetch(`${API}/b2b/invoices/manual`, { method: 'POST', body: fd });
     const j = await r.json();
     if (!j.success) throw new Error(j.error || '저장 실패');
-    st.innerHTML = `<span style="color:#4caf50;">✓ ${j.invoice.invoiceNo} 등록 완료</span>`;
-    setTimeout(() => { b2bCloseManualUpload(); loadB2BInvoiceList(); }, 1500);
+    st.innerHTML = `<span style="color:#4caf50;">✓ ${j.invoice.invoiceNo} 등록 완료 — 인보이스 목록으로 이동합니다…</span>`;
+    setTimeout(() => {
+      b2bCloseManualUpload();
+      // 인보이스 목록 탭으로 자동 전환 — 탭 버튼 click 트리거 시 데이터 로드도 자동.
+      const listTab = document.querySelector('.b2b-tab[data-tab="b2b-list"]');
+      if (listTab) listTab.click();
+      else loadB2BInvoiceList();
+    }, 1200);
   } catch (e) {
     st.innerHTML = `<span style="color:#ff8a80;">❌ ${e.message}</span>`;
     btn.disabled = false; btn.textContent = '✓ 목록에 등록';
@@ -8578,12 +8584,21 @@ async function b2bOpenAutoInvoice() {
         <button type="button" onclick="b2bCloseAutoInvoice()" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">닫기</button>
       </div>
 
-      <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-bottom:8px;">
+      <div style="display:grid;grid-template-columns:2fr 90px 1fr;gap:8px;margin-bottom:8px;">
         <div>
           <label style="font-size:11px;color:#aaa;">구매자 *</label>
           <select id="auto-buyer" onchange="b2bAutoOnBuyerChange()" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
             <option value="">구매자 선택...</option>
             ${_autoBuyers.map(b => `<option value="${b.BuyerID}">${b.BuyerID} · ${b.Name}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#aaa;">통화 (인보이스)</label>
+          <select id="auto-invoice-ccy" onchange="b2bAutoRecalc()" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+            <option value="USD">USD</option>
+            <option value="KRW">KRW (원화)</option>
+            <option value="JPY">JPY</option>
+            <option value="EUR">EUR</option>
           </select>
         </div>
         <div>
@@ -8819,6 +8834,9 @@ async function b2bAutoOnBuyerChange() {
     const tag = document.getElementById('auto-sr-default-tag');
     if (tag) tag.textContent = buyer ? `(거래처 기본값)` : '';
   }
+  // 인보이스 통화 — 거래처 기본 통화로 자동 세팅 (사용자가 후에 바꿀 수 있음)
+  const invCcySel = document.getElementById('auto-invoice-ccy');
+  if (invCcySel && buyer?.Currency) invCcySel.value = buyer.Currency;
   if (document.getElementById('auto-pane-orders').style.display !== 'none') b2bAutoLoadBuyerOrders();
   b2bAutoRecalc();
 }
@@ -9074,8 +9092,10 @@ async function b2bAutoCreateInvoice() {
   const shippingOverride = overrideChecked ? Number(document.getElementById('auto-ship-amount').value) || 0 : null;
 
   const isOrders = document.getElementById('auto-pane-orders').style.display !== 'none';
+  const invoiceCurrency = document.getElementById('auto-invoice-ccy')?.value || undefined;
   const payload = {
     buyerId, dueDate, shippingOverride,
+    currency: invoiceCurrency,
     shippingRuleOverride: _autoShippingRule || null,
     extraFees: _autoExtraFees.filter(f => f.name && Number(f.amount)),
     discount: Math.max(0, Number(document.getElementById('auto-discount')?.value) || 0),
