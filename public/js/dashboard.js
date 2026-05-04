@@ -8594,7 +8594,7 @@ async function b2bOpenAutoInvoice() {
         </div>
         <div>
           <label style="font-size:11px;color:#aaa;">통화 (인보이스)</label>
-          <select id="auto-invoice-ccy" onchange="b2bAutoRecalc()" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          <select id="auto-invoice-ccy" onchange="b2bAutoOnInvoiceCurrencyChange()" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
             <option value="USD">USD</option>
             <option value="KRW">KRW (원화)</option>
             <option value="JPY">JPY</option>
@@ -8891,6 +8891,9 @@ function b2bAutoRenderFees() {
   `).join('');
 }
 
+// 환율 캐시 — 카탈로그 prices 응답에서 추출 (KRW 인보이스 화면 표시 + 환산용)
+let _autoCatalogRates = { usdToKrw: 1400, usdToEur: 0.92 };
+
 async function b2bAutoLoadCatalog() {
   const tab = document.getElementById('auto-cat-tab').value;
   const host = document.getElementById('auto-cat-results');
@@ -8900,11 +8903,41 @@ async function b2bAutoLoadCatalog() {
       const r = await fetch(`${API}/catalog/prices?tab=${encodeURIComponent(tab)}`);
       const j = await r.json();
       _autoCatalogCache[tab] = j.items || [];
+      // 환율 갱신 (탭마다 같지만 매번 캐시 — 가장 최신 응답 반영)
+      if (j.rates) {
+        _autoCatalogRates = {
+          usdToKrw: Number(j.rates.usdToKrw) || 1400,
+          usdToEur: Number(j.rates.usdToEur) || 0.92,
+        };
+      }
     }
     b2bAutoRenderCatalog(_autoCatalogCache[tab]);
   } catch (e) {
     host.innerHTML = `<div style="padding:20px;color:#ff8a80;">로드 실패: ${e.message}</div>`;
   }
+}
+
+// 인보이스 통화 → USD 1단위 → 그 통화 가격 변환 (USD/KRW/EUR/JPY).
+// JPY 환율은 catalog 에 없으니 USD 그대로 (사장님이 수동 입력).
+function _autoConvertFromUsd(usdPrice, invoiceCcy) {
+  const p = Number(usdPrice) || 0;
+  if (!p) return 0;
+  const ccy = String(invoiceCcy || 'USD').toUpperCase();
+  if (ccy === 'KRW') return Math.round(p * (_autoCatalogRates.usdToKrw || 1400));
+  if (ccy === 'EUR') return Number((p * (_autoCatalogRates.usdToEur || 0.92)).toFixed(2));
+  return Number(p.toFixed(2)); // USD or default
+}
+
+function _autoCcySymbol(ccy) {
+  const c = String(ccy || 'USD').toUpperCase();
+  return c === 'KRW' ? '₩' : c === 'EUR' ? '€' : c === 'JPY' ? '¥' : '$';
+}
+
+function _autoCcyFmt(amount, ccy) {
+  const c = String(ccy || 'USD').toUpperCase();
+  const n = Number(amount) || 0;
+  if (c === 'KRW' || c === 'JPY') return `${_autoCcySymbol(c)}${Math.round(n).toLocaleString('ko-KR')}`;
+  return `${_autoCcySymbol(c)}${n.toFixed(2)}`;
 }
 
 function b2bAutoFilterCatalog() {
@@ -8962,32 +8995,56 @@ function b2bAutoRenderLines() {
     host.innerHTML = '<div style="padding:6px;color:#666;font-size:11px;text-align:center;">위에서 품목을 클릭해 추가하세요</div>';
     return;
   }
+  // 인보이스 통화 (모달 상단 드롭다운)
+  const invCcy = (document.getElementById('auto-invoice-ccy')?.value || 'USD').toUpperCase();
+  const sym = _autoCcySymbol(invCcy);
+  const step = (invCcy === 'KRW' || invCcy === 'JPY') ? '1' : '0.01';
+  const isWonOrYen = (invCcy === 'KRW' || invCcy === 'JPY');
+
   host.innerHTML = `
-    <div style="display:grid;grid-template-columns:3fr 80px 110px 70px 40px;gap:6px;align-items:center;padding:2px 0 6px;font-size:10px;color:#888;border-bottom:1px solid #2a2a4a;margin-bottom:4px;">
-      <span>품목</span><span>SETCODE</span><span style="text-align:right;">단가 (USD, 수정 가능)</span><span style="text-align:center;">박스</span><span></span>
+    <div style="display:grid;grid-template-columns:3fr 80px 130px 70px 40px;gap:6px;align-items:center;padding:2px 0 6px;font-size:10px;color:#888;border-bottom:1px solid #2a2a4a;margin-bottom:4px;">
+      <span>품목</span><span>SETCODE</span><span style="text-align:right;">단가 (${invCcy} · 수정 가능)</span><span style="text-align:center;">박스</span><span></span>
     </div>
-  ` + _autoLines.map((l, i) => `
-    <div style="display:grid;grid-template-columns:3fr 80px 110px 70px 40px;gap:6px;align-items:center;padding:4px 0;font-size:12px;">
+  ` + _autoLines.map((l, i) => {
+    // 표시 가격: displayPrice (사용자 수정값) 우선, 없으면 catalog usdPrice 환산
+    const defaultPrice = _autoConvertFromUsd(l.usdPrice, invCcy);
+    const showPrice = (l.displayPrice != null && l.displayCurrency === invCcy)
+      ? l.displayPrice
+      : defaultPrice;
+    const edited = l.displayPrice != null && l.displayCurrency === invCcy && Number(l.displayPrice) !== defaultPrice;
+    const value = isWonOrYen ? Math.round(showPrice) : Number(showPrice).toFixed(2);
+    const tooltipBase = `카탈로그 기본 ${_autoCcyFmt(defaultPrice, invCcy)} (USD ${Number(l.usdPrice||0).toFixed(2)} 환산)`;
+    return `
+    <div style="display:grid;grid-template-columns:3fr 80px 130px 70px 40px;gap:6px;align-items:center;padding:4px 0;font-size:12px;">
       <span style="color:#fff;">${(l.name || '').replace(/</g, '&lt;')}</span>
       <span style="color:#aaa;font-family:monospace;">${l.setCode || '-'}</span>
-      <input type="number" min="0" step="0.01" value="${Number(l.usdPrice || 0).toFixed(2)}" onchange="b2bAutoUpdatePrice(${i}, this.value)" title="카탈로그 기본 \$${Number(l.catalogUsdPrice ?? l.usdPrice ?? 0).toFixed(2)} — 수정 시 이번 인보이스만 적용" style="padding:4px;background:#1a1a2e;border:1px solid ${Number(l.usdPrice) !== Number(l.catalogUsdPrice ?? l.usdPrice) ? '#7c4dff' : '#333'};border-radius:3px;color:#81d4fa;font-size:12px;text-align:right;">
+      <div style="display:flex;align-items:center;gap:2px;">
+        <span style="color:#888;font-size:11px;">${sym}</span>
+        <input type="number" min="0" step="${step}" value="${value}" onchange="b2bAutoUpdatePrice(${i}, this.value)" title="${tooltipBase} — 수정 시 이번 인보이스만 적용" style="flex:1;padding:4px;background:#1a1a2e;border:1px solid ${edited ? '#7c4dff' : '#333'};border-radius:3px;color:#81d4fa;font-size:12px;text-align:right;">
+      </div>
       <input type="number" min="1" value="${l.boxes}" onchange="b2bAutoUpdateBoxes(${i}, this.value)" style="padding:4px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:12px;text-align:right;">
       <button type="button" onclick="b2bAutoRemoveLine(${i})" style="padding:4px;background:transparent;border:0;color:#e94560;cursor:pointer;font-size:13px;" title="제거">×</button>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
+}
+
+// 통화 바뀌면 라인 단가 표시 다시 그리고 (수정값은 다른 통화면 무효 → 카탈로그 환산값 다시 보이게)
+function b2bAutoOnInvoiceCurrencyChange() {
+  // 통화 바뀌면 다른 통화로 입력했던 displayPrice 무효 → 라인 다시 그릴 때 카탈로그 환산 사용
+  // (사용자가 다시 USD 로 돌리면 USD 로 입력했던 값은 살아있게 됨)
+  b2bAutoRenderLines();
+  b2bAutoRecalc();
 }
 
 function b2bAutoUpdatePrice(idx, val) {
   const v = Number(val);
   if (!Number.isFinite(v) || v < 0) return;
-  if (_autoLines[idx]) {
-    // catalogUsdPrice 백업 (시각적 비교용) — 첫 수정 시에만 저장
-    if (_autoLines[idx].catalogUsdPrice == null) _autoLines[idx].catalogUsdPrice = _autoLines[idx].usdPrice;
-    _autoLines[idx].usdPrice = v;
-    b2bAutoRecalc();
-    // 보라색 테두리 즉시 반영을 위해 줄 다시 그리기
-    b2bAutoRenderLines();
-  }
+  if (!_autoLines[idx]) return;
+  const invCcy = (document.getElementById('auto-invoice-ccy')?.value || 'USD').toUpperCase();
+  _autoLines[idx].displayPrice = v;
+  _autoLines[idx].displayCurrency = invCcy;
+  b2bAutoRecalc();
+  b2bAutoRenderLines();  // 테두리 색·합계 시각 갱신
 }
 
 function b2bAutoRecalc() {
@@ -9020,7 +9077,19 @@ function b2bAutoRecalc() {
   }
 
   const totalBoxes = _autoLines.reduce((s, l) => s + (parseInt(l.boxes, 10) || 0), 0);
-  const subtotalUsd = _autoLines.reduce((s, l) => s + (Number(l.usdPrice) || 0) * (parseInt(l.boxes, 10) || 0), 0);
+  // 인보이스 통화로 상품 소계 계산 (각 라인 displayPrice or 환산값 × 박스수)
+  const invCcy = (document.getElementById('auto-invoice-ccy')?.value || 'USD').toUpperCase();
+  const subtotalInvCcy = _autoLines.reduce((s, l) => {
+    const boxes = parseInt(l.boxes, 10) || 0;
+    let unit;
+    if (l.displayPrice != null && l.displayCurrency === invCcy) {
+      unit = Number(l.displayPrice);
+    } else {
+      unit = _autoConvertFromUsd(l.usdPrice, invCcy);
+    }
+    return s + unit * boxes;
+  }, 0);
+
   const overrideChecked = document.getElementById('auto-ship-override')?.checked;
   document.getElementById('auto-ship-amount').style.display = overrideChecked ? 'inline-block' : 'none';
   let shipping = 0;
@@ -9030,14 +9099,25 @@ function b2bAutoRecalc() {
     const chunks = totalBoxes > 0 ? Math.ceil(totalBoxes / perBoxes) : 0;
     shipping = chunks * rate;
   }
+  // 배송비 통화 ≠ 인보이스 통화 면 환산해서 표시 (서버 로직과 일치)
+  let shippingInInvCcy = shipping;
+  if (ccy !== invCcy && shipping > 0) {
+    if (ccy === 'USD' && invCcy === 'KRW') shippingInInvCcy = Math.round(shipping * (_autoCatalogRates.usdToKrw || 1400));
+    else if (ccy === 'KRW' && invCcy === 'USD') shippingInInvCcy = Number((shipping / (_autoCatalogRates.usdToKrw || 1400)).toFixed(2));
+    else if (ccy === 'USD' && invCcy === 'EUR') shippingInInvCcy = Number((shipping * (_autoCatalogRates.usdToEur || 0.92)).toFixed(2));
+    else if (ccy === 'EUR' && invCcy === 'USD') shippingInInvCcy = Number((shipping / (_autoCatalogRates.usdToEur || 0.92)).toFixed(2));
+  }
 
-  const fmtCcy = (ccy === 'USD' ? '$' : (ccy === 'EUR' ? '€' : '₩'));
-  const fmtNum = (v) => (ccy === 'KRW' ? Math.round(v).toLocaleString('ko-KR') : Number(v).toFixed(2));
+  const total = subtotalInvCcy + shippingInInvCcy + feesTotal - discount;
 
-  // 서버는 subtotal(USD) 를 invoiceCurrency 로 환산. 여기선 UI 상 대략적인 합계만 표시.
-  const parts = [`${_autoLines.length}품목`, `${totalBoxes}박스`, `상품 $${subtotalUsd.toFixed(2)}`, `배송 ${fmtCcy}${fmtNum(shipping)}`];
-  if (feesTotal) parts.push(`수수료 ${fmtCcy}${fmtNum(feesTotal)}`);
-  if (discount) parts.push(`<span style="color:#e94560">− 할인 ${fmtCcy}${fmtNum(discount)}</span>`);
+  const parts = [
+    `${_autoLines.length}품목 · ${totalBoxes}박스`,
+    `상품 ${_autoCcyFmt(subtotalInvCcy, invCcy)}`,
+    `배송 ${_autoCcyFmt(shippingInInvCcy, invCcy)}${ccy !== invCcy ? ` <span style="color:#888;font-size:10px;">(${_autoCcyFmt(shipping, ccy)} 환산)</span>` : ''}`,
+  ];
+  if (feesTotal) parts.push(`수수료 ${_autoCcyFmt(feesTotal, invCcy)}`);
+  if (discount) parts.push(`<span style="color:#e94560">− 할인 ${_autoCcyFmt(discount, invCcy)}</span>`);
+  parts.push(`<strong style="color:#81c784;">합계 ${_autoCcyFmt(total, invCcy)}</strong>`);
 
   const sum = document.getElementById('auto-summary');
   if (sum) sum.innerHTML = parts.join(' · ');
@@ -9126,16 +9206,19 @@ async function b2bAutoCreateInvoice() {
   } else {
     payload.mode = 'catalog';
     if (_autoLines.length === 0) { err.textContent = '카탈로그 품목을 추가하세요'; err.style.display = 'block'; return; }
-    payload.items = _autoLines.map(l => ({
-      catalogTab: l.catalogTab,
-      rowIndex: l.rowIndex,
-      side: l.side || undefined,
-      boxes: l.boxes,
-      // 사용자가 단가 수정했으면 override 전송 — 백엔드가 이 값으로 인보이스 라인 생성
-      unitPriceOverride: (l.catalogUsdPrice != null && Number(l.usdPrice) !== Number(l.catalogUsdPrice))
-        ? Number(l.usdPrice)
-        : undefined,
-    }));
+    payload.items = _autoLines.map(l => {
+      // 사용자가 단가 수정했고 그 통화가 현재 인보이스 통화와 같으면 override 전송 (인보이스 통화 단위)
+      const sendOverride = l.displayPrice != null && l.displayCurrency === invoiceCurrency;
+      return {
+        catalogTab: l.catalogTab,
+        rowIndex: l.rowIndex,
+        side: l.side || undefined,
+        boxes: l.boxes,
+        // 백엔드는 이 값을 invoice currency 단위로 그대로 사용 (USD 환산 안 함).
+        unitPriceOverride: sendOverride ? Number(l.displayPrice) : undefined,
+        unitPriceOverrideCurrency: sendOverride ? invoiceCurrency : undefined,
+      };
+    });
   }
 
   const btn = document.getElementById('auto-create-btn');

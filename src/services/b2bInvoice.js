@@ -492,10 +492,20 @@ class B2BInvoiceService {
             continue;
           }
           const boxes = Math.max(1, parseInt(sel.boxes, 10) || 1);
-          const usdPrice = Number(sel.unitPriceOverride ?? found.usdPrice) || 0;
-          const priceInInvoice = invoiceCurrency === 'KRW'
-            ? Math.round(usdPrice * usdToKrw)
-            : usdPrice;
+          // unitPriceOverride 는 사용자가 화면에서 입력한 값. unitPriceOverrideCurrency 가
+          // 인보이스 통화와 같으면 그대로 사용 (환산 X). 다르거나 없으면 카탈로그 USD 기준.
+          let priceInInvoice;
+          if (sel.unitPriceOverride != null && sel.unitPriceOverrideCurrency
+              && String(sel.unitPriceOverrideCurrency).toUpperCase() === invoiceCurrency) {
+            priceInInvoice = invoiceCurrency === 'KRW'
+              ? Math.round(Number(sel.unitPriceOverride))
+              : Number(sel.unitPriceOverride);
+          } else {
+            const usdBase = Number(sel.unitPriceOverride ?? found.usdPrice) || 0;
+            priceInInvoice = invoiceCurrency === 'KRW'
+              ? Math.round(usdBase * usdToKrw)
+              : usdBase;
+          }
           items.push({
             sku: found.setCode || found.upc || '',
             name: found.name,
