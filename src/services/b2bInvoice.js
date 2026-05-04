@@ -1184,9 +1184,40 @@ class B2BInvoiceService {
    * @param {string} format - 'xlsx' 또는 'pdf'
    */
   async downloadInvoice(invoiceNo, format = 'xlsx') {
-    const invoices = await this.getInvoices();
-    const inv = invoices.find(i => i.InvoiceNo === invoiceNo);
-    if (!inv) throw new Error(`인보이스 ${invoiceNo} 없음`);
+    const invoices = await this.getInvoices({ includeVoided: true });
+    let inv = invoices.find(i => i.InvoiceNo === invoiceNo);
+
+    // Sheets 에 없으면 Supabase fallback — 자동 인보이스가 Sheets append 실패한 경우 대비.
+    if (!inv) {
+      try {
+        const B2BRepo = require('../db/b2bRepository');
+        const repo = new B2BRepo();
+        const { data: row } = await repo.db.from('b2b_invoices')
+          .select('*').eq('invoice_no', invoiceNo).maybeSingle();
+        if (row) {
+          inv = {
+            InvoiceNo: row.invoice_no,
+            BuyerID: row.buyer_id,
+            BuyerName: row.buyer_name,
+            Date: row.invoice_date,
+            DueDate: row.due_date,
+            Items: typeof row.items === 'string' ? row.items : JSON.stringify(row.items || []),
+            ItemsParsed: Array.isArray(row.items) ? row.items : (typeof row.items === 'string' ? JSON.parse(row.items || '[]') : []),
+            Subtotal: Number(row.subtotal) || 0,
+            Tax: Number(row.tax) || 0,
+            Shipping: Number(row.shipping) || 0,
+            Total: Number(row.total) || 0,
+            Currency: row.currency || 'USD',
+            Status: row.status || 'CREATED',
+            DriveFileId: row.drive_file_id || '',
+            DriveUrl: row.drive_url || '',
+          };
+          console.log(`[downloadInvoice] Sheets miss → Supabase fallback OK (${invoiceNo})`);
+        }
+      } catch (e) { console.warn('[downloadInvoice] Supabase fallback 실패:', e.message); }
+    }
+
+    if (!inv) throw new Error(`인보이스 ${invoiceNo} 없음 (Sheets·Supabase 모두 조회 실패)`);
 
     // Drive에서 다운로드 시도
     if (inv.DriveFileId) {

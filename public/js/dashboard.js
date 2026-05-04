@@ -8962,15 +8962,32 @@ function b2bAutoRenderLines() {
     host.innerHTML = '<div style="padding:6px;color:#666;font-size:11px;text-align:center;">위에서 품목을 클릭해 추가하세요</div>';
     return;
   }
-  host.innerHTML = _autoLines.map((l, i) => `
-    <div style="display:grid;grid-template-columns:3fr 80px 90px 90px 40px;gap:6px;align-items:center;padding:4px 0;font-size:12px;">
+  host.innerHTML = `
+    <div style="display:grid;grid-template-columns:3fr 80px 110px 70px 40px;gap:6px;align-items:center;padding:2px 0 6px;font-size:10px;color:#888;border-bottom:1px solid #2a2a4a;margin-bottom:4px;">
+      <span>품목</span><span>SETCODE</span><span style="text-align:right;">단가 (USD, 수정 가능)</span><span style="text-align:center;">박스</span><span></span>
+    </div>
+  ` + _autoLines.map((l, i) => `
+    <div style="display:grid;grid-template-columns:3fr 80px 110px 70px 40px;gap:6px;align-items:center;padding:4px 0;font-size:12px;">
       <span style="color:#fff;">${(l.name || '').replace(/</g, '&lt;')}</span>
       <span style="color:#aaa;font-family:monospace;">${l.setCode || '-'}</span>
-      <span style="color:#81d4fa;text-align:right;">${l.usdPrice ? '$' + Number(l.usdPrice).toFixed(2) : '-'}</span>
+      <input type="number" min="0" step="0.01" value="${Number(l.usdPrice || 0).toFixed(2)}" onchange="b2bAutoUpdatePrice(${i}, this.value)" title="카탈로그 기본 \$${Number(l.catalogUsdPrice ?? l.usdPrice ?? 0).toFixed(2)} — 수정 시 이번 인보이스만 적용" style="padding:4px;background:#1a1a2e;border:1px solid ${Number(l.usdPrice) !== Number(l.catalogUsdPrice ?? l.usdPrice) ? '#7c4dff' : '#333'};border-radius:3px;color:#81d4fa;font-size:12px;text-align:right;">
       <input type="number" min="1" value="${l.boxes}" onchange="b2bAutoUpdateBoxes(${i}, this.value)" style="padding:4px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:12px;text-align:right;">
-      <button type="button" onclick="b2bAutoRemoveLine(${i})" style="padding:4px;background:transparent;border:0;color:#e94560;cursor:pointer;font-size:13px;">×</button>
+      <button type="button" onclick="b2bAutoRemoveLine(${i})" style="padding:4px;background:transparent;border:0;color:#e94560;cursor:pointer;font-size:13px;" title="제거">×</button>
     </div>
   `).join('');
+}
+
+function b2bAutoUpdatePrice(idx, val) {
+  const v = Number(val);
+  if (!Number.isFinite(v) || v < 0) return;
+  if (_autoLines[idx]) {
+    // catalogUsdPrice 백업 (시각적 비교용) — 첫 수정 시에만 저장
+    if (_autoLines[idx].catalogUsdPrice == null) _autoLines[idx].catalogUsdPrice = _autoLines[idx].usdPrice;
+    _autoLines[idx].usdPrice = v;
+    b2bAutoRecalc();
+    // 보라색 테두리 즉시 반영을 위해 줄 다시 그리기
+    b2bAutoRenderLines();
+  }
 }
 
 function b2bAutoRecalc() {
@@ -9114,6 +9131,10 @@ async function b2bAutoCreateInvoice() {
       rowIndex: l.rowIndex,
       side: l.side || undefined,
       boxes: l.boxes,
+      // 사용자가 단가 수정했으면 override 전송 — 백엔드가 이 값으로 인보이스 라인 생성
+      unitPriceOverride: (l.catalogUsdPrice != null && Number(l.usdPrice) !== Number(l.catalogUsdPrice))
+        ? Number(l.usdPrice)
+        : undefined,
     }));
   }
 
