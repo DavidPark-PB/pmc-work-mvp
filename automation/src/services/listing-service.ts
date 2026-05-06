@@ -6,7 +6,7 @@
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { crawlResults, products, platformListings, productImages } from '../db/schema.js';
-import { calculateListingPrice, calculatePriceSimple } from './pricing.js';
+import { calculateListingPrice, calculatePriceSimple, getPricingSettings } from './pricing.js';
 import { translateProduct } from './translate.js';
 import { EbayClient } from '../platforms/ebay/EbayClient.js';
 import { ShopifyClient } from '../platforms/shopify/ShopifyClient.js';
@@ -132,7 +132,8 @@ export async function createListing(
       .where(eq(platformListings.id, existingListing.id));
   }
 
-  // platform_listings 행 생성 (draft 상태)
+  // platform_listings 행 생성 (draft 상태) — 기본 재고 설정값 사용
+  const defaultQty = (pricing as any).defaultQuantity || (await getPricingSettings(platform)).defaultQuantity || 5;
   const [listing] = await db.insert(platformListings).values({
     productId,
     platform,
@@ -142,7 +143,7 @@ export async function createListing(
     price: String(pricing.salePrice),
     currency: 'USD',
     shippingCost: String(pricing.shippingCost),
-    quantity: 5,
+    quantity: defaultQty,
   }).returning();
 
   console.log(`[리스팅] draft 생성: #${listing.id} (${platform}, $${pricing.salePrice})`);
@@ -173,7 +174,7 @@ export async function createListing(
     description: fullDescription,
     price: pricing.salePrice,
     shippingCost: pricing.shippingCost,
-    quantity: 5,
+    quantity: defaultQty,
     sku: product.sku,
     condition: product.condition || 'ungraded',
     imageUrls: product.images.map((img: any) => img.url),

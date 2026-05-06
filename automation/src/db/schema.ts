@@ -144,6 +144,7 @@ export const pricingSettings = pgTable('pricing_settings', {
   exchangeRate: numeric('exchange_rate', { precision: 10, scale: 2 }).notNull(),       // 1400.00
   platformFeeRate: numeric('platform_fee_rate', { precision: 5, scale: 4 }).notNull(), // 0.1300
   defaultShippingKrw: numeric('default_shipping_krw', { precision: 10, scale: 2 }).notNull(), // 5500.00
+  defaultQuantity: integer('default_quantity').notNull().default(5),                    // 기본 재고 수량 (사장님이 설정)
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 

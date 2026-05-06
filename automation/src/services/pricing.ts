@@ -22,11 +22,15 @@ const DEFAULT_KRW_TO_USD = 1400;
 // 기본 배송비 (DB에 설정이 없을 때 폴백)
 const DEFAULT_SHIPPING_KRW = 5500;
 
+// 기본 재고 수량 (DB 에 설정이 없을 때 폴백)
+const DEFAULT_QUANTITY = 5;
+
 export interface PricingSettingsData {
   marginRate: number;
   exchangeRate: number;
   platformFeeRate: number;
   defaultShippingKrw: number;
+  defaultQuantity: number;
 }
 
 export interface PricingResult {
@@ -59,6 +63,7 @@ export async function getPricingSettings(platform: string): Promise<PricingSetti
       exchangeRate: parseFloat(String(row.exchangeRate)),
       platformFeeRate: parseFloat(String(row.platformFeeRate)),
       defaultShippingKrw: parseFloat(String(row.defaultShippingKrw)),
+      defaultQuantity: Number((row as any).defaultQuantity) || DEFAULT_QUANTITY,
     };
   }
 
@@ -67,6 +72,7 @@ export async function getPricingSettings(platform: string): Promise<PricingSetti
     exchangeRate: DEFAULT_KRW_TO_USD,
     platformFeeRate: PLATFORM_FEES[platform] || 0.13,
     defaultShippingKrw: DEFAULT_SHIPPING_KRW,
+    defaultQuantity: DEFAULT_QUANTITY,
   };
 }
 
@@ -83,6 +89,7 @@ export async function getAllPricingSettings(): Promise<Record<string, PricingSet
       exchangeRate: parseFloat(String(row.exchangeRate)),
       platformFeeRate: parseFloat(String(row.platformFeeRate)),
       defaultShippingKrw: parseFloat(String(row.defaultShippingKrw)),
+      defaultQuantity: Number((row as any).defaultQuantity) || DEFAULT_QUANTITY,
     };
   }
 
@@ -94,6 +101,7 @@ export async function getAllPricingSettings(): Promise<Record<string, PricingSet
         exchangeRate: DEFAULT_KRW_TO_USD,
         platformFeeRate: PLATFORM_FEES[platform] || 0.13,
         defaultShippingKrw: DEFAULT_SHIPPING_KRW,
+        defaultQuantity: DEFAULT_QUANTITY,
       };
     }
   }

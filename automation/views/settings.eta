@@ -27,7 +27,7 @@
   ]; %>
 
   <% for (const p of platforms) { %>
-  <% const s = it.settings[p.key] || { marginRate: 0.30, exchangeRate: 1400, platformFeeRate: 0.13, defaultShippingKrw: 5500 }; %>
+  <% const s = it.settings[p.key] || { marginRate: 0.30, exchangeRate: 1400, platformFeeRate: 0.13, defaultShippingKrw: 5500, defaultQuantity: 5 }; %>
   <div class="settings-card">
     <div class="settings-card-header" style="border-left: 4px solid <%= p.color %>;">
       <i class="ti ti-<%= p.icon %>"></i>
@@ -56,6 +56,12 @@
         <label>기본 배송비 (원)</label>
         <input type="number" class="form-input setting-input" data-platform="<%= p.key %>" data-field="defaultShippingKrw"
           value="<%= s.defaultShippingKrw.toFixed(0) %>" step="100" min="0">
+      </div>
+      <div class="form-group">
+        <label>기본 재고 수량 (개)</label>
+        <input type="number" class="form-input setting-input" data-platform="<%= p.key %>" data-field="defaultQuantity"
+          value="<%= (s.defaultQuantity || 5) %>" step="1" min="1" max="9999">
+        <div class="form-hint">새 리스팅 생성 시 기본으로 들어가는 재고 수량입니다.</div>
       </div>
     </div>
   </div>

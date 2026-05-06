@@ -50,6 +50,7 @@ export async function settingsRoutes(app: FastifyInstance) {
       exchangeRate: number;
       platformFeeRate: number;
       defaultShippingKrw: number;
+      defaultQuantity?: number;
     }>;
 
     const results: string[] = [];
@@ -62,6 +63,7 @@ export async function settingsRoutes(app: FastifyInstance) {
       if (values.exchangeRate <= 0) continue;
       if (values.platformFeeRate < 0 || values.platformFeeRate > 1) continue;
       if (values.defaultShippingKrw < 0) continue;
+      const qty = Math.max(1, Math.min(9999, parseInt(String(values.defaultQuantity ?? 5), 10) || 5));
 
       const existing = await db.query.pricingSettings.findFirst({
         where: eq(pricingSettings.platform, platform),
@@ -74,6 +76,7 @@ export async function settingsRoutes(app: FastifyInstance) {
             exchangeRate: String(values.exchangeRate),
             platformFeeRate: String(values.platformFeeRate),
             defaultShippingKrw: String(values.defaultShippingKrw),
+            defaultQuantity: qty,
             updatedAt: new Date(),
           })
           .where(eq(pricingSettings.platform, platform));
@@ -84,6 +87,7 @@ export async function settingsRoutes(app: FastifyInstance) {
           exchangeRate: String(values.exchangeRate),
           platformFeeRate: String(values.platformFeeRate),
           defaultShippingKrw: String(values.defaultShippingKrw),
+          defaultQuantity: qty,
         });
       }
 
