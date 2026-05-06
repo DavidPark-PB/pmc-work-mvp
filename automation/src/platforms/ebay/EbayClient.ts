@@ -236,8 +236,17 @@ export class EbayClient implements PlatformAdapter {
     const CARD_CATEGORIES = ['183454', '183456', '261328', '183050'];
     const isCardCategory = CARD_CATEGORIES.includes(categoryId);
 
-    // Condition: 카드면 ungraded(4000), 그 외 new(1000)
-    const conditionId = input.condition === 'used' ? '3000' : (isCardCategory ? '4000' : '1000');
+    // Sealed 상품 (박스/팩/덱/틴/번들) 감지 — 제목 키워드 기반.
+    // 개별 카드 (낱장) vs Sealed (박스 등) 는 condition 이 다름:
+    //   - 개별 카드: 4000 (Ungraded) + ConditionDescriptors
+    //   - Sealed: 1000 (New) — Ungraded 코드 거부됨
+    const isSealedProduct = isCardCategory && /\b(box|case|pack|deck|tin|bundle|collection|booster|elite trainer|premium|portfolio)\b/i.test(input.title);
+    const isIndividualCard = isCardCategory && !isSealedProduct;
+
+    // Condition: 중고 3000 / 개별카드 4000 (Ungraded) / 그 외(Sealed 포함) 1000 (New)
+    const conditionId = input.condition === 'used' ? '3000'
+      : isIndividualCard ? '4000'
+      : '1000';
 
     // ItemSpecifics: 카테고리 기반 템플릿 로드 (DB)
     let specs: Record<string, string> = {};
@@ -292,6 +301,10 @@ export class EbayClient implements PlatformAdapter {
         else if (/magic.*gathering|\bmtg\b/i.test(input.title)) specs['Brand'] = 'Wizards of the Coast';
         else specs['Brand'] = input.brand || 'Unbranded';
       }
+      // Manufacturer: 일부 카드 카테고리 (sealed) 가 Brand 와 별개로 요구. 같은 값으로.
+      if (!specs['Manufacturer']) {
+        specs['Manufacturer'] = specs['Brand'];
+      }
       // Type 도 sealed/booster 자동 감지
       if (!specs['Type']) {
         if (/booster box/i.test(input.title)) specs['Type'] = 'Booster Box';
@@ -325,7 +338,7 @@ export class EbayClient implements PlatformAdapter {
       <CategoryID>${categoryId}</CategoryID>
     </PrimaryCategory>
     <StartPrice currencyID="USD">${input.price.toFixed(2)}</StartPrice>
-    <ConditionID>${conditionId}</ConditionID>${isCardCategory ? `
+    <ConditionID>${conditionId}</ConditionID>${isIndividualCard ? `
     <ConditionDescriptors>
       <ConditionDescriptor>
         <Name>40001</Name>
