@@ -25,6 +25,10 @@ const xml2js = require('xml2js');
  */
 const DEFAULT_TRACK_URL = 'http://biz.epost.go.kr/KpostPortal/openapi';
 const DEFAULT_RATE_URL = 'http://eship.epost.go.kr/api/EmsTotProcCmd.ems';
+// 소포신청 — base 가 또 다름 (eship 아니라 ship). 인증 파라미터도 key (regkey 아님).
+const DEFAULT_LABEL_URL = 'http://ship.epost.go.kr/api/InsertOrder.jparcel';
+// 국제 EMS/K-Packet 접수신청 (다른 base 사용)
+const DEFAULT_INTL_LABEL_URL = 'http://eship.epost.go.kr/api/EmsApplyInsertReceiveTempCmdNew.ems';
 
 class KoreaPostAPI {
   constructor() {
@@ -36,7 +40,12 @@ class KoreaPostAPI {
     this.premiumcd = process.env.KOREAPOST_PREMIUMCD;     // 서비스 프리미엄 코드
     this.rateUrl = process.env.KOREAPOST_RATE_URL || DEFAULT_RATE_URL;
     this.trackUrl = process.env.KOREAPOST_TRACK_URL || DEFAULT_TRACK_URL;
-    this.labelUrl = process.env.KOREAPOST_LABEL_URL;
+    // 라벨 endpoint — 두 종류:
+    //   1. 국내 소포: ship.epost.go.kr/api/InsertOrder.jparcel  (key 인증)
+    //   2. 국제 EMS/K-Packet: eship.epost.go.kr/api/EmsApplyInsertReceiveTempCmdNew.ems  (key 인증)
+    // PMC 는 국제 발송 위주이므로 기본은 국제용. 환경변수로 override 가능.
+    this.labelUrl = process.env.KOREAPOST_LABEL_URL || DEFAULT_INTL_LABEL_URL;
+    this.domesticLabelUrl = process.env.KOREAPOST_DOMESTIC_LABEL_URL || DEFAULT_LABEL_URL;
     this._xmlParser = new xml2js.Parser({ explicitArray: false, trim: true, ignoreAttrs: false });
   }
 
@@ -204,44 +213,76 @@ class KoreaPostAPI {
   }
 
   /**
-   * 소포신청 → 운송장 번호 발급 + 라벨 PDF/ZPL.
+   * 소포신청 → 운송장 번호 발급 + 라벨.
+   * 매뉴얼 endpoint:
+   *   - 국제 (EMS/K-Packet): eship.epost.go.kr/api/EmsApplyInsertReceiveTempCmdNew.ems
+   *   - 국내 (소포): ship.epost.go.kr/api/InsertOrder.jparcel
+   * 인증 파라미터: 'key' (regkey 아님 — 주의)
+   *
+   * ⚠️ regData 파라미터는 인증키+요청데이터의 hash/암호화 값.
+   *    매뉴얼의 "암호화 샘플코드 (JAVA, PHP)" 다운로드 후 정확한 알고리즘 구현 필요.
+   *    현재는 stub — 실제 호출 전에 _buildRegData() 채워야 함.
+   *
    * @param {object} params
    *   - recipient: { name, phone, country, zip, addr1, addr2 }
    *   - parcel:    { weightG, dims:{l,w,h}, valueKrw, contents }
-   *   - serviceType: 'EMS' | 'KPACKET'
+   *   - serviceType: 'EMS' | 'KPACKET' (기본 KPACKET)
+   *   - domestic: false (기본) | true — 국내 소포면 true
    * @returns {Promise<{trackingNumber, labelBase64?, labelUrl?, cost}>}
    */
-  async createParcel({ recipient, parcel, serviceType = 'KPACKET' }) {
+  async createParcel({ recipient, parcel, serviceType = 'KPACKET', domestic = false }) {
     if (!this.isConfigured()) throw new Error('KOREAPOST_API_KEY 미설정');
-    if (!this.labelUrl) throw new Error('KOREAPOST_LABEL_URL 미설정 — 우체국 Open API 매뉴얼에서 확인 후 env 설정 필요');
     if (!recipient?.country || !recipient?.zip) throw new Error('recipient 주소 정보 필수');
 
+    const url = domestic ? this.domesticLabelUrl : this.labelUrl;
+    if (!url) throw new Error('우체국 라벨 endpoint 미설정');
+
     const sender = this.shipper();
+    const apprno = this._apprnoFor(serviceType);
+
+    // regData 빌드 — 매뉴얼 샘플 코드 받으면 정확한 hash 구현 필요.
+    const regData = this._buildRegData({ recipient, parcel, sender, serviceType, apprno });
+
     try {
-      // 매뉴얼 따라 body 구성 — POST 가 일반적이지만 일부 API 는 GET. 매뉴얼 확인 필요.
-      const body = {
-        authKey: this.apiKey,
-        serviceType,
-        sender,
-        recipient,
-        parcel,
-      };
-      const res = await axios.post(this.labelUrl, body, {
-        timeout: 30000,
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const d = res.data;
-      // TODO: 매뉴얼 응답 구조에 맞춰 추출
-      const trackingNumber = d?.trackingNumber || d?.rgistNo || null;
-      const labelBase64 = d?.labelBase64 || d?.labelPdf || null;
-      const labelUrl = d?.labelUrl || null;
-      const cost = Number(d?.cost ?? d?.totalCharge ?? 0);
-      if (!trackingNumber) throw new Error('운송장 번호 없음 (응답 구조 확인 필요)');
-      return { trackingNumber, labelBase64, labelUrl, cost, raw: d };
+      // 매뉴얼: GET 방식 query string. 인증 파라미터는 'key'.
+      const params = { key: this.apiKey, regData };
+      const res = await axios.get(url, { params, timeout: 30000, responseType: 'text' });
+      const xml = res.data;
+      const parsed = await this._xmlParser.parseStringPromise(xml);
+      const root = parsed && Object.values(parsed)[0];
+      // 에러 체크
+      if (root?.error?.error_code || /^ERR-/i.test(String(root?.error?.error_code || ''))) {
+        throw new Error(`우체국 API 에러 ${root.error.error_code}: ${root.error.message || ''}`);
+      }
+      // 응답 구조는 매뉴얼 확인 후 정확히 (TODO: regino, labelImage 등 키 이름 확정)
+      const tryKey = (obj, keys) => keys.map(k => obj?.[k]).find(v => v != null && v !== '');
+      const trackingNumber = tryKey(root, ['regino', 'rgistNo', 'trackingNumber', 'orderNo']);
+      const labelBase64 = tryKey(root, ['labelImage', 'labelBase64', 'labelPdf']);
+      const labelUrl = tryKey(root, ['labelUrl', 'imageUrl', 'pdfUrl']);
+      const cost = Number(tryKey(root, ['totCharge', 'cost', 'charge', 'amount'])) || 0;
+      if (!trackingNumber) throw new Error('운송장 번호 없음 (응답 구조 확인 필요 — 매뉴얼 PDF 참조)');
+      return { trackingNumber, labelBase64, labelUrl, cost, raw: parsed };
     } catch (e) {
       console.error('[KoreaPost] createParcel 실패:', e.response?.data || e.message);
       throw new Error('우체국 라벨 발급 실패: ' + (e.response?.data?.error || e.message));
     }
+  }
+
+  /**
+   * regData hash 빌드 — 우체국 API 의 핵심 보안 토큰.
+   * ⚠️ 매뉴얼 다운로드의 "암호화 샘플코드 (JAVA, PHP)" 받은 후 정확한 알고리즘으로 교체 필요.
+   *
+   * 일반적 패턴 (추정 — 매뉴얼 확인 필수):
+   *   - 요청 데이터 (recipient, parcel 등) 를 정해진 순서로 concatenate
+   *   - 인증키와 함께 SHA256 또는 AES 암호화
+   *   - hex 또는 base64 로 인코딩
+   *
+   * 현재 stub: 빈 string 반환 → API 호출 시 ERR-111 (필수입력값 누락) 에러 발생할 것.
+   * 사장님이 샘플 코드 공유해주시면 5분 안에 정확히 구현.
+   */
+  _buildRegData(/* { recipient, parcel, sender, serviceType, apprno } */) {
+    // TODO: 매뉴얼 샘플 코드 받으면 여기에 정확한 hash/암호화 로직 구현
+    throw new Error('regData hash 알고리즘 미구현 — 우체국 매뉴얼의 암호화 샘플코드 (JAVA/PHP) 필요. 받으시면 5분 안에 채워드립니다.');
   }
 }
 
