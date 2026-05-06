@@ -20,10 +20,23 @@ function calcWorkHours(inT, outT) {
   return Math.round(((outMin - inMin) / 60) * 100) / 100;
 }
 
+// 서버가 어느 region 에서 돌아도 한국 시간 (Asia/Seoul, UTC+9) 기준으로 날짜·시각 반환.
+// Railway 등 미국 region 에 배포해도 직원 출퇴근 시각이 한국 시간으로 정확히 찍힘.
+function _koreaParts(d = new Date()) {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+  return fmt.formatToParts(d).reduce((acc, p) => { if (p.type !== 'literal') acc[p.type] = p.value; return acc; }, {});
+}
 function todayDateStr() {
-  const d = new Date();
-  const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const p = _koreaParts();
+  return `${p.year}-${p.month}-${p.day}`;
+}
+function nowHhmmKr() {
+  const p = _koreaParts();
+  return `${p.hour}:${p.minute}`;
 }
 
 function isValidDateStr(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s); }
@@ -147,6 +160,6 @@ async function deleteAttendance(id) {
 module.exports = {
   listAttendance, getById, findByEmployeeDate,
   createAttendance, updateAttendance, deleteAttendance,
-  calcWorkHours, todayDateStr, isValidDateStr, getUserHourlyRate,
+  calcWorkHours, todayDateStr, nowHhmmKr, isValidDateStr, getUserHourlyRate,
   VALID_STATUSES, STATUS_LABELS, REASON_REQUIRED, NO_TIMES, ZERO_PAY,
 };
