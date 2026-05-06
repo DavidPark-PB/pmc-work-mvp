@@ -14,8 +14,9 @@ const xml2js = require('xml2js');
  * 환경변수:
  *   KOREAPOST_API_KEY              발급받은 인증키 (필수, 30자리 'regkey' 로 전송)
  *   KOREAPOST_CUSTNO               고객번호 (epost ID 연결, 예: 0005077976)
- *   KOREAPOST_APPRNO               계약승인번호 (요금조회·접수신청 필수, 우체국 계약별 발급)
- *                                   ※ 모르면 EmsPrcPayMethodList.ems 로 조회 가능
+ *   KOREAPOST_APPRNO_KPACKET       K-Packet 계약승인번호 (예: 40139J1076)
+ *   KOREAPOST_APPRNO_EMS           EMS 계약국제특급 계약승인번호 (예: 40139H1226)
+ *   KOREAPOST_APPRNO               (Legacy) 둘 다 같은 값 사용 시 fallback
  *   KOREAPOST_PREMIUMCD            서비스 프리미엄 코드 (예: 14 — 매뉴얼 확인)
  *   KOREAPOST_RATE_URL             EMS/K-Packet 요금 URL (기본: eship.epost.go.kr/api/EmsTotProcCmd.ems)
  *   KOREAPOST_TRACK_URL            종추적 URL (기본: biz.epost.go.kr/KpostPortal/openapi)
@@ -29,12 +30,19 @@ class KoreaPostAPI {
   constructor() {
     this.apiKey = process.env.KOREAPOST_API_KEY;
     this.custno = process.env.KOREAPOST_CUSTNO;          // 고객번호 (epost ID 연결)
-    this.apprno = process.env.KOREAPOST_APPRNO;          // 계약승인번호 (계약별)
+    // 서비스별 계약승인번호 (K-Packet 과 EMS 가 다른 계약 → 다른 apprno)
+    this.apprnoKpacket = process.env.KOREAPOST_APPRNO_KPACKET || process.env.KOREAPOST_APPRNO || '';
+    this.apprnoEms     = process.env.KOREAPOST_APPRNO_EMS     || process.env.KOREAPOST_APPRNO || '';
     this.premiumcd = process.env.KOREAPOST_PREMIUMCD;     // 서비스 프리미엄 코드
     this.rateUrl = process.env.KOREAPOST_RATE_URL || DEFAULT_RATE_URL;
     this.trackUrl = process.env.KOREAPOST_TRACK_URL || DEFAULT_TRACK_URL;
     this.labelUrl = process.env.KOREAPOST_LABEL_URL;
     this._xmlParser = new xml2js.Parser({ explicitArray: false, trim: true, ignoreAttrs: false });
+  }
+
+  // 서비스 타입 → 해당 apprno 반환
+  _apprnoFor(serviceType) {
+    return serviceType === 'EMS' ? this.apprnoEms : this.apprnoKpacket;
   }
 
   /**
@@ -81,23 +89,23 @@ class KoreaPostAPI {
    */
   async getRate({ countryCode, weightG, serviceType = 'KPACKET', boxDims = null }) {
     if (!this.isConfigured()) throw new Error('KOREAPOST_API_KEY 미설정');
-    if (!this.apprno) throw new Error('KOREAPOST_APPRNO (계약승인번호) 미설정 — 우체국 계약시스템에서 확인');
+    const apprno = this._apprnoFor(serviceType);
+    if (!apprno) throw new Error(`${serviceType} 계약승인번호 미설정 — KOREAPOST_APPRNO_${serviceType === 'EMS' ? 'EMS' : 'KPACKET'} env 필요`);
     if (!countryCode || !weightG) throw new Error('countryCode 와 weightG 필수');
 
-    // em_ee 코드: 매뉴얼 확인 후 정확히. 일단 K-Packet=ka, EMS=el 로 추정 (rl은 등기소포 가능성).
-    // 사장님 매뉴얼 다운로드 후 확인해서 채울 것.
+    // em_ee 코드: 매뉴얼 확인 후 정확히. 일단 K-Packet=ka, EMS=el 로 추정.
     const emEe = serviceType === 'EMS' ? 'el' : 'ka';
-    const premiumcd = this.premiumcd || (serviceType === 'EMS' ? '14' : '14');
+    const premiumcd = this.premiumcd || '14';
 
     const params = {
       regkey: this.apiKey,
       premiumcd,
       countrycd: countryCode,
       totweight: Math.round(weightG),
-      boyn: 'N',                     // 배송보험 미사용 (보험 필요시 'Y' + boprc 입력)
+      boyn: 'N',                     // 배송보험 미사용
       boprc: 0,
       em_ee: emEe,
-      apprno: this.apprno,
+      apprno,
       boxwidth: boxDims?.width ? Math.round(boxDims.width) : 10,
       boxheight: boxDims?.height ? Math.round(boxDims.height) : 10,
       boxlength: boxDims?.length ? Math.round(boxDims.length) : 10,
