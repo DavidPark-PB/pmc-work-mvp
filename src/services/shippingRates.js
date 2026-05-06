@@ -290,7 +290,10 @@ function lookupFedExIE(countryCode, weightKg) {
  * @param {string} countryCode - ISO 2자리 국가코드 (대문자)
  * @param {number} weightKg    - 실제 중량 (kg)
  * @param {{l:number,w:number,h:number}|null} dims - 박스 치수 (cm)
- * @returns {Array<{carrier,service,priceKRW,days,isRecommended}>}
+ * @returns {Array<{carrier,service,priceKRW,days,isRecommended,live?:boolean}>}
+ *
+ * 동기 함수 — hardcoded 표 기반.
+ * 라이브 견적이 필요하면 async 변형 `getShippingEstimatesLive` 사용.
  */
 function getShippingEstimates(countryCode, weightKg, dims = null) {
   const volWeightKg = (dims && dims.l && dims.w && dims.h)
@@ -360,4 +363,89 @@ function getShippingEstimates(countryCode, weightKg, dims = null) {
   return results;
 }
 
-module.exports = { getShippingEstimates };
+/**
+ * 라이브 견적 — FedEx 만 실제 API 호출, 나머지는 hardcoded 표.
+ * 사장님 요청: "유류할증료 때문에 뒤죽박죽" → FedEx 만 라이브로 정확하게.
+ *
+ * @param {string} countryCode
+ * @param {number} weightKg
+ * @param {{l,w,h}|null} dims
+ * @param {{street?,city?,state?,zip?,country?}|null} destination - FedEx Rate API 용 주소
+ * @returns {Promise<Array<{carrier,service,priceKRW,days,isRecommended,live?}>>}
+ */
+async function getShippingEstimatesLive(countryCode, weightKg, dims = null, destination = null) {
+  const baseEstimates = getShippingEstimates(countryCode, weightKg, dims);
+  // FedEx 항목들은 일단 hardcoded — live 시도해서 성공하면 교체.
+  const fedexIdxs = baseEstimates
+    .map((e, i) => (e.carrier === 'FedEx' ? i : -1))
+    .filter(i => i !== -1);
+
+  if (fedexIdxs.length === 0) return baseEstimates;
+
+  // FedEx API 자격증명 + 주소 정보 둘 다 있어야 라이브 시도
+  let fedex;
+  try { fedex = require('../api/fedexAPI').getFedexAPI(); }
+  catch { return baseEstimates; }
+  if (!fedex.isConfigured() || !destination || !destination.street || !destination.zip) {
+    // fallback: hardcoded 만 — live 표시 false
+    fedexIdxs.forEach(i => { baseEstimates[i].live = false; });
+    return baseEstimates;
+  }
+
+  try {
+    const volWeightKg = (dims && dims.l && dims.w && dims.h) ? (dims.l * dims.w * dims.h) / 5000 : null;
+    const chargeableKg = volWeightKg ? Math.max(weightKg, volWeightKg) : (weightKg || 0);
+    const services = await fedex.getRates({
+      destination: {
+        street: destination.street,
+        city: destination.city || '',
+        state: destination.state || '',
+        zip: destination.zip,
+        country: (destination.country || countryCode || 'US').toUpperCase(),
+      },
+      packages: [{
+        weightKg: chargeableKg,
+        dimensions: dims ? { length: dims.l, width: dims.w, height: dims.h } : null,
+      }],
+      currency: 'USD',
+    });
+    // USD → KRW 환산 (catalog 환율 사용)
+    let usdToKrw = 1400;
+    try {
+      const catalogService = require('./catalogService');
+      const rates = await catalogService.getRates();
+      usdToKrw = Number(rates.usdToKrw) || 1400;
+    } catch { /* 환율 fetch 실패 시 기본값 */ }
+
+    // FedEx 라이브 옵션들로 hardcoded FedEx 항목 교체
+    // (services 가 여러 옵션 반환 → INTERNATIONAL_PRIORITY 우선 + GROUND 등)
+    const liveOptions = (services || []).map(s => ({
+      carrier: 'FedEx',
+      service: s.serviceName || s.serviceType,
+      priceKRW: Math.round((s.cost || 0) * usdToKrw),
+      days: s.etaDays ? `${s.etaDays}일` : '3-5일',
+      live: true,
+    })).filter(s => s.priceKRW > 0);
+
+    if (liveOptions.length === 0) {
+      fedexIdxs.forEach(i => { baseEstimates[i].live = false; });
+      return baseEstimates;
+    }
+
+    // 기존 FedEx 항목 모두 제거 후 라이브 옵션 추가
+    const others = baseEstimates.filter(e => e.carrier !== 'FedEx');
+    const merged = [...others, ...liveOptions];
+    merged.sort((a, b) => (a.priceKRW ?? 1e12) - (b.priceKRW ?? 1e12));
+    if (merged.length > 0) {
+      merged.forEach(e => { e.isRecommended = false; });
+      merged[0].isRecommended = true;
+    }
+    return merged;
+  } catch (e) {
+    console.warn('[shippingRates] FedEx live 견적 실패, hardcoded fallback:', e.message);
+    fedexIdxs.forEach(i => { baseEstimates[i].live = false; });
+    return baseEstimates;
+  }
+}
+
+module.exports = { getShippingEstimates, getShippingEstimatesLive };

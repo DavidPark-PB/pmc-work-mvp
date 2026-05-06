@@ -311,6 +311,29 @@ class GoogleSheetsAPI {
   }
 
   /**
+   * 여러 범위를 한 번에 비우기 (API 호출 1회)
+   * @param {string} spreadsheetId
+   * @param {string[]} ranges - ['Sheet1!A2:T2', 'Sheet1!A5:T5', ...]
+   */
+  async batchClearData(spreadsheetId, ranges) {
+    try {
+      if (!this.sheets) {
+        await this.authenticate();
+      }
+      if (!ranges || ranges.length === 0) return null;
+      const response = await this.sheets.spreadsheets.values.batchClear({
+        spreadsheetId,
+        resource: { ranges },
+      });
+      console.log(`✅ ${ranges.length}개 범위 일괄 비움`);
+      return response.data;
+    } catch (error) {
+      console.error('❌ batchClear 실패:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * 스프레드시트 메타데이터 가져오기
    * @param {string} spreadsheetId - 스프레드시트 ID
    */

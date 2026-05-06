@@ -104,22 +104,21 @@ class OrderSync {
       const newRows = supabaseRows.filter(r => !awaitingSet.has(r.order_no));
 
       if (awaitingRows.length > 0) {
-        // Update only order-data fields, NOT carrier/tracking_no/status
-        for (const row of awaitingRows) {
-          await db.from('orders').update({
-            order_date: row.order_date,
-            title: row.title,
-            buyer_name: row.buyer_name,
-            country: row.country,
-            street: row.street,
-            city: row.city,
-            province: row.province,
-            zip_code: row.zip_code,
-            phone: row.phone,
-            country_code: row.country_code,
-            email: row.email,
-          }).eq('order_no', row.order_no);
-        }
+        // 데이터 필드만 갱신 (carrier/tracking/status 보존). PostgreSQL 의 ON CONFLICT 가
+        // 모든 컬럼을 덮어쓰기 때문에 여기선 carrier/tracking/status 만 fetched 값 그대로
+        // 유지하기 위해 추가 select.
+        // → 100~200건 짜리 sync 가 200번 update 호출 → quota 초과의 주범. 한 번의 upsert 로.
+        const { data: preserved } = await db.from('orders')
+          .select('order_no, carrier, tracking_no, status')
+          .in('order_no', awaitingRows.map(r => r.order_no));
+        const preserveMap = new Map((preserved || []).map(r => [r.order_no, r]));
+        const upsertRows = awaitingRows.map(r => ({
+          ...r,
+          carrier: preserveMap.get(r.order_no)?.carrier ?? r.carrier,
+          tracking_no: preserveMap.get(r.order_no)?.tracking_no ?? r.tracking_no,
+          status: preserveMap.get(r.order_no)?.status ?? r.status,
+        }));
+        await db.from('orders').upsert(upsertRows, { onConflict: 'order_no' });
         supabaseUpserted += awaitingRows.length;
       }
 
@@ -150,10 +149,41 @@ class OrderSync {
       errors.push(`Supabase: ${dbErr.message}`);
     }
 
-    // 3-B. Google Sheets 중복 체크 (시트에 중복 행 방지)
-    const existingIds = await this.getExistingOrderIds();
+    // 3-B. Google Sheets 중복 체크 + shipped 자동 제거
+    //   - 시트의 OrderNo 가 현재 eBay awaiting set 에 없으면 → shipped 됨 → 시트 row 비움
+    //   - 시트에 이미 있는 awaiting 주문 → 중복으로 분류 (skip)
+    const existingMap = await this.getExistingOrderRows(); // { orderNo: rowIndex (1-based) }
+    const currentAwaitingSet = new Set(allOrders.map(o => o.orderId));
+    const shippedRowsToClear = [];
+    for (const [orderNo, rowIdx] of existingMap.entries()) {
+      // 시트에 있는데 eBay awaiting 응답에 없음 = shipped 또는 cancelled
+      if (!currentAwaitingSet.has(orderNo)) {
+        shippedRowsToClear.push(`${SHEET_NAME}!A${rowIdx}:T${rowIdx}`);
+      }
+    }
+    let sheetShippedRemoved = 0;
+    if (shippedRowsToClear.length > 0) {
+      try {
+        // Sheets API batchClear 한 번으로 처리 — quota 절약
+        await this.sheets.batchClearData(SPREADSHEET_ID, shippedRowsToClear);
+        sheetShippedRemoved = shippedRowsToClear.length;
+        console.log(`📦 ${sheetShippedRemoved}개 발송완료 row 시트에서 비움`);
+      } catch (e) {
+        console.warn('⚠️ shipped row 정리 실패 (시트 그대로 남음):', e.message);
+      }
+    }
+
+    const existingIds = new Set(existingMap.keys());
     const newOrders = allOrders.filter(o => {
-      if (existingIds.has(o.orderId)) return false;
+      // 시트에서 방금 비운 row 의 orderNo 는 existingIds 에 그대로 있으니 따로 걸러야 함
+      if (shippedRowsToClear.length > 0 && !currentAwaitingSet.has(o.orderId)) {
+        // 안전장치 — 사실 도달 불가 (currentAwaitingSet 에 모두 있음)
+        return true;
+      }
+      if (existingIds.has(o.orderId)) {
+        // 이미 시트에 있고 awaiting 그대로 → 중복 (skip)
+        return false;
+      }
       if (o._legacyId && existingIds.has(o._legacyId)) return false;
       return true;
     });
@@ -203,6 +233,8 @@ class OrderSync {
     console.log(`✅ 새 주문 ${newOrders.length}건 시트에 추가`);
 
     // 5-1. EU 주문 → 윤익스프레스 자동 배정
+    // ⚠️ Quota 주의: 이전엔 EU row 마다 writeData() 1회 호출 (200건 = 200 writes/min → quota 초과).
+    //   지금은 모든 EU row 의 K:M update 를 batchWriteData() 한 번으로 처리.
     let euAssigned = 0;
     try {
       const CarrierSheets = require('./carrierSheets');
@@ -212,31 +244,39 @@ class OrderSync {
       if (euOrders.length > 0) {
         const cs = new CarrierSheets();
         const yunikSpreadsheetId = '1UZD25uxEUREhhwdw8fpg3w1e9q1LHJF8zw1xNhyPQfI';
-        const yunikRoutingCode = 'KRTHZXR';
 
         // 탭 1번만 생성하여 재사용
         const sheetTab = await cs.getOrCreateYunikTab(yunikSpreadsheetId);
 
+        // 모든 EU row 의 K:M update 를 한 번에 batch
+        const euUpdates = [];
+        const euOrdersInOrder = []; // 윤 시트에 추가할 순서 보존
         for (let i = 0; i < newOrders.length; i++) {
           const o = newOrders[i];
           const cc = (o.countryCode || '').toUpperCase();
           if (!EU_COUNTRIES.has(cc)) continue;
-
-          // 행 번호: 헤더(1) + 기존 데이터 행 + 새 주문 순서(i)
-          const rowIndex = existingRowCount + 1 + 1 + i; // 1-based, 헤더 + 기존 rows + i번째
-
-          // K열(배송사)='윤익스프레스', L열(운송장)='', M열(상태)='READY'
-          await this.sheets.writeData(
-            SPREADSHEET_ID,
-            `${SHEET_NAME}!K${rowIndex}:M${rowIndex}`,
-            [['윤익스프레스', '', 'READY']]
-          );
-
-          // 윤익스프레스 캐리어 시트에 추가
-          await cs.addToCarrierSheet('윤익스프레스', o, { sheetTab });
-          euAssigned++;
+          const rowIndex = existingRowCount + 1 + 1 + i; // 1-based
+          euUpdates.push({
+            range: `${SHEET_NAME}!K${rowIndex}:M${rowIndex}`,
+            values: [['윤익스프레스', '', 'READY']],
+          });
+          euOrdersInOrder.push(o);
         }
-        console.log(`✅ EU 주문 ${euAssigned}건 윤익스프레스 자동 배정`);
+        if (euUpdates.length > 0) {
+          await this.sheets.batchWriteData(SPREADSHEET_ID, euUpdates);
+        }
+
+        // 윤익스프레스 캐리어 시트에 모든 EU 주문 한 번에 append (CarrierSheets 가 batch 지원하면 활용)
+        if (typeof cs.addManyToCarrierSheet === 'function' && euOrdersInOrder.length > 0) {
+          await cs.addManyToCarrierSheet('윤익스프레스', euOrdersInOrder, { sheetTab });
+        } else {
+          // fallback: 개별 호출 (carrierSheets 가 아직 batch 안 지원)
+          for (const o of euOrdersInOrder) {
+            await cs.addToCarrierSheet('윤익스프레스', o, { sheetTab });
+          }
+        }
+        euAssigned = euOrdersInOrder.length;
+        console.log(`✅ EU 주문 ${euAssigned}건 윤익스프레스 자동 배정 (batch)`);
       }
     } catch (euErr) {
       console.error(`⚠️ EU 자동 배정 중 에러 (주문 동기화는 완료):`, euErr.message);
@@ -404,6 +444,24 @@ class OrderSync {
       // 시트가 비어있거나 에러 → 빈 Set
     }
     return ids;
+  }
+
+  /**
+   * 시트의 OrderNo (C열) → 1-based row index 매핑.
+   * shipped 자동 제거 (해당 row 비우기) 시 어떤 row 를 clear 할지 알아야 함.
+   */
+  async getExistingOrderRows() {
+    const map = new Map();
+    try {
+      const rows = await this.sheets.readData(SPREADSHEET_ID, `${SHEET_NAME}!C:C`);
+      for (let i = 0; i < (rows || []).length; i++) {
+        const cell = rows[i][0];
+        if (cell && cell !== '주문번호') {
+          map.set(cell, i + 1); // 1-based row number
+        }
+      }
+    } catch { /* empty */ }
+    return map;
   }
 
   /**

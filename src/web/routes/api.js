@@ -3354,7 +3354,7 @@ router.get('/orders/shipping-estimate/:orderNo', async (req, res) => {
 
     const { data: order, error: orderErr } = await db
       .from('orders')
-      .select('country_code, sku, quantity')
+      .select('country_code, sku, quantity, street, city, province, zip_code')
       .eq('order_no', orderNo)
       .single();
     if (orderErr || !order) {
@@ -3390,12 +3390,153 @@ router.get('/orders/shipping-estimate/:orderNo', async (req, res) => {
       ? { l: srcDimL, w: srcDimW, h: srcDimH }
       : null;
 
-    const { getShippingEstimates } = require('../../services/shippingRates');
-    const estimates = getShippingEstimates((order.country_code || '').toUpperCase(), weightKg, dims);
+    const { getShippingEstimatesLive } = require('../../services/shippingRates');
+    const destination = {
+      street: order.street || '',
+      city: order.city || '',
+      state: order.province || '',
+      zip: order.zip_code || '',
+      country: (order.country_code || '').toUpperCase(),
+    };
+    const estimates = await getShippingEstimatesLive(
+      (order.country_code || '').toUpperCase(),
+      weightKg,
+      dims,
+      destination,
+    );
 
     res.json({ success: true, orderNo, sku: order.sku, countryCode: (order.country_code || '').toUpperCase(), weightKg, dims, estimates });
   } catch (e) {
     console.error('❌ shipping-estimate 에러:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/orders/:orderNo/fedex-label — FedEx 라이브 라벨 발급 + tracking 자동 채움
+router.post('/orders/:orderNo/fedex-label', async (req, res) => {
+  try {
+    const { orderNo } = req.params;
+    const { weightKg, dimensions, packageCount = 1, serviceType, customsValue, currency = 'USD' } = req.body || {};
+
+    const { getFedexAPI } = require('../../api/fedexAPI');
+    const fedex = getFedexAPI();
+    if (!fedex.isConfigured()) {
+      return res.status(503).json({ success: false, error: 'FedEx 자격증명이 설정되지 않았습니다 (config/.env)' });
+    }
+    if (!weightKg || Number(weightKg) <= 0) return res.status(400).json({ success: false, error: '무게(kg) 가 필요합니다' });
+    if (!serviceType) return res.status(400).json({ success: false, error: 'serviceType 이 필요합니다 (먼저 견적 받기)' });
+
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data: order } = await db.from('orders')
+      .select('order_no, buyer_name, street, city, province, zip_code, country_code, phone, email, payment_amount, currency, sku, title, quantity, label_storage_path')
+      .eq('order_no', orderNo).maybeSingle();
+    if (!order) return res.status(404).json({ success: false, error: '주문을 찾을 수 없습니다' });
+    if (order.label_storage_path) return res.status(409).json({ success: false, error: '이미 라벨이 발급된 주문입니다' });
+    if (!order.street || !order.zip_code || !order.country_code) {
+      return res.status(400).json({ success: false, error: '주문 주소가 불완전합니다 (street, zip, country 필요)' });
+    }
+
+    const N = Math.max(1, parseInt(packageCount, 10) || 1);
+    const packages = Array.from({ length: N }, () => ({
+      weightKg: Number(weightKg),
+      dimensions: dimensions ? {
+        length: Number(dimensions.length) || 1,
+        width: Number(dimensions.width) || 1,
+        height: Number(dimensions.height) || 1,
+      } : null,
+    }));
+
+    const result = await fedex.createShipment({
+      destination: {
+        street: order.street, city: order.city, state: order.province,
+        zip: order.zip_code, country: order.country_code,
+      },
+      packages,
+      serviceType,
+      customs: {
+        totalValue: Number(customsValue) || Number(order.payment_amount) || 1,
+        currency: currency || order.currency || 'USD',
+        countryOfManufacture: 'KR',
+        commodities: [{
+          description: order.title || 'General Merchandise',
+          quantity: Number(order.quantity) || 1,
+          quantityUnits: 'PCS',
+          weight: { units: 'KG', value: Number(weightKg) },
+          unitPrice: { amount: Number(order.payment_amount) || 1, currency: order.currency || 'USD' },
+          customsValue: { amount: Number(order.payment_amount) || 1, currency: order.currency || 'USD' },
+          countryOfManufacture: 'KR',
+          harmonizedCode: '950430',
+        }],
+      },
+      recipientContact: {
+        name: order.buyer_name || 'Recipient',
+        phone: order.phone || '0000000000',
+        company: order.buyer_name || '',
+      },
+    });
+    if (!result.trackingNumber) return res.status(502).json({ success: false, error: 'FedEx 응답에 운송장 번호가 없습니다' });
+
+    // 라벨 PDF 저장 (Supabase Storage 'shipping-labels' 버킷)
+    let storagePath = null;
+    try {
+      const bucket = 'shipping-labels';
+      const fname = `${orderNo}/${result.trackingNumber}.pdf`;
+      let pdfBuffer = null;
+      if (result.labelBase64) pdfBuffer = Buffer.from(result.labelBase64, 'base64');
+      else if (result.labelUrl) {
+        const axios = require('axios');
+        const dl = await axios.get(result.labelUrl, { responseType: 'arraybuffer', timeout: 30000 });
+        pdfBuffer = Buffer.from(dl.data);
+      }
+      if (pdfBuffer) {
+        const { error: upErr } = await db.storage.from(bucket).upload(fname, pdfBuffer, {
+          contentType: 'application/pdf', upsert: true,
+        });
+        if (!upErr) storagePath = fname;
+        else console.error('[orders/fedex-label] Storage 업로드 실패:', upErr.message);
+      }
+    } catch (e) {
+      console.error('[orders/fedex-label] 라벨 저장 실패:', e.message);
+    }
+
+    // orders 테이블 업데이트
+    await db.from('orders').update({
+      carrier: 'FedEx',
+      tracking_no: result.trackingNumber,
+      label_storage_path: storagePath,
+      shipping_cost: result.cost || null,
+      shipping_currency: result.currency || currency || 'USD',
+      service_type: serviceType,
+      status: 'SHIPPED',
+    }).eq('order_no', orderNo);
+
+    res.json({
+      success: true,
+      trackingNumber: result.trackingNumber,
+      shippingCost: result.cost,
+      currency: result.currency,
+      labelStored: !!storagePath,
+    });
+  } catch (e) {
+    console.error('❌ orders/fedex-label:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/orders/:orderNo/fedex-label — 라벨 PDF signed URL (15분)
+router.get('/orders/:orderNo/fedex-label', async (req, res) => {
+  try {
+    const { orderNo } = req.params;
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data: order } = await db.from('orders')
+      .select('label_storage_path').eq('order_no', orderNo).maybeSingle();
+    if (!order?.label_storage_path) return res.status(404).json({ success: false, error: '라벨이 없습니다' });
+    const { data, error } = await db.storage.from('shipping-labels').createSignedUrl(order.label_storage_path, 900);
+    if (error) throw error;
+    res.json({ success: true, url: data.signedUrl, expiresIn: 900 });
+  } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });

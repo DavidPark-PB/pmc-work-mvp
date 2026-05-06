@@ -6475,16 +6475,23 @@ async function shippingShowEstimate(rowIdx, orderNo) {
       </div>`;
     }
     if (data.estimates && data.estimates.length > 0) {
-      data.estimates.forEach(e => {
+      data.estimates.forEach((e, eIdx) => {
         const star = e.isRecommended ? '⭐' : '　';
         const bg = e.isRecommended ? '#e3f2fd' : '#fff';
+        // FedEx 라이브 견적이면 라벨 즉시 발급 버튼 추가
+        const isFedexLive = e.carrier === 'FedEx' && e.live === true;
+        const liveBadge = isFedexLive ? '<span style="background:#2e7d32;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-left:2px">LIVE</span>' : '';
+        const fedexLabelBtn = isFedexLive
+          ? `<button onclick='shippingFedexLabel(${JSON.stringify({orderNo, rowIdx, serviceType:e.service, weightKg:data.weightKg, dims:data.dims})})' style="padding:1px 6px;border:1px solid #2e7d32;border-radius:8px;background:#2e7d32;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap;margin-left:2px" title="FedEx 라벨 즉시 발급">🖨 라벨</button>`
+          : '';
         html += `<div style="display:flex;align-items:center;gap:5px;padding:3px 4px;border-radius:4px;background:${bg};margin-bottom:2px">
           <span style="width:16px;font-size:10px">${star}</span>
-          <span style="font-weight:600;min-width:110px;font-size:9px">${esc(e.carrier)} <span style="color:#666;font-weight:400">${esc(e.service)}</span></span>
+          <span style="font-weight:600;min-width:110px;font-size:9px">${esc(e.carrier)} <span style="color:#666;font-weight:400">${esc(e.service)}</span>${liveBadge}</span>
           <span style="color:${e.priceKRW ? '#c62828' : '#f57c00'};font-weight:700;min-width:55px;font-size:10px">${e.priceKRW ? '₩' + e.priceKRW.toLocaleString() : '무게 필요'}</span>
           <span style="color:#666;min-width:40px;font-size:9px">${esc(e.days)}</span>
           <button onclick="shippingSetCarrier('${rowIdx}','${e.carrier.replace(/'/g,"\\'")}');document.getElementById('est-panel-${rowIdx}').style.display='none';document.getElementById('est-btn-${rowIdx}').textContent='배송사 추천 ▼';"
                   style="padding:1px 8px;border:1px solid #1565c0;border-radius:8px;background:#1565c0;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap">선택</button>
+          ${fedexLabelBtn}
         </div>`;
       });
     } else {
@@ -6500,6 +6507,55 @@ async function shippingShowEstimate(rowIdx, orderNo) {
     btn.textContent = '배송사 추천 ▼';
   }
   btn.disabled = false;
+}
+
+// FedEx 라벨 즉시 발급 (라이브 견적에서 클릭 시)
+async function shippingFedexLabel(opts) {
+  const { orderNo, rowIdx, serviceType, weightKg, dims } = opts || {};
+  if (!orderNo || !serviceType || !weightKg) {
+    alert('정보 부족: orderNo, serviceType, weightKg 필요');
+    return;
+  }
+  if (!confirm(`FedEx 라벨을 즉시 발급하시겠어요?\n\n주문: ${orderNo}\n서비스: ${serviceType}\n무게: ${weightKg}kg\n\n실제 운송장 번호가 발급되고 PDF 가 새 창에서 열립니다.`)) return;
+
+  const panel = document.getElementById(`est-panel-${rowIdx}`);
+  if (panel) panel.innerHTML = '<div style="padding:8px;color:#888;font-size:11px;">⏳ FedEx 라벨 발급 중 (10~20초)…</div>';
+
+  try {
+    const r = await fetch(`/api/orders/${encodeURIComponent(orderNo)}/fedex-label`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        weightKg,
+        dimensions: dims ? { length: dims.l, width: dims.w, height: dims.h } : null,
+        packageCount: 1,
+        serviceType,
+        currency: 'USD',
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.success) throw new Error(j.error || '라벨 발급 실패');
+
+    if (panel) panel.innerHTML = `<div style="padding:8px;background:#e8f5e9;border-radius:4px;font-size:11px;color:#2e7d32;">
+      ✓ 운송장 <code>${j.trackingNumber}</code> · ${j.currency || ''} ${(j.shippingCost || 0).toFixed(2)}<br>
+      라벨 PDF 새 창에서 열립니다…
+    </div>`;
+
+    // 라벨 PDF 새 창
+    if (j.labelStored) {
+      try {
+        const u = await fetch(`/api/orders/${encodeURIComponent(orderNo)}/fedex-label`);
+        const uj = await u.json();
+        if (uj.url) window.open(uj.url, '_blank');
+      } catch {}
+    }
+
+    // 1.5초 후 목록 리로드
+    setTimeout(() => {
+      if (typeof shippingLoadRecent === 'function') shippingLoadRecent();
+    }, 1500);
+  } catch (e) {
+    if (panel) panel.innerHTML = `<div style="padding:8px;color:#c62828;font-size:11px;">❌ ${e.message}</div>`;
+  }
 }
 
 async function shippingSetCarrier(rowIndex, carrier, sheetTab) {
