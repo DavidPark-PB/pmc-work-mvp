@@ -85,6 +85,60 @@ async function clearReceipt(id) {
   return decorate(data);
 }
 
+// ── 다중 영수증 (036 마이그레이션 필요) ──
+
+async function addReceiptRecord({ expenseId, path, name, mime, size, userId }) {
+  const { data, error } = await getClient().from('expense_receipts').insert({
+    expense_id: expenseId,
+    storage_path: path,
+    file_name: name || null,
+    mime_type: mime || null,
+    file_size: size || null,
+    uploaded_by: userId || null,
+  }).select().single();
+  if (error) throw error;
+  return _decorateReceipt(data);
+}
+
+async function listReceiptsByExpense(expenseId) {
+  const { data, error } = await getClient().from('expense_receipts')
+    .select('*')
+    .eq('expense_id', expenseId)
+    .order('uploaded_at', { ascending: true });
+  if (error) {
+    // 마이그레이션 036 미적용 시 빈 배열 fallback
+    if (/expense_receipts.*does not exist|relation .* does not exist|PGRST205/.test(error.message + (error.code || ''))) return [];
+    throw error;
+  }
+  return (data || []).map(_decorateReceipt);
+}
+
+async function getReceiptById(receiptId) {
+  const { data, error } = await getClient().from('expense_receipts')
+    .select('*').eq('id', receiptId).maybeSingle();
+  if (error && error.code !== 'PGRST116') throw error;
+  return data ? _decorateReceipt(data) : null;
+}
+
+async function deleteReceiptById(receiptId) {
+  const { error } = await getClient().from('expense_receipts').delete().eq('id', receiptId);
+  if (error) throw error;
+}
+
+function _decorateReceipt(r) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    expenseId: r.expense_id,
+    path: r.storage_path,
+    name: r.file_name,
+    mime: r.mime_type,
+    size: r.file_size,
+    uploadedBy: r.uploaded_by,
+    uploadedAt: r.uploaded_at,
+  };
+}
+
 async function listExpenses({ from, to, category, source, createdBy, limit = 500 } = {}) {
   let q = getClient().from('expenses')
     .select('*')
@@ -244,4 +298,6 @@ module.exports = {
   listExpenses, getExpense, createExpense, bulkCreate, updateExpense, deleteExpense,
   summaryByMonth, getCachedCategory, saveCachedCategory,
   setReceipt, clearReceipt, listDistinctCards,
+  // 다중 영수증
+  addReceiptRecord, listReceiptsByExpense, getReceiptById, deleteReceiptById,
 };

@@ -311,10 +311,12 @@
       const canEdit = user.canManageFinance || e.createdBy === user.id;
       const canDelete = user.canManageFinance || e.createdBy === user.id;
       const canReceipt = user.canManageFinance || e.createdBy === user.id;
+      // 다중 영수증: hasReceipt 가 true 면 "📎 N개" 보이고 클릭 시 모달로 목록.
+      // (옛 단일 영수증도 N=1 로 표시되어 일관 동작)
       let receiptBtn = '';
       if (e.hasReceipt) {
-        receiptBtn = `<button onclick="pmcExpenses.viewReceipt(${e.id})" title="${esc(e.receiptName || '영수증')}" style="padding:4px 8px;background:#0f2a3a;border:1px solid #1565c0;border-radius:4px;color:#64b5f6;cursor:pointer;font-size:11px;">📎 영수증</button>`;
-        if (canReceipt) receiptBtn += `<button onclick="pmcExpenses.deleteReceipt(${e.id})" title="영수증 삭제" style="padding:4px 6px;background:transparent;border:0;color:#666;cursor:pointer;font-size:11px;">✕</button>`;
+        receiptBtn = `<button onclick="pmcExpenses.openReceiptList(${e.id})" title="영수증 보기·추가·삭제" style="padding:4px 8px;background:#0f2a3a;border:1px solid #1565c0;border-radius:4px;color:#64b5f6;cursor:pointer;font-size:11px;">📎 영수증</button>`;
+        if (canReceipt) receiptBtn += `<button onclick="pmcExpenses.uploadReceiptLater(${e.id})" title="영수증 추가" style="padding:4px 6px;background:transparent;border:1px dashed #1565c0;color:#64b5f6;cursor:pointer;font-size:11px;border-radius:4px;">＋</button>`;
       } else if (canReceipt) {
         receiptBtn = `<button onclick="pmcExpenses.uploadReceiptLater(${e.id})" style="padding:4px 8px;background:#2a2a4a;border:1px dashed #555;border-radius:4px;color:#888;cursor:pointer;font-size:11px;">📎 첨부</button>`;
       }
@@ -419,7 +421,45 @@
   async function uploadReceiptLater(id) {
     const input = document.createElement('input');
     input.type = 'file';
+    input.multiple = true;   // 한 번에 여러 장 선택 가능
     input.accept = 'image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf';
+    input.onchange = async () => {
+      const files = Array.from(input.files || []);
+      if (files.length === 0) return;
+      let okCount = 0; let failCount = 0; const failMsgs = [];
+      for (const f of files) {
+        const fd = new FormData();
+        fd.append('file', f);
+        try {
+          const res = await fetch('/api/expenses/' + id + '/receipt', { method: 'POST', body: fd });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            failCount++;
+            failMsgs.push(`${f.name}: ${body.error || res.status}`);
+            console.error('[expense-receipt-later] upload failed', res.status, body);
+          } else {
+            okCount++;
+          }
+        } catch (e) {
+          failCount++;
+          failMsgs.push(`${f.name}: ${e.message}`);
+        }
+      }
+      if (failCount > 0) {
+        alert(`영수증 ${okCount}개 성공 / ${failCount}개 실패\n\n실패:\n${failMsgs.join('\n')}`);
+      } else if (okCount > 1) {
+        // 다중 성공 알림 (1개면 조용히)
+        const note = document.createElement('div');
+        note.style.cssText = 'position:fixed;top:80px;right:20px;background:#1a3a1a;color:#a5d6a7;border:1px solid #2d4a2d;padding:10px 16px;border-radius:6px;z-index:99999;font-size:13px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,.3);';
+        note.textContent = `✓ 영수증 ${okCount}개 첨부 완료`;
+        document.body.appendChild(note);
+        setTimeout(() => note.remove(), 3000);
+      }
+      refresh();
+    };
+    input.click();
+    return; // 아래 옛 onchange 코드 (single file) 무효화
+    /* legacy — 이제 multi 핸들러로 교체됨
     input.onchange = async () => {
       const f = input.files?.[0];
       if (!f) return;
@@ -440,6 +480,72 @@
       }
     };
     input.click();
+    */
+  }
+
+  // 다중 영수증 모달 — 첨부된 모든 영수증 보기 + 개별 보기/삭제 + 추가
+  async function openReceiptList(expenseId) {
+    document.getElementById('exp-receipt-list-modal')?.remove();
+    let receipts = [];
+    try {
+      const res = await fetch('/api/expenses/' + expenseId + '/receipts');
+      const body = await res.json();
+      if (res.ok) receipts = body.data || [];
+    } catch (e) { /* 빈 목록으로 진행 */ }
+
+    const m = document.createElement('div');
+    m.id = 'exp-receipt-list-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9998;display:flex;align-items:center;justify-content:center;padding:20px;';
+    const expense = cached.find(x => x.id === expenseId);
+    const title = expense ? `${expense.merchant || '-'} · ${money(expense.amount, expense.currency)}` : `지출 #${expenseId}`;
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:18px;width:560px;max-width:96vw;max-height:88vh;overflow:auto;color:#e0e0e0;" onclick="event.stopPropagation()">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <h3 style="color:#fff;font-size:14px;margin:0;">📎 영수증 목록 — <span style="color:#888;font-weight:400;">${esc(title)}</span></h3>
+          <button onclick="document.getElementById('exp-receipt-list-modal').remove()" style="background:transparent;border:0;color:#888;cursor:pointer;font-size:18px;">✕</button>
+        </div>
+        <div id="exp-receipt-list-body" style="margin-bottom:10px;">${receipts.length === 0 ? '<div style="padding:20px;text-align:center;color:#666;font-size:12px;">영수증 없음</div>' : receipts.map(r => `
+          <div style="display:flex;align-items:center;gap:8px;padding:8px;background:#0f0f23;border-radius:6px;margin-bottom:5px;font-size:12px;">
+            <span style="font-size:16px;">${(r.mime || '').includes('pdf') ? '📄' : '🖼'}</span>
+            <div style="flex:1;min-width:0;">
+              <div style="color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.name || 'receipt')}</div>
+              <div style="color:#666;font-size:10px;">${r.size ? (r.size/1024).toFixed(1) + ' KB' : ''} ${r.uploadedAt ? '· ' + new Date(r.uploadedAt).toLocaleString('ko-KR') : ''}</div>
+            </div>
+            <button onclick="pmcExpenses.viewReceiptById(${r.id}, ${expenseId}, ${r.legacy ? 1 : 0})" style="padding:5px 10px;background:#1565c0;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">보기</button>
+            <button onclick="pmcExpenses.deleteReceiptById(${r.id}, ${expenseId}, ${r.legacy ? 1 : 0})" style="padding:5px 10px;background:transparent;border:1px solid #c62828;color:#c62828;border-radius:4px;cursor:pointer;font-size:11px;">삭제</button>
+          </div>
+        `).join('')}</div>
+        <div style="text-align:right;border-top:1px solid #2a2a4a;padding-top:10px;">
+          <button onclick="pmcExpenses.uploadReceiptLater(${expenseId})" style="padding:7px 16px;background:#4caf50;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">＋ 영수증 추가 (여러 장 가능)</button>
+        </div>
+      </div>
+    `;
+    m.addEventListener('click', () => m.remove());
+    document.body.appendChild(m);
+  }
+
+  async function viewReceiptById(receiptId, expenseId, isLegacy) {
+    try {
+      // legacy (단일 영수증) 인 경우 옛 엔드포인트, 아니면 새 엔드포인트
+      const url = isLegacy
+        ? '/api/expenses/' + expenseId + '/receipt/url'
+        : '/api/expenses/receipts/' + receiptId + '/url';
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) { alert(data.error || '영수증 조회 실패'); return; }
+      window.open(data.signedUrl, '_blank');
+    } catch (e) { alert('실패: ' + e.message); }
+  }
+
+  async function deleteReceiptById(receiptId, expenseId, isLegacy) {
+    if (!confirm('이 영수증을 삭제하시겠습니까?')) return;
+    const url = isLegacy
+      ? '/api/expenses/' + expenseId + '/receipt'
+      : '/api/expenses/receipts/' + receiptId;
+    const res = await fetch(url, { method: 'DELETE' });
+    if (!res.ok) { alert((await res.json()).error || '삭제 실패'); return; }
+    document.getElementById('exp-receipt-list-modal')?.remove();
+    refresh();
   }
 
   function edit(id) {
@@ -1444,6 +1550,7 @@
   window.pmcExpenses = {
     load, refresh, edit, del,
     onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater,
+    openReceiptList, viewReceiptById, deleteReceiptById,
     closeEditModal, saveEditModal, replaceReceiptInModal, deleteReceiptInModal,
     onCsvPick, closeCsvModal, confirmCsv, csvRecalc, csvToggleAll, csvSkipDup,
     toggleRecurring, recRunNow, recToggleActive, recDelete,

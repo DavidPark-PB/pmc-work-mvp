@@ -301,15 +301,97 @@ router.post('/:id/receipt', (req, res, next) => {
       return res.status(500).json({ error: friendly });
     }
 
-    // 기존 영수증 있으면 제거
-    if (existing.receiptPath) {
-      try { await storage.remove([existing.receiptPath]); } catch {}
+    // ADD 의미로 변경 — 기존 영수증을 덮어쓰지 않고, 새 row 로 추가.
+    // 첫 번째 영수증만 backward-compat 위해 expenses.receipt_path 에도 미러링.
+    let receiptRecord = null;
+    try {
+      receiptRecord = await repo.addReceiptRecord({
+        expenseId: id, path: newPath, name: clean, mime: f.mimetype, size: f.size, userId: req.user.id,
+      });
+    } catch (e) {
+      // expense_receipts 테이블 없으면 (036 마이그레이션 미적용) → 옛 단일 영수증 모드 fallback
+      console.warn('[expense-receipt] addReceiptRecord 실패 (마이그레이션 036 미적용?):', e.message);
     }
 
-    const updated = await repo.setReceipt(id, {
-      path: newPath, name: clean, mime: f.mimetype, size: f.size,
-    });
-    res.json({ data: updated });
+    // 첫 번째 영수증이면 단일 컬럼도 동기화 (옛 UI fallback 용)
+    let updated;
+    if (!existing.receiptPath) {
+      updated = await repo.setReceipt(id, {
+        path: newPath, name: clean, mime: f.mimetype, size: f.size,
+      });
+    } else {
+      updated = existing;
+    }
+
+    res.json({ data: updated, receipt: receiptRecord });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/expenses/:id/receipts — 모든 영수증 목록 (다중)
+router.get('/:id/receipts', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const id = parseInt(req.params.id, 10);
+    const existing = await repo.getExpense(id);
+    if (!existing) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
+    if (!req.user.canManageFinance && existing.createdBy !== req.user.id) {
+      return res.status(403).json({ error: '권한이 없습니다' });
+    }
+    const list = await repo.listReceiptsByExpense(id);
+    // 마이그레이션 036 미적용으로 list 가 비어있으면 옛 단일 영수증으로 fallback
+    if (list.length === 0 && existing.receiptPath) {
+      list.push({
+        id: 0,                                  // legacy marker
+        expenseId: id,
+        path: existing.receiptPath,
+        name: existing.receiptName,
+        mime: existing.receiptMime,
+        size: existing.receiptSize,
+        uploadedAt: existing.createdAt,
+        legacy: true,
+      });
+    }
+    res.json({ data: list });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/expense-receipts/:receiptId/url — signed URL (개별)
+router.get('/receipts/:receiptId/url', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const receiptId = parseInt(req.params.receiptId, 10);
+    const r = await repo.getReceiptById(receiptId);
+    if (!r) return res.status(404).json({ error: '영수증이 없습니다' });
+    const exp = await repo.getExpense(r.expenseId);
+    if (!exp) return res.status(404).json({ error: '연결된 지출이 없습니다' });
+    if (!req.user.canManageFinance && exp.createdBy !== req.user.id) {
+      return res.status(403).json({ error: '권한이 없습니다' });
+    }
+    const { data, error } = await getClient().storage.from(RECEIPT_BUCKET)
+      .createSignedUrl(r.path, 300, { download: r.name || 'receipt' });
+    if (error) throw error;
+    res.json({ signedUrl: data.signedUrl, fileName: r.name, mime: r.mime });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/expense-receipts/:receiptId — 개별 영수증 삭제
+router.delete('/receipts/:receiptId', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const receiptId = parseInt(req.params.receiptId, 10);
+    const r = await repo.getReceiptById(receiptId);
+    if (!r) return res.status(404).json({ error: '영수증이 없습니다' });
+    const exp = await repo.getExpense(r.expenseId);
+    if (!exp) return res.status(404).json({ error: '연결된 지출이 없습니다' });
+    if (!req.user.canManageFinance && exp.createdBy !== req.user.id) {
+      return res.status(403).json({ error: '권한이 없습니다' });
+    }
+    // Storage 도 정리
+    try { await getClient().storage.from(RECEIPT_BUCKET).remove([r.path]); } catch {}
+    await repo.deleteReceiptById(receiptId);
+    // 옛 단일 컬럼 미러였다면 함께 정리
+    if (exp.receiptPath === r.path) await repo.clearReceipt(exp.id);
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
