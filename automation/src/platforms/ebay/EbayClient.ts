@@ -12,6 +12,49 @@ import { categoryCache } from '../../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import type { PlatformAdapter, ListingInput, ListingResult } from '../index.js';
 
+/**
+ * 제목에서 카드게임 Set (확장팩) 이름 추출.
+ * eBay 의 Pokemon TCG 카드 카테고리는 Set 필드 필수.
+ *
+ * 예시:
+ *   "Pokémon TCG Sword & Shield Paradigm Trigger Box" → "Sword & Shield: Paradigm Trigger"
+ *   "Pokémon TCG Scarlet & Violet Twilight Masquerade" → "Scarlet & Violet: Twilight Masquerade"
+ *   "Pokémon Sun & Moon Lost Thunder Booster Box" → "Sun & Moon: Lost Thunder"
+ */
+function extractSetFromTitle(title: string): string | null {
+  if (!title) return null;
+
+  // 시리즈 prefix 패턴들 (Pokemon TCG 시리즈)
+  const seriesPatterns = [
+    { regex: /Sword\s*&\s*Shield/i, prefix: 'Sword & Shield' },
+    { regex: /Scarlet\s*&\s*Violet/i, prefix: 'Scarlet & Violet' },
+    { regex: /Sun\s*&\s*Moon/i, prefix: 'Sun & Moon' },
+    { regex: /XY[\s:]/i, prefix: 'XY' },
+    { regex: /Black\s*&\s*White/i, prefix: 'Black & White' },
+    { regex: /Diamond\s*&\s*Pearl/i, prefix: 'Diamond & Pearl' },
+    { regex: /HeartGold\s*&?\s*SoulSilver|HGSS/i, prefix: 'HeartGold & SoulSilver' },
+  ];
+
+  for (const { regex, prefix } of seriesPatterns) {
+    const m = title.match(regex);
+    if (!m) continue;
+    // prefix 뒤의 expansion 이름 추출
+    const after = title.slice((m.index || 0) + m[0].length);
+    // 노이즈 단어 제거 (Expansion, Pack, Booster, Box 등)
+    const cleaned = after
+      .replace(/\b(Expansion|Enhancement|Pack|Booster|Box|Pokémon|Pokemon|TCG|Sealed|\d+\s*Boxes?|\d+\s*Packs?|Includes|Promo|Promotional|with)\b/gi, ' ')
+      .replace(/\([^)]*\)/g, ' ')   // 괄호 내용 제거
+      .replace(/[&\-:|]/g, ' ')      // 기호 제거
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleaned && cleaned.length >= 3) {
+      return `${prefix}: ${cleaned.split(' ').slice(0, 4).join(' ')}`;
+    }
+    return prefix; // 시리즈만 인식되면 그것만
+  }
+  return null;
+}
+
 export class EbayClient implements PlatformAdapter {
   readonly platform = 'ebay';
 
@@ -223,6 +266,51 @@ export class EbayClient implements PlatformAdapter {
     }
     // Card Condition은 ConditionDescriptors로 처리 — ItemSpecifics에서 제거
     delete specs['Card Condition'];
+
+    // ── 필수 항목 자동 채움 (eBay 카테고리별 required fields) ──
+    // 카드 카테고리 (Pokémon/YGO/MTG/Sports 등): Set + Game 필수
+    if (isCardCategory) {
+      // Game 자동 감지 (제목 키워드 기반)
+      if (!specs['Game']) {
+        const t = input.title.toLowerCase();
+        if (/pokémon|pokemon/i.test(input.title)) specs['Game'] = 'Pokémon TCG';
+        else if (/yu-?gi-?oh/i.test(input.title)) specs['Game'] = 'Yu-Gi-Oh! TCG';
+        else if (/magic.*gathering|\bmtg\b/i.test(input.title)) specs['Game'] = 'Magic: The Gathering';
+        else if (/digimon/i.test(input.title)) specs['Game'] = 'Digimon TCG';
+        else if (/one piece/i.test(input.title)) specs['Game'] = 'One Piece TCG';
+        else if (/dragon ball/i.test(input.title)) specs['Game'] = 'Dragon Ball Super TCG';
+        else specs['Game'] = 'Other';
+      }
+      // Set 자동 감지 (제목에서 시리즈/expansion 이름 추출)
+      if (!specs['Set']) {
+        specs['Set'] = extractSetFromTitle(input.title) || 'Various';
+      }
+      // Brand: 대부분 Game 과 같은 발행사
+      if (!specs['Brand']) {
+        if (/pokémon|pokemon/i.test(input.title)) specs['Brand'] = 'Pokémon';
+        else if (/yu-?gi-?oh/i.test(input.title)) specs['Brand'] = 'Konami';
+        else if (/magic.*gathering|\bmtg\b/i.test(input.title)) specs['Brand'] = 'Wizards of the Coast';
+        else specs['Brand'] = input.brand || 'Unbranded';
+      }
+      // Type 도 sealed/booster 자동 감지
+      if (!specs['Type']) {
+        if (/booster box/i.test(input.title)) specs['Type'] = 'Booster Box';
+        else if (/booster pack/i.test(input.title)) specs['Type'] = 'Booster Pack';
+        else if (/elite trainer/i.test(input.title)) specs['Type'] = 'Elite Trainer Box';
+        else if (/starter/i.test(input.title)) specs['Type'] = 'Starter Deck';
+        else specs['Type'] = 'See Description';
+      }
+    }
+    // 비디오게임 카테고리 — Platform 필수
+    if (!specs['Platform'] && /(playstation|xbox|nintendo|switch|ps[1-5]|video game)/i.test(input.title)) {
+      const t = input.title.toLowerCase();
+      if (/ps5|playstation 5/i.test(input.title)) specs['Platform'] = 'Sony PlayStation 5';
+      else if (/ps4|playstation 4/i.test(input.title)) specs['Platform'] = 'Sony PlayStation 4';
+      else if (/nintendo switch/i.test(input.title)) specs['Platform'] = 'Nintendo Switch';
+      else if (/xbox series/i.test(input.title)) specs['Platform'] = 'Microsoft Xbox Series X';
+      else if (/xbox one/i.test(input.title)) specs['Platform'] = 'Microsoft Xbox One';
+      else specs['Platform'] = 'See Description';
+    }
     const itemSpecificsXml = `
     <ItemSpecifics>${Object.entries(specs).map(([k, v]) =>
       `\n      <NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(String(v))}</Value></NameValueList>`
