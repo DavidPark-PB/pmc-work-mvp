@@ -384,8 +384,10 @@ async function getShippingEstimatesLive(countryCode, weightKg, dims = null, dest
     if (kp.isConfigured() && process.env.KOREAPOST_RATE_URL) {
       const weightG = Math.round((weightKg || 0) * 1000);
       if (weightG > 0) {
+        const boxDims = (dims && dims.l && dims.w && dims.h)
+          ? { length: dims.l, width: dims.w, height: dims.h } : null;
         const kpacketIdx = baseEstimates.findIndex(e => e.carrier === 'KPacket');
-        const kpRate = await kp.getRate({ countryCode, weightG, serviceType: 'KPACKET' }).catch(() => null);
+        const kpRate = await kp.getRate({ countryCode, weightG, serviceType: 'KPACKET', boxDims }).catch(() => null);
         if (kpRate && kpRate.cost > 0) {
           const liveEntry = {
             carrier: 'KPacket',
@@ -402,7 +404,7 @@ async function getShippingEstimatesLive(countryCode, weightKg, dims = null, dest
 
         // EMS 도 별도로 시도 (보통 무거운 짐)
         if (weightG > 1000) {
-          const emsRate = await kp.getRate({ countryCode, weightG, serviceType: 'EMS' }).catch(() => null);
+          const emsRate = await kp.getRate({ countryCode, weightG, serviceType: 'EMS', boxDims }).catch(() => null);
           if (emsRate && emsRate.cost > 0) {
             baseEstimates.push({
               carrier: 'KPacket',

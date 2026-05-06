@@ -13,20 +13,48 @@ const xml2js = require('xml2js');
  *
  * 환경변수:
  *   KOREAPOST_API_KEY              발급받은 인증키 (필수, 30자리 'regkey' 로 전송)
- *   KOREAPOST_RATE_URL             EMS/K-Packet 요금 조회 URL (매뉴얼 확인)
+ *   KOREAPOST_CUSTNO               고객번호 (epost ID 연결, 예: 0005077976)
+ *   KOREAPOST_APPRNO               계약승인번호 (요금조회·접수신청 필수, 우체국 계약별 발급)
+ *                                   ※ 모르면 EmsPrcPayMethodList.ems 로 조회 가능
+ *   KOREAPOST_PREMIUMCD            서비스 프리미엄 코드 (예: 14 — 매뉴얼 확인)
+ *   KOREAPOST_RATE_URL             EMS/K-Packet 요금 URL (기본: eship.epost.go.kr/api/EmsTotProcCmd.ems)
  *   KOREAPOST_TRACK_URL            종추적 URL (기본: biz.epost.go.kr/KpostPortal/openapi)
- *   KOREAPOST_LABEL_URL            소포신청 URL (매뉴얼 확인)
+ *   KOREAPOST_LABEL_URL            접수신청 URL (기본: eship.epost.go.kr/api/EmsApplyInsertReceiveTempCmdNew.ems)
  *   KOREAPOST_SHIPPER_*            발송인 정보 (라벨 발급용)
  */
 const DEFAULT_TRACK_URL = 'http://biz.epost.go.kr/KpostPortal/openapi';
+const DEFAULT_RATE_URL = 'http://eship.epost.go.kr/api/EmsTotProcCmd.ems';
 
 class KoreaPostAPI {
   constructor() {
     this.apiKey = process.env.KOREAPOST_API_KEY;
-    this.rateUrl = process.env.KOREAPOST_RATE_URL;
+    this.custno = process.env.KOREAPOST_CUSTNO;          // 고객번호 (epost ID 연결)
+    this.apprno = process.env.KOREAPOST_APPRNO;          // 계약승인번호 (계약별)
+    this.premiumcd = process.env.KOREAPOST_PREMIUMCD;     // 서비스 프리미엄 코드
+    this.rateUrl = process.env.KOREAPOST_RATE_URL || DEFAULT_RATE_URL;
     this.trackUrl = process.env.KOREAPOST_TRACK_URL || DEFAULT_TRACK_URL;
     this.labelUrl = process.env.KOREAPOST_LABEL_URL;
     this._xmlParser = new xml2js.Parser({ explicitArray: false, trim: true, ignoreAttrs: false });
+  }
+
+  /**
+   * 계약승인번호 조회 — 고객번호로 발급받은 apprno 목록 조회.
+   * 매뉴얼: eship.epost.go.kr/api/EmsPrcPayMethodList.ems
+   * apprno 모를 때 호출 → 결과로 env 채울 값 확인 가능.
+   */
+  async listAppreNoByCustno() {
+    if (!this.isConfigured()) throw new Error('KOREAPOST_API_KEY 미설정');
+    if (!this.custno) throw new Error('KOREAPOST_CUSTNO 미설정');
+    // 매뉴얼: regData 가 고객번호의 보안 hash 형태일 가능성 — 일단 raw custno 시도, 응답 보고 조정.
+    const url = 'http://eship.epost.go.kr/api/EmsPrcPayMethodList.ems';
+    const params = { regkey: this.apiKey, regData: this.custno };
+    try {
+      const res = await axios.get(url, { params, timeout: 15000, responseType: 'text' });
+      return await this._xmlParser.parseStringPromise(res.data);
+    } catch (e) {
+      console.error('[KoreaPost] listAppreNoByCustno 실패:', e.response?.data || e.message);
+      throw e;
+    }
   }
 
   isConfigured() { return !!this.apiKey; }
@@ -41,33 +69,55 @@ class KoreaPostAPI {
   }
 
   /**
-   * EMS / K-Packet 요금 조회.
+   * EMS / K-Packet 배송예상비용 조회.
+   * 매뉴얼: eship.epost.go.kr/api/EmsTotProcCmd.ems
+   *
    * @param {object} params
    *   - countryCode: ISO 2자리 (예: 'US', 'CA', 'GB')
    *   - weightG: 중량 (그램)
-   *   - serviceType: 'EMS' | 'KPACKET' (기본 'KPACKET')
-   * @returns {Promise<{cost: number, currency: 'KRW', etaDays: number, serviceType: string} | null>}
+   *   - serviceType: 'EMS' | 'KPACKET' (em_ee 코드 결정용 — 매뉴얼 확인 필요)
+   *   - boxDims: { width, height, length } (cm) — 부피 무게 계산용
+   * @returns {Promise<{cost, currency:'KRW', etaDays, serviceType, raw} | null>}
    */
-  async getRate({ countryCode, weightG, serviceType = 'KPACKET' }) {
+  async getRate({ countryCode, weightG, serviceType = 'KPACKET', boxDims = null }) {
     if (!this.isConfigured()) throw new Error('KOREAPOST_API_KEY 미설정');
-    if (!this.rateUrl) throw new Error('KOREAPOST_RATE_URL 미설정 — 우체국 Open API 매뉴얼에서 확인 후 env 설정 필요');
+    if (!this.apprno) throw new Error('KOREAPOST_APPRNO (계약승인번호) 미설정 — 우체국 계약시스템에서 확인');
     if (!countryCode || !weightG) throw new Error('countryCode 와 weightG 필수');
 
+    // em_ee 코드: 매뉴얼 확인 후 정확히. 일단 K-Packet=ka, EMS=el 로 추정 (rl은 등기소포 가능성).
+    // 사장님 매뉴얼 다운로드 후 확인해서 채울 것.
+    const emEe = serviceType === 'EMS' ? 'el' : 'ka';
+    const premiumcd = this.premiumcd || (serviceType === 'EMS' ? '14' : '14');
+
+    const params = {
+      regkey: this.apiKey,
+      premiumcd,
+      countrycd: countryCode,
+      totweight: Math.round(weightG),
+      boyn: 'N',                     // 배송보험 미사용 (보험 필요시 'Y' + boprc 입력)
+      boprc: 0,
+      em_ee: emEe,
+      apprno: this.apprno,
+      boxwidth: boxDims?.width ? Math.round(boxDims.width) : 10,
+      boxheight: boxDims?.height ? Math.round(boxDims.height) : 10,
+      boxlength: boxDims?.length ? Math.round(boxDims.length) : 10,
+    };
+
     try {
-      // 우체국 API 매뉴얼대로 query/body 구성 — 사장님이 docs 받으신 후 정확한 키 이름 채울 것.
-      const params = {
-        authKey: this.apiKey,         // 매뉴얼: 'serviceKey' 또는 'authKey' 또는 'regKey' 인지 확인
-        countryCode,
-        weight: weightG,
-        serviceType,
-      };
-      const res = await axios.get(this.rateUrl, { params, timeout: 15000 });
-      // 응답 파싱은 매뉴얼대로 — 보통 XML 또는 JSON. 여기선 JSON 가정.
-      const d = res.data;
-      // TODO: 매뉴얼 응답 구조에 맞춰 추출 (예: d.response.body.items.item.cost)
-      const cost = Number(d?.cost ?? d?.totalCharge ?? d?.amount ?? 0);
-      const etaDays = Number(d?.etaDays ?? d?.deliveryDays ?? null) || null;
-      return cost > 0 ? { cost, currency: 'KRW', etaDays, serviceType } : null;
+      const res = await axios.get(this.rateUrl, { params, timeout: 15000, responseType: 'text' });
+      const xml = res.data;
+      const parsed = await this._xmlParser.parseStringPromise(xml);
+      // 응답 루트는 매뉴얼대로. 보통 ERR-* 가 있으면 에러. 정상이면 cost/charge 필드.
+      const root = parsed && Object.values(parsed)[0];
+      if (root?.error_code || /^ERR-/i.test(String(root?.error_code || ''))) {
+        throw new Error(`우체국 API 에러 ${root.error_code}: ${root.message || ''}`);
+      }
+      // 매뉴얼 응답 키 이름 (totCharge / cost / charge 등) 확인 후 정리.
+      // 일단 가능성 높은 키들 시도.
+      const tryKey = (obj, keys) => keys.map(k => obj?.[k]).find(v => v != null && v !== '');
+      const cost = Number(tryKey(root, ['totCharge', 'totcharge', 'TOTAL_CHARGE', 'cost', 'charge', 'amount', 'price'])) || 0;
+      const etaDays = Number(tryKey(root, ['delivday', 'deliveryDays', 'etaDays'])) || null;
+      return cost > 0 ? { cost, currency: 'KRW', etaDays, serviceType, raw: root } : null;
     } catch (e) {
       console.error('[KoreaPost] getRate 실패:', e.response?.data || e.message);
       throw new Error('우체국 요금 조회 실패: ' + (e.response?.data?.error || e.message));
