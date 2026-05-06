@@ -3541,6 +3541,113 @@ router.get('/orders/:orderNo/fedex-label', async (req, res) => {
   }
 });
 
+// ─── 우체국 (Korea Post) Open API ───
+// 신청된 3개 API: EMS/K-Packet 요금조회, 종추적, 소포신청 (라벨 발급).
+// 환경변수 KOREAPOST_API_KEY 와 각 endpoint URL 셋팅 필요 (config/.env 참조).
+
+// POST /api/orders/:orderNo/koreapost-label — 소포신청 → 운송장 + 라벨 발급
+router.post('/orders/:orderNo/koreapost-label', async (req, res) => {
+  try {
+    const { orderNo } = req.params;
+    const { weightKg, dimensions, valueKrw, contents, serviceType = 'KPACKET' } = req.body || {};
+
+    const { getKoreaPostAPI } = require('../../api/koreaPostAPI');
+    const kp = getKoreaPostAPI();
+    if (!kp.isConfigured()) {
+      return res.status(503).json({ success: false, error: '우체국 API 키 미설정 (KOREAPOST_API_KEY)' });
+    }
+    if (!process.env.KOREAPOST_LABEL_URL) {
+      return res.status(503).json({ success: false, error: '우체국 라벨 URL 미설정 (매뉴얼 확인 후 KOREAPOST_LABEL_URL env 설정 필요)' });
+    }
+
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data: order } = await db.from('orders')
+      .select('order_no, buyer_name, street, city, province, zip_code, country_code, phone, email, payment_amount, currency, sku, title, quantity, label_storage_path')
+      .eq('order_no', orderNo).maybeSingle();
+    if (!order) return res.status(404).json({ success: false, error: '주문을 찾을 수 없습니다' });
+    if (order.label_storage_path) return res.status(409).json({ success: false, error: '이미 라벨이 발급된 주문입니다' });
+
+    const weightG = Math.round((Number(weightKg) || 0) * 1000);
+    if (weightG <= 0) return res.status(400).json({ success: false, error: '무게(kg) 가 필요합니다' });
+
+    const result = await kp.createParcel({
+      recipient: {
+        name: order.buyer_name || 'Recipient',
+        phone: order.phone || '',
+        country: order.country_code || '',
+        zip: order.zip_code || '',
+        addr1: order.street || '',
+        addr2: `${order.city || ''} ${order.province || ''}`.trim(),
+      },
+      parcel: {
+        weightG,
+        dims: dimensions ? { l: dimensions.length, w: dimensions.width, h: dimensions.height } : null,
+        valueKrw: Number(valueKrw) || Number(order.payment_amount) || 1,
+        contents: contents || order.title || 'Merchandise',
+      },
+      serviceType,
+    });
+
+    // 라벨 PDF 저장 (Storage 'shipping-labels' 버킷 — FedEx 와 공유)
+    let storagePath = null;
+    try {
+      const bucket = 'shipping-labels';
+      const fname = `${orderNo}/kp-${result.trackingNumber}.pdf`;
+      let pdfBuffer = null;
+      if (result.labelBase64) pdfBuffer = Buffer.from(result.labelBase64, 'base64');
+      else if (result.labelUrl) {
+        const axios = require('axios');
+        const dl = await axios.get(result.labelUrl, { responseType: 'arraybuffer', timeout: 30000 });
+        pdfBuffer = Buffer.from(dl.data);
+      }
+      if (pdfBuffer) {
+        const { error: upErr } = await db.storage.from(bucket).upload(fname, pdfBuffer, {
+          contentType: 'application/pdf', upsert: true,
+        });
+        if (!upErr) storagePath = fname;
+      }
+    } catch (e) { console.error('[koreapost-label] Storage 실패:', e.message); }
+
+    await db.from('orders').update({
+      carrier: serviceType === 'EMS' ? '우체국 EMS' : '우체국 K-Packet',
+      tracking_no: result.trackingNumber,
+      label_storage_path: storagePath,
+      shipping_cost: result.cost || null,
+      shipping_currency: 'KRW',
+      service_type: serviceType,
+      status: 'SHIPPED',
+    }).eq('order_no', orderNo);
+
+    res.json({ success: true, trackingNumber: result.trackingNumber, cost: result.cost, labelStored: !!storagePath });
+  } catch (e) {
+    console.error('❌ orders/koreapost-label:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/orders/:orderNo/koreapost-track — 종추적 조회
+router.get('/orders/:orderNo/koreapost-track', async (req, res) => {
+  try {
+    const { orderNo } = req.params;
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data: order } = await db.from('orders')
+      .select('tracking_no').eq('order_no', orderNo).maybeSingle();
+    if (!order?.tracking_no) return res.status(404).json({ success: false, error: '운송장 번호 없음' });
+
+    const { getKoreaPostAPI } = require('../../api/koreaPostAPI');
+    const kp = getKoreaPostAPI();
+    if (!kp.isConfigured() || !process.env.KOREAPOST_TRACK_URL) {
+      return res.status(503).json({ success: false, error: '우체국 종추적 API 미설정' });
+    }
+    const result = await kp.track(order.tracking_no);
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // PATCH /api/orders/save-weight — 주문 기반 무게/치수 저장 (SKU 없어도 동작)
 router.patch('/orders/save-weight', async (req, res) => {
   try {

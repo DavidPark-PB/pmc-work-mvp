@@ -375,12 +375,63 @@ function getShippingEstimates(countryCode, weightKg, dims = null) {
  */
 async function getShippingEstimatesLive(countryCode, weightKg, dims = null, destination = null) {
   const baseEstimates = getShippingEstimates(countryCode, weightKg, dims);
+
+  // ── 우체국 (KPacket) 라이브 견적 시도 ──
+  // KOREAPOST_API_KEY + KOREAPOST_RATE_URL 둘 다 있을 때만. 없으면 hardcoded fallback.
+  try {
+    const { getKoreaPostAPI } = require('../api/koreaPostAPI');
+    const kp = getKoreaPostAPI();
+    if (kp.isConfigured() && process.env.KOREAPOST_RATE_URL) {
+      const weightG = Math.round((weightKg || 0) * 1000);
+      if (weightG > 0) {
+        const kpacketIdx = baseEstimates.findIndex(e => e.carrier === 'KPacket');
+        const kpRate = await kp.getRate({ countryCode, weightG, serviceType: 'KPACKET' }).catch(() => null);
+        if (kpRate && kpRate.cost > 0) {
+          const liveEntry = {
+            carrier: 'KPacket',
+            service: 'K-Packet (우체국 LIVE)',
+            priceKRW: kpRate.cost,
+            days: kpRate.etaDays ? `${kpRate.etaDays}일` : '7-14일',
+            live: true,
+          };
+          if (kpacketIdx >= 0) baseEstimates[kpacketIdx] = liveEntry;
+          else baseEstimates.push(liveEntry);
+        } else if (kpacketIdx >= 0) {
+          baseEstimates[kpacketIdx].live = false;
+        }
+
+        // EMS 도 별도로 시도 (보통 무거운 짐)
+        if (weightG > 1000) {
+          const emsRate = await kp.getRate({ countryCode, weightG, serviceType: 'EMS' }).catch(() => null);
+          if (emsRate && emsRate.cost > 0) {
+            baseEstimates.push({
+              carrier: 'KPacket',
+              service: 'EMS (우체국 LIVE)',
+              priceKRW: emsRate.cost,
+              days: emsRate.etaDays ? `${emsRate.etaDays}일` : '5-10일',
+              live: true,
+            });
+          }
+        }
+      }
+    }
+  } catch (e) { /* 우체국 API 미설정/오류 시 hardcoded fallback */ }
+
+  // ── FedEx 라이브 견적 시도 ──
   // FedEx 항목들은 일단 hardcoded — live 시도해서 성공하면 교체.
   const fedexIdxs = baseEstimates
     .map((e, i) => (e.carrier === 'FedEx' ? i : -1))
     .filter(i => i !== -1);
 
-  if (fedexIdxs.length === 0) return baseEstimates;
+  if (fedexIdxs.length === 0) {
+    // 정렬 다시 (우체국 라이브 추가됐을 수 있음)
+    baseEstimates.sort((a, b) => (a.priceKRW ?? 1e12) - (b.priceKRW ?? 1e12));
+    if (baseEstimates.length > 0) {
+      baseEstimates.forEach(e => { e.isRecommended = false; });
+      baseEstimates[0].isRecommended = true;
+    }
+    return baseEstimates;
+  }
 
   // FedEx API 자격증명 + 주소 정보 둘 다 있어야 라이브 시도
   let fedex;

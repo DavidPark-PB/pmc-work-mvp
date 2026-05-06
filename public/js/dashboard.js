@@ -6478,12 +6478,21 @@ async function shippingShowEstimate(rowIdx, orderNo) {
       data.estimates.forEach((e, eIdx) => {
         const star = e.isRecommended ? '⭐' : '　';
         const bg = e.isRecommended ? '#e3f2fd' : '#fff';
-        // FedEx 라이브 견적이면 라벨 즉시 발급 버튼 추가
+        // 라이브 견적 (FedEx, 우체국 KPacket/EMS) 이면 라벨 즉시 발급 버튼 추가
         const isFedexLive = e.carrier === 'FedEx' && e.live === true;
-        const liveBadge = isFedexLive ? '<span style="background:#2e7d32;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-left:2px">LIVE</span>' : '';
-        const fedexLabelBtn = isFedexLive
-          ? `<button onclick='shippingFedexLabel(${JSON.stringify({orderNo, rowIdx, serviceType:e.service, weightKg:data.weightKg, dims:data.dims})})' style="padding:1px 6px;border:1px solid #2e7d32;border-radius:8px;background:#2e7d32;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap;margin-left:2px" title="FedEx 라벨 즉시 발급">🖨 라벨</button>`
+        const isKPacketLive = e.carrier === 'KPacket' && e.live === true;
+        const liveBadge = (isFedexLive || isKPacketLive)
+          ? '<span style="background:#2e7d32;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-left:2px">LIVE</span>'
           : '';
+        let labelBtn = '';
+        if (isFedexLive) {
+          labelBtn = `<button onclick='shippingFedexLabel(${JSON.stringify({orderNo, rowIdx, serviceType:e.service, weightKg:data.weightKg, dims:data.dims})})' style="padding:1px 6px;border:1px solid #2e7d32;border-radius:8px;background:#2e7d32;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap;margin-left:2px" title="FedEx 라벨 즉시 발급">🖨 라벨</button>`;
+        } else if (isKPacketLive) {
+          // service 문자열에서 EMS / KPACKET 구분
+          const kpService = /EMS/i.test(e.service) ? 'EMS' : 'KPACKET';
+          labelBtn = `<button onclick='shippingKoreaPostLabel(${JSON.stringify({orderNo, rowIdx, serviceType: kpService, weightKg:data.weightKg, dims:data.dims})})' style="padding:1px 6px;border:1px solid #2e7d32;border-radius:8px;background:#2e7d32;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap;margin-left:2px" title="우체국 라벨 즉시 발급">🖨 라벨</button>`;
+        }
+        const fedexLabelBtn = labelBtn;
         html += `<div style="display:flex;align-items:center;gap:5px;padding:3px 4px;border-radius:4px;background:${bg};margin-bottom:2px">
           <span style="width:16px;font-size:10px">${star}</span>
           <span style="font-weight:600;min-width:110px;font-size:9px">${esc(e.carrier)} <span style="color:#666;font-weight:400">${esc(e.service)}</span>${liveBadge}</span>
@@ -6550,6 +6559,53 @@ async function shippingFedexLabel(opts) {
     }
 
     // 1.5초 후 목록 리로드
+    setTimeout(() => {
+      if (typeof shippingLoadRecent === 'function') shippingLoadRecent();
+    }, 1500);
+  } catch (e) {
+    if (panel) panel.innerHTML = `<div style="padding:8px;color:#c62828;font-size:11px;">❌ ${e.message}</div>`;
+  }
+}
+
+// 우체국 라벨 즉시 발급 (소포신청)
+async function shippingKoreaPostLabel(opts) {
+  const { orderNo, rowIdx, serviceType, weightKg, dims } = opts || {};
+  if (!orderNo || !serviceType || !weightKg) {
+    alert('정보 부족: orderNo, serviceType, weightKg 필요');
+    return;
+  }
+  const svcLabel = serviceType === 'EMS' ? 'EMS' : 'K-Packet';
+  if (!confirm(`우체국 ${svcLabel} 라벨을 즉시 발급하시겠어요?\n\n주문: ${orderNo}\n무게: ${weightKg}kg\n\n실제 운송장 번호가 발급되고 PDF 가 새 창에서 열립니다.`)) return;
+
+  const panel = document.getElementById(`est-panel-${rowIdx}`);
+  if (panel) panel.innerHTML = '<div style="padding:8px;color:#888;font-size:11px;">⏳ 우체국 라벨 발급 중…</div>';
+
+  try {
+    const r = await fetch(`/api/orders/${encodeURIComponent(orderNo)}/koreapost-label`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        weightKg,
+        dimensions: dims ? { length: dims.l, width: dims.w, height: dims.h } : null,
+        serviceType,
+      }),
+    });
+    const j = await r.json();
+    if (!r.ok || !j.success) throw new Error(j.error || '라벨 발급 실패');
+
+    if (panel) panel.innerHTML = `<div style="padding:8px;background:#e8f5e9;border-radius:4px;font-size:11px;color:#2e7d32;">
+      ✓ 운송장 <code>${j.trackingNumber}</code> · ₩${(j.cost || 0).toLocaleString()}<br>
+      라벨 PDF 새 창에서 열립니다…
+    </div>`;
+
+    if (j.labelStored) {
+      try {
+        // 우체국용 signed URL — 같은 버킷 (shipping-labels) 사용. FedEx 라우트 재활용 가능.
+        const u = await fetch(`/api/orders/${encodeURIComponent(orderNo)}/fedex-label`);
+        const uj = await u.json();
+        if (uj.url) window.open(uj.url, '_blank');
+      } catch {}
+    }
+
     setTimeout(() => {
       if (typeof shippingLoadRecent === 'function') shippingLoadRecent();
     }, 1500);
