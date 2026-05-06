@@ -1,31 +1,32 @@
 require('../config');
 const axios = require('axios');
+const xml2js = require('xml2js');
 
 /**
  * 우체국 Open API 클라이언트.
  * biz.epost.go.kr 에서 발급받은 인증키 사용.
  *
  * 신청된 3개 API:
- *   1. EMS/K-Packet 요금 조회  → getRate()
- *   2. 종추적 조회                → track()
- *   3. 소포신청 (라벨 발급)       → createParcel()
+ *   1. EMS/K-Packet 요금 조회  → getRate()  (TODO: 매뉴얼 받으면 endpoint 확정)
+ *   2. 종추적 조회                → track()    (✅ 매뉴얼 확인 — biz.epost.go.kr/KpostPortal/openapi)
+ *   3. 소포신청 (라벨 발급)       → createParcel() (TODO: 매뉴얼)
  *
- * ⚠️ 환경변수에 endpoint URL 셋팅 필요 — 우체국 Open API 매뉴얼에서 확인:
- *   KOREAPOST_API_KEY              발급받은 인증키 (필수)
- *   KOREAPOST_RATE_URL             EMS/K-Packet 요금 조회 URL
- *   KOREAPOST_TRACK_URL            종추적 조회 URL
- *   KOREAPOST_LABEL_URL            소포신청 (라벨 발급) URL
- *   KOREAPOST_SHIPPER_NAME         발송인 정보 (라벨 발급용)
- *   KOREAPOST_SHIPPER_TEL
- *   KOREAPOST_SHIPPER_ZIP
- *   KOREAPOST_SHIPPER_ADDR
+ * 환경변수:
+ *   KOREAPOST_API_KEY              발급받은 인증키 (필수, 30자리 'regkey' 로 전송)
+ *   KOREAPOST_RATE_URL             EMS/K-Packet 요금 조회 URL (매뉴얼 확인)
+ *   KOREAPOST_TRACK_URL            종추적 URL (기본: biz.epost.go.kr/KpostPortal/openapi)
+ *   KOREAPOST_LABEL_URL            소포신청 URL (매뉴얼 확인)
+ *   KOREAPOST_SHIPPER_*            발송인 정보 (라벨 발급용)
  */
+const DEFAULT_TRACK_URL = 'http://biz.epost.go.kr/KpostPortal/openapi';
+
 class KoreaPostAPI {
   constructor() {
     this.apiKey = process.env.KOREAPOST_API_KEY;
     this.rateUrl = process.env.KOREAPOST_RATE_URL;
-    this.trackUrl = process.env.KOREAPOST_TRACK_URL;
+    this.trackUrl = process.env.KOREAPOST_TRACK_URL || DEFAULT_TRACK_URL;
     this.labelUrl = process.env.KOREAPOST_LABEL_URL;
+    this._xmlParser = new xml2js.Parser({ explicitArray: false, trim: true, ignoreAttrs: false });
   }
 
   isConfigured() { return !!this.apiKey; }
@@ -75,31 +76,73 @@ class KoreaPostAPI {
 
   /**
    * 종추적 (운송장 번호로 현재 위치/상태 조회).
-   * @param {string} trackingNumber - 등기번호
-   * @returns {Promise<{status, events: Array<{at, location, description}>}>}
+   * 매뉴얼 (biz.epost.go.kr/KpostPortal/openapi) 정확히 반영.
+   *
+   * @param {string} trackingNumber - 등기번호 (국내 13자리, 국제 EM*KR 등)
+   * @param {object} opts
+   *   - target: 'auto' (기본) | 'trace'(국내) | 'emsTrace'(국제 한글) | 'emsEngTrace'(국제 영문)
+   *   - showRec: 'Y' | 'N' (기본 N — 종추적 '접수' 정보 포함 여부)
+   * @returns {Promise<{events, sender, receiver, status, raw}>}
    */
-  async track(trackingNumber) {
+  async track(trackingNumber, opts = {}) {
     if (!this.isConfigured()) throw new Error('KOREAPOST_API_KEY 미설정');
-    if (!this.trackUrl) throw new Error('KOREAPOST_TRACK_URL 미설정 — 우체국 Open API 매뉴얼에서 확인 후 env 설정 필요');
     if (!trackingNumber) throw new Error('trackingNumber 필수');
 
+    // target 자동 판별: EM 또는 RR 시작 + KR 끝 = 국제, 13자리 숫자 = 국내
+    let target = opts.target || 'auto';
+    if (target === 'auto') {
+      const t = String(trackingNumber).trim().toUpperCase();
+      target = /^[A-Z]{2}\d+KR$/.test(t) ? 'emsEngTrace' : 'trace';
+    }
+
+    const params = {
+      regkey: this.apiKey,
+      target,
+      query: trackingNumber,
+      showRec: opts.showRec || 'N',
+    };
+
     try {
-      const params = {
-        authKey: this.apiKey,
-        trcKey: trackingNumber,        // 매뉴얼: 'trcKey' 또는 'rgistNo' 또는 'trackingNo' 확인
-      };
-      const res = await axios.get(this.trackUrl, { params, timeout: 15000 });
-      const d = res.data;
-      // TODO: 응답 구조에 맞춰 events 배열 파싱
+      const res = await axios.get(this.trackUrl, { params, timeout: 15000, responseType: 'text' });
+      const xml = res.data;
+      const parsed = await this._xmlParser.parseStringPromise(xml);
+      // 응답 루트는 매뉴얼 응답 형식에 따라 다름. 보통 <package> 또는 <openapi> 등.
+      // 응답 키 (sendnm, recevnm, regino, eventnm, eventymd 등) 정규화.
+      const root = parsed && Object.values(parsed)[0]; // 최상위 루트 element
+      const items = this._extractTrackItems(root);
+      const first = items[0] || {};
       return {
-        status: d?.status ?? 'unknown',
-        events: Array.isArray(d?.events) ? d.events : [],
-        raw: d,
+        sender: first.sendnm || '',
+        receiver: first.recevnm || '',
+        regino: first.regino || trackingNumber,
+        mailType: first.mailtypenm || '',
+        country: first.destcountrynm || '',
+        events: items.map(it => ({
+          at: `${it.eventymd || ''} ${it.eventhms || ''}`.trim(),
+          location: it.eventregiponm || '',
+          description: it.eventnm || '',
+          deliveryResult: it.delivrsltnm || it.eventnm || '',
+        })),
+        raw: parsed,
       };
     } catch (e) {
       console.error('[KoreaPost] track 실패:', e.response?.data || e.message);
       throw new Error('우체국 종추적 실패: ' + (e.response?.data?.error || e.message));
     }
+  }
+
+  // 응답 루트에서 종추적 이벤트 항목 배열 추출.
+  // 매뉴얼: <package><progress>...</progress>... </package> 또는 array 형태.
+  _extractTrackItems(root) {
+    if (!root) return [];
+    // 가능한 경로: root.progress, root.item, root.items, 또는 평면 객체
+    const candidates = [root.progress, root.item, root.items, root.events, root];
+    for (const c of candidates) {
+      if (!c) continue;
+      if (Array.isArray(c)) return c;
+      if (typeof c === 'object' && (c.eventnm || c.regino || c.sendnm)) return [c];
+    }
+    return [];
   }
 
   /**
