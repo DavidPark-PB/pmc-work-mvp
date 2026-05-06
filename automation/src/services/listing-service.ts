@@ -109,6 +109,11 @@ export async function createListing(
 
   // 가격 계산 (DB 설정 기반)
   const costKRW = parseFloat(String(product.costPrice)) || 0;
+  // 매입가 0 이면 등록 차단 — 잘못된 $1 리스팅 발생 방지.
+  // CSV 업로드 시 가격 컬럼 매핑 안 하거나 크롤이 가격 추출 실패한 경우.
+  if (costKRW <= 0) {
+    throw new Error(`매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재등록하세요. (SKU: ${product.sku})`);
+  }
   const pricing = await calculatePriceSimple(costKRW, { platform });
 
   // 기존 리스팅 확인 (unique 제약: productId + platform)
@@ -246,6 +251,9 @@ export async function retryListing(
 
   // 가격 재계산 (DB 설정 기반)
   const costKRW = parseFloat(String(product.costPrice)) || 0;
+  if (costKRW <= 0) {
+    throw new Error(`매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재시도하세요. (SKU: ${product.sku})`);
+  }
   const pricing = await calculatePriceSimple(costKRW, { platform: listing.platform });
 
   // 상태 리셋 + 가격 업데이트
@@ -396,6 +404,9 @@ export async function relistListing(
 
   // 가격 재계산 (DB 설정 기반)
   const costKRW = parseFloat(String(product.costPrice)) || 0;
+  if (costKRW <= 0) {
+    throw new Error(`매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재시도하세요. (SKU: ${product.sku})`);
+  }
   const pricing = await calculatePriceSimple(costKRW, { platform: listing.platform });
 
   // 상태 리셋
