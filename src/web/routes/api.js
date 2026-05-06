@@ -3770,7 +3770,17 @@ router.post('/b2b/invoices/:id/shipments', async (req, res) => {
       try { return typeof inv.Items === 'string' ? JSON.parse(inv.Items || '[]') : (inv.Items || inv.ItemsParsed || []); }
       catch { return inv.ItemsParsed || []; }
     })();
-    const orderedMap = new Map(orderedItems.map(it => [_itemKey(it), Number(it.qty || 0)]));
+    // 비물리 라인 (수수료·할인) 제외 — 자동 인보이스가 추가하는 fee/discount 가 발송 추적을 막아
+    // FULFILLED 자동 전이가 안 되는 버그 fix. 휴리스틱: 음수가격 (할인) 또는 sku 비어있는 qty=1 (수수료).
+    const _isPhysicalLine = (it) => {
+      const price = Number(it.price || 0);
+      const qty = Number(it.qty || 0);
+      if (price <= 0) return false;                            // 할인 라인
+      if (!String(it.sku || '').trim() && qty === 1) return false; // 수수료 라인 (자동 인보이스 패턴)
+      return true;
+    };
+    const physicalOrdered = orderedItems.filter(_isPhysicalLine);
+    const orderedMap = new Map(physicalOrdered.map(it => [_itemKey(it), Number(it.qty || 0)]));
 
     for (const it of cleanItems) {
       const ordered = orderedMap.get(it.sku) || 0;

@@ -1177,7 +1177,9 @@ class B2BInvoiceService {
     // 1. Sheet 행 비움 (행 자체는 남지만 InvoiceNo 빈 칸 → getInvoices 필터됨)
     await this.sheets.clearData(SPREADSHEET_ID, `'${INVOICES_SHEET}'!A${sheetRow}:P${sheetRow}`);
 
-    // 2. Supabase 삭제
+    // 2. Supabase 삭제 — 단계별로 실패 추적해서 hard delete 안 되면 voided_at 으로 마킹.
+    // (voided 인보이스는 getInvoices 필터에서 자동 제외 → 목록에서 사라짐)
+    let supabaseHardDeleted = false;
     try {
       const { getClient } = require('../db/supabaseClient');
       const db = getClient();
@@ -1186,11 +1188,25 @@ class B2BInvoiceService {
       if (inv?.original_file_path) {
         try { await db.storage.from('b2b-manual').remove([inv.original_file_path]); } catch {}
       }
-      // shipments / payments 도 cascade 가 없을 수 있으니 명시 삭제
-      await db.from('b2b_shipments').delete().eq('invoice_no', invoiceNo).then(() => {}).catch(() => {});
-      await db.from('b2b_payments').delete().eq('invoice_no', invoiceNo).then(() => {}).catch(() => {});
-      await db.from('b2b_invoices').delete().eq('invoice_no', invoiceNo);
-    } catch (e) { console.warn('[deleteInvoice] Supabase 삭제 실패:', e.message); }
+      // shipments / payments 명시 삭제 (FK cascade 안 깔려있을 수 있음). 실패 시 진짜 에러는 보고.
+      const shipDel = await db.from('b2b_shipments').delete().eq('invoice_no', invoiceNo);
+      if (shipDel.error) console.warn('[deleteInvoice] shipments 삭제 실패:', shipDel.error.message);
+      const payDel = await db.from('b2b_payments').delete().eq('invoice_no', invoiceNo);
+      if (payDel.error) console.warn('[deleteInvoice] payments 삭제 실패:', payDel.error.message);
+      // 인보이스 hard delete
+      const invDel = await db.from('b2b_invoices').delete().eq('invoice_no', invoiceNo);
+      if (invDel.error) {
+        console.warn('[deleteInvoice] hard delete 실패, voided_at fallback:', invDel.error.message);
+        // hard delete 실패 시 voided_at 마킹 — getInvoices 가 voided 자동 제외하므로 목록에서 사라짐
+        const voidUp = await db.from('b2b_invoices')
+          .update({ voided_at: new Date().toISOString() })
+          .eq('invoice_no', invoiceNo);
+        if (voidUp.error) console.error('[deleteInvoice] voided 마킹도 실패:', voidUp.error.message);
+        else console.log(`[deleteInvoice] ${invoiceNo} voided_at 마킹 완료 (hard delete 대신)`);
+      } else {
+        supabaseHardDeleted = true;
+      }
+    } catch (e) { console.warn('[deleteInvoice] Supabase 처리 예외:', e.message); }
 
     // 3. buyer 통계 재계산
     if (buyerId) {
