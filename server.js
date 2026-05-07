@@ -85,6 +85,9 @@ app.use('/api/ops', opsRoutes);
 app.use('/api/users', require('./src/web/routes/users'));
 app.use('/api/tasks', require('./src/web/routes/tasks'));
 app.use('/api/notifications', require('./src/web/routes/notifications'));
+// WMS Phase 1 — SKU master + 자동 예외 라우팅 (모두 admin 전용)
+app.use('/api/sku-master', require('./src/web/routes/skuMaster'));
+app.use('/api/exception-routing', require('./src/web/routes/exceptionRouting'));
 
 // ── 발주 관리 (Phase 2) ──
 app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));

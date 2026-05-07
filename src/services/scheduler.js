@@ -29,6 +29,7 @@ async function sendMorningDigest() {
     .from('team_tasks')
     .select('id, title, assignee_id, assignee_scope, due_date, priority, status, created_at')
     .neq('status', 'done')
+    .eq('auto_generated', false)  // 자동 예외 카드는 모닝 다이제스트에서 제외 — 직원 화면 보호
     .or(`and(due_date.gte.${start},due_date.lt.${end}),and(created_at.gte.${start},created_at.lt.${end}),assignee_scope.eq.all`);
   if (error) { console.error('[scheduler] morning digest query:', error.message); return; }
 
@@ -82,6 +83,7 @@ async function sendEveningOwnerSummary() {
     .from('team_tasks')
     .select('id, status, assignee_id, due_date, priority')
     .neq('status', 'done')
+    .eq('auto_generated', false)  // 자동 예외 카드는 사장 저녁 요약에서 제외 — 자동 카드 전용 통계는 별 채널
     .or(`and(due_date.gte.${start},due_date.lt.${end}),and(created_at.gte.${start},created_at.lt.${end})`);
   if (error) { console.error('[scheduler] evening summary query:', error.message); return; }
 
