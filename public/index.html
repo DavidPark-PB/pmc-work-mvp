@@ -592,6 +592,9 @@
     <div class="menu-item ops-menu" data-page="ops-pricing" style="color:#81d4fa;font-weight:600">가격 관리</div>
     <div class="menu-item ops-menu" data-page="ops-profit" style="color:#81d4fa;font-weight:600">수익 분석</div>
     <div class="menu-item ops-menu" data-page="ops-logs" style="color:#81d4fa;font-weight:600">자동화 로그</div>
+    <!-- WMS Phase 1 — admin 전용 -->
+    <div class="menu-item ops-menu" data-page="sku-master" data-admin-only style="color:#81d4fa;font-weight:600">📦 SKU 마스터</div>
+    <div class="menu-item ops-menu" data-page="exception-tasks" data-admin-only style="color:#81d4fa;font-weight:600">⚠️ 자동 예외</div>
     <div class="menu-title">시스템</div>
     <div class="menu-item" data-page="sync">동기화</div>
     <div class="menu-item" data-page="settings" style="color:#ff9800;font-weight:600">설정</div>
@@ -3285,6 +3288,11 @@
     </div>
   </div>
 
+  <!-- WMS Phase 1: SKU 마스터 -->
+  <div id="page-sku-master" class="page"></div>
+  <!-- WMS Phase 1: 자동 예외 콘솔 -->
+  <div id="page-exception-tasks" class="page"></div>
+
 
   </div>
 
@@ -3343,6 +3351,9 @@
   <script src="/js/feedback.js?v=20260420a"></script>
   <script src="/js/workspace.js?v=20260420a"></script>
   <script src="/js/staff-admin.js?v=20260502a"></script>
+  <!-- ── WMS Phase 1 ── -->
+  <script src="/js/skuMaster.js?v=20260508a"></script>
+  <script src="/js/exceptionFilter.js?v=20260508a"></script>
   <script>
   // ===== Inline cost editing for master products =====
   document.addEventListener('click', async (e) => {

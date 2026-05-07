@@ -98,6 +98,9 @@ function navigateTo(page) {
     case 'competitors':  if (window.pmcCompetitors) pmcCompetitors.load(); break;
     case 'prospects-list':  if (window.pmcProspectsList)   pmcProspectsList.load();   break;
     case 'prospects-active':if (window.pmcProspectsActive) pmcProspectsActive.load(); break;
+    // ── WMS Phase 1 ──
+    case 'sku-master':       if (window.pmcSkuMaster)        pmcSkuMaster.load();        break;
+    case 'exception-tasks':  if (window.pmcExceptionFilter)  pmcExceptionFilter.load();  break;
   }
 }
 
