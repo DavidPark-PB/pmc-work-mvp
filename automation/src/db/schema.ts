@@ -268,6 +268,109 @@ export const auditLogs = pgTable('audit_logs', {
 ]);
 
 // ============================================================
+// WMS Phase 1 — shared tables (메인 앱 supabase/migrations/038 가 권위)
+//
+// 주의:
+//   - 본 sub-app schema 는 typed access layer 일 뿐, schema source-of-truth 가 아니다.
+//   - shared table 의 컬럼 추가/변경/삭제는 반드시 메인 앱 migration 으로만 진행.
+//   - 본 정의가 메인 SQL 과 어긋나면 drift — drizzle-kit pull 결과와 diff 0 유지 필요.
+// ============================================================
+
+// ── sku_master — WMS 내부 SKU 의 단일 기준 ───────────────────
+export const skuMaster = pgTable('sku_master', {
+  id: serial('id').primaryKey(),
+  internalSku: varchar('internal_sku', { length: 100 }).notNull().unique(),
+  title: varchar('title', { length: 255 }).notNull(),
+  productType: varchar('product_type', { length: 50 }),
+  brand: varchar('brand', { length: 100 }),
+  category: varchar('category', { length: 100 }),
+  status: varchar('status', { length: 30 }).default('active').notNull(),     // 'active' | 'paused' | 'discontinued'
+  automationEnabled: boolean('automation_enabled').default(false).notNull(),
+  costKrw: numeric('cost_krw', { precision: 12, scale: 2 }),
+  weightGram: integer('weight_gram'),
+  hsCode: varchar('hs_code', { length: 50 }),
+  notes: text('notes'),
+  createdBy: integer('created_by'),                                          // users(id) — loose coupling, no FK
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => [
+  index('idx_sku_master_status').on(table.status),
+  index('idx_sku_master_automation_enabled').on(table.automationEnabled),
+]);
+
+// ── sku_listing_link — 내부 SKU ↔ 마켓 listing/option 매핑 ───
+export const skuListingLink = pgTable('sku_listing_link', {
+  id: serial('id').primaryKey(),
+  skuId: integer('sku_id').references(() => skuMaster.id, { onDelete: 'cascade' }).notNull(),
+  marketplace: varchar('marketplace', { length: 50 }).notNull(),  // 'ebay' | 'shopify' | 'naver' | 'shopee' | 'alibaba' | 'coupang' | 'qoo10'
+  listingId: varchar('listing_id', { length: 200 }).notNull(),
+  optionId: varchar('option_id', { length: 200 }),
+  marketplaceSku: varchar('marketplace_sku', { length: 200 }),
+  isPrimary: boolean('is_primary').default(false).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => [
+  index('idx_sku_listing_link_sku_id').on(table.skuId),
+  index('idx_sku_listing_link_marketplace').on(table.marketplace),
+  uniqueIndex('sku_listing_link_marketplace_listing_option_unique').on(
+    table.marketplace, table.listingId, table.optionId
+  ),
+]);
+
+// ── jobs — DB jobs polling 토대 (Phase 1: schema only, worker 없음) ─
+export const jobs = pgTable('jobs', {
+  id: serial('id').primaryKey(),
+  jobType: varchar('job_type', { length: 100 }).notNull(),
+  status: varchar('status', { length: 30 }).default('pending').notNull(), // 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  payload: jsonb('payload'),
+  priority: integer('priority').default(100).notNull(),
+  idempotencyKey: varchar('idempotency_key', { length: 200 }).unique(),
+  attempts: integer('attempts').default(0).notNull(),
+  maxAttempts: integer('max_attempts').default(3).notNull(),
+  availableAt: timestamp('available_at').defaultNow().notNull(),
+  lockedAt: timestamp('locked_at'),
+  lockedBy: varchar('locked_by', { length: 100 }),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
+  failedAt: timestamp('failed_at'),
+  errorMessage: text('error_message'),
+  createdBy: integer('created_by'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => [
+  index('idx_jobs_status_available').on(table.status, table.availableAt),
+  index('idx_jobs_locked_at').on(table.lockedAt),
+  index('idx_jobs_job_type').on(table.jobType),
+]);
+
+// ── automation_runs — 자동화 실행 이력 (Phase 1: schema foundation) ─
+//
+// related_task_id 는 메인 앱 team_tasks(id) 를 참조한다. team_tasks 는 본 sub-app schema 의
+// scope 밖 (메인 앱 전용) 이므로 typed FK 를 걸지 않고 plain integer 로 둔다. 메인 SQL 의
+// `references team_tasks(id)` 가 운영 DB 단의 무결성을 보장.
+export const automationRuns = pgTable('automation_runs', {
+  id: serial('id').primaryKey(),
+  jobId: integer('job_id').references(() => jobs.id, { onDelete: 'set null' }),
+  automationType: varchar('automation_type', { length: 100 }).notNull(),
+  triggeredBy: varchar('triggered_by', { length: 100 }),                 // 'cron' | 'user:{id}' | 'webhook' 등
+  status: varchar('status', { length: 30 }).default('started').notNull(), // 'started' | 'succeeded' | 'failed' | 'aborted'
+  inputSnapshot: jsonb('input_snapshot'),                                 // src/lib/redact.js 통과 후 저장
+  outputSnapshot: jsonb('output_snapshot'),                               // src/lib/redact.js 통과 후 저장
+  startedAt: timestamp('started_at').defaultNow().notNull(),
+  completedAt: timestamp('completed_at'),
+  errorCode: varchar('error_code', { length: 100 }),
+  errorMessage: text('error_message'),
+  retryCount: integer('retry_count').default(0).notNull(),
+  relatedSkuId: integer('related_sku_id').references(() => skuMaster.id),
+  relatedTaskId: integer('related_task_id'),                              // team_tasks(id) — sub-app schema 밖, FK 없음
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => [
+  index('idx_automation_runs_job_id').on(table.jobId),
+  index('idx_automation_runs_type_status').on(table.automationType, table.status),
+  index('idx_automation_runs_related_sku_id').on(table.relatedSkuId),
+]);
+
+// ============================================================
 // Relations
 // ============================================================
 export const crawlSourcesRelations = relations(crawlSources, ({ many }) => ({
@@ -291,4 +394,23 @@ export const productImagesRelations = relations(productImages, ({ one }) => ({
 
 export const platformListingsRelations = relations(platformListings, ({ one }) => ({
   product: one(products, { fields: [platformListings.productId], references: [products.id] }),
+}));
+
+// WMS Phase 1 relations
+export const skuMasterRelations = relations(skuMaster, ({ many }) => ({
+  links: many(skuListingLink),
+  automationRuns: many(automationRuns),
+}));
+
+export const skuListingLinkRelations = relations(skuListingLink, ({ one }) => ({
+  sku: one(skuMaster, { fields: [skuListingLink.skuId], references: [skuMaster.id] }),
+}));
+
+export const jobsRelations = relations(jobs, ({ many }) => ({
+  runs: many(automationRuns),
+}));
+
+export const automationRunsRelations = relations(automationRuns, ({ one }) => ({
+  job: one(jobs, { fields: [automationRuns.jobId], references: [jobs.id] }),
+  sku: one(skuMaster, { fields: [automationRuns.relatedSkuId], references: [skuMaster.id] }),
 }));
