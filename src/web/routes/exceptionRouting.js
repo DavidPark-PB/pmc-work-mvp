@@ -58,6 +58,17 @@ router.post('/mock', async (req, res) => {
       return res.status(400).json({ error: 'exceptionType 필수' });
     }
 
+    // created_by — mock trigger 는 admin 본인이 호출하므로 req.user.id 사용.
+    // team_tasks.created_by 가 NOT NULL 이라 null 전달 금지 (운영 admin 1명 이상 보장됨).
+    const createdBy = req.user?.id;
+    // 진단 로그 — user id 존재 여부만 (secret/token/key 등 민감값은 절대 출력 안 함).
+    // 실제 운영 코드 reload 여부 판별용. 옛 코드면 이 로그 없음.
+    console.log('[exceptionRouting] mock trigger — createdBy resolved:',
+      Number.isFinite(createdBy) ? `id=${createdBy} (admin)` : `MISSING (typeof=${typeof createdBy})`);
+    if (!Number.isFinite(createdBy)) {
+      return res.status(401).json({ error: '인증된 admin 사용자가 아닙니다 (req.user.id 부재)' });
+    }
+
     const result = await createExceptionTask({
       exceptionType: String(body.exceptionType).trim(),
       severity: body.severity,
@@ -70,6 +81,7 @@ router.post('/mock', async (req, res) => {
       relatedOrderId: body.relatedOrderId !== undefined ? Number(body.relatedOrderId) : null,
       scope: body.scope,
       assigneeId: body.assigneeId !== undefined ? Number(body.assigneeId) : null,
+      createdBy,
     });
 
     // 응답에는 task row 만 — context 는 이미 redact() 통과했으므로 그대로 반환해도 안전.

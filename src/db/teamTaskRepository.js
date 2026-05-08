@@ -323,8 +323,22 @@ async function updateTaskMeta(id, values) {
  * - specific:  recipient 1개 (assignee_id)
  * - all:       활성 staff 전원 recipient 생성
  * - operators: 활성 admin 전원 recipient 생성 (Phase 1 — 자동 예외 카드)
+ *
+ * Final guard: team_tasks.created_by 는 NOT NULL. 호출자가 누락하면 PostgreSQL 23502
+ * (not-null violation) 보다 먼저 명확한 에러로 차단해 디버깅 시간 단축.
  */
 async function createTask(taskValues) {
+  // ── Final guard: created_by 검증 ──
+  // tasks.js POST (사람 카드) 와 exceptionTask.js (자동 카드) 모두 createdBy 책임.
+  // null/undefined/non-finite 면 즉시 throw — DB 라운드트립 절약 + 명확한 호출자 책임.
+  if (taskValues == null || !Number.isFinite(taskValues.created_by)) {
+    const seenType = taskValues == null ? 'null/undefined' : typeof taskValues.created_by;
+    throw new Error(
+      `teamTaskRepository.createTask: created_by 누락 또는 유효하지 않음 ` +
+      `(seen=${seenType}). team_tasks.created_by 는 NOT NULL — 호출자가 admin user.id 를 반드시 전달해야 함.`
+    );
+  }
+
   const c = getClient();
   const { data: task, error: e1 } = await c
     .from('team_tasks')

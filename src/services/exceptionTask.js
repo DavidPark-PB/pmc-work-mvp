@@ -65,6 +65,9 @@ const VALID_SCOPES = new Set(['operators', 'specific', 'all']);
  * @param {number} [opts.relatedOrderId=null]
  * @param {string} [opts.scope]          override. 미지정 시 DEFAULT_ROUTING 또는 'operators'.
  * @param {number} [opts.assigneeId]     scope='specific' 일 때 직접 배정.
+ * @param {number} [opts.createdBy]      카드 생성 책임 user.id. mock trigger 는 req.user.id 전달.
+ *                                       미지정 시 활성 admin 첫 번째로 fallback (worker/cron 호출 대비).
+ *                                       활성 admin 도 없으면 throw — team_tasks.created_by 가 NOT NULL 이라 null insert 금지.
  *
  * @returns {Promise<{task: Object, deduped: boolean, recipientCount: number}>}
  */
@@ -103,10 +106,21 @@ async function createExceptionTask(opts) {
     ? (Number.isFinite(opts.assigneeId) ? opts.assigneeId : null)
     : null;
 
-  // 3) context redact (secret/PII 마스킹)
+  // 3) created_by 결정 — team_tasks.created_by 는 NOT NULL.
+  //    mock trigger 는 req.user.id 전달. worker/cron 호출 대비 fallback = 활성 admin 첫 번째.
+  let createdBy = Number.isFinite(opts.createdBy) ? Number(opts.createdBy) : null;
+  if (createdBy === null) {
+    const adminIds = await repo.getActiveAdminIds();
+    if (adminIds.length === 0) {
+      throw new Error('No active admin found — cannot resolve created_by for auto-generated exception task');
+    }
+    createdBy = adminIds[0];
+  }
+
+  // 4) context redact (secret/PII 마스킹)
   const safeContext = redact(opts.context || {});
 
-  // 4) team_tasks insert + recipient 자동 생성
+  // 5) team_tasks insert + recipient 자동 생성
   const taskValues = {
     title,
     assignee_id: assigneeId,
@@ -120,7 +134,7 @@ async function createExceptionTask(opts) {
     severity,
     related_sku_id: relatedSkuId,
     related_order_id: relatedOrderId,
-    created_by: null,  // system-generated
+    created_by: createdBy,  // mock = req.user.id, worker = active admin fallback
   };
 
   let task;
@@ -138,7 +152,7 @@ async function createExceptionTask(opts) {
     throw err;
   }
 
-  // 5) 알림 + SSE — 자동 카드 recipient 만 (operators 면 활성 admin)
+  // 6) 알림 + SSE — 자동 카드 recipient 만 (operators 면 활성 admin)
   let recipientIds = [];
   if (routedScope === 'operators') {
     recipientIds = await repo.getActiveAdminIds();
