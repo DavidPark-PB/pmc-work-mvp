@@ -88,6 +88,10 @@ app.use('/api/notifications', require('./src/web/routes/notifications'));
 // WMS Phase 1 — SKU master + 자동 예외 라우팅 (모두 admin 전용)
 app.use('/api/sku-master', require('./src/web/routes/skuMaster'));
 app.use('/api/exception-routing', require('./src/web/routes/exceptionRouting'));
+// WMS Phase 2 — Order import + matching (admin 전용)
+// 주의: /api/orders/mock-import 가 /api/orders/:id 보다 먼저 등록돼야 함 (path specificity).
+app.use('/api/orders/mock-import', require('./src/web/routes/mockOrderImport'));
+app.use('/api/orders', require('./src/web/routes/orders'));
 
 // ── 발주 관리 (Phase 2) ──
 app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));
