@@ -11,7 +11,7 @@ import {
   index,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 
 // ============================================================
 // Crawl Sources — 크롤링 대상 사이트
@@ -343,18 +343,28 @@ export const jobs = pgTable('jobs', {
   index('idx_jobs_job_type').on(table.jobType),
 ]);
 
-// ── automation_runs — 자동화 실행 이력 (Phase 1: schema foundation) ─
+// ── automation_runs — 자동화 실행 이력 (Phase 1 foundation + Phase 3 PR S 확장) ─
 //
 // related_task_id 는 메인 앱 team_tasks(id) 를 참조한다. team_tasks 는 본 sub-app schema 의
 // scope 밖 (메인 앱 전용) 이므로 typed FK 를 걸지 않고 plain integer 로 둔다. 메인 SQL 의
 // `references team_tasks(id)` 가 운영 DB 단의 무결성을 보장.
+//
+// Phase 3 PR S — Safety Foundation 확장 컬럼 (메인 앱 supabase/migrations/040 가 권위):
+//   - executed_by_user_id  → users(id) (sub-app schema 밖 — plain integer)
+//   - action_name, target_table, target_id    : query-able executor / target metadata
+//   - rollback_method, rollback_hint          : 되돌리기 가능 여부 + 방법 hint
+//   - rolled_back_at/by, rollback_run_id, rollback_reason : 되돌리기 실행 기록
+//
+// rollback_run_id 는 automation_runs(id) 셀프 FK. 단방향 포인터 정책:
+//   원본 row → 자신을 되돌린 rollback row id.   rollback row → NULL.
+//   역방향은 rollback row 의 input_snapshot.original_run_id 로.
 export const automationRuns = pgTable('automation_runs', {
   id: serial('id').primaryKey(),
   jobId: integer('job_id').references(() => jobs.id, { onDelete: 'set null' }),
   automationType: varchar('automation_type', { length: 100 }).notNull(),
-  triggeredBy: varchar('triggered_by', { length: 100 }),                 // 'cron' | 'user:{id}' | 'webhook' 등
-  status: varchar('status', { length: 30 }).default('started').notNull(), // 'started' | 'succeeded' | 'failed' | 'aborted'
-  inputSnapshot: jsonb('input_snapshot'),                                 // src/lib/redact.js 통과 후 저장
+  triggeredBy: varchar('triggered_by', { length: 100 }),                 // 'cron' | 'user:{id}' | 'legacy_admin' | 'webhook' 등
+  status: varchar('status', { length: 30 }).default('started').notNull(), // pending | started | succeeded | failed | aborted | cancelled | rollback_required | rolled_back
+  inputSnapshot: jsonb('input_snapshot'),                                 // src/lib/redact.js 통과 후 저장 (PR S: rollback row 는 { original_run_id, original_after })
   outputSnapshot: jsonb('output_snapshot'),                               // src/lib/redact.js 통과 후 저장
   startedAt: timestamp('started_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at'),
@@ -364,10 +374,30 @@ export const automationRuns = pgTable('automation_runs', {
   relatedSkuId: integer('related_sku_id').references(() => skuMaster.id),
   relatedTaskId: integer('related_task_id'),                              // team_tasks(id) — sub-app schema 밖, FK 없음
   createdAt: timestamp('created_at').defaultNow().notNull(),
+
+  // Phase 3 PR S — Safety Foundation
+  executedByUserId: integer('executed_by_user_id'),                       // users(id) — sub-app schema 밖, FK 없음 (plain int)
+  actionName: varchar('action_name', { length: 100 }),                    // 'mock_order_import' | 'price_change' | 'rollback' 등
+  targetTable: varchar('target_table', { length: 100 }),                  // ('wms_orders', N) 형식의 target row 포인터
+  targetId: integer('target_id'),
+  rollbackMethod: varchar('rollback_method', { length: 20 }),             // 'auto' | 'manual' | 'irreversible' | null
+  rollbackHint: text('rollback_hint'),                                    // 'manual' 일 때 admin 이 참고할 SQL/절차
+  rolledBackAt: timestamp('rolled_back_at'),
+  rolledBackBy: integer('rolled_back_by'),                                // users(id) — sub-app schema 밖, FK 없음
+  rollbackRunId: integer('rollback_run_id'),                              // automation_runs(id) 셀프 FK — sub-app 에선 plain int (drizzle 셀프 참조 회피)
+  rollbackReason: text('rollback_reason'),
 }, (table) => [
   index('idx_automation_runs_job_id').on(table.jobId),
   index('idx_automation_runs_type_status').on(table.automationType, table.status),
   index('idx_automation_runs_related_sku_id').on(table.relatedSkuId),
+  // Phase 3 PR S 인덱스
+  index('idx_automation_runs_executed_by').on(table.executedByUserId),
+  index('idx_automation_runs_action_status').on(table.actionName, table.status),
+  index('idx_automation_runs_target').on(table.targetTable, table.targetId),
+  // Partial index — 040 SQL 의 WHERE status = 'rollback_required' 와 정합
+  index('idx_automation_runs_rollback_required')
+    .on(table.actionName)
+    .where(sql`status = 'rollback_required'`),
 ]);
 
 // ============================================================
