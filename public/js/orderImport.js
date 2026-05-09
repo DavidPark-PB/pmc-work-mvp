@@ -100,10 +100,8 @@
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
           <strong style="color:#fff;font-size:14px;">📥 Mock JSON 입력</strong>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <label style="color:#aaa;font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;">
-              <input type="checkbox" id="oi-unique" style="margin:0;"> external_order_id 에 timestamp suffix
-            </label>
-            <button id="oi-fill" type="button" style="padding:6px 12px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">예시 JSON 채우기</button>
+            <button id="oi-fill" type="button" title="external_order_id = EBAY-2026-001 (고정 — 중복 import 테스트용)" style="padding:6px 12px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">예시 JSON 채우기</button>
+            <button id="oi-fill-unique" type="button" title="external_order_id = EBAY-TEST-{YYYYMMDD-HHmmss} (매번 신규 — KST 로컬 시간)" style="padding:6px 12px;background:#1565c0;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">예시 JSON 채우기 (Unique)</button>
             <button id="oi-clear" type="button" style="padding:6px 12px;background:#37474f;border:none;border-radius:4px;color:#aaa;cursor:pointer;font-size:12px;">비우기</button>
           </div>
         </div>
@@ -117,9 +115,14 @@
       </div>
     `;
 
+    // 버튼 A — 항상 EBAY-2026-001 고정 (중복 import 테스트용)
     document.getElementById('oi-fill').addEventListener('click', () => {
-      const unique = document.getElementById('oi-unique').checked;
-      document.getElementById('oi-json').value = buildExampleJson({ uniqueOrderId: unique });
+      document.getElementById('oi-json').value = buildExampleJson({ uniqueOrderId: false });
+      document.getElementById('oi-result').textContent = '';
+    });
+    // 버튼 B — 누를 때마다 새 EBAY-TEST-{YYYYMMDD-HHmmss} (신규 주문 테스트용)
+    document.getElementById('oi-fill-unique').addEventListener('click', () => {
+      document.getElementById('oi-json').value = buildExampleJson({ uniqueOrderId: true });
       document.getElementById('oi-result').textContent = '';
     });
     document.getElementById('oi-clear').addEventListener('click', () => {
