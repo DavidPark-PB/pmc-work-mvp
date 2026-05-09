@@ -101,6 +101,11 @@ function navigateTo(page) {
     // ── WMS Phase 1 ──
     case 'sku-master':       if (window.pmcSkuMaster)        pmcSkuMaster.load();        break;
     case 'exception-tasks':  if (window.pmcExceptionFilter)  pmcExceptionFilter.load();  break;
+    // ── WMS Phase 2 ──
+    case 'wms-orders':
+      if (window.pmcOrderImport) pmcOrderImport.init();
+      if (window.pmcOrderList)   pmcOrderList.init();
+      break;
   }
 }
 

@@ -595,6 +595,8 @@
     <!-- WMS Phase 1 — admin 전용 -->
     <div class="menu-item ops-menu" data-page="sku-master" data-admin-only style="color:#81d4fa;font-weight:600">📦 SKU 마스터</div>
     <div class="menu-item ops-menu" data-page="exception-tasks" data-admin-only style="color:#81d4fa;font-weight:600">⚠️ 자동 예외</div>
+    <!-- WMS Phase 2 — admin 전용 (mock import + 목록 + 상세 통합) -->
+    <div class="menu-item ops-menu" data-page="wms-orders" data-admin-only style="color:#81d4fa;font-weight:600">📦 WMS 주문</div>
     <div class="menu-title">시스템</div>
     <div class="menu-item" data-page="sync">동기화</div>
     <div class="menu-item" data-page="settings" style="color:#ff9800;font-weight:600">설정</div>
@@ -3292,6 +3294,12 @@
   <div id="page-sku-master" class="page"></div>
   <!-- WMS Phase 1: 자동 예외 콘솔 -->
   <div id="page-exception-tasks" class="page"></div>
+  <!-- WMS Phase 2: 주문 import + 목록 + 상세 통합 -->
+  <!-- 두 sub-section 은 orderImport.js / orderList.js 가 각각 채움 -->
+  <div id="page-wms-orders" class="page">
+    <div id="wms-import-section"></div>
+    <div id="wms-list-section"></div>
+  </div>
 
 
   </div>
@@ -3354,6 +3362,9 @@
   <!-- ── WMS Phase 1 ── -->
   <script src="/js/skuMaster.js?v=20260508a"></script>
   <script src="/js/exceptionFilter.js?v=20260508a"></script>
+  <!-- ── WMS Phase 2 ── -->
+  <script src="/js/orderImport.js?v=20260509a"></script>
+  <script src="/js/orderList.js?v=20260509a"></script>
   <script>
   // ===== Inline cost editing for master products =====
   document.addEventListener('click', async (e) => {
