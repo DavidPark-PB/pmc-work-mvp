@@ -7,6 +7,9 @@
  *   - 목록 컬럼: id / marketplace / external_order_id / order_status / import_source / imported_by / created_at
  *   - 상세 패널: order info + stats + lines table + 자동 예외 콘솔 안내
  *
+ * 권한: 로그인한 모든 사용자 (admin / staff). admin 전용 아님.
+ *   - WMS 주문은 staff 도 조회 가능. 권한 차단보다 실행자/조회자 추적 우선.
+ *
  * 외부 노출:
  *   window.pmcOrderList = { init, refresh, openDetail }
  *     - init():            화면 첫 진입 시 (또는 메뉴 재진입 시)
@@ -59,8 +62,8 @@
     if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r => r.json()).catch(() => ({}))).user;
     const root = document.getElementById('wms-list-section');
     if (!root) return;
-    if (!user || !user.isAdmin) {
-      root.innerHTML = '<div style="padding:20px;color:#888;">관리자 전용 영역입니다.</div>';
+    if (!user || !user.id) {
+      root.innerHTML = '<div style="padding:20px;color:#888;">로그인이 필요합니다.</div>';
       return;
     }
     if (root.dataset.initialized !== '1') {

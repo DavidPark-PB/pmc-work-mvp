@@ -1,9 +1,12 @@
 /**
- * src/web/routes/orders.js — admin only WMS 주문 조회 (Phase 2 PR 2)
+ * src/web/routes/orders.js — WMS 주문 조회 (Phase 2 PR 2)
  *
  * 라우트:
  *   GET /api/orders            wms_orders 목록 (filter + pagination)
  *   GET /api/orders/:id        wms_orders 단건 + lines 포함
+ *
+ * 권한: 로그인한 모든 사용자 (admin / staff). admin 전용 아님.
+ *   - WMS 주문 조회는 staff 도 필요 — 권한 차단보다 실행자/조회자 추적을 우선한다.
  *
  * 중요:
  *   - 모든 from() 인자는 wms_orders / wms_order_lines 만.
@@ -12,12 +15,12 @@
 'use strict';
 
 const express = require('express');
-const { requireAdmin } = require('../../middleware/auth');
+const { requireAuth } = require('../../middleware/auth');
 const wmsRepo = require('../../db/wmsOrderRepository');
 
 const router = express.Router();
 
-router.use(requireAdmin);
+router.use(requireAuth);
 
 // GET /api/orders?marketplace=ebay&status=paid&limit=100&offset=0
 router.get('/', async (req, res) => {

@@ -9,6 +9,10 @@
  *   - import 성공 후 orderList refresh + 신규 주문 자동 선택
  *   - 409 응답의 existing_order_id 가 있으면 해당 주문 상세 열기
  *
+ * 권한: 로그인한 모든 사용자 (admin / staff). admin 전용 아님.
+ *   - 권한 차단보다 실행자 기록 우선 — backend 가 wms_orders.imported_by = req.user.id 로 저장.
+ *   - 후속 Safety Foundation PR 에서 변경 전/후 값 + 성공/실패 + 되돌리기 보강 예정.
+ *
  * 정책:
  *   - DB target = wms_orders / wms_order_lines (backend 가 보장. UI 는 API 만 호출)
  *   - 기존 public.orders 일체 미참조
@@ -80,8 +84,8 @@
     if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r => r.json()).catch(() => ({}))).user;
     const root = document.getElementById('wms-import-section');
     if (!root) return;
-    if (!user || !user.isAdmin) {
-      root.innerHTML = '<div style="padding:20px;color:#888;">관리자 전용 영역입니다.</div>';
+    if (!user || !user.id) {
+      root.innerHTML = '<div style="padding:20px;color:#888;">로그인이 필요합니다.</div>';
       return;
     }
     if (root.dataset.initialized === '1') return;  // 중복 init 방지 (ops-menu 클릭 반복)

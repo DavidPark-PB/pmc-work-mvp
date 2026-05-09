@@ -14,11 +14,43 @@
 - 매칭 실패 line 의 SKU_MATCH_FAILED 자동 예외 카드 생성
 - 중복 주문 방지 (HTTP 409 + DUPLICATE_ORDER + existing_order_id)
 - PII / secret 마스킹 (raw_payload / buyer_contact / 자동 카드 context)
-- staff 회귀 보호 (메뉴 미노출 + 직접 URL 차단 + API 403)
+- staff 접근 가능 회귀 (메뉴 노출 + 직접 URL 통과 + API 200/201) — **권한 차단 → 실행자 추적으로 정책 전환** (§11 참조)
 - **기존 운영 흐름 보호** — public.orders / eBay sync / 037·038·039 migration 무영향
 - **040 migration 없이 039 schema 만으로** Phase 2 backend / matching / 자동 카드가 동작
 
 본 검증 통과 = Phase 2 완료 선언 + Phase 3 진입 가능.
+
+---
+
+## 1-A. 권한 정책 (2026-05-10 변경 — 본 PR 기준)
+
+본 PR 기준의 새 정책. 기존 `admin only` 차단 → `staff 도 사용 가능 + 실행자/조회자 추적` 으로 전환.
+
+### 원칙
+
+1. **권한 차단보다 실행자 기록 우선**. WMS 주문 / 자동 예외 / mock import / 향후 자동화 / 가격변경 / 배송접수 / 라벨생성 모두 staff 도 사용할 수 있어야 한다.
+2. 모든 변경 액션은 `executed_by = req.user.id` 로 기록한다 (현 PR 의 `wms_orders.imported_by` 가 그 첫 사례).
+3. **읽기 차단 ≠ 보안**. 작은 팀에서 staff 의 정상 업무 흐름을 막는 것은 비용이 크고 보안 가치가 거의 없다.
+4. 보안은 **차단** 이 아니라 **추적 + 되돌리기 가능성** 으로 확보 — 후속 Safety Foundation PR 에서 보강 (변경 전/후 값 + 성공/실패 + 되돌리기 / 취소 프로세스 + 감사 로그).
+5. legacy 공유 비번 계정 (`userId=0`) 의 쓰기 차단 (`blockLegacyWrites`) 은 **유지** — 실 사용자 id 가 없어 추적이 불가능하기 때문이다 (정책 충돌 아님).
+
+### 본 PR 적용 범위
+
+| 영역 | 변경 | 비고 |
+|---|---|---|
+| `📦 WMS 주문` 메뉴 (사이드바) | `data-admin-only` 제거 → staff 노출 | `index.html:599` |
+| GET `/api/orders` | `requireAdmin` → `requireAuth` | `routes/orders.js` |
+| GET `/api/orders/:id` | `requireAdmin` → `requireAuth` | `routes/orders.js` |
+| POST `/api/orders/mock-import` | `requireAdmin` → `requireAuth` | `routes/mockOrderImport.js`, `imported_by = req.user.id` 그대로 |
+| `orderImport.js` UI 가드 | `user.isAdmin` → `user.id` (로그인만) | `public/js/orderImport.js` |
+| `orderList.js` UI 가드 | `user.isAdmin` → `user.id` (로그인만) | `public/js/orderList.js` |
+
+### 본 PR 에서 다루지 않는 것 (후속 PR — Safety Foundation)
+
+- 자동 예외 카드 (Phase 1 의 `📦 SKU 마스터` / `⚠️ 자동 예외`) 의 staff 노출
+- 변경 전/후 값을 기록하는 `automation_runs` 표준화
+- 성공/실패 status + 되돌리기/취소 프로세스
+- 가격변경/배송접수/라벨생성 등 향후 자동화 액션 — 본 PR 범위 밖. 본 PR 에서 새로운 액션 기능 추가 금지.
 
 ---
 
@@ -213,7 +245,7 @@ where marketplace = 'ebay'
 ### 절차
 
 1. https://pmc-work-mvp-production.up.railway.app 접속
-2. **관리자 계정** 로그인
+2. **로그인** (admin 또는 staff — 정책 §1-A 에 따라 둘 다 접근 가능)
 3. 사이드바 운영 관리 그룹에서 `📦 WMS 주문` 메뉴 확인
 4. 클릭 → wms-orders 화면 진입
 
@@ -232,7 +264,7 @@ where marketplace = 'ebay'
 
 ### 실패 시 점검
 
-- 메뉴 미노출 → `data-admin-only` 토글 / req.user.isAdmin 확인
+- 메뉴 미노출 → `index.html:599` 의 `data-admin-only` 잔존 여부 (제거되어야 함). 비로그인 상태인지도 확인
 - 화면 빈 채로 진입 → `dashboard.js:105` case 'wms-orders' 분기 / `pmcOrderImport.init` / `pmcOrderList.init` 함수 등록 확인
 - 버튼 부재 → orderImport.js patch (PR 3 patch) 가 deploy 됐는지 commit 확인
 
@@ -274,7 +306,8 @@ where marketplace = 'ebay'
 
 | 증상 | 확인 |
 |---|---|
-| 401/403 | admin 로그인 + `requireAdmin` 미들웨어 |
+| 401 | 로그인 안 됨 (세션 쿠키 없음 / 만료) — 재로그인 후 재시도. `requireAuth` 미들웨어가 적용됐는지 |
+| 403 | 정책 §1-A 적용 후에는 발생하면 안 됨 — `routes/orders.js` / `routes/mockOrderImport.js` 가 `requireAdmin` 으로 잔존하는지 |
 | 400 validation | textarea JSON 손상 / `marketplace` enum 부적합 / lines 비어있음 |
 | 500 | server log 의 `[mockOrderImport] unexpected error` |
 | matched_count = 0 (예상 1) | 사전 조건 §4-5 의 sku_listing_link 가 실제로 등록됐는지 |
@@ -365,7 +398,7 @@ where related_order_id = <시나리오 B 의 wms_orders.id>
 | `assignee_scope` | `operators` |
 | `related_order_id` | 시나리오 B 의 `wms_orders.id` |
 | `dedupe_key` | `sku_match_failed:ebay:<시나리오 B external_order_id>:TXN-B` |
-| `created_by` | mock 실행한 admin user.id (NOT NULL) |
+| `created_by` | mock 실행한 사용자 id (admin / staff 모두 가능, NOT NULL) — 정책 §1-A |
 | `context` | JSON, 아래 필드 포함 |
 
 ### context 필수 포함 필드
@@ -559,56 +592,67 @@ where related_order_id = <시나리오 B 또는 E 의 wms_orders.id>
 
 ---
 
-## 11. 시나리오 G — staff 화면 보호 회귀
+## 11. 시나리오 G — staff 접근 회귀 (정책 변경 — 차단 → 추적)
+
+> **§1-A 정책에 따라 본 시나리오는 "staff 차단 검증" 에서 "staff 정상 사용 + 실행자 기록 검증" 으로 변경됨.**
 
 ### 절차
 
 1. **로그아웃** (admin 세션 종료)
-2. **staff 계정** 로그인 (`role='staff'`)
-3. 사이드바 확인 — `📦 WMS 주문` 메뉴가 **보이지 않아야 함**
-4. URL 직접 진입 시도: `https://pmc-work-mvp-production.up.railway.app/?page=wms-orders`
-5. (DevTools Console) API 직접 호출 시도:
+2. **staff 계정** 로그인 (`role='staff'`, `is_active=true`)
+3. 사이드바 확인 — `📦 WMS 주문` 메뉴가 **보여야 함**
+4. `📦 WMS 주문` 클릭 → import 패널 + 목록/상세 패널 정상 빌드
+5. 상단 import 패널: `예시 JSON 채우기 (Unique)` → `Import 실행` 클릭
+6. (DevTools Console) API 직접 호출:
 
 ```javascript
 // (1) 목록 GET
 fetch('/api/orders', { credentials: 'include' })
   .then(r => r.status).then(console.log);
 
-// (2) 상세 GET
-fetch('/api/orders/1', { credentials: 'include' })
+// (2) 상세 GET (위에서 import 한 order_id 로 교체)
+fetch('/api/orders/<NEW_ORDER_ID>', { credentials: 'include' })
   .then(r => r.status).then(console.log);
 
-// (3) mock import POST
-fetch('/api/orders/mock-import', {
-  method: 'POST',
-  credentials: 'include',
-  headers: { 'Content-Type': 'application/json' },
-  body: '{}'
-}).then(r => r.status).then(console.log);
+// (3) mock import POST (스킵 — 위 5번에서 이미 실행)
 ```
 
-6. staff 의 일반 업무 화면 (`/?page=tasks`) 진입 — 자동 예외 카드 노출 여부 확인
+7. (Supabase Studio) 실행자 기록 확인:
+
+```sql
+select id, marketplace, external_order_id, imported_by, import_source, created_at
+from wms_orders
+order by id desc
+limit 1;
+```
 
 ### 기대
 
-- [ ] 사이드바에 `📦 WMS 주문` 메뉴 **미노출** (`data-admin-only` 토글)
-- [ ] `/?page=wms-orders` 직접 진입 시 빈 화면 또는 admin only 안내 또는 redirect (page key 자체는 라우팅되지만 init 시 admin 가드로 차단)
-- [ ] (1) GET /api/orders → **403**
-- [ ] (2) GET /api/orders/:id → **403**
-- [ ] (3) POST /api/orders/mock-import → **403**
-- [ ] staff 의 일반 업무 화면에 SKU_MATCH_FAILED auto_generated 카드 **0 건** (Phase 1 의 `auto_generated=false` filter 정합)
-- [ ] `assignee_scope='operators'` 인 자동 카드는 staff UI 에 절대 표시 안 됨
+- [ ] 사이드바에 `📦 WMS 주문` 메뉴 **노출** (`data-admin-only` 부재)
+- [ ] `/?page=wms-orders` 진입 시 화면 정상 빌드 (`로그인이 필요합니다` 메시지 없음)
+- [ ] import 5번 — `✓ Import 성공 — order #N` 정상 표시 (admin 과 동일)
+- [ ] (1) GET /api/orders → **200**
+- [ ] (2) GET /api/orders/:id → **200**
+- [ ] (3) POST /api/orders/mock-import → **201** (위 5번에서 이미 검증)
+- [ ] `wms_orders.imported_by` = 로그인한 staff 의 user id (admin 의 id 가 아님!) — 실행자 기록 작동
+- [ ] `wms_orders.import_source` = `'mock'`
 
 ### 실패 시 점검
 
 | 증상 | 확인 |
 |---|---|
-| 메뉴 보임 | `index.html:599` 의 `data-admin-only` 속성 / dashboard.js:104-107 의 admin 토글 |
-| 직접 URL 진입 시 화면 빌드됨 | orderImport.init / orderList.init 의 admin 가드 |
-| API 401 (admin 가드 부재) → 403 안 됨 | mockOrderImport.js / orders.js 의 `router.use(requireAdmin)` |
-| staff 업무 화면에 자동 카드 노출 | Phase 1 의 teamTaskRepository.listTasks staff path 정합 점검 |
+| 메뉴 안 보임 | `index.html:599` 에서 `data-admin-only` 가 잔존하는지 (제거되어야 함) |
+| `로그인이 필요합니다` 메시지 | `orderImport.init` / `orderList.init` 의 user 가드가 여전히 `isAdmin` 체크하는지 |
+| API 403 | `mockOrderImport.js` / `orders.js` 의 `router.use()` 가 `requireAdmin` 인지 (`requireAuth` 여야 함) |
+| `imported_by` = null | `mockOrderImport.js` 의 `req.user?.id` 추출 실패 — 세션 / authGuard 점검 |
+| `imported_by` = 0 (legacy) | staff 가 본인 계정 으로 로그인했는지 — userId=0 은 legacy 공유 비번. blockLegacyWrites 와 정책 정합성 검토 |
 
 **§11 통과 여부**: ☐ 통과 / ☐ 실패
+
+### 본 시나리오에서 다루지 않는 것
+
+- staff 의 자동 예외 카드 (`⚠️ 자동 예외`) 노출 여부 — Phase 1 의 `auto_generated=false` 필터 + `assignee_scope='operators'` 라우팅이 staff UI 에서 어떻게 동작해야 하는지는 후속 Safety Foundation PR 에서 별도 결정.
+- 변경 전/후 값 기록 / 되돌리기 / 취소 프로세스 — 후속 Safety Foundation PR.
 
 ---
 
@@ -718,13 +762,13 @@ test ! -f supabase/migrations/040_phase2_wms_order_matching_fields.sql && echo "
 
 | # | 항목 | 통과 기준 | 결과 |
 |---|---|---|---|
-| 1 | WMS 주문 메뉴 표시 (admin) | 시나리오 A 통과 | ☐ |
+| 1 | WMS 주문 메뉴 표시 (admin / staff 둘 다) | 시나리오 A 통과 | ☐ |
 | 2 | Unique import 성공 | 시나리오 B HTTP 201 + totals 일치 | ☐ |
 | 3 | matched / failed 라인 매칭 정확 | 시나리오 C TXN-A=matched_link/high, TXN-B=failed/no_match | ☐ |
 | 4 | 자동 카드 1개 생성 + dedupe_key 정확 | 시나리오 D 카드 1개 (TXN-B 만), TXN-A 카드 0 | ☐ |
 | 5 | 중복 import 409 + DB 중복 0 | 시나리오 E (1차 201, 2차 409, DB count = 1) | ☐ |
 | 6 | PII / token 마스킹 | 시나리오 F SQL leaked_token_count = 0, 카드 context 누설 0 | ☐ |
-| 7 | staff 메뉴 미노출 + API 403 | 시나리오 G (메뉴 X, GET/POST 모두 403) | ☐ |
+| 7 | staff 메뉴 노출 + API 200/201 + imported_by = staff id | 시나리오 G (메뉴 O, GET 200, POST 201, imported_by 정합) | ☐ |
 | 8 | 기존 public.orders 영향 0 | 시나리오 H (참조 0건, legacy_count 변화 0) | ☐ |
 | 9 | git log 에 PR 3 + patch 커밋 push 됨 | §3 통과 (commit 메시지 확인 + Railway active 일치) | ☐ |
 | 10 | 037/038/039 무변경 + **040 미생성** + api.js 무변경 + automation schema 무변경 | §3 / §12 git diff 통과 + 040 부재 | ☐ |
@@ -789,7 +833,7 @@ docs/phase-2-e2e-evidence/
 ├── scenario-d-card.sql.txt
 ├── scenario-e-409.png
 ├── scenario-f-pii.sql.txt
-├── scenario-g-staff-403.png
+├── scenario-g-staff-access.png    # staff 가 메뉴 접근 + import 성공 + imported_by 정합
 └── scenario-h-legacy-isolation.sql.txt
 ```
 
@@ -803,10 +847,11 @@ docs/phase-2-e2e-evidence/
 
 | 후보 | 설명 | 의존성 |
 |---|---|---|
+| **Safety Foundation (정책 §1-A 후속)** | 모든 자동화/액션 라우트의 표준화: `executed_by` + 변경 전/후 값 + 성공/실패 status + 되돌리기/취소 + 감사 로그. 가격변경/배송접수/라벨생성 등 staff 가 쓸 액션의 전제 조건 | `automation_runs` 표준화 + 신규 `action_audit` 또는 동등 컬럼군 |
 | CSV import | 마켓별 export 형식 mapping (eBay / Shopee / Naver 등) | PR 2 의 orderImporter 확장 |
 | 도매처 가격 / 품절 감시 | 외부 sourcing site 의 SKU 가격·재고 모니터링 → 자동 카드 | 신규 service + cron |
 | 마진 계산 | wms_orders.total_amount + sku_master 원가 / 배송비로 마진 추출 | sku_master 에 cost 컬럼 추가 검토 |
-| SKU 매칭 보정 UI | failed line 을 admin 이 수동으로 sku_master 와 link → 자동 카드 close | 신규 UI + skuMatcher 의 manual link 분기 |
+| SKU 매칭 보정 UI | failed line 을 사용자 (admin / staff) 가 수동으로 sku_master 와 link → 자동 카드 close + executed_by 기록 | 신규 UI + skuMatcher 의 manual link 분기 |
 | 자동 예외 처리 완료 플로우 | operators 가 카드 close 시 dedupe_key cool-down 처리 | Phase 1 의 team_tasks 흐름 확장 |
 | sub-app 자동화에서 wms_orders 활용 | PR 1-B Drizzle sync 가 완료된 sub-app worker 가 wms 데이터 직접 read | automation/src/db/schema.ts (이미 sync 완료) 활용 |
 

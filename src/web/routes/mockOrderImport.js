@@ -1,11 +1,15 @@
 /**
- * src/web/routes/mockOrderImport.js — admin only mock order import (Phase 2 PR 2)
+ * src/web/routes/mockOrderImport.js — mock order import (Phase 2 PR 2)
  *
  * 라우트:
  *   POST /api/orders/mock-import
  *
+ * 권한: 로그인한 모든 사용자 (admin / staff). admin 전용 아님.
+ *   - 권한 차단보다 실행자 기록을 우선한다 — wms_orders.imported_by = req.user.id 로 저장.
+ *   - 후속 Safety Foundation PR 에서 변경 전/후 값 + 성공/실패 + 되돌리기 기록 보강 예정.
+ *
  * 동작:
- *   - admin 인증 (requireAdmin)
+ *   - 로그인 인증 (requireAuth)
  *   - req.user.id 를 createdBy 로 orderImporter.importMockOrder 호출
  *   - validation error → 400
  *   - duplicate order → 409
@@ -16,20 +20,20 @@
 'use strict';
 
 const express = require('express');
-const { requireAdmin } = require('../../middleware/auth');
+const { requireAuth } = require('../../middleware/auth');
 const orderImporter = require('../../services/orderImporter');
 const wmsRepo = require('../../db/wmsOrderRepository');
 
 const router = express.Router();
 
-router.use(requireAdmin);
+router.use(requireAuth);
 
 // POST /api/orders/mock-import
 router.post('/', async (req, res) => {
   try {
     const createdBy = req.user?.id;
     if (!Number.isFinite(createdBy)) {
-      return res.status(401).json({ error: '인증된 admin 사용자가 아닙니다 (req.user.id 부재)' });
+      return res.status(401).json({ error: '인증된 사용자가 아닙니다 (req.user.id 부재)' });
     }
 
     const result = await orderImporter.importMockOrder(req.body || {}, { createdBy });
