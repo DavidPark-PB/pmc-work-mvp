@@ -114,6 +114,10 @@ function navigateTo(page) {
     case 'ops-briefing':
       if (window.pmcOpsBriefing) pmcOpsBriefing.init();
       break;
+    // ── PR R-Inbox UI — Opportunity Inbox (R0 후속) ──
+    case 'opportunity-inbox':
+      if (window.pmcOpportunityInbox) pmcOpportunityInbox.init();
+      break;
   }
 }
 
