@@ -317,8 +317,8 @@ router.patch('/:id/approve', requireAdmin, async (req, res) => {
       targetTable:      'purchase_requests',
       targetId:         id,
       beforeSnapshot:   prSnapshot(existing),
-      rollbackMethod:   'manual',
-      rollbackHint:     'input_snapshot 을 참고해 purchase_requests row 를 수동 복구하세요.',
+      rollbackMethod:   'auto',
+      rollbackHint:     '자동 되돌리기: 상태 변경 전 snapshot 의 허용 필드로 purchase_requests row 를 복구합니다. 실제 외부 주문/결제는 별도 확인하세요.',
       status: 'pending',
     });
   } catch (auditErr) {
@@ -387,8 +387,8 @@ router.patch('/:id/reject', requireAdmin, async (req, res) => {
       targetTable:      'purchase_requests',
       targetId:         id,
       beforeSnapshot:   prSnapshot(existing),
-      rollbackMethod:   'manual',
-      rollbackHint:     'input_snapshot 을 참고해 purchase_requests row 를 수동 복구하세요.',
+      rollbackMethod:   'auto',
+      rollbackHint:     '자동 되돌리기: 상태 변경 전 snapshot 의 허용 필드로 purchase_requests row 를 복구합니다. 실제 외부 주문/결제는 별도 확인하세요.',
       status: 'pending',
     });
   } catch (auditErr) {
@@ -457,8 +457,8 @@ router.patch('/:id/order', async (req, res) => {
       targetTable:      'purchase_requests',
       targetId:         id,
       beforeSnapshot:   prSnapshot(existing),
-      rollbackMethod:   'manual',
-      rollbackHint:     'input_snapshot 을 참고해 purchase_requests row 를 수동 복구하세요.',
+      rollbackMethod:   'auto',
+      rollbackHint:     '자동 되돌리기: 상태 변경 전 snapshot 의 허용 필드로 purchase_requests row 를 복구합니다. 실제 외부 주문/결제는 별도 확인하세요.',
       status: 'pending',
     });
   } catch (auditErr) {

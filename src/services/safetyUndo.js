@@ -18,7 +18,10 @@
  *                 internal_sku / id / created_by / created_at 등 시스템 필드 보호)
  *   - PR U6 4차 = sku_master_soft_delete 추가 (status flip 만 하는 update 라
  *                 PR U5 의 undoSkuMasterUpdate 핸들러 재사용)
- *   - 다른 action 추가는 PR U7+ 에서 점진 도입
+ *   - PR U7 5차 = purchase_request_approve / reject / ordered 3개 동시 추가
+ *                 (모두 status / decision / ordered_* 필드만 변경 — 단일 row patch.
+ *                  status 변경 알림 (notify/SSE) 은 비가역 — 응답 비고만 표시)
+ *   - 다른 action 추가는 PR U8+ 에서 점진 도입
  *   - 로그 룰: actionName / runId / executedBy / message 만. snapshot/payload/secret 출력 금지
  *
  * 무수정 약속:
@@ -36,13 +39,17 @@ const supabaseClient = require('../db/supabaseClient');
 const safetyExec = require('./safetyExec');
 
 // PR U2 1차 (sku_listing_link_create) + PR U4 2차 (sku_listing_link_delete) +
-// PR U5 3차 (sku_master_update) + PR U6 4차 (sku_master_soft_delete).
-// 모두 단일 row 만 다루며 FK cascade 없음. 추가 action 은 PR U7+ 검토.
+// PR U5 3차 (sku_master_update) + PR U6 4차 (sku_master_soft_delete) +
+// PR U7 5차 (purchase_request_approve / reject / ordered).
+// 모두 단일 row 만 다루며 FK cascade 없음. 추가 action 은 PR U8+ 검토.
 const AUTO_ROLLBACK_ACTIONS = new Set([
   'sku_listing_link_create',
   'sku_listing_link_delete',
   'sku_master_update',
   'sku_master_soft_delete',
+  'purchase_request_approve',
+  'purchase_request_reject',
+  'purchase_request_ordered',
 ]);
 
 const TABLE = 'automation_runs';
@@ -108,6 +115,12 @@ async function rollbackRun({ runId, executedBy, reason = null } = {}) {
     undone = await undoSkuMasterUpdate(original, supabase);
   } else if (original.action_name === 'sku_master_soft_delete') {
     undone = await undoSkuMasterSoftDelete(original, supabase);
+  } else if (
+    original.action_name === 'purchase_request_approve' ||
+    original.action_name === 'purchase_request_reject'  ||
+    original.action_name === 'purchase_request_ordered'
+  ) {
+    undone = await undoPurchaseRequestStatusChange(original, supabase);
   } else {
     // 위 allowlist 체크에서 걸리므로 도달 불가지만 방어
     throw new UndoError('safetyUndo/handler_missing', `no handler for action '${original.action_name}'`);
@@ -309,6 +322,91 @@ async function undoSkuMasterUpdate(original, supabase) {
  */
 async function undoSkuMasterSoftDelete(original, supabase) {
   return undoSkuMasterUpdate(original, supabase);
+}
+
+/**
+ * purchase_request_approve / reject / ordered undo = 상태 변경 전 snapshot 의
+ * 허용 필드만 patch. 3 액션 모두 동일 패턴 (status / decision_* / ordered_* flip)
+ * 이라 단일 handler 로 통합.
+ *
+ * 정책 (PR U7):
+ *   - purchase_requests 의 실 컬럼 기준 ALLOWED_FIELDS 만 patch.
+ *     (실제 컬럼: status / decision_by / decision_at / rejection_reason /
+ *      rejection_note / ordered_by / ordered_at)
+ *   - id / requested_by / product_name / quantity / estimated_price 등
+ *     요청 본문 / 식별자 / 외부 영향 컬럼 절대 patch X.
+ *   - 알림 (notify) / SSE broadcast 는 비가역 — undo 후에도 사용자에게 도착한 알림은
+ *     되돌릴 수 없음. 응답의 restoredPurchaseRequest 로 운영자 확인.
+ *   - 외부 주문/결제/재고 연동은 본 handler 가 건드리지 않음.
+ *
+ * 반환의 approved_x / rejected_x 는 spec 추상화 — 실 컬럼 decision_by / decision_at 을
+ * 복구 후 status 에 따라 mapping (status='approved' → approved_x, 그 외 null).
+ */
+async function undoPurchaseRequestStatusChange(original, supabase) {
+  if (original.target_table !== 'purchase_requests') {
+    throw new UndoError('safetyUndo/invalid_target_table', `expected target_table='purchase_requests', got '${original.target_table}'`);
+  }
+  if (!Number.isFinite(original.target_id)) {
+    throw new UndoError('safetyUndo/invalid_target_id', `target_id is not a finite number`);
+  }
+
+  const snap = original.input_snapshot;
+  if (!snap || typeof snap !== 'object') {
+    throw new UndoError('safetyUndo/invalid_snapshot', 'input snapshot 부재 — 복구 데이터 없음');
+  }
+
+  // 실 컬럼 기준 ALLOWED_FIELDS — id / requested_by / product_name / quantity /
+  // estimated_price 등 요청 본문 필드는 절대 X
+  const ALLOWED_FIELDS = [
+    'status',
+    'decision_by',
+    'decision_at',
+    'rejection_reason',
+    'rejection_note',
+    'ordered_by',
+    'ordered_at',
+  ];
+
+  const patch = { updated_at: new Date().toISOString() };
+  for (const f of ALLOWED_FIELDS) {
+    if (snap[f] !== undefined) patch[f] = snap[f];
+  }
+  if (Object.keys(patch).length <= 1) {
+    throw new UndoError('safetyUndo/invalid_snapshot', 'snapshot 에 복구 가능한 허용 필드가 없음');
+  }
+
+  const { data, error } = await supabase
+    .from('purchase_requests')
+    .update(patch)
+    .eq('id', original.target_id)
+    .select('id, status, decision_by, decision_at, ordered_by, ordered_at')
+    .maybeSingle();
+  if (error) {
+    throw new UndoError('safetyUndo/update_failed', error.message);
+  }
+  if (!data) {
+    throw new UndoError('safetyUndo/target_not_found', `purchase_requests id=${original.target_id} not found`);
+  }
+
+  // spec 의 approved_x / rejected_x 추상화 — 실 컬럼 decision_x 을 status 기반 mapping
+  const isApproved = data.status === 'approved';
+  const isRejected = data.status === 'rejected';
+
+  return {
+    actionName:  original.action_name,
+    targetTable: original.target_table,
+    targetId:    original.target_id,
+    restoredPurchaseRequest: {
+      id:          data.id,
+      status:      data.status,
+      approved_by: isApproved ? data.decision_by : null,
+      approved_at: isApproved ? data.decision_at : null,
+      rejected_by: isRejected ? data.decision_by : null,
+      rejected_at: isRejected ? data.decision_at : null,
+      ordered_by:  data.ordered_by,
+      ordered_at:  data.ordered_at,
+    },
+  };
 }
 
 module.exports = {
