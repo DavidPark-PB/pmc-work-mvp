@@ -14,7 +14,9 @@
  *   - PR U2 1차 = sku_listing_link_create 1개 (단일 row DELETE, FK cascade 없음)
  *   - PR U4 2차 = sku_listing_link_delete 추가 (input_snapshot 기반 단일 row INSERT,
  *                 PK 재사용 X 로 sequence 충돌 회피, UNIQUE 충돌은 명시 에러로 거절)
- *   - 다른 action 추가는 PR U5+ 에서 점진 도입
+ *   - PR U5 3차 = sku_master_update 추가 (input_snapshot 의 허용 필드만 patch.
+ *                 internal_sku / id / created_by / created_at 등 시스템 필드 보호)
+ *   - 다른 action 추가는 PR U6+ 에서 점진 도입
  *   - 로그 룰: actionName / runId / executedBy / message 만. snapshot/payload/secret 출력 금지
  *
  * 무수정 약속:
@@ -31,11 +33,13 @@
 const supabaseClient = require('../db/supabaseClient');
 const safetyExec = require('./safetyExec');
 
-// PR U2 1차 (sku_listing_link_create) + PR U4 2차 (sku_listing_link_delete).
-// 모두 단일 row 만 다루며 FK cascade 없음. 추가 action 은 PR U5+ 검토.
+// PR U2 1차 (sku_listing_link_create) + PR U4 2차 (sku_listing_link_delete) +
+// PR U5 3차 (sku_master_update). 모두 단일 row 만 다루며 FK cascade 없음.
+// 추가 action 은 PR U6+ 검토.
 const AUTO_ROLLBACK_ACTIONS = new Set([
   'sku_listing_link_create',
   'sku_listing_link_delete',
+  'sku_master_update',
 ]);
 
 const TABLE = 'automation_runs';
@@ -97,6 +101,8 @@ async function rollbackRun({ runId, executedBy, reason = null } = {}) {
     undone = await undoSkuListingLinkCreate(original, supabase);
   } else if (original.action_name === 'sku_listing_link_delete') {
     undone = await undoSkuListingLinkDelete(original, supabase);
+  } else if (original.action_name === 'sku_master_update') {
+    undone = await undoSkuMasterUpdate(original, supabase);
   } else {
     // 위 allowlist 체크에서 걸리므로 도달 불가지만 방어
     throw new UndoError('safetyUndo/handler_missing', `no handler for action '${original.action_name}'`);
@@ -222,6 +228,66 @@ async function undoSkuListingLinkDelete(original, supabase) {
     targetTable:   original.target_table,
     targetId:      original.target_id,
     recreatedLink: data,
+  };
+}
+
+/**
+ * sku_master_update undo = input_snapshot 의 허용 필드만 patch.
+ *
+ * 정책 (PR U5):
+ *   - ALLOWED_FIELDS 외 컬럼은 절대 patch X
+ *   - internal_sku 는 patch 금지 (식별자 안정성 — skuMaster route 의 update 정책 정합)
+ *   - id / created_by / created_at 등 시스템 필드 보호
+ *   - updated_at 만 helper 측에서 갱신 (감사 추적용)
+ *   - input_snapshot 부재 또는 허용 필드 0개 → invalid_snapshot 거절
+ *   - target_id 가 그 사이 삭제됐으면 target_not_found 거절
+ */
+async function undoSkuMasterUpdate(original, supabase) {
+  if (original.target_table !== 'sku_master') {
+    throw new UndoError('safetyUndo/invalid_target_table', `expected target_table='sku_master', got '${original.target_table}'`);
+  }
+  if (!Number.isFinite(original.target_id)) {
+    throw new UndoError('safetyUndo/invalid_target_id', `target_id is not a finite number`);
+  }
+
+  const snap = original.input_snapshot;
+  if (!snap || typeof snap !== 'object') {
+    throw new UndoError('safetyUndo/invalid_snapshot', 'input snapshot 부재 — 복구 데이터 없음');
+  }
+
+  // PR U5 spec — 허용 필드 10개. internal_sku / id / created_by / created_at 제외.
+  const ALLOWED_FIELDS = [
+    'title', 'product_type', 'brand', 'category', 'status',
+    'automation_enabled', 'cost_krw', 'weight_gram', 'hs_code', 'notes',
+  ];
+
+  const patch = { updated_at: new Date().toISOString() };
+  for (const f of ALLOWED_FIELDS) {
+    if (snap[f] !== undefined) patch[f] = snap[f];
+  }
+  if (Object.keys(patch).length <= 1) {
+    // updated_at 만 있고 복구할 허용 필드 0개
+    throw new UndoError('safetyUndo/invalid_snapshot', 'snapshot 에 복구 가능한 허용 필드가 없음');
+  }
+
+  const { data, error } = await supabase
+    .from('sku_master')
+    .update(patch)
+    .eq('id', original.target_id)
+    .select('id, internal_sku, title, status, automation_enabled')
+    .maybeSingle();
+  if (error) {
+    throw new UndoError('safetyUndo/update_failed', error.message);
+  }
+  if (!data) {
+    throw new UndoError('safetyUndo/target_not_found', `sku_master id=${original.target_id} not found`);
+  }
+
+  return {
+    actionName:  original.action_name,
+    targetTable: original.target_table,
+    targetId:    original.target_id,
+    restoredSku: data,
   };
 }
 

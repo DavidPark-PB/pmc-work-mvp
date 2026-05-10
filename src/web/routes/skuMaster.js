@@ -258,9 +258,8 @@ router.patch('/:id', async (req, res) => {
       targetId:         id,
       beforeSnapshot:   beforeRow,
       relatedSkuId:     id,
-      rollbackMethod:   'manual',
-      rollbackHint:
-        'UPDATE sku_master SET <컬럼>=<before 값> WHERE id=<target_id>; -- before snapshot 의 모든 변경 컬럼 복원.',
+      rollbackMethod:   'auto',
+      rollbackHint:     '자동 되돌리기: 수정 전 snapshot 의 허용 필드로 sku_master row 를 복구합니다. internal_sku 는 변경하지 않습니다.',
       status: 'pending',
     });
   } catch (auditErr) {
