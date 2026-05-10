@@ -200,6 +200,9 @@
         </p>
       </div>
 
+      <!-- PR V2 — stats 카드. loadStats() 가 채움. 실패해도 list/detail 무영향. -->
+      <div id="safety-runs-stats" style="margin-bottom:16px;"></div>
+
       <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:16px;align-items:start;">
         <!-- 좌측: 필터 + 목록 -->
         <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;">
@@ -314,6 +317,9 @@
   async function refresh() {
     const root = document.getElementById('safety-runs-section');
     if (!root || root.dataset.initialized !== '1') return;
+
+    // PR V2 — stats 도 같이 로드 (병렬, best-effort, 실패해도 list 영향 X)
+    loadStats();
 
     const action  = document.getElementById('sr-action')?.value  || '';
     const status  = document.getElementById('sr-status')?.value  || '';
@@ -736,6 +742,48 @@
     document.body.appendChild(overlay);
     document.getElementById('sr-stub-ok').addEventListener('click', () => overlay.remove());
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  }
+
+  // ── PR V2 — execution log mini stats cards ───────────────────────────────
+  // GET /api/safety-runs/stats → 4 카드 + recent footnote.
+  // 실패해도 list/detail 흐름 무영향 (best-effort).
+  async function loadStats() {
+    const el = document.getElementById('safety-runs-stats');
+    if (!el) return;
+    try {
+      const res = await fetch('/api/safety-runs/stats', { credentials: 'include' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `stats failed (${res.status})`);
+      renderStats(json);
+    } catch (e) {
+      el.innerHTML = `<div style="color:#888;font-size:11px;text-align:right;">통계 로드 실패</div>`;
+    }
+  }
+
+  function renderStats(stats) {
+    const el = document.getElementById('safety-runs-stats');
+    if (!el) return;
+    const t = stats?.today  || { total: 0, succeeded: 0, failed: 0, rolled_back: 0, auto_rollbackable: 0 };
+    const r = stats?.recent || { total: 0, failed: 0, rolled_back: 0, auto_rollbackable: 0 };
+
+    const card = (label, value, color) => `
+      <div style="background:#0f0f23;padding:12px;border-radius:8px;text-align:center;border:1px solid #2a2a4a;">
+        <div style="color:#888;font-size:10px;margin-bottom:4px;">${esc(label)}</div>
+        <div style="color:${color};font-size:22px;font-weight:600;line-height:1;">${value}</div>
+      </div>
+    `;
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
+        ${card('오늘 전체',         t.total,             '#fff')}
+        ${card('오늘 실패',         t.failed,            '#ef9a9a')}
+        ${card('오늘 되돌림 완료',   t.rolled_back,       '#64b5f6')}
+        ${card('오늘 자동 가능',     t.auto_rollbackable, '#69f0ae')}
+      </div>
+      <div style="margin-top:6px;color:#888;font-size:11px;text-align:right;">
+        최근 100건 중 — 실패 ${r.failed} · 되돌림 ${r.rolled_back} · 자동 가능 ${r.auto_rollbackable}
+      </div>
+    `;
   }
 
   window.pmcSafetyRuns = { init, refresh, openDetail };

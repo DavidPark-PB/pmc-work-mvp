@@ -108,6 +108,65 @@ router.get('/', async (req, res) => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// GET /api/safety-runs/stats — 미니 통계 카드용 집계 (PR V2)
+//
+// 주의: 반드시 GET /:id 보다 앞에 정의 — Express 라우트 매칭 순서상 /stats 가
+//       /:id 패턴에 잡히면 'invalid id' 가 됨.
+//
+// 권한: requireAuth (admin / staff 동일)
+//
+// 집계:
+//   today  — 서버 로컬 00:00 이후 started_at
+//   recent — 최근 100개 (id desc limit)
+//   auto_rollbackable: status='succeeded' && rollback_method='auto' && rollback_run_id == null
+//
+// 출력 안전:
+//   - snapshot / payload / secret 컬럼 SELECT 안 함
+//   - 응답 실패 시 list/detail 흐름 무영향 (별 try/catch)
+// ──────────────────────────────────────────────────────────────────────────
+router.get('/stats', async (req, res) => {
+  try {
+    const supabase = supabaseClient.getClient();
+    const STATS_COLUMNS = 'id, status, rollback_method, rollback_run_id, started_at';
+
+    // 서버 로컬 오늘 00:00 → ISO (timestamptz 비교용)
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const todayStartIso = todayStart.toISOString();
+
+    const aggregate = (rows) => {
+      const out = { total: rows.length, succeeded: 0, failed: 0, rolled_back: 0, auto_rollbackable: 0 };
+      for (const r of rows) {
+        if (r.status === 'succeeded') out.succeeded++;
+        if (r.status === 'failed')    out.failed++;
+        if (r.status === 'rolled_back' || r.rollback_run_id != null) out.rolled_back++;
+        if (r.status === 'succeeded' && r.rollback_method === 'auto' && r.rollback_run_id == null) {
+          out.auto_rollbackable++;
+        }
+      }
+      return out;
+    };
+
+    const [todayRes, recentRes] = await Promise.all([
+      supabase.from(TABLE).select(STATS_COLUMNS).gte('started_at', todayStartIso).limit(1000),
+      supabase.from(TABLE).select(STATS_COLUMNS).order('id', { ascending: false }).limit(100),
+    ]);
+    if (todayRes.error)  throw todayRes.error;
+    if (recentRes.error) throw recentRes.error;
+
+    const today  = aggregate(todayRes.data || []);
+    const recent = aggregate(recentRes.data || []);
+    // recent 의 succeeded 는 활동량 의미 작음 — spec 따라 응답에서 제거
+    delete recent.succeeded;
+
+    res.json({ today, recent });
+  } catch (e) {
+    console.error('[safetyRuns] stats error:', e.message);
+    res.status(500).json({ error: '실행 로그 통계 조회 실패' });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // GET /api/safety-runs/:id — 단건 + rollback chain 1단계
 // ──────────────────────────────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
