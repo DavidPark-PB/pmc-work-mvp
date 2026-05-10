@@ -222,6 +222,26 @@
       pageOffset += PAGE_LIMIT;
       refresh();
     });
+
+    // PR U2-fix — rollback 버튼 click 을 root container 에 delegate.
+    // renderShell 은 init() 의 data-initialized='1' 안에서 1회 호출되므로 listener 중복 X.
+    // button 은 detail re-render 때마다 재생성되지만 root 는 안정적이라 detached
+    // listener / id 충돌 / re-render race 모두 회피.
+    root.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-rollback-mode]');
+      if (!btn) return;
+      const id = Number(btn.dataset.runId);
+      const mode = btn.dataset.rollbackMode;
+      if (!Number.isFinite(id)) {
+        alert('실행 로그 ID가 올바르지 않습니다');
+        return;
+      }
+      if (mode === 'auto') {
+        showAutoRollbackModal(id);
+      } else if (mode === 'manual') {
+        showManualRollbackModal(id);
+      }
+    });
   }
 
   // ── list ─────────────────────────────────────────────────
@@ -367,9 +387,9 @@
     }
     let rollbackBtnHtml = '';
     if (rollbackBtnMode === 'auto') {
-      rollbackBtnHtml = `<button id="sr-rollback-btn" data-mode="auto" type="button" style="margin-top:8px;padding:6px 14px;background:#1565c0;border:1px solid #64b5f6;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">되돌리기 실행</button>`;
+      rollbackBtnHtml = `<button data-rollback-mode="auto" data-run-id="${r.id}" type="button" style="margin-top:8px;padding:6px 14px;background:#1565c0;border:1px solid #64b5f6;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">되돌리기 실행</button>`;
     } else if (rollbackBtnMode === 'manual') {
-      rollbackBtnHtml = `<button id="sr-rollback-btn" data-mode="manual" type="button" style="margin-top:8px;padding:6px 14px;background:#5d3a00;border:1px solid #ffb74d;border-radius:4px;color:#ffb74d;cursor:pointer;font-size:12px;font-weight:600;">수동 되돌리기 안내</button>`;
+      rollbackBtnHtml = `<button data-rollback-mode="manual" data-run-id="${r.id}" type="button" style="margin-top:8px;padding:6px 14px;background:#5d3a00;border:1px solid #ffb74d;border-radius:4px;color:#ffb74d;cursor:pointer;font-size:12px;font-weight:600;">수동 되돌리기 안내</button>`;
     } else if (rollbackBtnMode === 'irreversible') {
       rollbackBtnHtml = `<div style="margin-top:8px;padding:6px 10px;background:#37474f;border-radius:4px;color:#bdbdbd;font-size:11px;">되돌릴 수 없음 (irreversible)</div>`;
     } else if (rollbackBtnMode === 'done') {
@@ -462,16 +482,9 @@
       ${snapshotPre('output_snapshot', r.output_snapshot)}
     `;
 
-    // PR U2 — auto/manual 분기 핸들러
-    const btn = document.getElementById('sr-rollback-btn');
-    if (btn) {
-      const mode = btn.dataset.mode;
-      if (mode === 'auto') {
-        btn.addEventListener('click', () => onAutoRollbackClick(r));
-      } else if (mode === 'manual') {
-        btn.addEventListener('click', () => onManualRollbackClick(r));
-      }
-    }
+    // PR U2 + fix — rollback button click 은 renderShell 의 root delegation 에서 처리.
+    // (이전 querySelector + addEventListener 방식은 button id 충돌 / re-render race
+    //  / detached element listener 등 신뢰성 문제로 delegated handler 로 전환)
     // rollback chain 의 원본 링크
     const orLink = document.getElementById('sr-open-original');
     if (orLink) {
@@ -490,9 +503,21 @@
     });
   }
 
+  // ── PR U2-fix — id → run 객체 lookup helper ──
+  // delegated handler 가 id 만 알기에 cache (목록) + openRunDetail (현재 상세) 에서 검색.
+  function getRunById(id) {
+    if (openRunDetail && openRunDetail.id === id) return openRunDetail;
+    return cache.find(r => r.id === id) || null;
+  }
+
   // ── manual 안내 modal (PR M §2-1 A — manual 액션용 보존) ──
   // 정책: server endpoint 호출 0건, audit helper invocation 0건. 단순 안내 modal.
-  function onManualRollbackClick(run) {
+  function showManualRollbackModal(id) {
+    const run = getRunById(id);
+    if (!run) {
+      alert('실행 로그를 찾을 수 없습니다 (id=' + id + ')');
+      return;
+    }
     const targetStr = run.target_table
       ? `${run.target_table}${run.target_id != null ? '#' + run.target_id : ''}`
       : '-';
@@ -513,11 +538,12 @@
   // ── PR U2 — 실 auto rollback modal ──
   // 정책: rollback_method='auto' + allowlist 등록 액션만 도달.
   // 클릭 → reason 입력 modal → 추가 confirm → POST /api/safety-runs/:id/rollback
-  function onAutoRollbackClick(run) {
-    showAutoRollbackModal(run);
-  }
-
-  function showAutoRollbackModal(run) {
+  function showAutoRollbackModal(id) {
+    const run = getRunById(id);
+    if (!run) {
+      alert('실행 로그를 찾을 수 없습니다 (id=' + id + ')');
+      return;
+    }
     const existing = document.getElementById('sr-auto-modal');
     if (existing) existing.remove();
 
