@@ -29,6 +29,7 @@
   "author": "PMC Corporation",
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
     "@imgly/background-removal-node": "^1.4.5",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@shopify/shopify-api": "^12.2.0",
