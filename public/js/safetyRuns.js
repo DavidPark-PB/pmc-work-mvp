@@ -83,6 +83,65 @@
     irreversible: '되돌릴 수 없음',
   };
 
+  // PR U9 — action 별 위험도/영향 설명. auto rollback modal 본문에 표시.
+  const ROLLBACK_IMPACT_TEXT = {
+    sku_listing_link_create:  '생성된 SKU 링크 1개를 삭제합니다.',
+    sku_listing_link_delete:  '삭제된 SKU 링크 1개를 snapshot 기준으로 재생성합니다. 같은 링크가 이미 있으면 실패할 수 있습니다.',
+    sku_master_update:        'SKU의 수정 가능한 필드를 이전 값으로 복구합니다. internal_sku는 변경하지 않습니다.',
+    sku_master_soft_delete:   'soft delete 전 상태로 SKU를 복구합니다.',
+    purchase_request_approve: '발주 승인 상태를 이전 상태로 되돌립니다. 실제 외부 구매/결제는 별도 확인하세요.',
+    purchase_request_reject:  '발주 반려 상태를 이전 상태로 되돌립니다.',
+    purchase_request_ordered: '주문 완료 상태를 이전 상태로 되돌립니다. 실제 외부 주문은 별도 확인하세요.',
+  };
+
+  function rollbackImpactText(run) {
+    if (!run) return '';
+    return ROLLBACK_IMPACT_TEXT[run.action_name] || '이 액션은 자동 되돌리기 대상이 아닙니다.';
+  }
+
+  // PR U9 — POST rollback 응답의 undone 객체 → 사용자 친화 요약 1줄
+  function summarizeUndone(json) {
+    const u = json?.undone;
+    if (!u || typeof u !== 'object') return '되돌리기가 완료되었습니다.';
+    if (u.deletedLink) {
+      const dl = u.deletedLink;
+      return `삭제된 링크: ${dl.marketplace || '?'} / ${dl.listing_id || '?'}`;
+    }
+    if (u.recreatedLink) {
+      const rl = u.recreatedLink;
+      return `복구된 링크: ${rl.marketplace || '?'} / ${rl.listing_id || '?'}`;
+    }
+    if (u.restoredSku) {
+      const s = u.restoredSku;
+      return `복구된 SKU: ${s.internal_sku || '?'} / ${s.title || '?'}`;
+    }
+    if (u.restoredPurchaseRequest) {
+      const p = u.restoredPurchaseRequest;
+      return `복구된 발주 요청: #${p.id} / ${p.status || '?'}`;
+    }
+    return '되돌리기가 완료되었습니다.';
+  }
+
+  // PR U9 — rollback 가능 여부/완료 상태 배지. 5분기.
+  // 색상: 완료=blue / auto=green / manual=orange / irreversible=gray-red / 그 외=gray
+  function rollbackStatusBadge(run) {
+    if (!run) return '';
+    const alreadyDone = run.status === 'rolled_back' || run.rollback_run_id != null;
+    let bg, fg, label;
+    if (alreadyDone) {
+      bg = '#1a3a4a'; fg = '#64b5f6'; label = '되돌림 완료';
+    } else if (run.rollback_method === 'auto' && run.status === 'succeeded') {
+      bg = '#1b5e20'; fg = '#69f0ae'; label = '자동 되돌리기 가능';
+    } else if (run.rollback_method === 'manual') {
+      bg = '#5d3a00'; fg = '#ffb74d'; label = '수동 처리 필요';
+    } else if (run.rollback_method === 'irreversible') {
+      bg = '#4a1a1a'; fg = '#ef9a9a'; label = '되돌릴 수 없음';
+    } else {
+      bg = '#37474f'; fg = '#bdbdbd'; label = '되돌리기 정보 없음';
+    }
+    return `<span style="background:${bg};color:${fg};padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600;">↺ ${esc(label)}</span>`;
+  }
+
   // PR L-3 — target_table → dashboard.js case 명 매핑 (deep link 버튼).
   // dashboard.js 의 navigateTo(page) 와 정합. row id 자동 선택은 본 PR 범위 외.
   const TARGET_PAGE = {
@@ -330,6 +389,7 @@
         ">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
             ${badge(r.status)}
+            ${rollbackStatusBadge(r)}
             ${actionLabelHtml(r.action_name || r.automation_type)}
             <span style="margin-left:auto;color:#666;font-size:11px;">#${r.id}</span>
           </div>
@@ -456,6 +516,7 @@
         <div style="flex:1;min-width:200px;">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
             ${badge(r.status)}
+            ${rollbackStatusBadge(r)}
             ${actionLabelHtml(r.action_name || r.automation_type)}
             <span style="color:#666;font-size:11px;">#${r.id}</span>
           </div>
@@ -541,7 +602,7 @@
 
     showStubModal({
       title: '수동 되돌리기 안내',
-      body:  '이 액션은 자동 되돌리기 대상이 아닙니다. 현재는 audit 메타데이터와 수동 처리 힌트만 표시합니다.',
+      body:  '자동 되돌리기 대상이 아닙니다. 수동 처리만 가능합니다. 아래 정보와 hint 를 참고해 직접 처리하세요.',
       info:  infoLines,
     });
   }
@@ -565,13 +626,28 @@
     const overlay = document.createElement('div');
     overlay.id = 'sr-auto-modal';
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+    const actionRaw = run.action_name || run.automation_type || '?';
     overlay.innerHTML = `
-      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;max-width:520px;width:100%;color:#fff;">
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;max-width:560px;width:100%;color:#fff;">
         <h3 style="margin:0 0 10px;font-size:16px;color:#64b5f6;">↺ 되돌리기 실행</h3>
+
         <div style="color:#ffcdd2;font-size:13px;margin-bottom:14px;line-height:1.5;font-weight:600;">
-          ⚠️ 이 작업은 실제 데이터를 변경합니다.
+          ⚠️ 이 작업은 실제 DB 데이터를 변경합니다.
         </div>
-        <pre style="background:#0f0f23;color:#cfd8dc;padding:8px;border-radius:4px;font-size:11px;margin:4px 0;white-space:pre-wrap;word-break:break-all;">${esc(run.action_name || run.automation_type || '?')} #${run.id}\ntarget: ${esc(targetStr)}</pre>
+
+        <div style="margin-bottom:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          ${actionLabelHtml(actionRaw)}
+          <span style="color:#666;font-size:11px;">#${run.id}</span>
+        </div>
+
+        <div style="background:#0f0f23;padding:8px 10px;border-radius:4px;font-size:11px;color:#cfd8dc;margin-bottom:8px;">
+          target: <strong style="font-family:monospace;">${esc(targetStr)}</strong>
+        </div>
+
+        <div style="background:#1a3a4a;padding:8px 10px;border-radius:4px;font-size:12px;color:#bbdefb;margin-bottom:10px;line-height:1.5;">
+          <strong>영향:</strong> ${esc(rollbackImpactText(run))}
+        </div>
+
         <label style="display:block;margin-top:10px;color:#aaa;font-size:11px;">사유 (선택, 최대 500자):</label>
         <textarea id="sr-auto-reason" maxlength="500" rows="3" style="width:100%;margin-top:4px;padding:6px;background:#0f0f23;border:1px solid #333;color:#cfd8dc;border-radius:4px;font-size:12px;box-sizing:border-box;"></textarea>
         <div id="sr-auto-msg" style="margin-top:10px;font-size:12px;min-height:18px;"></div>
@@ -619,12 +695,14 @@
           return;
         }
         // 성공 — alert 대신 modal 내부 메시지 → 700ms 후 close + refresh
-        msgEl.innerHTML = `<span style="color:#69f0ae;">✓ 되돌리기 완료. 실행 로그를 새로고침했습니다. <span style="color:#aaa;font-size:11px;">(rollback run #${json.rollbackRunId})</span></span>`;
+        // PR U9 — undone 객체로 복구 요약 추가 (action 별 1줄)
+        const summary = summarizeUndone(json);
+        msgEl.innerHTML = `<span style="color:#69f0ae;">✓ 되돌리기 완료. 실행 로그를 새로고침했습니다.</span><br><span style="color:#aaeeb5;font-size:11px;">${esc(summary)}</span><br><span style="color:#888;font-size:10px;font-family:monospace;">rollback run #${json.rollbackRunId}</span>`;
         setTimeout(async () => {
           close();
           await openDetail(run.id);
           await refresh();
-        }, 700);
+        }, 800);
       } catch (e) {
         msgEl.innerHTML = `<span style="color:#ef9a9a;">네트워크 오류: ${esc(e.message)}</span>`;
         execBtn.disabled = false; cancelBtn.disabled = false;
