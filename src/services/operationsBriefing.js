@@ -218,4 +218,59 @@ function buildRecommendations(out, failedSections) {
   return recs;
 }
 
-module.exports = { getTodayBriefing };
+/**
+ * PR O2 — briefing 객체 → notification payload (title / body / linkUrl).
+ *
+ * 정책:
+ *   - 순수 formatting helper (DB write 0, 외부 API 0)
+ *   - body 는 ~250자 이내로 컴팩트
+ *   - recommendations 상위 2개 포함 (있으면)
+ *   - 카운트 0 인 섹션은 body 에서 생략 (잡음 감소)
+ *
+ * @param {Object} briefing — getTodayBriefing() 결과
+ * @returns {{ title: string, body: string, linkUrl: string, type: string }}
+ */
+function buildBriefingNotification(briefing) {
+  const o = briefing?.orders || {};
+  const t = briefing?.tasks  || {};
+  const p = briefing?.purchase_requests || {};
+  const s = briefing?.safety || {};
+
+  const segments = [];
+  // orders 핵심 — 신규 주문 / 자동 예외
+  if (o.total_today)      segments.push(`신규 주문 ${o.total_today}건`);
+  if (o.exception_count)  segments.push(`자동 예외 ${o.exception_count}건`);
+  // tasks 핵심 — 미처리 / 긴급 / 마감 지남
+  if (t.urgent)           segments.push(`긴급 업무 ${t.urgent}건`);
+  if (t.overdue)          segments.push(`마감 지남 ${t.overdue}건`);
+  if (!t.urgent && !t.overdue && t.open) segments.push(`미처리 업무 ${t.open}건`);
+  // purchase
+  if (p.pending)          segments.push(`발주 대기 ${p.pending}건`);
+  // safety
+  if (s.failed_runs_today) segments.push(`자동화 실패 ${s.failed_runs_today}건`);
+
+  const summaryLine = segments.length > 0
+    ? segments.join(' · ')
+    : '오늘 처리할 긴급 항목이 없습니다.';
+
+  // recommendations 상위 2개 (partial 안내 라인은 제외 — body 가 너무 길어짐)
+  const recs = (Array.isArray(briefing?.recommendations) ? briefing.recommendations : [])
+    .filter(r => !r.startsWith('일부 데이터'))
+    .slice(0, 2);
+
+  let body = summaryLine;
+  if (recs.length > 0) {
+    body += '\n\n💡 ' + recs.join('\n💡 ');
+  }
+  // 250자 cap
+  if (body.length > 250) body = body.slice(0, 247) + '...';
+
+  return {
+    title:   '오늘 운영 브리핑',
+    body,
+    linkUrl: '/?page=ops-briefing',
+    type:    'ops_briefing',
+  };
+}
+
+module.exports = { getTodayBriefing, buildBriefingNotification };

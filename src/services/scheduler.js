@@ -116,6 +116,17 @@ function start() {
     sendMorningDigest().catch(e => console.error('[scheduler] morning error:', e));
   }, { timezone: TZ });
 
+  // 매일 오전 9시 정각 — 운영 브리핑 (PR O2). admin 전체에 인앱 notification 발송.
+  // morning digest 와 동시 실행 (별 함수, 충돌 없음).
+  cron.schedule('0 9 * * *', async () => {
+    try {
+      const { runOperationsBriefingJob } = require('../jobs/operationsBriefingJob');
+      await runOperationsBriefingJob();
+    } catch (e) {
+      console.error('[OpsBriefingJob] error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // 매일 오전 9시 5분 — B2B 미발송 수량 admin 알림
   cron.schedule('5 9 * * *', async () => {
     try {
