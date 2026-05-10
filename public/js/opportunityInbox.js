@@ -351,6 +351,15 @@
       ` : ''}
 
       ${actionsHtml}
+
+      <!-- PR R-Drafts UI — AI draft 섹션 -->
+      <div id="oi-drafts-section" style="margin-top:14px;padding:10px;background:#0f0f23;border-radius:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">
+          <div style="color:#aaa;font-size:11px;font-weight:600;">🤖 AI Drafts (R1)</div>
+          ${isAdmin && !isFinal ? `<button id="oi-gen-draft" type="button" style="padding:4px 10px;background:#1565c0;border:none;border-radius:3px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">＋ Draft 생성</button>` : ''}
+        </div>
+        <div id="oi-drafts-list" style="color:#888;font-size:11px;">로딩 중...</div>
+      </div>
     `;
 
     // action handlers
@@ -358,6 +367,183 @@
     document.getElementById('oi-reject') ?.addEventListener('click', () => showRejectModal(r.id));
     document.getElementById('oi-archive')?.addEventListener('click', () => doArchive(r.id));
     document.getElementById('oi-edit-notes')?.addEventListener('click', () => showNotesModal(r));
+    document.getElementById('oi-gen-draft')?.addEventListener('click', () => showGenerateDraftModal(r));
+
+    // drafts 비동기 로드
+    loadDrafts(r.id);
+  }
+
+  // ── R-Drafts UI ────────────────────────────────────────────────────────
+  async function loadDrafts(opportunityId) {
+    const el = document.getElementById('oi-drafts-list');
+    if (!el) return;
+    try {
+      const res = await fetch('/api/opportunity-drafts?opportunity_id=' + opportunityId, { credentials: 'include' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `load failed (${res.status})`);
+      renderDrafts(json.data || []);
+    } catch (e) {
+      el.innerHTML = `<span style="color:#ef9a9a;">draft 로드 실패: ${esc(e.message)}</span>`;
+    }
+  }
+
+  function renderDrafts(drafts) {
+    const el = document.getElementById('oi-drafts-list');
+    if (!el) return;
+    if (drafts.length === 0) {
+      el.innerHTML = '<div style="color:#666;font-size:11px;">아직 AI draft 가 없습니다. admin 이 "+ Draft 생성" 으로 platform/language 별 draft 생성 가능.</div>';
+      return;
+    }
+    const isAdmin = user?.isAdmin === true;
+    el.innerHTML = drafts.map(d => {
+      const isMock = d.ai_provider === 'mock';
+      const isApproved = d.status === 'approved';
+      const costStr = d.cost_usd != null ? `$${Number(d.cost_usd).toFixed(4)}` : '-';
+      return `
+        <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;padding:10px;margin-bottom:8px;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+            <span style="background:#1a3a4a;color:#bbdefb;padding:1px 6px;border-radius:3px;font-size:10px;font-family:monospace;">${esc(d.platform)} · ${esc(d.language)}</span>
+            ${isMock ? '<span style="background:#5d3a00;color:#ffb74d;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;">MOCK</span>' : ''}
+            ${isApproved ? '<span style="background:#1b5e20;color:#69f0ae;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;">✓ APPROVED</span>' : ''}
+            <span style="color:#666;font-size:10px;">#${d.id} · ${costStr} · ${esc(d.ai_model || '-')}</span>
+            <span style="margin-left:auto;color:#666;font-size:10px;">${fmtDate(d.generated_at)}</span>
+          </div>
+          ${d.title ? `<div style="color:#fff;font-size:12px;font-weight:600;margin-bottom:4px;line-height:1.3;">${esc(d.title)}</div>` : ''}
+          ${d.description ? `<details style="margin-top:4px;"><summary style="cursor:pointer;color:#aaa;font-size:11px;">▸ description (펼치기)</summary><pre style="background:#0f0f23;color:#cfd8dc;padding:8px;border-radius:4px;font-size:11px;margin:4px 0 0;max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;">${esc(d.description)}</pre></details>` : ''}
+          ${Array.isArray(d.hashtags) && d.hashtags.length > 0 ? `<div style="margin-top:6px;color:#90caf9;font-size:11px;">${d.hashtags.map(h => `#${esc(h)}`).join(' ')}</div>` : ''}
+          ${isAdmin && !isApproved ? `<div style="margin-top:8px;"><button data-draft-approve="${d.id}" type="button" style="padding:3px 10px;background:#1b5e20;border:none;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">✓ 승인</button></div>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    // approve handlers (delegated)
+    el.querySelectorAll('[data-draft-approve]').forEach(btn => {
+      btn.addEventListener('click', () => approveDraft(parseInt(btn.dataset.draftApprove, 10)));
+    });
+  }
+
+  async function approveDraft(id) {
+    if (!Number.isFinite(id)) return;
+    if (!confirm('이 draft 를 승인합니까?')) return;
+    try {
+      const res = await fetch('/api/opportunity-drafts/' + id + '/approve', {
+        method: 'POST', credentials: 'include',
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `failed (${res.status})`);
+      if (openId) await loadDrafts(openId);
+    } catch (e) {
+      alert('draft 승인 실패: ' + e.message);
+    }
+  }
+
+  // 기본 platform → language 추천 매핑
+  const DEFAULT_LANG_BY_PLATFORM = {
+    ebay: 'en', shopify: 'en', alibaba: 'en', shopee: 'en',
+    qoo10: 'ja', xiaohongshu: 'zh', wechat: 'zh',
+    naver_smartstore: 'ko', coupang: 'ko', naver_blog: 'ko',
+    instagram: 'en', x: 'en', tiktok: 'en', youtube_shorts: 'en', discord: 'en',
+  };
+
+  function showGenerateDraftModal(opportunity) {
+    const existing = document.getElementById('oi-gen-modal');
+    if (existing) existing.remove();
+
+    // target_platforms 가 있으면 첫 번째를 default 로
+    const platforms = Array.isArray(opportunity.target_platforms) && opportunity.target_platforms.length > 0
+      ? opportunity.target_platforms
+      : PLATFORMS;
+    const defaultPlatform = platforms[0];
+    const defaultLang = DEFAULT_LANG_BY_PLATFORM[defaultPlatform] || 'en';
+
+    const overlay = document.createElement('div');
+    overlay.id = 'oi-gen-modal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+    overlay.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;max-width:480px;width:100%;color:#fff;">
+        <h3 style="margin:0 0 10px;font-size:16px;color:#1565c0;">🤖 AI Draft 생성</h3>
+        <div style="color:#ffcdd2;font-size:11px;margin-bottom:10px;line-height:1.5;">
+          ⚠️ AI 호출 = 비용 발생. mock mode (env 미설정 시) 는 무료 placeholder 반환.
+        </div>
+
+        <div style="background:#0f0f23;padding:8px 10px;border-radius:4px;font-size:11px;color:#cfd8dc;margin-bottom:10px;">
+          opportunity #${opportunity.id} · ${esc(opportunity.title_ko || opportunity.title || opportunity.title_en || '(제목 없음)')}
+        </div>
+
+        <div style="display:grid;gap:8px;font-size:12px;">
+          <label>Platform
+            <select id="oi-gen-platform" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;color:#fff;border-radius:4px;font-size:12px;margin-top:2px;">
+              ${platforms.map(p => `<option value="${p}" ${p===defaultPlatform?'selected':''}>${esc(p)}</option>`).join('')}
+            </select>
+          </label>
+          <label>Language
+            <select id="oi-gen-lang" style="width:100%;padding:6px;background:#0f0f23;border:1px solid #333;color:#fff;border-radius:4px;font-size:12px;margin-top:2px;">
+              <option value="ko" ${defaultLang==='ko'?'selected':''}>한국어 (ko)</option>
+              <option value="en" ${defaultLang==='en'?'selected':''}>English (en)</option>
+              <option value="ja" ${defaultLang==='ja'?'selected':''}>日本語 (ja)</option>
+              <option value="zh" ${defaultLang==='zh'?'selected':''}>中文 (zh)</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="oi-gen-msg" style="margin-top:10px;font-size:12px;min-height:18px;"></div>
+
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:14px;">
+          <button id="oi-gen-cancel" type="button" style="padding:6px 14px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
+          <button id="oi-gen-exec"   type="button" style="padding:6px 14px;background:#1565c0;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">생성</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    document.getElementById('oi-gen-cancel').addEventListener('click', close);
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+    // platform 변경 시 language 자동 추천
+    document.getElementById('oi-gen-platform').addEventListener('change', e => {
+      const lang = DEFAULT_LANG_BY_PLATFORM[e.target.value];
+      if (lang) document.getElementById('oi-gen-lang').value = lang;
+    });
+
+    document.getElementById('oi-gen-exec').addEventListener('click', async () => {
+      const msgEl = document.getElementById('oi-gen-msg');
+      const execBtn = document.getElementById('oi-gen-exec');
+      const cancelBtn = document.getElementById('oi-gen-cancel');
+      const platform = document.getElementById('oi-gen-platform').value;
+      const language = document.getElementById('oi-gen-lang').value;
+
+      execBtn.disabled = true; cancelBtn.disabled = true;
+      execBtn.textContent = '생성 중... (8~15초)';
+      msgEl.innerHTML = '<span style="color:#aaa;">AI 호출 중...</span>';
+
+      try {
+        const res = await fetch('/api/opportunity-drafts', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ opportunity_id: opportunity.id, platform, language }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const code = json.code || `http_${res.status}`;
+          msgEl.innerHTML = `<span style="color:#ef9a9a;">생성 실패: ${esc(json.error || 'unknown')} <span style="color:#888;font-family:monospace;font-size:10px;">(${esc(code)})</span></span>`;
+          execBtn.disabled = false; cancelBtn.disabled = false;
+          execBtn.textContent = '생성';
+          return;
+        }
+        const mockTag = json.mock ? ' (MOCK)' : '';
+        const costStr = json.cost_usd != null ? `$${Number(json.cost_usd).toFixed(4)}` : '$0';
+        msgEl.innerHTML = `<span style="color:#69f0ae;">✓ Draft #${json.data.id} 생성${mockTag} · 비용 ${costStr}</span>`;
+        setTimeout(async () => {
+          close();
+          if (openId) await loadDrafts(openId);
+        }, 800);
+      } catch (e) {
+        msgEl.innerHTML = `<span style="color:#ef9a9a;">네트워크 오류: ${esc(e.message)}</span>`;
+        execBtn.disabled = false; cancelBtn.disabled = false;
+        execBtn.textContent = '생성';
+      }
+    });
   }
 
   async function doApprove(id) {
