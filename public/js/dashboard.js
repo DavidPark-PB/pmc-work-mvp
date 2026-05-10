@@ -110,6 +110,10 @@ function navigateTo(page) {
     case 'safety-runs':
       if (window.pmcSafetyRuns)  pmcSafetyRuns.init();
       break;
+    // ── PR O1 — Daily Operations Briefing ──
+    case 'ops-briefing':
+      if (window.pmcOpsBriefing) pmcOpsBriefing.init();
+      break;
   }
 }
 

@@ -587,6 +587,8 @@
     <a href="https://ccorea-auto-production-1540.up.railway.app" target="_blank" class="menu-item" style="color:#ff5722;font-weight:600;text-decoration:none;display:block">리스팅 자동화 ↗</a>
     <div class="menu-item" data-page="crawl-results">크롤링 결과</div>
     <div class="menu-title" style="color:#64b5f6;margin-top:8px">── 운영 관리 ──</div>
+    <!-- PR O1 — Daily Operations Briefing (admin / staff 동일 가시성) -->
+    <div class="menu-item ops-menu" data-page="ops-briefing" style="color:#ffd54f;font-weight:600">📅 오늘 브리핑</div>
     <div class="menu-item ops-menu" data-page="ops-products" style="color:#81d4fa;font-weight:600">상품 검색/관리</div>
     <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">재고 관리</div>
     <div class="menu-item ops-menu" data-page="ops-pricing" style="color:#81d4fa;font-weight:600">가격 관리</div>
@@ -3306,6 +3308,10 @@
   <div id="page-safety-runs" class="page">
     <div id="safety-runs-section"></div>
   </div>
+  <!-- PR O1: Daily Operations Briefing -->
+  <div id="page-ops-briefing" class="page">
+    <div id="ops-briefing-section"></div>
+  </div>
 
 
   </div>
@@ -3373,6 +3379,8 @@
   <script src="/js/orderList.js?v=20260509a"></script>
   <!-- ── Phase 3 PR M — Safety Foundation 실행 로그 ── -->
   <script src="/js/safetyRuns.js?v=20260510a"></script>
+  <!-- ── PR O1 — Daily Operations Briefing ── -->
+  <script src="/js/opsBriefing.js?v=20260510a"></script>
   <script>
   // ===== Inline cost editing for master products =====
   document.addEventListener('click', async (e) => {

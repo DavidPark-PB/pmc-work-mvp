@@ -94,6 +94,8 @@ app.use('/api/orders/mock-import', require('./src/web/routes/mockOrderImport'));
 app.use('/api/orders', require('./src/web/routes/orders'));
 // Phase 3 PR M — Safety Foundation 실행 로그 read API (admin / staff 동일 가시성)
 app.use('/api/safety-runs', require('./src/web/routes/safetyRuns'));
+// PR O1 — Daily Operations Briefing (오늘 운영 요약 read-only)
+app.use('/api/ops-briefing', require('./src/web/routes/operationsBriefing'));
 
 // ── 발주 관리 (Phase 2) ──
 app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));
