@@ -76,6 +76,13 @@
     return `<span style="color:#fff;font-size:11px;font-weight:600;margin-right:6px;">${esc(friendly)}</span>${monoBadge}`;
   }
 
+  // PR U8 — rollback_method → 사용자 친화 라벨
+  const ROLLBACK_METHOD_LABEL = {
+    auto:         '자동 되돌리기 가능',
+    manual:       '수동 처리 필요',
+    irreversible: '되돌릴 수 없음',
+  };
+
   // PR L-3 — target_table → dashboard.js case 명 매핑 (deep link 버튼).
   // dashboard.js 의 navigateTo(page) 와 정합. row id 자동 선택은 본 PR 범위 외.
   const TARGET_PAGE = {
@@ -393,7 +400,7 @@
     } else if (rollbackBtnMode === 'irreversible') {
       rollbackBtnHtml = `<div style="margin-top:8px;padding:6px 10px;background:#37474f;border-radius:4px;color:#bdbdbd;font-size:11px;">되돌릴 수 없음 (irreversible)</div>`;
     } else if (rollbackBtnMode === 'done') {
-      rollbackBtnHtml = `<div style="margin-top:8px;padding:6px 10px;background:#1a3a4a;border-radius:4px;color:#64b5f6;font-size:11px;">이미 되돌려진 run 입니다</div>`;
+      rollbackBtnHtml = `<div style="margin-top:8px;padding:6px 10px;background:#1a3a4a;border-radius:4px;color:#64b5f6;font-size:11px;">이미 되돌려진 실행입니다.</div>`;
     }
 
     // rollback chain
@@ -466,7 +473,11 @@
       <div style="margin-top:14px;padding:10px;background:#0f0f23;border-radius:6px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:6px;font-weight:600;">↺ rollback metadata</div>
         <div style="color:#fff;font-size:12px;">
-          rollback_method: <strong>${esc(r.rollback_method || '-')}</strong>
+          ${(() => {
+            const key = r.rollback_method;
+            const label = key ? (ROLLBACK_METHOD_LABEL[key] || key) : '되돌리기 정보 없음';
+            return `<strong>${esc(label)}</strong>${key ? ` <span style="color:#888;font-size:10px;font-family:monospace;margin-left:4px;">(${esc(key)})</span>` : ''}`;
+          })()}
         </div>
         ${r.rollback_hint ? `
           <div style="margin-top:6px;color:#aaa;font-size:11px;">hint:</div>
@@ -598,13 +609,17 @@
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) {
-          msgEl.innerHTML = `<span style="color:#ef9a9a;">실패 (${res.status} ${esc(json.code || '')}): ${esc(json.message || json.error || 'unknown')}</span>`;
+          // 서버 user-friendly error 우선 + code 표시. modal 닫지 않음 — 사용자 확인 후 취소/재시도.
+          const userErr = json.error   || '되돌리기 실패';
+          const code    = json.code    || `http_${res.status}`;
+          const detail  = json.message || '';
+          msgEl.innerHTML = `<span style="color:#ef9a9a;">되돌리기 실패: ${esc(userErr)} <span style="color:#888;font-family:monospace;font-size:10px;">(${esc(code)})</span>${detail ? `<br><span style="color:#aaa;font-size:11px;">${esc(detail)}</span>` : ''}</span>`;
           execBtn.disabled = false; cancelBtn.disabled = false;
           execBtn.textContent = '실행';
           return;
         }
-        msgEl.innerHTML = `<span style="color:#69f0ae;">✓ 되돌리기 성공 — rollback run #${json.rollbackRunId}</span>`;
-        // 성공 후 detail + list refresh
+        // 성공 — alert 대신 modal 내부 메시지 → 700ms 후 close + refresh
+        msgEl.innerHTML = `<span style="color:#69f0ae;">✓ 되돌리기 완료. 실행 로그를 새로고침했습니다. <span style="color:#aaa;font-size:11px;">(rollback run #${json.rollbackRunId})</span></span>`;
         setTimeout(async () => {
           close();
           await openDetail(run.id);

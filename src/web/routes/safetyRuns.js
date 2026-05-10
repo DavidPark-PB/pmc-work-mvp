@@ -183,20 +183,27 @@ router.get('/:id', async (req, res) => {
 //
 // 로그 룰: runId / executedBy / code / message 만. payload/snapshot 출력 금지.
 // ──────────────────────────────────────────────────────────────────────────
-const ERROR_STATUS = {
-  'safetyUndo/invalid_run_id':         400,
-  'safetyUndo/invalid_executed_by':    400,
-  'safetyUndo/run_not_found':          404,
-  'safetyUndo/already_rolled_back':    409,
-  'safetyUndo/not_auto':               400,
-  'safetyUndo/not_allowed':            400,
-  'safetyUndo/invalid_target_table':   400,
-  'safetyUndo/invalid_target_id':      400,
-  'safetyUndo/handler_missing':        400,
-  'safetyUndo/target_not_found':       409,
-  'safetyUndo/load_failed':            500,
-  'safetyUndo/delete_failed':          500,
-  'safetyUndo/audit_rollback_failed':  500,
+// PR U8 — code → { status, error (user-facing 메시지) } 매핑.
+// 미매핑 code 는 default 500 + '되돌리기 실패' 로 처리.
+const ERROR_MAP = {
+  'safetyUndo/run_not_found':         { status: 404, error: '실행 로그를 찾을 수 없습니다.' },
+  'safetyUndo/already_rolled_back':   { status: 409, error: '이미 되돌려진 실행 로그입니다.' },
+  'safetyUndo/not_auto':              { status: 400, error: '자동 되돌리기 대상이 아닙니다.' },
+  'safetyUndo/not_allowed':           { status: 400, error: '허용되지 않은 자동 되돌리기 액션입니다.' },
+  'safetyUndo/target_not_found':      { status: 409, error: '되돌릴 대상 데이터가 이미 없습니다.' },
+  'safetyUndo/invalid_snapshot':      { status: 400, error: '되돌리기에 필요한 snapshot 정보가 부족합니다.' },
+  'safetyUndo/unique_conflict':       { status: 409, error: '동일한 연결 정보가 이미 존재하여 되돌릴 수 없습니다.' },
+  'safetyUndo/delete_failed':         { status: 500, error: '대상 삭제 중 오류가 발생했습니다.' },
+  'safetyUndo/insert_failed':         { status: 500, error: '대상 복구 중 오류가 발생했습니다.' },
+  'safetyUndo/update_failed':         { status: 500, error: '대상 복구 중 오류가 발생했습니다.' },
+  'safetyUndo/audit_rollback_failed': { status: 500, error: '데이터는 변경됐지만 감사 로그 연결에 실패했습니다. 관리자 확인이 필요합니다.' },
+  // helper 가 throw 하는 추가 정밀 code (사장님 spec 외 — 보수적 default 매핑)
+  'safetyUndo/invalid_run_id':        { status: 400, error: '실행 로그 ID가 올바르지 않습니다.' },
+  'safetyUndo/invalid_executed_by':   { status: 400, error: '실행자 정보가 올바르지 않습니다.' },
+  'safetyUndo/invalid_target_table':  { status: 400, error: '되돌리기 대상 테이블이 올바르지 않습니다.' },
+  'safetyUndo/invalid_target_id':     { status: 400, error: '되돌리기 대상 ID가 올바르지 않습니다.' },
+  'safetyUndo/handler_missing':       { status: 400, error: '내부 오류: 되돌리기 핸들러 부재.' },
+  'safetyUndo/load_failed':           { status: 500, error: '실행 로그 로드 실패.' },
 };
 
 router.post('/:id/rollback', async (req, res) => {
@@ -220,7 +227,10 @@ router.post('/:id/rollback', async (req, res) => {
       undone:        result.undone,
     });
   } catch (err) {
-    const status = ERROR_STATUS[err.code] || 500;
+    const mapping = ERROR_MAP[err.code];
+    const status  = mapping?.status || 500;
+    const userErr = mapping?.error  || '되돌리기 실패';
+    // 로그 룰: snapshot/payload 출력 금지. runId / executedBy / code / message 만.
     console.error('[safetyRuns] rollback error:', {
       runId:      id,
       executedBy,
@@ -228,7 +238,7 @@ router.post('/:id/rollback', async (req, res) => {
       message:    err.message,
     });
     return res.status(status).json({
-      error:   '되돌리기 실패',
+      error:   userErr,
       code:    err.code || 'unknown',
       message: err.message,
     });
