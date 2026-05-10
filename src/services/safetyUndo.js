@@ -11,8 +11,10 @@
  * 정책 (PR U1 plan §2):
  *   - 기본값 manual-only — 본 service 는 allowlist 등록 action 만 처리
  *   - rollbackAction 책임 분리 — DB undo 가 먼저, audit row 는 그 후
- *   - PR U2 1차 = sku_listing_link_create 1개만 (단일 row DELETE, FK cascade 없음)
- *   - 다른 action 추가는 PR U4+ 에서 점진 도입
+ *   - PR U2 1차 = sku_listing_link_create 1개 (단일 row DELETE, FK cascade 없음)
+ *   - PR U4 2차 = sku_listing_link_delete 추가 (input_snapshot 기반 단일 row INSERT,
+ *                 PK 재사용 X 로 sequence 충돌 회피, UNIQUE 충돌은 명시 에러로 거절)
+ *   - 다른 action 추가는 PR U5+ 에서 점진 도입
  *   - 로그 룰: actionName / runId / executedBy / message 만. snapshot/payload/secret 출력 금지
  *
  * 무수정 약속:
@@ -29,8 +31,12 @@
 const supabaseClient = require('../db/supabaseClient');
 const safetyExec = require('./safetyExec');
 
-// PR U2 1차 — 가장 안전한 단일 row DELETE 1개만
-const AUTO_ROLLBACK_ACTIONS = new Set(['sku_listing_link_create']);
+// PR U2 1차 (sku_listing_link_create) + PR U4 2차 (sku_listing_link_delete).
+// 모두 단일 row 만 다루며 FK cascade 없음. 추가 action 은 PR U5+ 검토.
+const AUTO_ROLLBACK_ACTIONS = new Set([
+  'sku_listing_link_create',
+  'sku_listing_link_delete',
+]);
 
 const TABLE = 'automation_runs';
 
@@ -89,6 +95,8 @@ async function rollbackRun({ runId, executedBy, reason = null } = {}) {
   let undone;
   if (original.action_name === 'sku_listing_link_create') {
     undone = await undoSkuListingLinkCreate(original, supabase);
+  } else if (original.action_name === 'sku_listing_link_delete') {
+    undone = await undoSkuListingLinkDelete(original, supabase);
   } else {
     // 위 allowlist 체크에서 걸리므로 도달 불가지만 방어
     throw new UndoError('safetyUndo/handler_missing', `no handler for action '${original.action_name}'`);
@@ -150,6 +158,70 @@ async function undoSkuListingLinkCreate(original, supabase) {
     targetTable: original.target_table,
     targetId:    original.target_id,
     deletedLink: data,
+  };
+}
+
+/**
+ * sku_listing_link_delete undo = input_snapshot 의 삭제 전 row 로 단일 INSERT.
+ *
+ * 정책:
+ *   - PK (id) 는 재사용 X — 신규 sequence 값 사용 (sequence 충돌 회피).
+ *     원본 link 의 id 는 audit row 의 target_id 에 보존돼서 추적 가능.
+ *   - input_snapshot 우선 (PR L-1 의 beforeRow 가 들어있음). 없으면 output_snapshot fallback.
+ *   - 필수 필드 (sku_id / marketplace / listing_id) 부재 → invalid_snapshot 거절.
+ *   - UNIQUE (marketplace, listing_id, option_id) 충돌 → unique_conflict 거절
+ *     (그 사이 다른 SKU 가 같은 link 차지한 케이스. 운영자 수동 정리 필요).
+ */
+async function undoSkuListingLinkDelete(original, supabase) {
+  if (original.target_table !== 'sku_listing_link') {
+    throw new UndoError('safetyUndo/invalid_target_table', `expected target_table='sku_listing_link', got '${original.target_table}'`);
+  }
+  if (!Number.isFinite(original.target_id)) {
+    throw new UndoError('safetyUndo/invalid_target_id', `target_id is not a finite number`);
+  }
+
+  const snap = (original.input_snapshot && typeof original.input_snapshot === 'object')
+    ? original.input_snapshot
+    : (original.output_snapshot && typeof original.output_snapshot === 'object')
+      ? original.output_snapshot
+      : null;
+  if (!snap) {
+    throw new UndoError('safetyUndo/invalid_snapshot', 'input/output snapshot 부재 — 재생성 데이터 없음');
+  }
+
+  const sku_id          = Number(snap.sku_id);
+  const marketplace     = snap.marketplace;
+  const listing_id      = snap.listing_id;
+  const option_id       = snap.option_id !== undefined ? snap.option_id : null;
+  const marketplace_sku = snap.marketplace_sku !== undefined ? snap.marketplace_sku : null;
+  const is_primary      = snap.is_primary === true;
+
+  if (!Number.isFinite(sku_id) || !marketplace || !listing_id) {
+    throw new UndoError('safetyUndo/invalid_snapshot',
+      'snapshot 필수 필드 부족 — sku_id / marketplace / listing_id 확인 필요');
+  }
+
+  // PK 재사용 X — DB sequence 가 새 id 발행
+  const insertRow = { sku_id, marketplace, listing_id, option_id, marketplace_sku, is_primary };
+
+  const { data, error } = await supabase
+    .from('sku_listing_link')
+    .insert(insertRow)
+    .select('id, sku_id, marketplace, listing_id, option_id, marketplace_sku, is_primary')
+    .single();
+  if (error) {
+    if (error.code === '23505') {
+      throw new UndoError('safetyUndo/unique_conflict',
+        '동일 (marketplace, listing_id, option_id) 가 이미 다른 SKU 에 존재 — 수동 확인 필요');
+    }
+    throw new UndoError('safetyUndo/insert_failed', error.message);
+  }
+
+  return {
+    actionName:    original.action_name,
+    targetTable:   original.target_table,
+    targetId:      original.target_id,
+    recreatedLink: data,
   };
 }
 

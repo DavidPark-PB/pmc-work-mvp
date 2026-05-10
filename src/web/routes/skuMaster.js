@@ -491,9 +491,8 @@ router.delete('/:id/links/:linkId', async (req, res) => {
       targetId:         linkId,
       beforeSnapshot:   beforeRow,
       relatedSkuId:     skuId,
-      rollbackMethod:   'manual',
-      rollbackHint:
-        'INSERT INTO sku_listing_link (sku_id, marketplace, listing_id, option_id, marketplace_sku, is_primary) VALUES (<before 값>); -- before snapshot 으로 재삽입.',
+      rollbackMethod:   'auto',
+      rollbackHint:     '자동 되돌리기: 삭제 전 snapshot 을 기준으로 sku_listing_link row 를 재생성합니다. unique 충돌 시 수동 확인하세요.',
       status: 'pending',
     });
   } catch (auditErr) {
