@@ -410,8 +410,8 @@ router.post('/:id/links', async (req, res) => {
         is_primary:      isPrimary,
       },
       relatedSkuId:     skuId,
-      rollbackMethod:   'manual',
-      rollbackHint:     'DELETE FROM sku_listing_link WHERE id=<target_id>;',
+      rollbackMethod:   'auto',
+      rollbackHint:     '자동 되돌리기: 생성된 sku_listing_link row 를 삭제합니다. 실패 시 링크 상태를 확인하고 수동 삭제하세요.',
       status: 'pending',
     });
   } catch (auditErr) {
