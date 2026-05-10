@@ -16,7 +16,7 @@
  * 무수정 약속 (PR M):
  *   - safety helper (write helper) — 본 PR 에서 수정 0
  *   - automation_runs schema (040) — 본 PR 에서 변경 0
- *   - rollbackAction 호출 0 — 되돌리기 stub UI 는 modal 만, 실 호출 X
+ *   - audit helper undo 호출 0 — PR M 단계에선 stub UI 만, 실 호출 X (PR U2 에서 별 endpoint 추가)
  *   - POST 라우트 0 — GET 만
  *
  * total count 정책 (보강 1):
@@ -165,6 +165,73 @@ router.get('/:id', async (req, res) => {
   } catch (e) {
     console.error('[safetyRuns] detail unexpected:', e.message);
     res.status(500).json({ error: '실행 로그 조회 실패' });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// POST /api/safety-runs/:id/rollback — auto-undo (Phase 3 PR U2)
+//
+// 권한: admin 전용 (안전 우선 — staff 확장은 PR U-staff-scope 별 PR).
+// 동작: src/services/safetyUndo.rollbackRun() 위임.
+//   - allowlist (sku_listing_link_create 1차) + rollback_method='auto' 검증 후 실행
+//   - 성공 시 { ok, rollbackRunId, undone }
+//   - 실패 시 code 별 HTTP status 매핑
+//
+// 무수정 약속:
+//   - safetyExec 직접 require 금지 (route 에서 직접 호출 X)
+//   - audit helper undo 직접 호출 금지 — safetyUndo 내부에서만
+//
+// 로그 룰: runId / executedBy / code / message 만. payload/snapshot 출력 금지.
+// ──────────────────────────────────────────────────────────────────────────
+const ERROR_STATUS = {
+  'safetyUndo/invalid_run_id':         400,
+  'safetyUndo/invalid_executed_by':    400,
+  'safetyUndo/run_not_found':          404,
+  'safetyUndo/already_rolled_back':    409,
+  'safetyUndo/not_auto':               400,
+  'safetyUndo/not_allowed':            400,
+  'safetyUndo/invalid_target_table':   400,
+  'safetyUndo/invalid_target_id':      400,
+  'safetyUndo/handler_missing':        400,
+  'safetyUndo/target_not_found':       409,
+  'safetyUndo/load_failed':            500,
+  'safetyUndo/delete_failed':          500,
+  'safetyUndo/audit_rollback_failed':  500,
+};
+
+router.post('/:id/rollback', async (req, res) => {
+  // 권한 — admin 전용
+  if (!req.user?.isAdmin) {
+    return res.status(403).json({ error: '관리자 전용 기능입니다' });
+  }
+
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+  const reason = String(req.body?.reason || '').trim().slice(0, 500) || null;
+  const executedBy = req.user?.id;
+
+  try {
+    const safetyUndo = require('../../services/safetyUndo');
+    const result = await safetyUndo.rollbackRun({ runId: id, executedBy, reason });
+    return res.json({
+      ok: true,
+      rollbackRunId: result.rollbackRunId,
+      undone:        result.undone,
+    });
+  } catch (err) {
+    const status = ERROR_STATUS[err.code] || 500;
+    console.error('[safetyRuns] rollback error:', {
+      runId:      id,
+      executedBy,
+      code:       err.code,
+      message:    err.message,
+    });
+    return res.status(status).json({
+      error:   '되돌리기 실패',
+      code:    err.code || 'unknown',
+      message: err.message,
+    });
   }
 });
 

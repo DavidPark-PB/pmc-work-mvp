@@ -351,12 +351,30 @@
       ? `${esc(r.target_table)}${r.target_id != null ? '#' + r.target_id : ''}`
       : '<span style="color:#666;">-</span>';
 
-    // 되돌리기 버튼 표시 조건 — plan §5 (rollback_method ∈ {auto,manual} && status='succeeded')
-    const showRollbackBtn = (r.rollback_method === 'auto' || r.rollback_method === 'manual')
-      && r.status === 'succeeded';
-    const rollbackBtnHtml = showRollbackBtn
-      ? `<button id="sr-rollback-btn" type="button" style="margin-top:8px;padding:6px 14px;background:#5d3a00;border:1px solid #ffb74d;border-radius:4px;color:#ffb74d;cursor:pointer;font-size:12px;font-weight:600;">되돌리기</button>`
-      : '';
+    // PR U2 — 4분기 (auto / manual / 이미 되돌려짐 / irreversible / 그 외)
+    const alreadyRolledBack = r.status === 'rolled_back' || r.rollback_run_id != null;
+    let rollbackBtnMode = 'none';   // 'auto' | 'manual' | 'done' | 'irreversible' | 'none'
+    if (alreadyRolledBack) {
+      rollbackBtnMode = 'done';
+    } else if (r.status !== 'succeeded') {
+      rollbackBtnMode = 'none';
+    } else if (r.rollback_method === 'auto') {
+      rollbackBtnMode = 'auto';
+    } else if (r.rollback_method === 'manual') {
+      rollbackBtnMode = 'manual';
+    } else if (r.rollback_method === 'irreversible') {
+      rollbackBtnMode = 'irreversible';
+    }
+    let rollbackBtnHtml = '';
+    if (rollbackBtnMode === 'auto') {
+      rollbackBtnHtml = `<button id="sr-rollback-btn" data-mode="auto" type="button" style="margin-top:8px;padding:6px 14px;background:#1565c0;border:1px solid #64b5f6;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">되돌리기 실행</button>`;
+    } else if (rollbackBtnMode === 'manual') {
+      rollbackBtnHtml = `<button id="sr-rollback-btn" data-mode="manual" type="button" style="margin-top:8px;padding:6px 14px;background:#5d3a00;border:1px solid #ffb74d;border-radius:4px;color:#ffb74d;cursor:pointer;font-size:12px;font-weight:600;">수동 되돌리기 안내</button>`;
+    } else if (rollbackBtnMode === 'irreversible') {
+      rollbackBtnHtml = `<div style="margin-top:8px;padding:6px 10px;background:#37474f;border-radius:4px;color:#bdbdbd;font-size:11px;">되돌릴 수 없음 (irreversible)</div>`;
+    } else if (rollbackBtnMode === 'done') {
+      rollbackBtnHtml = `<div style="margin-top:8px;padding:6px 10px;background:#1a3a4a;border-radius:4px;color:#64b5f6;font-size:11px;">이미 되돌려진 run 입니다</div>`;
+    }
 
     // rollback chain
     let chainHtml = '';
@@ -444,10 +462,15 @@
       ${snapshotPre('output_snapshot', r.output_snapshot)}
     `;
 
-    // 되돌리기 버튼 stub (보강: network request 0, helper invocation 0)
-    if (showRollbackBtn) {
-      const btn = document.getElementById('sr-rollback-btn');
-      if (btn) btn.addEventListener('click', () => onRollbackClick(r));
+    // PR U2 — auto/manual 분기 핸들러
+    const btn = document.getElementById('sr-rollback-btn');
+    if (btn) {
+      const mode = btn.dataset.mode;
+      if (mode === 'auto') {
+        btn.addEventListener('click', () => onAutoRollbackClick(r));
+      } else if (mode === 'manual') {
+        btn.addEventListener('click', () => onManualRollbackClick(r));
+      }
     }
     // rollback chain 의 원본 링크
     const orLink = document.getElementById('sr-open-original');
@@ -467,9 +490,9 @@
     });
   }
 
-  // ── 되돌리기 stub modal (PR M §2-1 A) ────────────────────
-  // 정책: network request 0건, audit helper invocation 0건. 단순 안내 modal.
-  function onRollbackClick(run) {
+  // ── manual 안내 modal (PR M §2-1 A — manual 액션용 보존) ──
+  // 정책: server endpoint 호출 0건, audit helper invocation 0건. 단순 안내 modal.
+  function onManualRollbackClick(run) {
     const targetStr = run.target_table
       ? `${run.target_table}${run.target_id != null ? '#' + run.target_id : ''}`
       : '-';
@@ -481,9 +504,91 @@
     if (run.rollback_hint) infoLines.push(`hint:\n${run.rollback_hint}`);
 
     showStubModal({
-      title: '되돌리기',
-      body:  '실제 undo 실행은 PR auto-undo 에서 활성화됩니다. 현재는 audit 메타데이터만 표시합니다.',
+      title: '수동 되돌리기 안내',
+      body:  '이 액션은 자동 되돌리기 대상이 아닙니다. 현재는 audit 메타데이터와 수동 처리 힌트만 표시합니다.',
       info:  infoLines,
+    });
+  }
+
+  // ── PR U2 — 실 auto rollback modal ──
+  // 정책: rollback_method='auto' + allowlist 등록 액션만 도달.
+  // 클릭 → reason 입력 modal → 추가 confirm → POST /api/safety-runs/:id/rollback
+  function onAutoRollbackClick(run) {
+    showAutoRollbackModal(run);
+  }
+
+  function showAutoRollbackModal(run) {
+    const existing = document.getElementById('sr-auto-modal');
+    if (existing) existing.remove();
+
+    const targetStr = run.target_table
+      ? `${run.target_table}${run.target_id != null ? '#' + run.target_id : ''}`
+      : '-';
+
+    const overlay = document.createElement('div');
+    overlay.id = 'sr-auto-modal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+    overlay.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;max-width:520px;width:100%;color:#fff;">
+        <h3 style="margin:0 0 10px;font-size:16px;color:#64b5f6;">↺ 되돌리기 실행</h3>
+        <div style="color:#ffcdd2;font-size:13px;margin-bottom:14px;line-height:1.5;font-weight:600;">
+          ⚠️ 이 작업은 실제 데이터를 변경합니다.
+        </div>
+        <pre style="background:#0f0f23;color:#cfd8dc;padding:8px;border-radius:4px;font-size:11px;margin:4px 0;white-space:pre-wrap;word-break:break-all;">${esc(run.action_name || run.automation_type || '?')} #${run.id}\ntarget: ${esc(targetStr)}</pre>
+        <label style="display:block;margin-top:10px;color:#aaa;font-size:11px;">사유 (선택, 최대 500자):</label>
+        <textarea id="sr-auto-reason" maxlength="500" rows="3" style="width:100%;margin-top:4px;padding:6px;background:#0f0f23;border:1px solid #333;color:#cfd8dc;border-radius:4px;font-size:12px;box-sizing:border-box;"></textarea>
+        <div id="sr-auto-msg" style="margin-top:10px;font-size:12px;min-height:18px;"></div>
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:14px;">
+          <button id="sr-auto-cancel" type="button" style="padding:6px 14px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:13px;">취소</button>
+          <button id="sr-auto-exec" type="button" style="padding:6px 14px;background:#1565c0;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">실행</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    document.getElementById('sr-auto-cancel').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+    document.getElementById('sr-auto-exec').addEventListener('click', async () => {
+      const reason = document.getElementById('sr-auto-reason').value.trim().slice(0, 500);
+      const msgEl  = document.getElementById('sr-auto-msg');
+      const execBtn   = document.getElementById('sr-auto-exec');
+      const cancelBtn = document.getElementById('sr-auto-cancel');
+
+      if (!confirm('정말 되돌리기를 실행할까요? 이 작업은 실제 DB 데이터를 변경합니다.')) return;
+
+      execBtn.disabled = true; cancelBtn.disabled = true;
+      execBtn.textContent = '실행 중...';
+      msgEl.innerHTML = '<span style="color:#aaa;">서버에 되돌리기 요청 중...</span>';
+
+      try {
+        const res = await fetch('/api/safety-runs/' + run.id + '/rollback', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: reason || null }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          msgEl.innerHTML = `<span style="color:#ef9a9a;">실패 (${res.status} ${esc(json.code || '')}): ${esc(json.message || json.error || 'unknown')}</span>`;
+          execBtn.disabled = false; cancelBtn.disabled = false;
+          execBtn.textContent = '실행';
+          return;
+        }
+        msgEl.innerHTML = `<span style="color:#69f0ae;">✓ 되돌리기 성공 — rollback run #${json.rollbackRunId}</span>`;
+        // 성공 후 detail + list refresh
+        setTimeout(async () => {
+          close();
+          await openDetail(run.id);
+          await refresh();
+        }, 700);
+      } catch (e) {
+        msgEl.innerHTML = `<span style="color:#ef9a9a;">네트워크 오류: ${esc(e.message)}</span>`;
+        execBtn.disabled = false; cancelBtn.disabled = false;
+        execBtn.textContent = '실행';
+      }
     });
   }
 
