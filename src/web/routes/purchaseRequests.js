@@ -1,6 +1,21 @@
 /**
  * 발주 요청 API (/api/purchase-requests)
  * 주의: 레거시 /api/orders/*는 주문(판매) 관리용이라 이름 충돌을 피하기 위해 purchase-requests 경로 사용.
+ *
+ * Phase 3 PR L-2 audit wiring:
+ *   POST   /                      purchase_request_create
+ *   PATCH  /:id                   purchase_request_update
+ *   PATCH  /:id/approve           purchase_request_approve
+ *   PATCH  /:id/reject            purchase_request_reject
+ *   PATCH  /:id/order             purchase_request_ordered
+ *
+ *   - audit 정책: pre-runAction strict (실패 시 500), post-updateRun best-effort.
+ *   - validation 등 audit 생성 전 실패는 audit 기록 X.
+ *   - duplicate / 부수효과 없는 거부 = status='cancelled', 그 외 실패 = 'failed'.
+ *   - snapshot 에는 핵심 필드만 — req.body 전체 / token / secret 일체 포함 금지.
+ *   - rollback_method='manual' + 짧은 hint.
+ *   - PATCH /:id/unorder 는 spec 의 cancel 과 의미 다름 (ordered→approved 되돌리기) — audit 추가 안 함, 후속 PR 결정.
+ *   - DELETE / 첨부 라우트는 spec 부재 — audit 추가 안 함.
  */
 const express = require('express');
 const crypto = require('crypto');
@@ -12,6 +27,27 @@ const attRepo = require('../../db/purchaseRequestAttachmentRepository');
 const { notify, notifyAdmins, getAdminIds } = require('../../services/notificationService');
 const sseHub = require('../../services/sseHub');
 const { getClient } = require('../../db/supabaseClient');
+const safetyExec = require('../../services/safetyExec');
+
+// snapshot 표준화 — purchase_requests row → 핵심 필드만 (raw body / token / secret 부재)
+function prSnapshot(r) {
+  if (!r) return null;
+  return {
+    id:               r.id,
+    status:           r.status,
+    product_name:     r.product_name,
+    quantity:         r.quantity,
+    estimated_price:  r.estimated_price,
+    priority:         r.priority,
+    requested_by:     r.requested_by,
+    decision_by:      r.decision_by,
+    decision_at:      r.decision_at,
+    rejection_reason: r.rejection_reason,
+    ordered_by:       r.ordered_by,
+    ordered_at:       r.ordered_at,
+    updated_at:       r.updated_at,
+  };
+}
 
 const router = express.Router();
 
@@ -103,21 +139,45 @@ router.get('/insights', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/purchase-requests
+// POST /api/purchase-requests                                   [audit: purchase_request_create]
 router.post('/', async (req, res) => {
-  try {
-    const { productName, quantity, estimatedPrice, priority, reason } = req.body || {};
-    if (!productName || !productName.trim()) return res.status(400).json({ error: '상품명을 입력하세요' });
-    const qty = Number(quantity);
-    if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: '수량은 1 이상이어야 합니다' });
+  // pre-validation (audit row 생성 전)
+  const { productName, quantity, estimatedPrice, priority, reason } = req.body || {};
+  if (!productName || !productName.trim()) return res.status(400).json({ error: '상품명을 입력하세요' });
+  const qty = Number(quantity);
+  if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: '수량은 1 이상이어야 합니다' });
 
+  const executedBy = req.user.id;
+
+  // pre-action audit (strict)
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'purchase_request_create',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'purchase_requests',
+      targetId:         null,             // post 에 채움
+      beforeSnapshot:   null,             // CREATE
+      rollbackMethod:   'manual',
+      rollbackHint:     '생성된 purchase_requests row 를 확인 후 취소/삭제 정책에 따라 수동 처리하세요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[purchase-requests] runAction failed (purchase_request_create):', {
+      actionName: 'purchase_request_create', executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
+
+  try {
     const created = await repo.createRequest({
       product_name: productName.trim(),
       quantity: qty,
       estimated_price: estimatedPrice != null && estimatedPrice !== '' ? String(estimatedPrice) : null,
       priority: priority === 'urgent' ? 'urgent' : 'normal',
       reason: reason?.trim() || null,
-      requested_by: req.user.id,
+      requested_by: executedBy,
     });
 
     if (!req.user.isAdmin) {
@@ -134,70 +194,144 @@ router.post('/', async (req, res) => {
       sseHub.sendToMany(adminIds, { type: 'purchase_requested', title: body, linkUrl: '/?page=orders' });
     }
 
+    safetyExec.updateRun(run.id, {
+      status:        'succeeded',
+      targetId:      created.id,
+      afterSnapshot: prSnapshot(created),
+    });
     res.json({ data: created });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// PATCH /api/purchase-requests/:id — 요청 내용 수정
+// PATCH /api/purchase-requests/:id — 요청 내용 수정                  [audit: purchase_request_update]
 //  - 사장: 언제든 수정 가능
 //  - 요청자 본인: status=pending 일 때만
 //  - 그 외 직원: 금지
 router.patch('/:id', async (req, res) => {
+  // pre-validation (audit row 생성 전)
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+  let existing;
   try {
-    const id = parseInt(req.params.id, 10);
-    const existing = await repo.getRequest(id);
-    if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+    existing = await repo.getRequest(id);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
 
-    const isOwner = existing.requested_by === req.user.id;
-    if (!req.user.isAdmin && !isOwner) {
-      return res.status(403).json({ error: '본인 요청만 수정할 수 있습니다' });
-    }
-    if (!req.user.isAdmin && existing.status !== 'pending') {
-      return res.status(400).json({ error: '이미 처리된 요청은 수정할 수 없습니다 (관리자 문의)' });
-    }
+  const isOwner = existing.requested_by === req.user.id;
+  if (!req.user.isAdmin && !isOwner) {
+    return res.status(403).json({ error: '본인 요청만 수정할 수 있습니다' });
+  }
+  if (!req.user.isAdmin && existing.status !== 'pending') {
+    return res.status(400).json({ error: '이미 처리된 요청은 수정할 수 없습니다 (관리자 문의)' });
+  }
 
-    const { productName, quantity, estimatedPrice, priority, reason } = req.body || {};
-    const updates = {};
-    if (productName !== undefined) {
-      const trimmed = String(productName).trim();
-      if (!trimmed) return res.status(400).json({ error: '상품명을 입력하세요' });
-      updates.product_name = trimmed;
-    }
-    if (quantity !== undefined) {
-      const qty = Number(quantity);
-      if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: '수량은 1 이상이어야 합니다' });
-      updates.quantity = qty;
-    }
-    if (estimatedPrice !== undefined) {
-      updates.estimated_price = estimatedPrice !== null && estimatedPrice !== '' ? String(estimatedPrice) : null;
-    }
-    if (priority !== undefined) {
-      updates.priority = priority === 'urgent' ? 'urgent' : 'normal';
-    }
-    if (reason !== undefined) {
-      updates.reason = String(reason).trim() || null;
-    }
+  const { productName, quantity, estimatedPrice, priority, reason } = req.body || {};
+  const updates = {};
+  if (productName !== undefined) {
+    const trimmed = String(productName).trim();
+    if (!trimmed) return res.status(400).json({ error: '상품명을 입력하세요' });
+    updates.product_name = trimmed;
+  }
+  if (quantity !== undefined) {
+    const qty = Number(quantity);
+    if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: '수량은 1 이상이어야 합니다' });
+    updates.quantity = qty;
+  }
+  if (estimatedPrice !== undefined) {
+    updates.estimated_price = estimatedPrice !== null && estimatedPrice !== '' ? String(estimatedPrice) : null;
+  }
+  if (priority !== undefined) {
+    updates.priority = priority === 'urgent' ? 'urgent' : 'normal';
+  }
+  if (reason !== undefined) {
+    updates.reason = String(reason).trim() || null;
+  }
 
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: '변경할 내용이 없습니다' });
-    }
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: '변경할 내용이 없습니다' });
+  }
 
+  const executedBy = req.user.id;
+
+  // pre-action audit (strict)
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'purchase_request_update',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'purchase_requests',
+      targetId:         id,
+      beforeSnapshot:   prSnapshot(existing),
+      rollbackMethod:   'manual',
+      rollbackHint:     'input_snapshot 을 참고해 purchase_requests row 를 수동 복구하세요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[purchase-requests] runAction failed (purchase_request_update):', {
+      actionName: 'purchase_request_update', id, executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
+
+  try {
     const updated = await repo.updateRequest(id, updates);
+    safetyExec.updateRun(run.id, { status: 'succeeded', afterSnapshot: prSnapshot(updated) });
     res.json({ data: updated });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// PATCH /api/purchase-requests/:id/approve
+// PATCH /api/purchase-requests/:id/approve                      [audit: purchase_request_approve]
 router.patch('/:id/approve', requireAdmin, async (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const existing = await repo.getRequest(id);
-    if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
-    if (existing.status !== 'pending') return res.status(400).json({ error: '이미 처리된 요청입니다' });
+  // pre-validation (audit row 생성 전)
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
 
+  let existing;
+  try {
+    existing = await repo.getRequest(id);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+  if (existing.status !== 'pending') return res.status(400).json({ error: '이미 처리된 요청입니다' });
+
+  const executedBy = req.user.id;
+
+  // pre-action audit (strict)
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'purchase_request_approve',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'purchase_requests',
+      targetId:         id,
+      beforeSnapshot:   prSnapshot(existing),
+      rollbackMethod:   'manual',
+      rollbackHint:     'input_snapshot 을 참고해 purchase_requests row 를 수동 복구하세요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[purchase-requests] runAction failed (purchase_request_approve):', {
+      actionName: 'purchase_request_approve', id, executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
+
+  try {
     const updated = await repo.updateRequest(id, {
       status: 'approved',
-      decision_by: req.user.id,
+      decision_by: executedBy,
       decision_at: new Date().toISOString(),
       rejection_reason: null,
       rejection_note: null,
@@ -215,24 +349,59 @@ router.patch('/:id/approve', requireAdmin, async (req, res) => {
     });
     sseHub.sendTo(existing.requested_by, { type: 'purchase_approved', title: aBody, linkUrl: '/?page=orders' });
 
+    safetyExec.updateRun(run.id, { status: 'succeeded', afterSnapshot: prSnapshot(updated) });
     res.json({ data: updated });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// PATCH /api/purchase-requests/:id/reject
+// PATCH /api/purchase-requests/:id/reject                       [audit: purchase_request_reject]
 router.patch('/:id/reject', requireAdmin, async (req, res) => {
+  // pre-validation (audit row 생성 전)
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+  const { reason, note } = req.body || {};
+  if (!reason || !REJECT_LABELS[reason]) return res.status(400).json({ error: '반려 사유를 선택하세요' });
+
+  let existing;
   try {
-    const id = parseInt(req.params.id, 10);
-    const { reason, note } = req.body || {};
-    if (!reason || !REJECT_LABELS[reason]) return res.status(400).json({ error: '반려 사유를 선택하세요' });
+    existing = await repo.getRequest(id);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+  if (existing.status !== 'pending') return res.status(400).json({ error: '이미 처리된 요청입니다' });
 
-    const existing = await repo.getRequest(id);
-    if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
-    if (existing.status !== 'pending') return res.status(400).json({ error: '이미 처리된 요청입니다' });
+  const executedBy = req.user.id;
 
+  // pre-action audit (strict)
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'purchase_request_reject',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'purchase_requests',
+      targetId:         id,
+      beforeSnapshot:   prSnapshot(existing),
+      rollbackMethod:   'manual',
+      rollbackHint:     'input_snapshot 을 참고해 purchase_requests row 를 수동 복구하세요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[purchase-requests] runAction failed (purchase_request_reject):', {
+      actionName: 'purchase_request_reject', id, executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
+
+  try {
     const updated = await repo.updateRequest(id, {
       status: 'rejected',
-      decision_by: req.user.id,
+      decision_by: executedBy,
       decision_at: new Date().toISOString(),
       rejection_reason: reason,
       rejection_note: note?.trim() || null,
@@ -250,29 +419,64 @@ router.patch('/:id/reject', requireAdmin, async (req, res) => {
     });
     sseHub.sendTo(existing.requested_by, { type: 'purchase_rejected', title: rBody, linkUrl: '/?page=orders' });
 
+    safetyExec.updateRun(run.id, { status: 'succeeded', afterSnapshot: prSnapshot(updated) });
     res.json({ data: updated });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// PATCH /api/purchase-requests/:id/order — 주문 완료 체크 (전 직원)
+// PATCH /api/purchase-requests/:id/order — 주문 완료 체크 (전 직원)   [audit: purchase_request_ordered]
 // approved → ordered 만 허용. ordered_by/ordered_at 기록.
 router.patch('/:id/order', async (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const existing = await repo.getRequest(id);
-    if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
-    if (existing.status !== 'approved') {
-      return res.status(400).json({ error: '승인된 요청만 주문완료 처리할 수 있습니다' });
-    }
+  // pre-validation (audit row 생성 전)
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
 
+  let existing;
+  try {
+    existing = await repo.getRequest(id);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+  if (existing.status !== 'approved') {
+    return res.status(400).json({ error: '승인된 요청만 주문완료 처리할 수 있습니다' });
+  }
+
+  const executedBy = req.user.id;
+
+  // pre-action audit (strict)
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'purchase_request_ordered',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'purchase_requests',
+      targetId:         id,
+      beforeSnapshot:   prSnapshot(existing),
+      rollbackMethod:   'manual',
+      rollbackHint:     'input_snapshot 을 참고해 purchase_requests row 를 수동 복구하세요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[purchase-requests] runAction failed (purchase_request_ordered):', {
+      actionName: 'purchase_request_ordered', id, executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
+
+  try {
     const updated = await repo.updateRequest(id, {
       status: 'ordered',
-      ordered_by: req.user.id,
+      ordered_by: executedBy,
       ordered_at: new Date().toISOString(),
     });
 
     // 요청자에게 알림 (주문자 본인이면 생략)
-    if (existing.requested_by && existing.requested_by !== req.user.id) {
+    if (existing.requested_by && existing.requested_by !== executedBy) {
       const oBody = `${existing.product_name} × ${existing.quantity} — ${req.user.displayName} 주문`;
       await notify({
         recipientId: existing.requested_by,
@@ -286,8 +490,12 @@ router.patch('/:id/order', async (req, res) => {
       sseHub.sendTo(existing.requested_by, { type: 'purchase_ordered', title: oBody, linkUrl: '/?page=orders' });
     }
 
+    safetyExec.updateRun(run.id, { status: 'succeeded', afterSnapshot: prSnapshot(updated) });
     res.json({ data: updated });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // PATCH /api/purchase-requests/:id/unorder — 주문완료 되돌리기

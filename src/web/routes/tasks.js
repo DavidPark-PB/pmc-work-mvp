@@ -10,6 +10,19 @@
  *   - 상태 변경 (status/completionNote/userId?) — recipient 기준
  *     - userId 생략 시 req.user.id (본인) 대상
  *     - userId 지정은 admin만 허용 (직원 대신 완료 처리)
+ *
+ * Phase 3 PR L-2 audit wiring:
+ *   POST   /                  task_create
+ *   PATCH  /:id (메타 분기)    task_update
+ *   PATCH  /:id (상태 분기)    task_status_update
+ *   POST   /:id/complete      task_status_update (multipart + 완료)
+ *   DELETE /:id               task_delete
+ *
+ *   - audit 정책: pre-runAction strict (실패 시 500), post-updateRun best-effort.
+ *   - validation 등 audit 생성 전 실패는 audit 기록 X.
+ *   - snapshot 에는 핵심 필드만 — req.body 전체 / token / secret 일체 포함 금지.
+ *   - 로그에는 actionName / id / executedBy / error.message 만.
+ *   - rollback_method='manual' + 짧은 hint.
  */
 const express = require('express');
 const crypto = require('crypto');
@@ -19,6 +32,29 @@ const repo = require('../../db/teamTaskRepository');
 const { notify, notifyMany, notifyAdmins, getStaffIds } = require('../../services/notificationService');
 const sseHub = require('../../services/sseHub');
 const { getClient } = require('../../db/supabaseClient');
+const safetyExec = require('../../services/safetyExec');
+
+// snapshot 압축용: 긴 텍스트를 max 500자로 자름 (raw body dump 방지)
+function previewText(s, max = 500) {
+  if (s == null) return null;
+  const str = String(s);
+  return str.length > max ? str.slice(0, max) + '…' : str;
+}
+
+// snapshot 표준화 — task row → 핵심 필드만
+function taskSnapshot(t) {
+  if (!t) return null;
+  return {
+    id:             t.id,
+    title:          previewText(t.title, 500),
+    status:         t.status,
+    priority:       t.priority,
+    assignee_id:    t.assignee_id,
+    assignee_scope: t.assignee_scope,
+    due_date:       t.due_date,
+    updated_at:     t.updated_at,
+  };
+}
 
 const router = express.Router();
 
@@ -84,18 +120,42 @@ router.get('/stats', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/tasks (owner only)
+// POST /api/tasks (owner only)                                  [audit: task_create]
 router.post('/', requireAdmin, async (req, res) => {
+  // pre-validation (audit row 생성 전 — 실패 시 audit 기록 X)
+  const { title, assigneeId, assigneeScope, dueDate, priority, memo } = req.body || {};
+  if (!title || !title.trim()) return res.status(400).json({ error: '업무 내용을 입력하세요' });
+
+  const scope = assigneeScope === 'all' ? 'all' : 'specific';
+  const assignee = scope === 'all' ? null : (assigneeId ? parseInt(assigneeId, 10) : null);
+  if (scope === 'specific' && !assignee) {
+    return res.status(400).json({ error: '담당자를 선택하거나 전체 공지로 지정하세요' });
+  }
+
+  const executedBy = req.user.id;
+
+  // pre-action audit (strict)
+  let run;
   try {
-    const { title, assigneeId, assigneeScope, dueDate, priority, memo } = req.body || {};
-    if (!title || !title.trim()) return res.status(400).json({ error: '업무 내용을 입력하세요' });
+    run = await safetyExec.runAction({
+      actionName:       'task_create',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'team_tasks',
+      targetId:         null,             // post 에 채움
+      beforeSnapshot:   null,             // CREATE
+      rollbackMethod:   'manual',
+      rollbackHint:     '생성된 team_tasks row 를 확인 후 close/delete 정책에 따라 수동 처리하세요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[tasks] runAction failed (task_create):', {
+      actionName: 'task_create', executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
 
-    const scope = assigneeScope === 'all' ? 'all' : 'specific';
-    const assignee = scope === 'all' ? null : (assigneeId ? parseInt(assigneeId, 10) : null);
-    if (scope === 'specific' && !assignee) {
-      return res.status(400).json({ error: '담당자를 선택하거나 전체 공지로 지정하세요' });
-    }
-
+  try {
     const { task, recipientCount } = await repo.createTask({
       title: title.trim(),
       assignee_id: assignee,
@@ -103,7 +163,7 @@ router.post('/', requireAdmin, async (req, res) => {
       due_date: dueDate ? new Date(dueDate).toISOString() : null,
       priority: priority === 'urgent' ? 'urgent' : 'normal',
       memo: memo?.trim() || null,
-      created_by: req.user.id,
+      created_by: executedBy,
     });
 
     // 알림 (DB) + SSE 실시간 이벤트
@@ -117,7 +177,7 @@ router.post('/', requireAdmin, async (req, res) => {
       linkUrl: '/?page=tasks',
     };
 
-    if (scope === 'specific' && assignee && assignee !== req.user.id) {
+    if (scope === 'specific' && assignee && assignee !== executedBy) {
       await notify({
         recipientId: assignee,
         type: 'task_assigned',
@@ -141,70 +201,138 @@ router.post('/', requireAdmin, async (req, res) => {
       sseHub.sendToMany(staffIds, ssePayload);
     }
 
+    // post-action audit (best-effort) — 핵심 필드만
+    safetyExec.updateRun(run.id, {
+      status:        'succeeded',
+      targetId:      task.id,
+      afterSnapshot: { ...taskSnapshot(task), recipient_count: recipientCount },
+    });
+
     res.json({ data: task, recipientCount });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // PATCH /api/tasks/:id
 // 2가지 모드 자동 분기:
-//   메타 필드 (title/due/priority/memo/assigneeId/assigneeScope) → admin만, team_tasks update
-//   status/completionNote → recipient 업데이트
+//   메타 필드 (title/due/priority/memo/assigneeId/assigneeScope) → admin만, team_tasks update  [audit: task_update]
+//   status/completionNote → recipient 업데이트                                                  [audit: task_status_update]
+// 두 분기가 동시 발생하면 audit row 2건 생성.
 router.patch('/:id', async (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const task = await repo.getTask(id);
-    if (!task) return res.status(404).json({ error: '업무를 찾을 수 없습니다' });
+  // pre-validation (audit row 생성 전)
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
 
-    const body = req.body || {};
-    const isMetaUpdate = body.title !== undefined || body.assigneeScope !== undefined ||
-                         body.assigneeId !== undefined || body.dueDate !== undefined ||
-                         body.priority !== undefined || body.memo !== undefined;
-    const isStatusUpdate = body.status !== undefined || body.completionNote !== undefined;
+  const task = await repo.getTask(id).catch((e) => { throw e; });
+  if (!task) return res.status(404).json({ error: '업무를 찾을 수 없습니다' });
 
-    // 메타 업데이트
-    if (isMetaUpdate) {
-      if (!req.user.isAdmin) return res.status(403).json({ error: '메타데이터 수정은 사장만 가능합니다' });
-      const metaUpdates = {};
-      if (body.title !== undefined) metaUpdates.title = body.title.trim();
-      if (body.dueDate !== undefined) metaUpdates.due_date = body.dueDate ? new Date(body.dueDate).toISOString() : null;
-      if (body.priority !== undefined) metaUpdates.priority = body.priority;
-      if (body.memo !== undefined) metaUpdates.memo = body.memo?.trim() || null;
-      // assignee 재배정은 지금은 비활성 (recipient 재구성 필요 — 추후)
-      if (Object.keys(metaUpdates).length === 0 && !isStatusUpdate) {
-        return res.status(400).json({ error: '변경할 내용이 없습니다' });
+  const body = req.body || {};
+  const isMetaUpdate = body.title !== undefined || body.assigneeScope !== undefined ||
+                       body.assigneeId !== undefined || body.dueDate !== undefined ||
+                       body.priority !== undefined || body.memo !== undefined;
+  const isStatusUpdate = body.status !== undefined || body.completionNote !== undefined;
+
+  const executedBy = req.user.id;
+
+  // ── 메타 업데이트 ──                                              [audit: task_update]
+  if (isMetaUpdate) {
+    if (!req.user.isAdmin) return res.status(403).json({ error: '메타데이터 수정은 사장만 가능합니다' });
+    const metaUpdates = {};
+    if (body.title !== undefined) metaUpdates.title = body.title.trim();
+    if (body.dueDate !== undefined) metaUpdates.due_date = body.dueDate ? new Date(body.dueDate).toISOString() : null;
+    if (body.priority !== undefined) metaUpdates.priority = body.priority;
+    if (body.memo !== undefined) metaUpdates.memo = body.memo?.trim() || null;
+    // assignee 재배정은 지금은 비활성 (recipient 재구성 필요 — 추후)
+    if (Object.keys(metaUpdates).length === 0 && !isStatusUpdate) {
+      return res.status(400).json({ error: '변경할 내용이 없습니다' });
+    }
+    if (Object.keys(metaUpdates).length > 0) {
+      let metaRun;
+      try {
+        metaRun = await safetyExec.runAction({
+          actionName:       'task_update',
+          executedBy,
+          isLegacyExecutor: req.user?.isLegacy === true,
+          targetTable:      'team_tasks',
+          targetId:         id,
+          beforeSnapshot:   taskSnapshot(task),
+          relatedTaskId:    id,
+          rollbackMethod:   'manual',
+          rollbackHint:     'input_snapshot 을 참고해 team_tasks row 를 수동 복구하세요.',
+          status: 'pending',
+        });
+      } catch (auditErr) {
+        console.error('[tasks] runAction failed (task_update):', {
+          actionName: 'task_update', id, executedBy, message: auditErr.message,
+        });
+        return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
       }
-      if (Object.keys(metaUpdates).length > 0) {
+      try {
         await repo.updateTaskMeta(id, metaUpdates);
+        const refreshed = await repo.getTask(id);
+        safetyExec.updateRun(metaRun.id, { status: 'succeeded', afterSnapshot: taskSnapshot(refreshed) });
+      } catch (e) {
+        safetyExec.updateRun(metaRun.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+        return res.status(500).json({ error: e.message });
+      }
+    }
+  }
+
+  // ── 상태 업데이트 (recipient 기준) ──                             [audit: task_status_update]
+  if (isStatusUpdate) {
+    const targetUserId = req.user.isAdmin && body.userId ? parseInt(body.userId, 10) : req.user.id;
+
+    // 본인이 아닌 recipient 대상은 admin만 가능
+    if (targetUserId !== req.user.id && !req.user.isAdmin) {
+      return res.status(403).json({ error: '타인 상태 변경은 사장만 가능합니다' });
+    }
+
+    // recipient 존재 확인
+    const rec = await repo.getRecipient(id, targetUserId);
+    if (!rec) return res.status(404).json({ error: '해당 직원의 업무 수신 기록이 없습니다' });
+
+    // 상태 validation
+    const newStatus = body.status;
+    if (newStatus !== undefined && !['pending', 'in_progress', 'done'].includes(newStatus)) {
+      return res.status(400).json({ error: '올바른 상태가 아닙니다' });
+    }
+
+    // done인데 본인 완료 + 사장 아님 → 코멘트 필수
+    if (newStatus === 'done' && targetUserId === req.user.id && !req.user.isAdmin) {
+      const note = body.completionNote;
+      if (!note || !String(note).trim()) {
+        return res.status(400).json({ error: '완료 코멘트를 입력하세요' });
       }
     }
 
-    // 상태 업데이트 (recipient 기준)
-    if (isStatusUpdate) {
-      const targetUserId = req.user.isAdmin && body.userId ? parseInt(body.userId, 10) : req.user.id;
+    let statusRun;
+    try {
+      statusRun = await safetyExec.runAction({
+        actionName:       'task_status_update',
+        executedBy,
+        isLegacyExecutor: req.user?.isLegacy === true,
+        targetTable:      'team_tasks',
+        targetId:         id,
+        beforeSnapshot:   {
+          ...taskSnapshot(task),
+          recipient_user_id: targetUserId,
+          recipient_status:  rec.status,
+        },
+        relatedTaskId:    id,
+        rollbackMethod:   'manual',
+        rollbackHint:     'input_snapshot 을 참고해 team_tasks / team_task_recipients row 를 수동 복구하세요.',
+        status: 'pending',
+      });
+    } catch (auditErr) {
+      console.error('[tasks] runAction failed (task_status_update):', {
+        actionName: 'task_status_update', id, executedBy, message: auditErr.message,
+      });
+      return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+    }
 
-      // 본인이 아닌 recipient 대상은 admin만 가능
-      if (targetUserId !== req.user.id && !req.user.isAdmin) {
-        return res.status(403).json({ error: '타인 상태 변경은 사장만 가능합니다' });
-      }
-
-      // recipient 존재 확인
-      const rec = await repo.getRecipient(id, targetUserId);
-      if (!rec) return res.status(404).json({ error: '해당 직원의 업무 수신 기록이 없습니다' });
-
-      // 상태 validation
-      const newStatus = body.status;
-      if (newStatus !== undefined && !['pending', 'in_progress', 'done'].includes(newStatus)) {
-        return res.status(400).json({ error: '올바른 상태가 아닙니다' });
-      }
-
-      // done인데 본인 완료 + 사장 아님 → 코멘트 필수
-      if (newStatus === 'done' && targetUserId === req.user.id && !req.user.isAdmin) {
-        const note = body.completionNote;
-        if (!note || !String(note).trim()) {
-          return res.status(400).json({ error: '완료 코멘트를 입력하세요' });
-        }
-      }
-
+    try {
       await repo.updateRecipient(id, targetUserId, {
         status: newStatus,
         completionNote: body.completionNote !== undefined ? (body.completionNote?.trim() || null) : undefined,
@@ -221,14 +349,29 @@ router.patch('/:id', async (req, res) => {
           relatedId: id,
         });
       }
-    }
 
+      const refreshed = await repo.getTask(id);
+      safetyExec.updateRun(statusRun.id, {
+        status: 'succeeded',
+        afterSnapshot: {
+          ...taskSnapshot(refreshed),
+          recipient_user_id: targetUserId,
+          recipient_status:  newStatus !== undefined ? newStatus : rec.status,
+        },
+      });
+    } catch (e) {
+      safetyExec.updateRun(statusRun.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  try {
     const updated = await repo.getTask(id);
     res.json({ data: updated });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/tasks/:id/complete — 본인 완료 + 파일 첨부 (multipart)
+// POST /api/tasks/:id/complete — 본인 완료 + 파일 첨부 (multipart)   [audit: task_status_update]
 // 필드: completionNote(text, 직원 필수), files[]
 router.post('/:id/complete', (req, res, next) => {
   uploadAttachments.array('files', MAX_FILES_PER_COMPLETE)(req, res, (err) => {
@@ -247,24 +390,62 @@ router.post('/:id/complete', (req, res, next) => {
   const files = req.files || [];
   const uploadedPaths = [];
 
+  // pre-validation (audit row 생성 전)
+  if (!Number.isFinite(taskId)) return res.status(400).json({ error: 'invalid id' });
+
+  let task, rec, note, existingCount;
   try {
-    const task = await repo.getTask(taskId);
+    task = await repo.getTask(taskId);
     if (!task) return res.status(404).json({ error: '업무를 찾을 수 없습니다' });
 
     const targetUserId = req.user.id;
-    const rec = await repo.getRecipient(taskId, targetUserId);
+    rec = await repo.getRecipient(taskId, targetUserId);
     if (!rec) return res.status(404).json({ error: '해당 업무의 수신자가 아닙니다' });
 
-    const note = (req.body?.completionNote || '').trim();
+    note = (req.body?.completionNote || '').trim();
     if (!req.user.isAdmin && !note) {
       return res.status(400).json({ error: '완료 코멘트를 입력하세요' });
     }
 
-    const existingCount = await repo.countAttachmentsForUser(taskId, targetUserId);
+    existingCount = await repo.countAttachmentsForUser(taskId, targetUserId);
     if (existingCount + files.length > MAX_FILES_PER_COMPLETE) {
       return res.status(400).json({ error: `업무당 최대 ${MAX_FILES_PER_COMPLETE}개까지 첨부 가능합니다 (현재 ${existingCount}개)` });
     }
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
 
+  const targetUserId = req.user.id;
+  const executedBy = req.user.id;
+
+  // pre-action audit (strict)
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'task_status_update',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'team_tasks',
+      targetId:         taskId,
+      beforeSnapshot:   {
+        ...taskSnapshot(task),
+        recipient_user_id: targetUserId,
+        recipient_status:  rec.status,
+      },
+      relatedTaskId:    taskId,
+      rollbackMethod:   'manual',
+      rollbackHint:
+        'input_snapshot 을 참고해 team_tasks / team_task_recipients / team_task_attachments row 를 수동 복구하세요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[tasks] runAction failed (task_status_update via complete):', {
+      actionName: 'task_status_update', id: taskId, executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
+
+  try {
     const storage = getClient().storage.from(ATTACHMENT_BUCKET);
 
     for (const f of files) {
@@ -304,12 +485,22 @@ router.post('/:id/complete', (req, res, next) => {
     }
 
     const updated = await repo.getTask(taskId);
+    safetyExec.updateRun(run.id, {
+      status: 'succeeded',
+      afterSnapshot: {
+        ...taskSnapshot(updated),
+        recipient_user_id: targetUserId,
+        recipient_status:  'done',
+        attachments_added: files.length,
+      },
+    });
     res.json({ data: updated, attachmentsAdded: files.length });
   } catch (e) {
     // rollback: delete any files uploaded in this request
     if (uploadedPaths.length > 0) {
       try { await getClient().storage.from(ATTACHMENT_BUCKET).remove(uploadedPaths); } catch {}
     }
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
     res.status(500).json({ error: e.message });
   }
 });
@@ -336,15 +527,56 @@ router.get('/:id/attachments/:attId/url', async (req, res) => {
   }
 });
 
-// DELETE /api/tasks/:id (owner only) — CASCADE로 recipients 함께 삭제
+// DELETE /api/tasks/:id (owner only) — CASCADE로 recipients 함께 삭제   [audit: task_delete]
 router.delete('/:id', requireAdmin, async (req, res) => {
+  // pre-validation
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+  let existing;
   try {
-    const id = parseInt(req.params.id, 10);
-    const existing = await repo.getTask(id);
-    if (!existing) return res.status(404).json({ error: '업무를 찾을 수 없습니다' });
+    existing = await repo.getTask(id);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  if (!existing) return res.status(404).json({ error: '업무를 찾을 수 없습니다' });
+
+  const executedBy = req.user.id;
+
+  // pre-action audit (strict)
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'task_delete',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'team_tasks',
+      targetId:         id,
+      beforeSnapshot:   taskSnapshot(existing),
+      relatedTaskId:    id,
+      rollbackMethod:   'manual',
+      rollbackHint:
+        'input_snapshot 을 참고해 team_tasks row 를 INSERT 로 재생성하세요. CASCADE 로 함께 삭제된 recipients 도 별도 복구 필요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[tasks] runAction failed (task_delete):', {
+      actionName: 'task_delete', id, executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
+
+  try {
     await repo.deleteTask(id);
+    safetyExec.updateRun(run.id, {
+      status:        'succeeded',
+      afterSnapshot: { deleted: true, id },
+    });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;
