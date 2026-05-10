@@ -106,6 +106,10 @@ function navigateTo(page) {
       if (window.pmcOrderImport) pmcOrderImport.init();
       if (window.pmcOrderList)   pmcOrderList.init();
       break;
+    // ── Phase 3 PR M — Safety Foundation 실행 로그 ──
+    case 'safety-runs':
+      if (window.pmcSafetyRuns)  pmcSafetyRuns.init();
+      break;
   }
 }
 

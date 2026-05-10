@@ -92,6 +92,8 @@ app.use('/api/exception-routing', require('./src/web/routes/exceptionRouting'));
 // 주의: /api/orders/mock-import 가 /api/orders/:id 보다 먼저 등록돼야 함 (path specificity).
 app.use('/api/orders/mock-import', require('./src/web/routes/mockOrderImport'));
 app.use('/api/orders', require('./src/web/routes/orders'));
+// Phase 3 PR M — Safety Foundation 실행 로그 read API (admin / staff 동일 가시성)
+app.use('/api/safety-runs', require('./src/web/routes/safetyRuns'));
 
 // ── 발주 관리 (Phase 2) ──
 app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));

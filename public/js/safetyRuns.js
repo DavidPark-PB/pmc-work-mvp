@@ -1,0 +1,430 @@
+/**
+ * Safety Foundation 실행 로그 UI — Phase 3 PR M
+ *
+ * 책임:
+ *   - GET /api/safety-runs 호출 (목록)
+ *   - GET /api/safety-runs/:id 호출 (상세 + rollback chain)
+ *   - 좌측 목록 + 우측 상세 + 필터 (action_name / status / 본인만)
+ *   - 되돌리기 버튼 = stub modal (PR M §2-1 A) — network request 0, helper invocation 0
+ *
+ * 권한: 로그인된 모든 사용자 (정책 §1-A + PR M §2-2 X)
+ *
+ * 정책:
+ *   - snapshot 은 redact 통과 후 저장된 상태 — UI 가 추가 마스킹 안 함
+ *   - raw JSON 은 기본 접힘 (보강 3) — <details> + max-height + overflow-y:auto
+ *   - 되돌리기 stub 클릭은 modal 만 — server endpoint 호출 0건, helper invocation 0건
+ *   - total 은 best-effort (보강 1) — null 시에도 prev/next 정상 동작
+ */
+(function () {
+  let user = null;
+  let cache = [];
+  let openRunId = null;
+  let openRunDetail = null;
+  let pageOffset = 0;
+  let lastTotal = null;
+  let lastDataLen = 0;
+  const PAGE_LIMIT = 50;
+
+  // ── helpers ─────────────────────────────────────────────
+  function esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmtDate(iso)  { return iso ? new Date(iso).toLocaleString('ko-KR') : '-'; }
+
+  // status 배지 (plan §5)
+  const STATUS_BADGE = {
+    pending:           { bg: '#37474f', fg: '#90a4ae', label: 'pending' },
+    started:           { bg: '#37474f', fg: '#90a4ae', label: 'started' },
+    succeeded:         { bg: '#1b5e20', fg: '#69f0ae', label: 'succeeded' },
+    failed:            { bg: '#4a1a1a', fg: '#ef9a9a', label: 'failed' },
+    aborted:           { bg: '#4a1a1a', fg: '#ef9a9a', label: 'aborted' },
+    cancelled:         { bg: '#37474f', fg: '#bdbdbd', label: 'cancelled' },
+    rollback_required: { bg: '#5d3a00', fg: '#ffb74d', label: 'rollback_required' },
+    rolled_back:       { bg: '#1a3a4a', fg: '#64b5f6', label: 'rolled_back' },
+  };
+
+  function executorLabel(run) {
+    if (run.executor && run.executor.display_name) return esc(run.executor.display_name);
+    if (run.triggered_by === 'legacy_admin')       return '<span style="color:#888;">legacy_admin</span>';
+    if (run.triggered_by)                          return esc(run.triggered_by);
+    return '<span style="color:#666;">-</span>';
+  }
+
+  function badge(status) {
+    const sb = STATUS_BADGE[status] || { bg: '#37474f', fg: '#bdbdbd', label: status || '?' };
+    return `<span style="background:${sb.bg};color:${sb.fg};padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600;">${esc(sb.label)}</span>`;
+  }
+
+  // ── entry ────────────────────────────────────────────────
+  async function init() {
+    if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r => r.json()).catch(() => ({}))).user;
+    const root = document.getElementById('safety-runs-section');
+    if (!root) return;
+    if (!user || !user.id) {
+      root.innerHTML = '<div style="padding:20px;color:#888;">로그인이 필요합니다.</div>';
+      return;
+    }
+    if (root.dataset.initialized !== '1') {
+      root.dataset.initialized = '1';
+      renderShell(root);
+    }
+    await refresh();
+  }
+
+  function renderShell(root) {
+    root.innerHTML = `
+      <div style="margin-bottom:16px;">
+        <h1 style="font-size:22px;color:#fff;margin:0 0 4px;">📜 실행 로그</h1>
+        <p style="color:#888;font-size:13px;margin:0;">
+          모든 audit 실행 기록 조회 (admin / staff 동일 가시성). snapshot 은 redact 통과 후 저장된 상태이며 UI 추가 마스킹 없음.
+          타인 실행 row 도 표시됩니다 — 본인 row 만 보려면 좌측 "내가 실행한 것만" 체크.
+        </p>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:16px;align-items:start;">
+        <!-- 좌측: 필터 + 목록 -->
+        <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+            <strong style="color:#fff;font-size:14px;">📋 audit 목록</strong>
+            <button id="sr-refresh" type="button" style="padding:6px 12px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">새로고침</button>
+          </div>
+          <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+            <select id="sr-action" style="padding:6px;background:#0f0f23;border:1px solid #333;color:#fff;border-radius:4px;font-size:12px;">
+              <option value="">전체 action</option>
+              <option value="mock_order_import">mock_order_import</option>
+              <option value="rollback">rollback</option>
+            </select>
+            <select id="sr-status" style="padding:6px;background:#0f0f23;border:1px solid #333;color:#fff;border-radius:4px;font-size:12px;">
+              <option value="">전체 status</option>
+              <option value="pending">pending</option>
+              <option value="started">started</option>
+              <option value="succeeded">succeeded</option>
+              <option value="failed">failed</option>
+              <option value="aborted">aborted</option>
+              <option value="cancelled">cancelled</option>
+              <option value="rollback_required">rollback_required</option>
+              <option value="rolled_back">rolled_back</option>
+            </select>
+            <label style="color:#aaa;font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;">
+              <input type="checkbox" id="sr-mine"> 내가 실행한 것만
+            </label>
+          </div>
+          <div id="sr-list" style="margin-bottom:10px;"></div>
+          <div id="sr-pager" style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#888;">
+            <button id="sr-prev" type="button" style="padding:4px 10px;background:#37474f;border:none;border-radius:3px;color:#fff;cursor:pointer;font-size:11px;">← prev</button>
+            <span id="sr-pager-info"></span>
+            <button id="sr-next" type="button" style="padding:4px 10px;background:#37474f;border:none;border-radius:3px;color:#fff;cursor:pointer;font-size:11px;">next →</button>
+          </div>
+        </div>
+
+        <!-- 우측: 상세 -->
+        <div id="sr-detail" style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;color:#888;">
+          <div style="text-align:center;padding:40px 0;">왼쪽에서 row 를 선택하세요.</div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('sr-refresh').addEventListener('click', () => { pageOffset = 0; refresh(); });
+    document.getElementById('sr-action').addEventListener('change',  () => { pageOffset = 0; refresh(); });
+    document.getElementById('sr-status').addEventListener('change',  () => { pageOffset = 0; refresh(); });
+    document.getElementById('sr-mine').addEventListener('change',    () => { pageOffset = 0; refresh(); });
+    document.getElementById('sr-prev').addEventListener('click',     () => {
+      if (pageOffset <= 0) return;
+      pageOffset = Math.max(0, pageOffset - PAGE_LIMIT);
+      refresh();
+    });
+    document.getElementById('sr-next').addEventListener('click',     () => {
+      // 보강 1 — total null 이어도 마지막 row 수 == limit 이면 next 가능
+      if (lastDataLen < PAGE_LIMIT) return;
+      if (lastTotal !== null && pageOffset + PAGE_LIMIT >= lastTotal) return;
+      pageOffset += PAGE_LIMIT;
+      refresh();
+    });
+  }
+
+  // ── list ─────────────────────────────────────────────────
+  async function refresh() {
+    const root = document.getElementById('safety-runs-section');
+    if (!root || root.dataset.initialized !== '1') return;
+
+    const action  = document.getElementById('sr-action')?.value  || '';
+    const status  = document.getElementById('sr-status')?.value  || '';
+    const mine    = document.getElementById('sr-mine')?.checked  || false;
+
+    const params = new URLSearchParams({ limit: String(PAGE_LIMIT), offset: String(pageOffset) });
+    if (action)  params.set('action_name', action);
+    if (status)  params.set('status',      status);
+    if (mine && user?.id) params.set('executed_by', String(user.id));
+
+    // URL deep-link 자동 적용 (target_table / target_id) — UI 컨트롤은 본 PR 미포함
+    const urlParams = new URLSearchParams(location.search);
+    const tt = urlParams.get('target_table');
+    const ti = urlParams.get('target_id');
+    if (tt) params.set('target_table', tt);
+    if (ti) params.set('target_id',    ti);
+
+    try {
+      const res = await fetch('/api/safety-runs?' + params.toString(), { credentials: 'include' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `load failed (${res.status})`);
+      cache       = json.data || [];
+      lastTotal   = (typeof json.total === 'number') ? json.total : null;
+      lastDataLen = cache.length;
+      renderList();
+      updatePager();
+      if (openRunId) {
+        const stillExists = cache.find(r => r.id === openRunId);
+        if (stillExists) await openDetail(openRunId);
+      }
+    } catch (e) {
+      const el = document.getElementById('sr-list');
+      if (el) el.innerHTML = `<div style="padding:20px;color:#ef9a9a;">로드 실패: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function updatePager() {
+    const info = document.getElementById('sr-pager-info');
+    const prev = document.getElementById('sr-prev');
+    const next = document.getElementById('sr-next');
+    if (!info || !prev || !next) return;
+
+    const start = lastDataLen === 0 ? 0 : pageOffset + 1;
+    const end   = pageOffset + lastDataLen;
+    const totalStr = lastTotal !== null ? ` / ${lastTotal} 건` : '';
+    info.textContent = `${start}–${end}${totalStr}`;
+
+    prev.disabled = pageOffset <= 0;
+    prev.style.opacity = prev.disabled ? '0.4' : '1';
+
+    const noMore = (lastDataLen < PAGE_LIMIT) || (lastTotal !== null && pageOffset + PAGE_LIMIT >= lastTotal);
+    next.disabled = noMore;
+    next.style.opacity = next.disabled ? '0.4' : '1';
+  }
+
+  function renderList() {
+    const el = document.getElementById('sr-list');
+    if (!el) return;
+    if (cache.length === 0) {
+      el.innerHTML = '<div style="padding:20px;color:#888;font-size:13px;">audit row 없음. mock import 등 액션을 실행하면 여기 표시됩니다.</div>';
+      return;
+    }
+    el.innerHTML = cache.map(r => {
+      const isActive = r.id === openRunId;
+      const targetStr = r.target_table
+        ? `${esc(r.target_table)}${r.target_id != null ? '#' + r.target_id : ''}`
+        : '<span style="color:#666;">-</span>';
+      return `
+        <div class="sr-row" data-id="${r.id}" style="
+          padding:10px 12px;border:1px solid ${isActive ? '#81d4fa' : '#2a2a4a'};
+          border-radius:8px;margin-bottom:8px;cursor:pointer;
+          background:${isActive ? '#0a1a2e' : '#0f0f23'};
+        ">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
+            ${badge(r.status)}
+            <span style="background:#1a3a4a;color:#64b5f6;padding:1px 6px;border-radius:3px;font-size:10px;font-family:monospace;">${esc(r.action_name || r.automation_type || '?')}</span>
+            <span style="margin-left:auto;color:#666;font-size:11px;">#${r.id}</span>
+          </div>
+          <div style="color:#fff;font-size:12px;margin-bottom:4px;">
+            by ${executorLabel(r)} · target ${targetStr}
+          </div>
+          <div style="color:#666;font-size:11px;">${fmtDate(r.started_at)}</div>
+        </div>
+      `;
+    }).join('');
+    el.querySelectorAll('.sr-row').forEach(div => {
+      div.addEventListener('click', async () => {
+        const id = parseInt(div.dataset.id, 10);
+        await openDetail(id);
+      });
+    });
+  }
+
+  // ── detail (외부에서 호출 가능) ─────────────────────────
+  async function openDetail(id) {
+    if (!Number.isFinite(id)) return;
+    openRunId = id;
+    renderList();  // active 표시 갱신
+
+    const el = document.getElementById('sr-detail');
+    if (!el) return;
+    el.innerHTML = '<div style="padding:40px;text-align:center;color:#888;">로딩 중...</div>';
+    try {
+      const res = await fetch('/api/safety-runs/' + id, { credentials: 'include' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `load failed (${res.status})`);
+      openRunDetail = json.data;
+      renderDetail();
+    } catch (e) {
+      el.innerHTML = `<div style="padding:20px;color:#ef9a9a;">상세 로드 실패: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderDetail() {
+    const r = openRunDetail;
+    if (!r) return;
+    const el = document.getElementById('sr-detail');
+    if (!el) return;
+
+    const targetStr = r.target_table
+      ? `${esc(r.target_table)}${r.target_id != null ? '#' + r.target_id : ''}`
+      : '<span style="color:#666;">-</span>';
+
+    // 되돌리기 버튼 표시 조건 — plan §5 (rollback_method ∈ {auto,manual} && status='succeeded')
+    const showRollbackBtn = (r.rollback_method === 'auto' || r.rollback_method === 'manual')
+      && r.status === 'succeeded';
+    const rollbackBtnHtml = showRollbackBtn
+      ? `<button id="sr-rollback-btn" type="button" style="margin-top:8px;padding:6px 14px;background:#5d3a00;border:1px solid #ffb74d;border-radius:4px;color:#ffb74d;cursor:pointer;font-size:12px;font-weight:600;">되돌리기</button>`
+      : '';
+
+    // rollback chain
+    let chainHtml = '';
+    if (r.rollback_run) {
+      const rr = r.rollback_run;
+      chainHtml = `
+        <div style="margin-top:10px;padding:10px;background:#1a3a4a;border-radius:6px;font-size:12px;color:#bbdefb;">
+          ↩ 이 액션은 <strong>#${rr.id}</strong> (${esc(rr.action_name)}) 에서 되돌려졌습니다 ·
+          by ${executorLabel(rr)} · ${fmtDate(rr.started_at)}
+        </div>
+      `;
+    }
+    if (r.original_run) {
+      const or = r.original_run;
+      chainHtml += `
+        <div style="margin-top:10px;padding:10px;background:#1a3a4a;border-radius:6px;font-size:12px;color:#bbdefb;">
+          ↪ 원본 액션: <a href="#" data-original-id="${or.id}" id="sr-open-original" style="color:#fff;text-decoration:underline;font-weight:600;">#${or.id} ${esc(or.action_name)}</a>
+          · by ${executorLabel(or)} · ${fmtDate(or.started_at)}
+        </div>
+      `;
+    }
+
+    const errHtml = (r.error_code || r.error_message) ? `
+      <div style="margin-top:10px;padding:10px;background:#4a1a1a;border-radius:6px;font-size:12px;color:#ffcdd2;">
+        ${r.error_code ? `<div><strong>error_code:</strong> ${esc(r.error_code)}</div>` : ''}
+        ${r.error_message ? `<div style="margin-top:4px;"><strong>error_message:</strong> ${esc(r.error_message)}</div>` : ''}
+      </div>
+    ` : '';
+
+    const rolledBackInfo = r.rolled_back_at ? `
+      <div style="margin-top:6px;color:#90a4ae;font-size:11px;">
+        rolled_back_at: ${fmtDate(r.rolled_back_at)} ·
+        rolled_back_by: ${r.rolled_back_executor?.display_name ? esc(r.rolled_back_executor.display_name) : (r.rolled_back_by ?? '-')}
+        ${r.rollback_reason ? `<div style="margin-top:2px;">reason: ${esc(r.rollback_reason)}</div>` : ''}
+      </div>
+    ` : '';
+
+    // 보강 3 — snapshot 기본 접힘 (<details> open 속성 없음, max-height + overflow)
+    const snapshotPre = (label, value) => {
+      if (value == null) return '';
+      const json = JSON.stringify(value, null, 2);
+      return `
+        <details style="margin-top:10px;">
+          <summary style="cursor:pointer;color:#aaa;font-size:11px;">▸ ${esc(label)} (펼치기)</summary>
+          <pre style="background:#0f0f23;color:#cfd8dc;padding:10px;border-radius:6px;font-size:11px;max-height:300px;overflow-y:auto;margin:6px 0 0;">${esc(json)}</pre>
+        </details>
+      `;
+    };
+
+    el.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:200px;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+            ${badge(r.status)}
+            <span style="background:#1a3a4a;color:#64b5f6;padding:3px 8px;border-radius:3px;font-size:11px;font-family:monospace;">${esc(r.action_name || r.automation_type || '?')}</span>
+            <span style="color:#666;font-size:11px;">#${r.id}</span>
+          </div>
+          <div style="color:#fff;font-size:13px;">by ${executorLabel(r)}</div>
+          <div style="color:#aaa;font-size:11px;margin-top:2px;">target: ${targetStr}</div>
+        </div>
+        <div style="text-align:right;color:#888;font-size:11px;">
+          started: ${fmtDate(r.started_at)}<br>
+          completed: ${fmtDate(r.completed_at)}
+        </div>
+      </div>
+
+      ${errHtml}
+
+      <div style="margin-top:14px;padding:10px;background:#0f0f23;border-radius:6px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:6px;font-weight:600;">↺ rollback metadata</div>
+        <div style="color:#fff;font-size:12px;">
+          rollback_method: <strong>${esc(r.rollback_method || '-')}</strong>
+        </div>
+        ${r.rollback_hint ? `
+          <div style="margin-top:6px;color:#aaa;font-size:11px;">hint:</div>
+          <pre style="background:#1a1a2e;color:#cfd8dc;padding:8px;border-radius:4px;font-size:11px;margin:4px 0 0;white-space:pre-wrap;word-break:break-all;">${esc(r.rollback_hint)}</pre>
+        ` : ''}
+        ${rolledBackInfo}
+        ${rollbackBtnHtml}
+      </div>
+
+      ${chainHtml}
+
+      ${snapshotPre('input_snapshot',  r.input_snapshot)}
+      ${snapshotPre('output_snapshot', r.output_snapshot)}
+    `;
+
+    // 되돌리기 버튼 stub (보강: network request 0, helper invocation 0)
+    if (showRollbackBtn) {
+      const btn = document.getElementById('sr-rollback-btn');
+      if (btn) btn.addEventListener('click', () => onRollbackClick(r));
+    }
+    // rollback chain 의 원본 링크
+    const orLink = document.getElementById('sr-open-original');
+    if (orLink) {
+      orLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        const oid = parseInt(orLink.dataset.originalId, 10);
+        if (Number.isFinite(oid)) openDetail(oid);
+      });
+    }
+  }
+
+  // ── 되돌리기 stub modal (PR M §2-1 A) ────────────────────
+  // 정책: network request 0건, audit helper invocation 0건. 단순 안내 modal.
+  function onRollbackClick(run) {
+    const targetStr = run.target_table
+      ? `${run.target_table}${run.target_id != null ? '#' + run.target_id : ''}`
+      : '-';
+    const infoLines = [
+      `대상: ${run.action_name || run.automation_type} #${run.id}`,
+      `target: ${targetStr}`,
+      `rollback_method: ${run.rollback_method}`,
+    ];
+    if (run.rollback_hint) infoLines.push(`hint:\n${run.rollback_hint}`);
+
+    showStubModal({
+      title: '되돌리기',
+      body:  '실제 undo 실행은 PR auto-undo 에서 활성화됩니다. 현재는 audit 메타데이터만 표시합니다.',
+      info:  infoLines,
+    });
+  }
+
+  function showStubModal({ title, body, info }) {
+    // 기존 modal 제거 (재 클릭 대비)
+    const existing = document.getElementById('sr-stub-modal');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'sr-stub-modal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+
+    const infoHtml = info.map(line => `<pre style="background:#0f0f23;color:#cfd8dc;padding:8px;border-radius:4px;font-size:11px;margin:4px 0;white-space:pre-wrap;word-break:break-all;">${esc(line)}</pre>`).join('');
+
+    overlay.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;max-width:520px;width:100%;color:#fff;">
+        <h3 style="margin:0 0 10px;font-size:16px;color:#ffb74d;">↺ ${esc(title)}</h3>
+        <div style="color:#cfd8dc;font-size:13px;margin-bottom:14px;line-height:1.5;">${esc(body)}</div>
+        ${infoHtml}
+        <div style="text-align:right;margin-top:14px;">
+          <button id="sr-stub-ok" type="button" style="padding:6px 16px;background:#1565c0;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:13px;">확인</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+    document.getElementById('sr-stub-ok').addEventListener('click', () => overlay.remove());
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  }
+
+  window.pmcSafetyRuns = { init, refresh, openDetail };
+})();
