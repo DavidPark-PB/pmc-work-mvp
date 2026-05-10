@@ -321,9 +321,8 @@ router.delete('/:id', async (req, res) => {
       targetId:         id,
       beforeSnapshot:   beforeRow,
       relatedSkuId:     id,
-      rollbackMethod:   'manual',
-      rollbackHint:
-        `UPDATE sku_master SET status='${beforeRow.status}', automation_enabled=${beforeRow.automation_enabled} WHERE id=<target_id>;`,
+      rollbackMethod:   'auto',
+      rollbackHint:     '자동 되돌리기: soft delete 전 snapshot 의 허용 필드로 sku_master row 를 복구합니다. internal_sku 는 변경하지 않습니다.',
       status: 'pending',
     });
   } catch (auditErr) {

@@ -16,7 +16,9 @@
  *                 PK 재사용 X 로 sequence 충돌 회피, UNIQUE 충돌은 명시 에러로 거절)
  *   - PR U5 3차 = sku_master_update 추가 (input_snapshot 의 허용 필드만 patch.
  *                 internal_sku / id / created_by / created_at 등 시스템 필드 보호)
- *   - 다른 action 추가는 PR U6+ 에서 점진 도입
+ *   - PR U6 4차 = sku_master_soft_delete 추가 (status flip 만 하는 update 라
+ *                 PR U5 의 undoSkuMasterUpdate 핸들러 재사용)
+ *   - 다른 action 추가는 PR U7+ 에서 점진 도입
  *   - 로그 룰: actionName / runId / executedBy / message 만. snapshot/payload/secret 출력 금지
  *
  * 무수정 약속:
@@ -34,12 +36,13 @@ const supabaseClient = require('../db/supabaseClient');
 const safetyExec = require('./safetyExec');
 
 // PR U2 1차 (sku_listing_link_create) + PR U4 2차 (sku_listing_link_delete) +
-// PR U5 3차 (sku_master_update). 모두 단일 row 만 다루며 FK cascade 없음.
-// 추가 action 은 PR U6+ 검토.
+// PR U5 3차 (sku_master_update) + PR U6 4차 (sku_master_soft_delete).
+// 모두 단일 row 만 다루며 FK cascade 없음. 추가 action 은 PR U7+ 검토.
 const AUTO_ROLLBACK_ACTIONS = new Set([
   'sku_listing_link_create',
   'sku_listing_link_delete',
   'sku_master_update',
+  'sku_master_soft_delete',
 ]);
 
 const TABLE = 'automation_runs';
@@ -103,6 +106,8 @@ async function rollbackRun({ runId, executedBy, reason = null } = {}) {
     undone = await undoSkuListingLinkDelete(original, supabase);
   } else if (original.action_name === 'sku_master_update') {
     undone = await undoSkuMasterUpdate(original, supabase);
+  } else if (original.action_name === 'sku_master_soft_delete') {
+    undone = await undoSkuMasterSoftDelete(original, supabase);
   } else {
     // 위 allowlist 체크에서 걸리므로 도달 불가지만 방어
     throw new UndoError('safetyUndo/handler_missing', `no handler for action '${original.action_name}'`);
@@ -289,6 +294,21 @@ async function undoSkuMasterUpdate(original, supabase) {
     targetId:    original.target_id,
     restoredSku: data,
   };
+}
+
+/**
+ * sku_master_soft_delete undo = soft delete 직전 snapshot 의 허용 필드로 복구.
+ *
+ * 정책 (PR U6):
+ *   - skuMaster route 의 soft delete 는 status='discontinued' + automation_enabled=false
+ *     로 필드 2개만 변경하는 update — 본질이 sku_master_update 와 동일.
+ *   - 따라서 PR U5 의 undoSkuMasterUpdate 핸들러 그대로 재사용 (코드 중복 회피).
+ *   - ALLOWED_FIELDS / internal_sku 보호 / system 필드 보호 / target_not_found 처리
+ *     모두 PR U5 와 동일.
+ *   - 별도 deleted_at 컬럼 미존재 (status 만 'discontinued' 로 flip 하는 방식).
+ */
+async function undoSkuMasterSoftDelete(original, supabase) {
+  return undoSkuMasterUpdate(original, supabase);
 }
 
 module.exports = {
