@@ -96,6 +96,8 @@ app.use('/api/orders', require('./src/web/routes/orders'));
 app.use('/api/safety-runs', require('./src/web/routes/safetyRuns'));
 // PR O1 — Daily Operations Briefing (오늘 운영 요약 read-only)
 app.use('/api/ops-briefing', require('./src/web/routes/operationsBriefing'));
+// PR R0 — Opportunity Inbox (직원/admin 후보 등록 + 사장님 검토)
+app.use('/api/opportunity-inbox', require('./src/web/routes/opportunityInbox'));
 
 // ── 발주 관리 (Phase 2) ──
 app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));
