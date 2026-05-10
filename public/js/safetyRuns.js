@@ -44,6 +44,58 @@
     rolled_back:       { bg: '#1a3a4a', fg: '#64b5f6', label: 'rolled_back' },
   };
 
+  // PR L-3 — action_name → 친화 라벨. 라벨 없는 신규 action_name 은 mono 만 표시.
+  const ACTION_LABEL = {
+    mock_order_import:           'Mock 주문 가져오기',
+    rollback:                    '되돌리기',
+    sku_master_create:           'SKU 등록',
+    sku_master_update:           'SKU 수정',
+    sku_master_soft_delete:      'SKU 보류/폐기',
+    sku_listing_link_create:     'SKU 마켓 링크 등록',
+    sku_listing_link_delete:     'SKU 마켓 링크 삭제',
+    exception_task_mock_create:  '자동 예외 카드 (mock)',
+    task_create:                 '업무 등록',
+    task_update:                 '업무 수정',
+    task_status_update:          '업무 상태 변경',
+    task_delete:                 '업무 삭제',
+    task_comment_create:         '업무 댓글 등록',
+    purchase_request_create:     '발주 요청 등록',
+    purchase_request_update:     '발주 요청 수정',
+    purchase_request_approve:    '발주 승인',
+    purchase_request_reject:     '발주 반려',
+    purchase_request_ordered:    '발주 주문완료',
+    purchase_request_cancel:     '발주 취소',
+  };
+
+  // 친화 라벨 + mono action_name 함께 표시. 라벨 없으면 mono 만.
+  function actionLabelHtml(name) {
+    if (!name) return '<span style="color:#666;">?</span>';
+    const friendly = ACTION_LABEL[name];
+    const monoBadge = `<span style="background:#1a3a4a;color:#64b5f6;padding:1px 6px;border-radius:3px;font-size:10px;font-family:monospace;">${esc(name)}</span>`;
+    if (!friendly) return monoBadge;
+    return `<span style="color:#fff;font-size:11px;font-weight:600;margin-right:6px;">${esc(friendly)}</span>${monoBadge}`;
+  }
+
+  // PR L-3 — target_table → dashboard.js case 명 매핑 (deep link 버튼).
+  // dashboard.js 의 navigateTo(page) 와 정합. row id 자동 선택은 본 PR 범위 외.
+  const TARGET_PAGE = {
+    sku_master:        'sku-master',
+    team_tasks:        'tasks',
+    purchase_requests: 'orders',
+    wms_orders:        'wms-orders',
+  };
+
+  function targetNavBtn(table) {
+    const page = TARGET_PAGE[table];
+    if (!page) return '';
+    return `<button type="button" class="sr-target-nav" data-target-page="${esc(page)}" style="margin-left:8px;padding:2px 8px;background:#37474f;border:1px solid #555;border-radius:3px;color:#cfd8dc;cursor:pointer;font-size:10px;">→ ${esc(page)} 화면 열기</button>`;
+  }
+
+  function navigateToPage(page) {
+    if (typeof showPage === 'function') showPage(page);
+    else location.href = '/?page=' + encodeURIComponent(page);
+  }
+
   function executorLabel(run) {
     if (run.executor && run.executor.display_name) return esc(run.executor.display_name);
     if (run.triggered_by === 'legacy_admin')       return '<span style="color:#888;">legacy_admin</span>';
@@ -92,8 +144,37 @@
           <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
             <select id="sr-action" style="padding:6px;background:#0f0f23;border:1px solid #333;color:#fff;border-radius:4px;font-size:12px;">
               <option value="">전체 action</option>
-              <option value="mock_order_import">mock_order_import</option>
-              <option value="rollback">rollback</option>
+              <optgroup label="WMS 주문">
+                <option value="mock_order_import">Mock 주문 가져오기 (mock_order_import)</option>
+              </optgroup>
+              <optgroup label="SKU 마스터">
+                <option value="sku_master_create">SKU 등록 (sku_master_create)</option>
+                <option value="sku_master_update">SKU 수정 (sku_master_update)</option>
+                <option value="sku_master_soft_delete">SKU 보류/폐기 (sku_master_soft_delete)</option>
+                <option value="sku_listing_link_create">SKU 마켓 링크 등록 (sku_listing_link_create)</option>
+                <option value="sku_listing_link_delete">SKU 마켓 링크 삭제 (sku_listing_link_delete)</option>
+              </optgroup>
+              <optgroup label="자동 예외">
+                <option value="exception_task_mock_create">자동 예외 카드 mock (exception_task_mock_create)</option>
+              </optgroup>
+              <optgroup label="업무">
+                <option value="task_create">업무 등록 (task_create)</option>
+                <option value="task_update">업무 수정 (task_update)</option>
+                <option value="task_status_update">업무 상태 변경 (task_status_update)</option>
+                <option value="task_delete">업무 삭제 (task_delete)</option>
+                <option value="task_comment_create">업무 댓글 등록 (task_comment_create)</option>
+              </optgroup>
+              <optgroup label="발주">
+                <option value="purchase_request_create">발주 요청 등록 (purchase_request_create)</option>
+                <option value="purchase_request_update">발주 요청 수정 (purchase_request_update)</option>
+                <option value="purchase_request_approve">발주 승인 (purchase_request_approve)</option>
+                <option value="purchase_request_reject">발주 반려 (purchase_request_reject)</option>
+                <option value="purchase_request_ordered">발주 주문완료 (purchase_request_ordered)</option>
+                <option value="purchase_request_cancel">발주 취소 (purchase_request_cancel)</option>
+              </optgroup>
+              <optgroup label="시스템">
+                <option value="rollback">되돌리기 (rollback)</option>
+              </optgroup>
             </select>
             <select id="sr-status" style="padding:6px;background:#0f0f23;border:1px solid #333;color:#fff;border-radius:4px;font-size:12px;">
               <option value="">전체 status</option>
@@ -222,7 +303,7 @@
         ">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
             ${badge(r.status)}
-            <span style="background:#1a3a4a;color:#64b5f6;padding:1px 6px;border-radius:3px;font-size:10px;font-family:monospace;">${esc(r.action_name || r.automation_type || '?')}</span>
+            ${actionLabelHtml(r.action_name || r.automation_type)}
             <span style="margin-left:auto;color:#666;font-size:11px;">#${r.id}</span>
           </div>
           <div style="color:#fff;font-size:12px;margin-bottom:4px;">
@@ -330,11 +411,11 @@
         <div style="flex:1;min-width:200px;">
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
             ${badge(r.status)}
-            <span style="background:#1a3a4a;color:#64b5f6;padding:3px 8px;border-radius:3px;font-size:11px;font-family:monospace;">${esc(r.action_name || r.automation_type || '?')}</span>
+            ${actionLabelHtml(r.action_name || r.automation_type)}
             <span style="color:#666;font-size:11px;">#${r.id}</span>
           </div>
           <div style="color:#fff;font-size:13px;">by ${executorLabel(r)}</div>
-          <div style="color:#aaa;font-size:11px;margin-top:2px;">target: ${targetStr}</div>
+          <div style="color:#aaa;font-size:11px;margin-top:2px;">target: ${targetStr}${targetNavBtn(r.target_table)}</div>
         </div>
         <div style="text-align:right;color:#888;font-size:11px;">
           started: ${fmtDate(r.started_at)}<br>
@@ -377,6 +458,13 @@
         if (Number.isFinite(oid)) openDetail(oid);
       });
     }
+    // PR L-3 — target deep link 버튼. 화면 이동만, row 자동 선택 X.
+    el.querySelectorAll('.sr-target-nav').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const page = btn.dataset.targetPage;
+        if (page) navigateToPage(page);
+      });
+    });
   }
 
   // ── 되돌리기 stub modal (PR M §2-1 A) ────────────────────
