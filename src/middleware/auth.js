@@ -190,7 +190,8 @@ async function authGuard(req, res, next) {
     req.user = user;
     next();
   } catch (err) {
-    console.error('[Auth] 유저 로드 실패:', err.message);
+    const cause = err && err.cause ? ` cause=${err.cause.code || ''} ${err.cause.message || err.cause}` : '';
+    console.error('[Auth] 유저 로드 실패:', err && (err.message || err), cause);
     return res.status(500).json({ error: 'Auth error' });
   }
 }
