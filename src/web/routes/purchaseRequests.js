@@ -28,6 +28,13 @@ const { notify, notifyAdmins, getAdminIds } = require('../../services/notificati
 const sseHub = require('../../services/sseHub');
 const { getClient } = require('../../db/supabaseClient');
 const safetyExec = require('../../services/safetyExec');
+const dupDetector = require('../../services/duplicatePurchaseDetector');
+
+// PR P-1A-B: status 도메인 화이트리스트.
+//   1-A 시점 활성: pending / approved / ordered / rejected
+//   1-A 시점 미활성 (코드만 등록 — 1-D 에서 UI 활성, 마이그레이션 재실행 불필요): reviewed / arrived
+const ALLOWED_STATUSES = ['pending', 'reviewed', 'approved', 'ordered', 'arrived', 'rejected'];
+const ALLOWED_UNITS = ['개', '박스', '세트'];
 
 // snapshot 표준화 — purchase_requests row → 핵심 필드만 (raw body / token / secret 부재)
 function prSnapshot(r) {
@@ -36,6 +43,8 @@ function prSnapshot(r) {
     id:               r.id,
     status:           r.status,
     product_name:     r.product_name,
+    sku:              r.sku,
+    unit:             r.unit,
     quantity:         r.quantity,
     estimated_price:  r.estimated_price,
     priority:         r.priority,
@@ -45,8 +54,40 @@ function prSnapshot(r) {
     rejection_reason: r.rejection_reason,
     ordered_by:       r.ordered_by,
     ordered_at:       r.ordered_at,
+    deleted_at:       r.deleted_at,
+    deleted_by:       r.deleted_by,
     updated_at:       r.updated_at,
   };
+}
+
+// PR P-1A-B 도우미: req.body 의 spec 필드를 DB 컬럼으로 정규화.
+//   - normalize 결과 비어있으면 normalized_product_name=null (검색 인덱스 보호)
+//   - unit 화이트리스트 외 → '개' 폴백 (사장님 짚은점 5: 빈 값 일관성)
+function normalizePurchaseInput(body, { isCreate } = {}) {
+  const out = {};
+  if (body.productName !== undefined || isCreate) {
+    const trimmed = String(body.productName || '').trim();
+    out.product_name = trimmed;
+    const norm = dupDetector.normalize(trimmed);
+    out.normalized_product_name = norm || null;
+  }
+  if (body.sku !== undefined) {
+    const t = String(body.sku || '').trim();
+    out.sku = t || null;
+  }
+  if (body.unit !== undefined) {
+    const u = String(body.unit || '').trim();
+    out.unit = ALLOWED_UNITS.includes(u) ? u : '개';
+  }
+  if (body.currentStock !== undefined) {
+    const n = Number(body.currentStock);
+    out.current_stock = Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+  }
+  if (body.memo !== undefined) {
+    const m = String(body.memo || '').trim();
+    out.memo = m || null;
+  }
+  return out;
 }
 
 const router = express.Router();
@@ -130,6 +171,24 @@ router.get('/stats', requireAdmin, async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/purchase-requests/duplicate-check?productName=&sku=&excludeId=&days=
+// PR P-1A-B: 폼 입력 중 실시간 중복 검사. 본인 row 는 excludeId 로 제외 (사장님 짚은점 3).
+//   응답: { data: [...], windowDays }. soft-deleted 는 결과에 절대 포함 X (사장님 짚은점 4).
+//   rate limit: 상위 미들웨어 (server.js /api/ 300/15min) 적용. 별도 추가 X.
+router.get('/duplicate-check', async (req, res) => {
+  try {
+    const productName = req.query.productName ? String(req.query.productName) : null;
+    const sku = req.query.sku ? String(req.query.sku) : null;
+    const excludeId = req.query.excludeId ? parseInt(req.query.excludeId, 10) : undefined;
+    const days = req.query.days ? Math.min(parseInt(req.query.days, 10) || 7, 90) : 7;
+    const data = await dupDetector.findDuplicates({ productName, sku, excludeId, days });
+    res.json({ data, windowDays: days });
+  } catch (e) {
+    console.error('[purchase-requests] duplicate-check error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/purchase-requests/insights — 재고 추천 (전 직원 열람)
 router.get('/insights', async (req, res) => {
   try {
@@ -171,8 +230,9 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    const norm = normalizePurchaseInput(req.body || {}, { isCreate: true });
     const created = await repo.createRequest({
-      product_name: productName.trim(),
+      ...norm,
       quantity: qty,
       estimated_price: estimatedPrice != null && estimatedPrice !== '' ? String(estimatedPrice) : null,
       priority: priority === 'urgent' ? 'urgent' : 'normal',
@@ -232,12 +292,11 @@ router.patch('/:id', async (req, res) => {
   }
 
   const { productName, quantity, estimatedPrice, priority, reason } = req.body || {};
-  const updates = {};
-  if (productName !== undefined) {
-    const trimmed = String(productName).trim();
-    if (!trimmed) return res.status(400).json({ error: '상품명을 입력하세요' });
-    updates.product_name = trimmed;
+  // 빈 productName → 400 으로 거부 (normalizePurchaseInput 는 productName 검증 없이 normalize 만 함)
+  if (productName !== undefined && !String(productName).trim()) {
+    return res.status(400).json({ error: '상품명을 입력하세요' });
   }
+  const updates = normalizePurchaseInput(req.body || {}, { isCreate: false });
   if (quantity !== undefined) {
     const qty = Number(quantity);
     if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: '수량은 1 이상이어야 합니다' });
@@ -521,41 +580,65 @@ router.patch('/:id/unorder', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// DELETE /api/purchase-requests/:id
-//  - 사장: 언제든 삭제 가능
-//  - 요청자 본인: status=pending 일 때만 (중복 입력 정정 용도)
+// DELETE /api/purchase-requests/:id  — PR P-1A-B: hard → soft delete   [audit: purchase_request_delete]
+//  - 사장: 언제든 삭제 가능 (모든 status)
+//  - 요청자 본인: 모든 status (spec 변경 — 모든 직원 발주 삭제 권한)
 //  - 그 외: 금지
+//  - soft delete: deleted_at + deleted_by set. 신뢰도/이력 분석용으로 row 보존.
+//  - 첨부 파일 storage 는 정리 X (이력 추적). cleanup 은 후속 단계 (정기 재주기 작업 또는 수동).
 router.delete('/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+  let existing;
   try {
-    const id = parseInt(req.params.id, 10);
-    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    existing = await repo.getRequest(id);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+  if (existing.deleted_at) return res.status(400).json({ error: '이미 삭제된 요청입니다' });
 
-    const existing = await repo.getRequest(id);
-    if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+  const isOwner = existing.requested_by === req.user.id;
+  if (!req.user.isAdmin && !isOwner) {
+    return res.status(403).json({ error: '본인 요청만 삭제할 수 있습니다' });
+  }
 
-    const isOwner = existing.requested_by === req.user.id;
-    if (!req.user.isAdmin && !isOwner) {
-      return res.status(403).json({ error: '본인 요청만 삭제할 수 있습니다' });
-    }
-    if (!req.user.isAdmin && existing.status !== 'pending') {
-      return res.status(400).json({ error: '이미 처리된 요청은 삭제할 수 없습니다 (관리자 문의)' });
-    }
+  const executedBy = req.user.id;
 
-    // 스토리지 파일 정리 (CASCADE는 DB row만 삭제)
-    try {
-      const atts = await attRepo.list(id);
-      if (atts.length > 0) {
-        await getClient().storage.from(ATT_BUCKET).remove(atts.map(a => a.filePath));
-      }
-    } catch (e) {
-      // 정리 실패해도 DB 삭제는 진행 (파일이 이미 없을 수도 있음)
-      console.warn('[purchase-requests] attachment cleanup failed:', e.message);
-    }
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'purchase_request_delete',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'purchase_requests',
+      targetId:         id,
+      beforeSnapshot:   prSnapshot(existing),
+      rollbackMethod:   'manual',
+      rollbackHint:     'soft delete 복구: UPDATE purchase_requests SET deleted_at=NULL, deleted_by=NULL WHERE id=...',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[purchase-requests] runAction failed (purchase_request_delete):', {
+      actionName: 'purchase_request_delete', id, executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
 
-    await repo.deleteRequest(id);
+  try {
+    await repo.softDeleteRequest(id, executedBy);
+    safetyExec.updateRun(run.id, {
+      status: 'succeeded',
+      afterSnapshot: { id, deleted_at: new Date().toISOString(), deleted_by: executedBy },
+    });
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    res.status(500).json({ error: e.message });
+  }
 });
+
 
 // ─── 이미지 첨부 엔드포인트 ───
 

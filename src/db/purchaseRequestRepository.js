@@ -6,12 +6,17 @@ const { getClient } = require('./supabaseClient');
 /**
  * 발주 목록 조회 — 모든 직원이 전체 목록 열람 가능 (중복 구매 방지 목적).
  * scope='mine' 파라미터로 본인 요청만 필터 가능.
+ *
+ * PR P-1A-B: deleted_at IS NULL 만 노출 (soft delete). includeDeleted=true 일 때만 포함 (감사용).
+ *            sku / unit / current_stock / memo / normalized_product_name 추가 select.
  */
-async function listRequests({ user, status, scope, statusGroup }) {
+async function listRequests({ user, status, scope, statusGroup, includeDeleted } = {}) {
   const baseCols = `
-    id, product_name, quantity, estimated_price, priority, reason,
+    id, product_name, normalized_product_name, sku, unit, current_stock, memo,
+    quantity, estimated_price, priority, reason,
     requested_by, requested_at, status, decision_by, decision_at,
     rejection_reason, rejection_note, ordered_by, ordered_at,
+    deleted_at, deleted_by,
     requester:users!purchase_requests_requested_by_users_id_fk ( id, display_name, platform ),
     orderer:users!purchase_requests_ordered_by_fk ( id, display_name )
   `;
@@ -24,6 +29,7 @@ async function listRequests({ user, status, scope, statusGroup }) {
 
   async function runQuery(cols) {
     let q = getClient().from('purchase_requests').select(cols);
+    if (!includeDeleted) q = q.is('deleted_at', null);
     if (scope === 'mine') q = q.eq('requested_by', user.id);
     if (status) q = q.eq('status', status);
     // 그룹 필터 — active=진행중(pending+approved), completed=주문완료, rejected=반려, all=전체
@@ -34,7 +40,7 @@ async function listRequests({ user, status, scope, statusGroup }) {
   }
 
   let { data, error } = await runQuery(baseCols);
-  // Migration 010 not applied yet → retry with legacy columns
+  // Migration 010/044 not applied yet → retry with legacy columns
   if (error && (error.code === '42703' || error.code === 'PGRST200')) {
     ({ data, error } = await runQuery(legacyCols));
   }
@@ -67,6 +73,7 @@ async function getRecommendations({ days = 90 } = {}) {
     .from('purchase_requests')
     .select('product_name, quantity, estimated_price, requested_at, status, priority')
     .gte('requested_at', since)
+    .is('deleted_at', null)
     .neq('status', 'rejected');
   if (error) throw error;
 
@@ -179,7 +186,8 @@ async function updateRequest(id, values) {
 async function getStats() {
   const { data, error } = await getClient()
     .from('purchase_requests')
-    .select('status, priority');
+    .select('status, priority')
+    .is('deleted_at', null);
   if (error) throw error;
   const counts = { pending: 0, pendingUrgent: 0, approved: 0, ordered: 0, rejected: 0 };
   for (const r of data || []) {
@@ -193,12 +201,27 @@ async function getStats() {
   return counts;
 }
 
-async function deleteRequest(id) {
+/**
+ * Soft delete (PR P-1A-B). hard delete 는 더 이상 사용 X.
+ * deleted_at IS NULL 로 활성/비활성 구분. 신뢰도/이력 분석 시엔 includeDeleted=true 사용.
+ */
+async function softDeleteRequest(id, deletedBy) {
   const { error } = await getClient()
     .from('purchase_requests')
-    .delete()
+    .update({
+      deleted_at: new Date().toISOString(),
+      deleted_by: deletedBy,
+    })
     .eq('id', id);
   if (error) throw error;
 }
 
-module.exports = { listRequests, getRequest, createRequest, updateRequest, deleteRequest, getStats, getRecommendations };
+module.exports = {
+  listRequests,
+  getRequest,
+  createRequest,
+  updateRequest,
+  softDeleteRequest,
+  getStats,
+  getRecommendations,
+};
