@@ -26,18 +26,23 @@ function decorate(row) {
     language: row.language,
     category: row.category,
     body: row.body,
+    variables: row.variables || null,
     usageCount: row.usage_count || 0,
     isActive: row.is_active,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    lastUsedAt: row.last_used_at || null,
+    deletedAt: row.deleted_at || null,
   };
 }
 
-async function list({ activeOnly = true, language, category } = {}) {
+// PR CS-G1-B: soft delete 적용. includeDeleted=true 일 때만 삭제된 row 포함 (감사용).
+async function list({ activeOnly = true, language, category, includeDeleted = false } = {}) {
   let q = getClient().from('cs_templates').select('*')
     .order('usage_count', { ascending: false })
     .order('title', { ascending: true });
+  if (!includeDeleted) q = q.is('deleted_at', null);
   if (activeOnly) q = q.eq('is_active', true);
   if (language) q = q.eq('language', language);
   if (category) q = q.eq('category', category);
@@ -81,8 +86,13 @@ async function update(id, updates) {
   return decorate(data);
 }
 
-async function remove(id) {
-  const { error } = await getClient().from('cs_templates').delete().eq('id', id);
+// PR CS-G1-B: hard → soft delete. deleted_by 는 삭제 실행자 user id (NOT 원 작성자).
+// 호출자가 deletedBy 전달 안 하면 NULL 로 둠 (이전 호환).
+async function remove(id, deletedBy) {
+  const { error } = await getClient().from('cs_templates').update({
+    deleted_at: new Date().toISOString(),
+    deleted_by: deletedBy ?? null,
+  }).eq('id', id);
   if (error) throwFriendly(error);
 }
 
@@ -92,6 +102,7 @@ async function bumpUsage(id) {
     if (!cur) return;
     await getClient().from('cs_templates').update({
       usage_count: (cur.usageCount || 0) + 1,
+      last_used_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }).eq('id', id);
   } catch { /* 사용 카운트 실패는 조용히 */ }
