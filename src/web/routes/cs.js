@@ -266,7 +266,37 @@ router.post('/responses/:id/result-status', requireAdmin, async (req, res) => {
   }
 });
 
-// PR CS-G3-B: AI 톤 다듬기 (모든 직원).
+// PR CS-G3-B: AI 톤 다듬기 (저장 안 된 미리보기용 — 모든 직원).
+//   body: { text, language? } — :id 불필요. 미리보기 단계에서 호출.
+//   1차 mock 모드면 원본 그대로 반환.
+router.post('/ai-tone-adjust-preview', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const text = String(req.body?.text || '');
+    const language = req.body?.language || null;
+    if (!text.trim()) return res.status(400).json({ error: '다듬을 본문이 비어있습니다' });
+    try {
+      const result = await aiToneAdjuster.adjustTone({ text, language });
+      res.json({
+        text: result.text,
+        provider: result.provider,
+        mock: !!result.mock,
+        costUsd: result.costUsd,
+      });
+    } catch (e) {
+      const code = e?.code || '';
+      const status = code === 'csTone/usage_cap_exceeded' ? 429
+        : code === 'csTone/config_error' ? 503
+        : code === 'csTone/provider_failed' ? 502
+        : code === 'csTone/validation' ? 400
+        : 500;
+      console.error('[cs/ai-tone-adjust-preview] error:', { code, message: e.message });
+      res.status(status).json({ error: e.message, code });
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PR CS-G3-B: AI 톤 다듬기 (저장된 응답용 — 모든 직원, 본인/admin).
 //   1차 mock — 원본 그대로 반환. 환경변수 활성 시 Anthropic 호출.
 //   응답 저장 시 ai_tone_adjusted=true 는 frontend 가 별도 saveResponse 시 set.
 router.post('/responses/:id/ai-tone-adjust', async (req, res) => {

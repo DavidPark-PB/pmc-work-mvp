@@ -85,11 +85,13 @@
       <div style="display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid #2a2a4a;">
         <button type="button" id="cs-tab-compose" onclick="pmcCs.switchView('compose')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid #7c4dff;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">✍️ 답변 작성</button>
         <button type="button" id="cs-tab-suspicious" onclick="pmcCs.switchView('suspicious')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">🚩 진상 바이어 DB</button>
+        ${user.isAdmin ? `<button type="button" id="cs-tab-results" onclick="pmcCs.switchView('results')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">📝 결과 입력 대기</button>` : ''}
         ${manageTab}
       </div>
 
       <div id="cs-compose"></div>
       <div id="cs-suspicious" style="display:none;"></div>
+      <div id="cs-results" style="display:none;"></div>
       <div id="cs-manage" style="display:none;"></div>
     `;
   }
@@ -106,12 +108,17 @@
     viewMode = v;
     _setTabActive('cs-tab-compose', v === 'compose');
     _setTabActive('cs-tab-suspicious', v === 'suspicious');
-    if (user.isAdmin) _setTabActive('cs-tab-manage', v === 'manage');
+    if (user.isAdmin) {
+      _setTabActive('cs-tab-results', v === 'results');
+      _setTabActive('cs-tab-manage', v === 'manage');
+    }
     document.getElementById('cs-compose').style.display = v === 'compose' ? '' : 'none';
     document.getElementById('cs-suspicious').style.display = v === 'suspicious' ? '' : 'none';
+    document.getElementById('cs-results').style.display = v === 'results' ? '' : 'none';
     document.getElementById('cs-manage').style.display = v === 'manage' ? '' : 'none';
     if (v === 'manage') renderManage();
     else if (v === 'suspicious') renderSuspiciousList();
+    else if (v === 'results') renderResultsDashboard();
     else renderCompose();
   }
 
@@ -401,8 +408,9 @@
           <label style="font-size:11px;color:#aaa;">📋 미리보기 ${editMode ? '(편집 모드)' : '(읽기 전용)'}</label>
           <div style="display:flex;gap:4px;">
             <button type="button" onclick="pmcCs.toggleEditMode()" style="padding:3px 8px;background:#2a2a4a;border:0;border-radius:3px;color:#ccc;cursor:pointer;font-size:10px;">${editMode ? '👁 읽기 전용' : '✏️ 편집'}</button>
-            <button type="button" disabled title="그룹 3 (PR CS-G3) 에서 활성됨"
-              style="padding:3px 8px;background:#444;border:0;border-radius:3px;color:#888;cursor:not-allowed;font-size:10px;">🤖 AI 톤 다듬기</button>
+            <button type="button" id="cs-ai-tone-btn" onclick="pmcCs.aiToneAdjust()"
+              title="AI 가 톤만 다듬음 (사실/숫자/언어 변경 X)"
+              style="padding:3px 8px;background:#7c4dff;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">🤖 AI 톤 다듬기</button>
           </div>
         </div>
         <textarea id="cs-preview" ${editMode ? '' : 'readonly'} rows="10"
@@ -879,6 +887,208 @@
     `;
   }
 
+  // ── PR CS-G3-F: AI 톤 다듬기 (저장 안 된 미리보기 기준) ──
+  async function aiToneAdjust() {
+    const ta = document.getElementById('cs-preview');
+    if (!ta) return;
+    const text = ta.value || previewText || '';
+    if (!text.trim()) { alert('다듬을 본문이 비어있습니다'); return; }
+    const lang = document.getElementById('cs-lang')?.value || null;
+    const btn = document.getElementById('cs-ai-tone-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '🤖 다듬는 중...'; }
+    try {
+      const res = await fetch('/api/cs/ai-tone-adjust-preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, language: lang }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '실패');
+      ta.value = j.text || text;
+      previewText = ta.value;
+      const status = document.getElementById('cs-save-status');
+      if (status) {
+        status.style.color = j.mock ? '#888' : '#81c784';
+        status.textContent = j.mock
+          ? '🤖 mock 모드 — 원본 그대로 (CS_TONE_MOCK_MODE=true 또는 ANTHROPIC_API_KEY 미설정)'
+          : `✓ AI 톤 다듬기 완료 (${j.provider} · $${(j.costUsd || 0).toFixed(4)})`;
+      }
+    } catch (e) {
+      const status = document.getElementById('cs-save-status');
+      if (status) { status.style.color = '#ff8a80'; status.textContent = '실패: ' + e.message; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🤖 AI 톤 다듬기'; }
+    }
+  }
+
+  // ── PR CS-G3-F: 결과 입력 대시보드 (admin only) ──
+  let pendingResults = [];
+  async function renderResultsDashboard() {
+    const host = document.getElementById('cs-results');
+    if (!host || !user.isAdmin) {
+      if (host) host.innerHTML = '<div style="padding:30px;color:#888;text-align:center;">관리자 전용</div>';
+      return;
+    }
+    host.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;margin-bottom:12px;">
+        <h3 style="color:#fff;font-size:14px;margin:0 0 4px;">📝 결과 입력 대기 케이스</h3>
+        <p style="color:#888;font-size:12px;margin:0;">
+          의심 케이스 (사기 의심 / 클레임 / 진상 매칭) 중 결과가 미입력된 응답입니다.
+          7가지 결과 중 하나를 선택하세요.
+        </p>
+      </div>
+      <div id="cs-results-list">로딩 중...</div>
+    `;
+    try {
+      const res = await fetch('/api/cs/responses?needsResultOnly=true&limit=100');
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '실패');
+      pendingResults = j.data || [];
+      _renderPendingResults();
+    } catch (e) {
+      document.getElementById('cs-results-list').innerHTML = `<div style="padding:20px;color:#ff8a80;">로드 실패: ${esc(e.message)}</div>`;
+    }
+  }
+
+  const RESULT_STATUSES = [
+    { key: 'converted',       label: '구매 전환',     color: '#2e7d32' },
+    { key: 'repurchased',     label: '재구매',        color: '#388e3c' },
+    { key: 'positive_review', label: '좋은 리뷰',     color: '#43a047' },
+    { key: 'refunded',        label: '환불됨',        color: '#ff9800' },
+    { key: 'case_opened',     label: '케이스 오픈',   color: '#e94560' },
+    { key: 'confirmed_fraud', label: '🚩 사기 확인',  color: '#b71c1c' },
+    { key: 'blocked',         label: '🚫 차단 필요',  color: '#5d1010' },
+  ];
+
+  function _renderPendingResults() {
+    const host = document.getElementById('cs-results-list');
+    if (!host) return;
+    if (pendingResults.length === 0) {
+      host.innerHTML = '<div style="padding:30px;color:#666;text-align:center;font-size:12px;">결과 입력 대기 케이스가 없습니다.</div>';
+      return;
+    }
+    host.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;overflow:hidden;">
+        ${pendingResults.map(r => {
+          const cat = r.manualCategory || r.detectedCategory || 'unknown';
+          const msgPreview = (r.customerMessage || '').slice(0, 200);
+          return `
+            <div style="padding:12px 14px;border-bottom:1px solid #2a2a4a;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px;">
+                <div style="flex:1;min-width:0;">
+                  <span style="padding:2px 8px;background:${catColor(cat)};color:#fff;border-radius:8px;font-size:10px;">${esc(catLabel(cat))}</span>
+                  ${r.suspiciousBuyerId ? `<span style="margin-left:4px;padding:2px 8px;background:#b71c1c;color:#fff;border-radius:8px;font-size:10px;">🚩 진상 매칭</span>` : ''}
+                  ${r.buyerUsername ? `<span style="margin-left:6px;color:#aaa;font-size:11px;">👤 ${esc(r.buyerUsername)}</span>` : ''}
+                  ${r.orderId ? `<span style="margin-left:6px;color:#888;font-size:11px;">📦 ${esc(r.orderId)}</span>` : ''}
+                </div>
+                <span style="color:#888;font-size:11px;">${esc((r.createdAt || '').slice(0,16).replace('T',' '))}</span>
+              </div>
+              <div style="color:#ddd;font-size:12px;background:#0f0f23;padding:6px 10px;border-radius:4px;margin-bottom:8px;white-space:pre-wrap;">${esc(msgPreview)}${(r.customerMessage || '').length > 200 ? '…' : ''}</div>
+              <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                ${RESULT_STATUSES.map(s => `
+                  <button type="button" onclick="pmcCs.setResultStatus(${r.id}, '${s.key}')"
+                    style="padding:5px 10px;background:${s.color};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">${esc(s.label)}</button>
+                `).join('')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  async function setResultStatus(id, resultStatus) {
+    if (!confirm(`결과를 "${esc(resultStatus)}" 로 입력하시겠습니까?`)) return;
+    try {
+      const res = await fetch(`/api/cs/responses/${id}/result-status`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resultStatus }),
+      });
+      const j = await res.json();
+      if (!res.ok) { alert(j.error || '실패'); return; }
+      // confirmed_fraud / blocked → 진상 등록 유도
+      if ((resultStatus === 'confirmed_fraud' || resultStatus === 'blocked') && !j.data?.suspiciousBuyerId) {
+        if (confirm('🚩 진상 바이어로 등록하시겠습니까?\n(빠른 등록 모달이 열립니다)')) {
+          openQuickRegisterModalForResponse(j.data);
+        }
+      }
+      // 리스트 새로고침
+      renderResultsDashboard();
+    } catch (e) { alert('실패: ' + e.message); }
+  }
+
+  // 결과 입력 후 진상 등록 유도 시 호출 — 응답의 buyerUsername 으로 prefill
+  function openQuickRegisterModalForResponse(response) {
+    // 임시로 cs-var-* 를 채워 openQuickRegisterModal 이 prefill 되도록
+    // 결과 대시보드에선 var input 이 없으므로 직접 모달 열기
+    const existing = document.getElementById('cs-quick-modal');
+    if (existing) existing.remove();
+
+    const m = document.createElement('div');
+    m.id = 'cs-quick-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;width:480px;max-width:95vw;color:#e0e0e0;">
+        <h3 style="color:#ff8a80;font-size:15px;margin:0 0 14px;">🚩 진상 바이어 등록 (결과: ${esc(response.resultStatus || '')})</h3>
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">플랫폼 <span style="color:#ff8a80;">*</span></label>
+        <select id="cs-q-platform" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;margin-bottom:8px;">
+          <option value="">— 선택 —</option>
+          <option value="ebay">eBay</option><option value="shopify">Shopify</option>
+          <option value="qoo10">Qoo10</option><option value="coupang">쿠팡</option>
+          <option value="smartstore">스마트스토어</option><option value="alibaba">Alibaba</option>
+        </select>
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">플랫폼 ID <span style="color:#ff8a80;">*</span></label>
+        <input id="cs-q-platformid" type="text" maxlength="120" value="${esc(response.buyerUsername || '')}"
+          style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;margin-bottom:8px;">
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">사건 유형 <span style="color:#ff8a80;">*</span></label>
+        <select id="cs-q-incident-type" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;margin-bottom:8px;">
+          <option value="">— 선택 —</option>
+          <option value="사기">사기</option><option value="파손사기">파손사기</option>
+          <option value="협박">협박</option><option value="저격feedback">저격 feedback</option>
+          <option value="카드도용">카드 도용</option><option value="재포장반품">재포장 반품</option>
+          <option value="기타">기타</option>
+        </select>
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">주문번호 (선택)</label>
+        <input id="cs-q-order" type="text" maxlength="120" value="${esc(response.orderId || '')}"
+          style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;margin-bottom:8px;">
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">수법 설명</label>
+        <textarea id="cs-q-desc" rows="3" maxlength="2000"
+          style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;font-family:inherit;resize:vertical;margin-bottom:10px;">${esc((response.customerMessage || '').slice(0, 500))}</textarea>
+        <div id="cs-q-error" style="display:none;margin-bottom:10px;padding:7px 10px;background:#3a1a1a;border-radius:4px;color:#ff8a80;font-size:11px;"></div>
+        <div style="display:flex;justify-content:flex-end;gap:6px;">
+          <button type="button" id="cs-q-cancel" style="padding:7px 14px;background:#2a2a4a;border:0;border-radius:4px;color:#ccc;cursor:pointer;font-size:12px;">취소</button>
+          <button type="button" id="cs-q-submit" style="padding:7px 16px;background:#b71c1c;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">🚩 등록</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+    m.querySelector('#cs-q-cancel').addEventListener('click', () => m.remove());
+    m.querySelector('#cs-q-submit').addEventListener('click', async () => {
+      const errEl = m.querySelector('#cs-q-error');
+      errEl.style.display = 'none';
+      const payload = {
+        platform: m.querySelector('#cs-q-platform').value,
+        platformId: m.querySelector('#cs-q-platformid').value.trim(),
+        incidentType: m.querySelector('#cs-q-incident-type').value,
+        orderNumber: m.querySelector('#cs-q-order').value.trim(),
+        description: m.querySelector('#cs-q-desc').value.trim(),
+      };
+      if (!payload.platform || !payload.platformId || !payload.incidentType) {
+        errEl.textContent = '플랫폼 + 플랫폼ID + 사건유형 필수'; errEl.style.display = 'block'; return;
+      }
+      try {
+        const res = await fetch('/api/cs/suspicious-buyers/quick', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const j = await res.json();
+        if (!res.ok) { errEl.textContent = j.error || '실패'; errEl.style.display = 'block'; return; }
+        m.remove();
+        alert(`✓ 진상 등록 완료 (id=${j.data.id})`);
+      } catch (e) { errEl.textContent = e.message; errEl.style.display = 'block'; }
+    });
+  }
+
   // ── 템플릿 관리 (admin) — 보존 ──
   function renderManage() {
     const host = document.getElementById('cs-manage');
@@ -992,6 +1202,8 @@
     // 진상 바이어 (PR CS-G2-F)
     openQuickRegisterModal, openSuspiciousDetail,
     searchSuspicious,
+    // 결과 + AI (PR CS-G3-F)
+    aiToneAdjust, setResultStatus,
     // 관리 (보존)
     editTemplate, deleteTemplate,
   };
