@@ -37,6 +37,30 @@ router.put('/prices', requireAdmin, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// PR catalog-fix 2026-05: 다건 일괄 저장 (사장님 spec — batch + retry).
+//   PUT /api/catalog/prices/batch
+//   body: { tab, items: [{rowIndex, side, usdPrice}, ...] }
+//   response: { ok, totalRequested, totalSucceeded, totalFailed, rates, results: [...] }
+router.put('/prices/batch', requireAdmin, async (req, res) => {
+  try {
+    const { tab, items } = req.body || {};
+    if (!tab) return res.status(400).json({ error: 'tab 필수' });
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'items 배열 필수' });
+    }
+    if (items.length > 200) {
+      return res.status(400).json({ error: '한 번에 최대 200행까지 저장 가능합니다' });
+    }
+    const result = await service.updatePricesBatch({ tab, items });
+    // 모두 실패면 502, 부분 실패면 200 + results 안에 표시
+    const status = result.totalSucceeded === 0 ? 502 : 200;
+    res.status(status).json({ ok: result.totalSucceeded > 0, ...result });
+  } catch (e) {
+    console.error('[catalog/prices/batch] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── 수동 환율 편집 ──
 // PUT /api/catalog/rates  body: { usdToKrw?, usdToEur? }  (null 보내면 자동 모드로 복원)
 router.put('/rates', requireAdmin, async (req, res) => {

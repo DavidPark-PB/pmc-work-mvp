@@ -415,8 +415,116 @@ async function updatePrice({ tab, rowIndex, side, usdPrice }) {
   };
 }
 
+/**
+ * 다건 USD 가격 일괄 업데이트 (PR catalog-fix 2026-05).
+ *
+ * 사장님 spec:
+ *   - 화면에서 임시 변경 후 한 번에 batchUpdate 로 보냄 (단건 N+3 호출 → 3 호출 고정)
+ *   - 실패 시 1초 후 재시도, 최대 3회 (utils/retry)
+ *   - 부분 실패는 행 단위로 보고 (어느 행 어느 시트 실패했는지)
+ *
+ * @param {Object} input
+ * @param {string} input.tab — USD 시트 탭명
+ * @param {Array<{rowIndex, side, usdPrice}>} input.items — 변경할 행 목록
+ * @returns {Promise<{
+ *   tab, totalRequested, totalSucceeded, totalFailed,
+ *   rates: { usdToKrw, usdToEur },
+ *   results: [{rowIndex, side, ok, updated?: {usd,krw,eur}, error?: string}]
+ * }>}
+ */
+async function updatePricesBatch({ tab, items }) {
+  if (!tab) throw new Error('tab 필수');
+  if (!Array.isArray(items) || items.length === 0) throw new Error('items 배열 필수');
+
+  // input validation
+  const cleaned = [];
+  const validationErrors = [];
+  for (const it of items) {
+    const rowIndex = parseInt(it.rowIndex, 10);
+    const side = it.side;
+    const usd = Number(it.usdPrice);
+    if (!Number.isFinite(rowIndex) || rowIndex <= 0 || !['left', 'right'].includes(side) ||
+        !Number.isFinite(usd) || usd < 0) {
+      validationErrors.push({
+        rowIndex: it.rowIndex, side: it.side, ok: false,
+        error: 'rowIndex/side/usdPrice 형식 오류',
+      });
+      continue;
+    }
+    cleaned.push({ rowIndex, side, usd });
+  }
+  if (cleaned.length === 0) {
+    return {
+      tab, totalRequested: items.length, totalSucceeded: 0, totalFailed: items.length,
+      rates: { usdToKrw: 0, usdToEur: 0 },
+      results: validationErrors,
+    };
+  }
+
+  const tabUSD = tab;
+  const tabKRW = tab.replace(/_USD$/i, '_KRW');
+  const tabEURO = tab.replace(/_USD$/i, '_EURO');
+  const q = t => `'${t.replace(/'/g, "''")}'`;
+
+  const s = await getSheets();
+  const rates = await getRates();
+  const { withRetry } = require('../utils/retry');
+
+  // 시트별 batch payload 생성
+  const usdData = [];
+  const krwData = [];
+  const euroData = [];
+  const meta = [];  // 결과 매핑용 (rowIndex/side/usd/krw/eur)
+
+  for (const c of cleaned) {
+    const col = c.side === 'left' ? 'F' : 'M';
+    const krw = Math.round(c.usd * rates.usdToKrw);
+    const eur = Math.round(c.usd * rates.usdToEur * 100) / 100;
+    usdData.push({ range: `${q(tabUSD)}!${col}${c.rowIndex}`, values: [[`$${c.usd}`]] });
+    krwData.push({ range: `${q(tabKRW)}!${col}${c.rowIndex}`, values: [[`₩${krw.toLocaleString('en-US')}`]] });
+    euroData.push({ range: `${q(tabEURO)}!${col}${c.rowIndex}`, values: [[`€${eur}`]] });
+    meta.push({ rowIndex: c.rowIndex, side: c.side, usd: c.usd, krw, eur });
+  }
+
+  // 시트 별 batchWriteData 호출 (각각 retry — 시트 단위 부분 실패 추적)
+  const sheetResults = await Promise.allSettled([
+    withRetry(() => s.batchWriteData(SHEET_IDS.USD, usdData), { maxAttempts: 3, baseDelayMs: 1000 }),
+    withRetry(() => s.batchWriteData(SHEET_IDS.KRW, krwData), { maxAttempts: 3, baseDelayMs: 1000 }),
+    withRetry(() => s.batchWriteData(SHEET_IDS.EURO, euroData), { maxAttempts: 3, baseDelayMs: 1000 }),
+  ]);
+  const labels = ['USD', 'KRW', 'EURO'];
+  const sheetFailures = sheetResults
+    .map((r, i) => ({ label: labels[i], ok: r.status === 'fulfilled', error: r.status === 'rejected' ? (r.reason?.message || String(r.reason)) : null }))
+    .filter(x => !x.ok);
+
+  // 행별 결과: 모든 시트 성공이면 ok, 하나라도 실패면 실패 (어느 시트 실패한지 메시지)
+  const results = meta.map(m => {
+    if (sheetFailures.length === 0) {
+      return { rowIndex: m.rowIndex, side: m.side, ok: true, updated: { usd: m.usd, krw: m.krw, eur: m.eur } };
+    }
+    return {
+      rowIndex: m.rowIndex, side: m.side, ok: false,
+      error: '시트 업데이트 실패: ' + sheetFailures.map(f => f.label).join(', '),
+      updated: { usd: m.usd, krw: m.krw, eur: m.eur },  // 계산값은 참고용으로 포함
+    };
+  });
+
+  // validation 실패 행도 결과에 포함
+  results.push(...validationErrors);
+
+  const totalSucceeded = results.filter(r => r.ok).length;
+  return {
+    tab,
+    totalRequested: items.length,
+    totalSucceeded,
+    totalFailed: items.length - totalSucceeded,
+    rates: { usdToKrw: rates.usdToKrw, usdToEur: rates.usdToEur },
+    results,
+  };
+}
+
 module.exports = {
-  getCatalog, updatePrice, listTabs, getRates, SHEET_IDS,
+  getCatalog, updatePrice, updatePricesBatch, listTabs, getRates, SHEET_IDS,
   getManualRates, setManualRates,
   setImageOverride,
 };

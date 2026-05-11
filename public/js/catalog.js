@@ -2,7 +2,15 @@
  * 카탈로그 가격 관리 — Google Sheets 3시트 (USD/KRW/EURO) 동시 관리
  */
 (function() {
-  let state = { tab: '', tabs: [], rates: null, items: [], category: '', search: '', loading: false, accioEnabled: false };
+  // PR catalog-fix 2026-05: pendingChanges = rowKey('rowIndex-side') → 임시 USD 값 (저장 전)
+  // failedRows = rowKey → error message (마지막 batch 저장 실패한 행)
+  let state = {
+    tab: '', tabs: [], rates: null, items: [], category: '', search: '',
+    loading: false, accioEnabled: false,
+    pendingChanges: new Map(),
+    failedRows: new Map(),
+    saving: false,
+  };
 
   function esc(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function fmtMoney(n, sym) {
@@ -194,8 +202,22 @@
         <button onclick="pmcCatalog.editImage(${it.rowIndex}, '${it.side}')" title="이미지 URL 수정" style="display:block;margin-top:2px;padding:1px 6px;background:#2a2a4a;color:#aaa;border:0;border-radius:3px;cursor:pointer;font-size:10px;width:100%;">수정</button>
         ${aiBtn}
       </div>`;
+    // PR catalog-fix 2026-05: dirty / failed 표시
+    const pending = state.pendingChanges.has(rowKey);
+    const failed = state.failedRows.has(rowKey);
+    const inputValue = pending ? state.pendingChanges.get(rowKey) : (it.usdPrice != null ? it.usdPrice : '');
+    let inputBorder = '#333';
+    let bg = '#0f0f23';
+    let badge = '';
+    if (failed) {
+      inputBorder = '#e94560'; bg = '#2a1a1a';
+      badge = `<span title="${esc(state.failedRows.get(rowKey))}" style="color:#ff8a80;font-size:10px;margin-left:4px;">❌</span>`;
+    } else if (pending) {
+      inputBorder = '#ff9800'; bg = '#2a1a0f';
+      badge = `<span title="저장 안 됨 — 헤더 '일괄 저장' 클릭" style="color:#ffb74d;font-size:10px;margin-left:4px;">●</span>`;
+    }
     return `
-      <tr style="border-bottom:1px solid #2a2a4a;">
+      <tr style="border-bottom:1px solid #2a2a4a;${failed ? 'background:#1a0a0a;' : (pending ? 'background:#1a120a;' : '')}">
         <td style="padding:8px;text-align:center;color:#888;font-size:12px;">${esc(it.num)}</td>
         <td style="padding:8px;text-align:center;">${imgCell}</td>
         <td style="padding:8px;white-space:pre-wrap;">${esc(it.name)}${state.search ? ` <span style="color:#7c4dff;font-size:10px;margin-left:4px;">· ${esc(it.category)}</span>` : ''}</td>
@@ -203,21 +225,32 @@
         <td style="padding:8px;text-align:right;white-space:nowrap;">
           <div style="display:flex;gap:4px;align-items:center;justify-content:flex-end;">
             <span style="color:#888;">$</span>
-            <input type="number" value="${it.usdPrice != null ? it.usdPrice : ''}" step="0.01" min="0"
-              data-row="${it.rowIndex}" data-side="${it.side}"
-              onkeydown="if(event.key==='Enter'){pmcCatalog.savePrice('${rowKey}',event.target.value);event.target.blur();}"
-              style="width:80px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:13px;text-align:right;">
-            <button onclick="pmcCatalog.savePrice('${rowKey}', this.previousElementSibling.value)" style="padding:4px 8px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">저장</button>
+            <input type="number" value="${inputValue}" step="0.01" min="0"
+              data-row="${it.rowIndex}" data-side="${it.side}" data-rowkey="${rowKey}"
+              data-original="${it.usdPrice != null ? it.usdPrice : ''}"
+              oninput="pmcCatalog.markDirty('${rowKey}', this.value)"
+              style="width:80px;padding:4px 6px;background:${bg};border:1px solid ${inputBorder};border-radius:4px;color:#fff;font-size:13px;text-align:right;">
+            ${badge}
           </div>
         </td>
-        <td style="padding:8px;text-align:right;color:#b0b0b0;">${fmtMoney(it.krwPrice, '₩')}</td>
-        <td style="padding:8px;text-align:right;color:#b0b0b0;">${fmtMoney(it.euroPrice, '€')}</td>
+        <td style="padding:8px;text-align:right;color:${pending ? '#666' : '#b0b0b0'};">${fmtMoney(it.krwPrice, '₩')}${pending ? ' <span style="font-size:9px;color:#ffb74d;">(저장 후 갱신)</span>' : ''}</td>
+        <td style="padding:8px;text-align:right;color:${pending ? '#666' : '#b0b0b0'};">${fmtMoney(it.euroPrice, '€')}</td>
         <td style="padding:8px;text-align:center;color:#555;font-size:11px;">${it.side === 'left' ? 'F' : 'M'}${it.rowIndex}</td>
       </tr>
     `;
   }
 
   function onTabChange() {
+    // PR catalog-fix 2026-05: 미저장 변경 있으면 경고
+    if (state.pendingChanges.size > 0) {
+      if (!confirm(`저장 안 된 변경 ${state.pendingChanges.size}건이 있습니다. 탭을 바꾸면 사라집니다. 계속할까요?`)) {
+        const sel = document.getElementById('cat-tab');
+        if (sel) sel.value = state.tab;
+        return;
+      }
+      state.pendingChanges.clear();
+      state.failedRows.clear();
+    }
     const sel = document.getElementById('cat-tab');
     state.tab = sel.value;
     state.category = '';
@@ -230,34 +263,134 @@
     renderTable();
   }
 
-  async function savePrice(rowKey, usdValue) {
-    const [rowIndex, side] = rowKey.split('-');
-    const usdPrice = Number(usdValue);
-    if (!Number.isFinite(usdPrice) || usdPrice < 0) { alert('가격을 올바로 입력하세요'); return; }
-    const res = await fetch('/api/catalog/prices', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tab: state.tab, rowIndex: Number(rowIndex), side, usdPrice }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      alert('저장 실패: ' + (err.error || '오류'));
+  // ── PR catalog-fix 2026-05: 임시 변경 + 일괄 저장 ──
+
+  function markDirty(rowKey, usdValue) {
+    if (state.saving) return;
+    const num = Number(usdValue);
+    const [rowIndexStr, side] = rowKey.split('-');
+    const rowIndex = Number(rowIndexStr);
+    const it = state.items.find(x => x.rowIndex === rowIndex && x.side === side);
+    const original = it?.usdPrice != null ? Number(it.usdPrice) : null;
+
+    // 원래 값과 같으면 dirty 해제. 다르거나 입력 비어있으면 dirty.
+    if (Number.isFinite(num) && original != null && num === original) {
+      state.pendingChanges.delete(rowKey);
+    } else if (usdValue === '' || !Number.isFinite(num) || num < 0) {
+      // 빈 값 / invalid → dirty 표시 안 함 (저장 시 invalid 행은 backend 가 거부)
+      state.pendingChanges.delete(rowKey);
+    } else {
+      state.pendingChanges.set(rowKey, num);
+    }
+    // 실패 표시는 사용자가 다시 수정하면 해제
+    state.failedRows.delete(rowKey);
+    _refreshSaveBar();
+  }
+
+  // 헤더 sticky 바: 변경된 N건 표시 + "💾 일괄 저장" 버튼
+  function _refreshSaveBar() {
+    let bar = document.getElementById('cat-save-bar');
+    const n = state.pendingChanges.size;
+    if (n === 0 && !state.saving) {
+      if (bar) bar.remove();
       return;
     }
-    const { result } = await res.json();
-    // 로컬 state 업데이트 후 행만 다시 렌더
-    const it = state.items.find(x => x.rowIndex === Number(rowIndex) && x.side === side);
-    if (it) {
-      it.usdPrice = result.updated.usd;
-      it.krwPrice = result.updated.krw;
-      it.euroPrice = result.updated.eur;
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'cat-save-bar';
+      bar.style.cssText = 'position:sticky;top:0;z-index:50;background:#1a1a2e;border:1px solid #ff9800;border-radius:8px;padding:10px 14px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:0 4px 8px rgba(0,0,0,0.4);';
+      const content = document.getElementById('cat-content');
+      if (content) content.parentNode.insertBefore(bar, content);
+      else return;
     }
+    const failedCount = state.failedRows.size;
+    bar.innerHTML = `
+      <div style="color:#ffb74d;font-size:13px;">
+        ●  변경됨 <strong style="color:#fff;">${n}건</strong>
+        ${failedCount > 0 ? `· <span style="color:#ff8a80;">실패 ${failedCount}건</span>` : ''}
+        <span style="color:#888;font-size:11px;margin-left:6px;">저장하기 전엔 시트에 반영 안 됨</span>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button onclick="pmcCatalog.discardChanges()" ${state.saving ? 'disabled' : ''}
+          style="padding:6px 12px;background:#2a2a4a;border:0;border-radius:4px;color:#aaa;cursor:${state.saving ? 'not-allowed' : 'pointer'};font-size:12px;">
+          ↶ 취소
+        </button>
+        <button onclick="pmcCatalog.saveAll()" ${state.saving || n === 0 ? 'disabled' : ''}
+          style="padding:6px 16px;background:${state.saving ? '#555' : '#7c4dff'};border:0;border-radius:4px;color:#fff;cursor:${state.saving ? 'not-allowed' : 'pointer'};font-size:12px;font-weight:600;">
+          ${state.saving ? '⏳ 저장 중...' : `💾 일괄 저장 (${n}건)`}
+        </button>
+      </div>
+    `;
+  }
+
+  function discardChanges() {
+    if (state.saving) return;
+    state.pendingChanges.clear();
+    state.failedRows.clear();
     renderTable();
-    if (result.partialFailures && result.partialFailures.length > 0) {
-      const fails = result.partialFailures.map(f => `${f.label}: ${f.error}`).join('\n');
-      alert(`⚠️ 일부 시트 갱신 실패\n\n${fails}\n\n성공한 시트는 저장됐고 화면도 갱신됐습니다. 실패한 시트는 권한 문제일 수 있어요.`);
-    } else {
-      showSaveToast(`${result.formatted.USD} / ${result.formatted.KRW} / ${result.formatted.EURO} 저장됨`);
+    _refreshSaveBar();
+  }
+
+  async function saveAll() {
+    if (state.saving) return;
+    if (state.pendingChanges.size === 0) return;
+
+    state.saving = true;
+    state.failedRows.clear();
+    _refreshSaveBar();
+    renderTable();
+
+    const items = [];
+    for (const [rowKey, usdPrice] of state.pendingChanges.entries()) {
+      const [rowIndex, side] = rowKey.split('-');
+      items.push({ rowIndex: Number(rowIndex), side, usdPrice });
+    }
+
+    try {
+      const res = await fetch('/api/catalog/prices/batch', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tab: state.tab, items }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 502 || data.totalSucceeded === 0) {
+        // 전체 실패
+        for (const [rowKey] of state.pendingChanges.entries()) {
+          state.failedRows.set(rowKey, data.error || '시트 업데이트 실패');
+        }
+        alert(`❌ 저장 실패: ${data.error || '시트 업데이트 실패'}`);
+      } else {
+        // 성공 행은 pendingChanges 에서 제거, 실패 행은 failedRows 에 보관
+        for (const r of data.results || []) {
+          const rk = `${r.rowIndex}-${r.side}`;
+          if (r.ok) {
+            state.pendingChanges.delete(rk);
+          } else {
+            state.failedRows.set(rk, r.error || '실패');
+          }
+        }
+        if (data.totalFailed > 0) {
+          alert(`⚠️ ${data.totalSucceeded}건 저장 성공 / ${data.totalFailed}건 실패\n실패한 행은 빨간색으로 표시됩니다. 수정 후 다시 저장하세요.`);
+        } else {
+          showSaveToast(`✓ ${data.totalSucceeded}건 일괄 저장 완료`);
+        }
+
+        // 사장님 spec 4: 저장 완료 후 시트에서 최신 KRW/EUR 재조회
+        if (data.totalSucceeded > 0) {
+          await refresh();
+        }
+      }
+    } catch (e) {
+      // network / 5xx — 모두 실패 처리
+      for (const [rowKey] of state.pendingChanges.entries()) {
+        state.failedRows.set(rowKey, e.message);
+      }
+      alert(`❌ 네트워크 오류: ${e.message}\n다시 시도하세요.`);
+    } finally {
+      state.saving = false;
+      _refreshSaveBar();
+      renderTable();
     }
   }
 
@@ -484,7 +617,9 @@
   }
 
   window.pmcCatalog = {
-    load, refresh, onTabChange, setCategory, savePrice,
+    load, refresh, onTabChange, setCategory,
+    // PR catalog-fix 2026-05: 일괄 저장 (savePrice 는 보존 — 호출처 없으면 dead code)
+    markDirty, saveAll, discardChanges, savePrice,
     openFxModal, closeFxModal, saveFx, resetFxAuto, editImage,
     onSearch, clearSearch,
     openAiImage, closeAiImage, runAiImage, copyAiUrl,
