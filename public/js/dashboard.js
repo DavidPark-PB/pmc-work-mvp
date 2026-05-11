@@ -7071,7 +7071,8 @@ async function loadB2BInvoiceList() {
             <button onclick="b2bOpenPaymentModal('${inv.InvoiceNo}', ${total}, ${paidAmt})" title="입금 기록" style="background:#f39c12;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">💰 입금</button>
             ${isManual
               ? `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/manual-download" style="background:#ff9800;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">📎 원본</a>`
-              : `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="background:#0288d1;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">XLSX</a>`}
+              : `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="background:#0288d1;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">XLSX</a>
+                 <a href="${API}/b2b/invoices/${inv.InvoiceNo}/download?format=pdf" style="background:#e53935;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">📄 PDF</a>`}
             ${inv.OriginalFilePath && !isManual
               ? `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/manual-download" style="background:#81c784;color:#1a1a2e;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:700">📎 첨부</a>`
               : ''}

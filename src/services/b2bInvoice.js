@@ -1348,7 +1348,7 @@ class B2BInvoiceService {
   // ────────────────────── 전송 ──────────────────────
 
   /**
-   * WhatsApp 딥링크 생성
+   * WhatsApp 딥링크 생성 — PDF를 Drive에 업로드하고 그 URL을 메시지에 박는다.
    */
   async getWhatsAppLink(invoiceNo) {
     const invoices = await this.getInvoices();
@@ -1359,11 +1359,28 @@ class B2BInvoiceService {
     const buyer = buyers.find(b => b.BuyerID === inv.BuyerID);
     const phone = (buyer?.WhatsApp || buyer?.Phone || '').replace(/[^0-9]/g, '');
 
+    // PDF 생성 후 Drive에 업로드 → 메시지에 PDF URL 사용. 실패 시 기존 XLSX URL로 fallback.
+    let downloadUrl = inv.DriveUrl || '';
+    try {
+      const { buffer: pdfBuffer } = await this.downloadInvoice(invoiceNo, 'pdf');
+      const buyerSlug = (buyer?.Name || inv.BuyerName || 'buyer').replace(/[^a-zA-Z0-9]/g, '_');
+      const pdfFileName = `${invoiceNo}_${buyerSlug}.pdf`;
+      const uploaded = await this.drive.uploadFile(
+        B2B_DRIVE_FOLDER_ID,
+        pdfFileName,
+        'application/pdf',
+        pdfBuffer
+      );
+      if (uploaded?.webViewLink) downloadUrl = uploaded.webViewLink;
+    } catch (pdfErr) {
+      console.warn('⚠️ WA용 PDF 생성/업로드 실패, XLSX 링크 사용:', pdfErr.message);
+    }
+
     const message = encodeURIComponent(
       `Hi ${buyer?.Name || inv.BuyerName},\n\n` +
       `Please find your invoice ${inv.InvoiceNo} for ${inv.Currency} ${inv.Total}.\n` +
       `Due date: ${inv.DueDate}\n\n` +
-      (inv.DriveUrl ? `Download: ${inv.DriveUrl}\n\n` : '') +
+      (downloadUrl ? `Download (PDF): ${downloadUrl}\n\n` : '') +
       `Thank you for your business!\n- PMC Corporation`
     );
 
@@ -1374,7 +1391,7 @@ class B2BInvoiceService {
     // 상태 업데이트
     await this.updateInvoiceStatus(invoiceNo, 'SENT', { sentVia: 'WhatsApp' });
 
-    return { link, phone, buyerName: buyer?.Name || inv.BuyerName };
+    return { link, phone, buyerName: buyer?.Name || inv.BuyerName, pdfUrl: downloadUrl };
   }
 
   // ────────────────────── 매출 분석 ──────────────────────
