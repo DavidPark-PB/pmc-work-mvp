@@ -12,10 +12,14 @@ const { requireAdmin } = require('../../middleware/auth');
 const repo = require('../../db/csTemplateRepository');
 const salesOptionRepo = require('../../db/csSalesOptionRepository');
 const responseRepo = require('../../db/csResponseRepository');
+const suspiciousBuyerRepo = require('../../db/suspiciousBuyerRepository');
+const suspiciousIncidentRepo = require('../../db/suspiciousIncidentRepository');
 const csClassifier = require('../../services/cs/csCategoryClassifier');
 const buyerExtractor = require('../../services/cs/buyerExtractor');
 const templateRecommender = require('../../services/cs/templateRecommender');
 const variableSubstitutor = require('../../services/cs/variableSubstitutor');
+const buyerMatcher = require('../../services/cs/suspiciousBuyerMatcher');
+const fraudDetector = require('../../services/cs/fraudPatternDetector');
 
 const router = express.Router();
 
@@ -86,13 +90,15 @@ router.post('/templates/:id/use', async (req, res) => {
 // ──────────────────────────────────────────────────────────────────────────
 
 // POST /api/cs/analyze — 메시지 자동 분석 (모든 직원)
-// body: { message }
-// response: { detectedCategory, candidates[], extractedVars{}, recommendedTemplates[], salesOptions[] }
+// body: { message, hints? }   hints: { trackingDelivered, hasPhotos, firstTransaction }
+// response: { detectedCategory, candidates[], extractedVars{}, recommendedTemplates[], salesOptions[],
+//             suspiciousMatch{ primary, matches[], extractedEmails[] }, fraudSignals[] }
 router.post('/analyze', async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
     const message = String(req.body?.message || '');
     if (!message.trim()) return res.status(400).json({ error: '메시지를 입력하세요' });
+    const hints = req.body?.hints || {};
 
     const { detectedCategory, candidates } = csClassifier.classify(message);
     const extracted = buyerExtractor.extract(message);
@@ -105,12 +111,27 @@ router.post('/analyze', async (req, res) => {
         ])
       : [[], []];
 
+    // PR CS-G2-B: 진상 매칭 + 위험 신호
+    const [suspiciousMatch, fraudSignals] = await Promise.all([
+      buyerMatcher.findMatches({
+        message,
+        buyerName: extracted.buyerName,
+        platformIds: req.body?.platformIds || null,
+      }).catch(e => {
+        console.warn('[cs/analyze] matcher error:', e.message);
+        return { matches: [], primary: null, extractedEmails: [] };
+      }),
+      Promise.resolve(fraudDetector.detect(message, hints)),
+    ]);
+
     res.json({
       detectedCategory,
       candidates,
       extractedVars: extracted,
       recommendedTemplates,
       salesOptions,
+      suspiciousMatch,
+      fraudSignals,
     });
   } catch (e) {
     console.error('[cs/analyze] error:', e.message);
@@ -235,6 +256,181 @@ router.delete('/responses/:id', async (req, res) => {
     }
     // deleted_by = 삭제 실행자 user id (NOT 원 작성자 — 사장님 짚을 점 E)
     await responseRepo.softDelete(id, req.user.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// PR CS-G2-B: 진상 바이어 DB CRUD + 사건 + 빠른 등록
+// ──────────────────────────────────────────────────────────────────────────
+
+// GET /api/cs/suspicious-buyers?q=&suspicionLevel=&limit=
+router.get('/suspicious-buyers', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const data = await suspiciousBuyerRepo.list({
+      q: req.query.q,
+      suspicionLevel: req.query.suspicionLevel,
+      limit: req.query.limit ? parseInt(req.query.limit, 10) : 100,
+    });
+    res.json({ data });
+  } catch (e) {
+    console.error('[cs/suspicious-buyers] list error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/cs/suspicious-buyers/search?q= — 검색 alias (단순 q 필터)
+router.get('/suspicious-buyers/search', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const q = req.query.q;
+    if (!q || !String(q).trim()) return res.json({ data: [] });
+    const data = await suspiciousBuyerRepo.list({ q, limit: 30 });
+    res.json({ data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/cs/suspicious-buyers/:id  + 사건 목록 함께
+router.get('/suspicious-buyers/:id', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const id = parseInt(req.params.id, 10);
+    const buyer = await suspiciousBuyerRepo.getById(id);
+    if (!buyer) return res.status(404).json({ error: '진상 바이어를 찾을 수 없습니다' });
+    const incidents = await suspiciousIncidentRepo.listByBuyer(id);
+    res.json({ data: buyer, incidents });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/cs/suspicious-buyers — 등록 (모든 직원)
+router.post('/suspicious-buyers', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const b = req.body || {};
+    // 최소 식별자 1개 요구 (real_name / email / platformIds 중 하나)
+    const hasIdentifier = !!(b.realName || b.email ||
+      (b.platformIds && Object.values(b.platformIds).some(v => v)));
+    if (!hasIdentifier) {
+      return res.status(400).json({ error: '식별자 (이름/이메일/플랫폼ID) 최소 1개가 필요합니다' });
+    }
+    // staff 는 admin only 필드 채워보내도 무시 (service 단에서 reset)
+    const created = await suspiciousBuyerRepo.create({
+      ...b,
+      reportedBy: req.user.id,
+      // admin only 필드는 staff 신규 등록 시 default 강제
+      suspicionLevel:    req.user.isAdmin ? b.suspicionLevel : '의심',
+      isVerifiedByAdmin: req.user.isAdmin ? !!b.isVerifiedByAdmin : false,
+      isPublicShareable: req.user.isAdmin ? !!b.isPublicShareable : false,
+    });
+    res.status(201).json({ data: created });
+  } catch (e) {
+    console.error('[cs/suspicious-buyers] create error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/cs/suspicious-buyers/quick — CS 화면에서 빠른 등록 (모든 직원)
+// 최소 필드: { platform, platformId, incidentType, description } + 자동으로 사건 1건 생성
+router.post('/suspicious-buyers/quick', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const b = req.body || {};
+    const platform = String(b.platform || '').trim();
+    const platformId = String(b.platformId || '').trim();
+    const incidentType = String(b.incidentType || '').trim();
+    if (!platform || !platformId) {
+      return res.status(400).json({ error: 'platform + platformId 필수' });
+    }
+    if (!incidentType) {
+      return res.status(400).json({ error: '사건 유형 필수' });
+    }
+
+    const buyer = await suspiciousBuyerRepo.create({
+      platformIds: { [platform]: platformId },
+      patternDescription: b.description || null,
+      incidentTypes: [incidentType],
+      reportedBy: req.user.id,
+    });
+    const incident = await suspiciousIncidentRepo.create({
+      buyerId: buyer.id,
+      platform,
+      orderNumber: b.orderNumber || null,
+      incidentType,
+      description: b.description || null,
+      amount: b.amount,
+      screenshotUrls: Array.isArray(b.screenshotUrls) ? b.screenshotUrls : null,
+      createdBy: req.user.id,
+    });
+    res.status(201).json({ data: buyer, incident });
+  } catch (e) {
+    console.error('[cs/suspicious-buyers/quick] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/cs/suspicious-buyers/:id
+//   admin = 모든 필드. staff = ADMIN_ONLY_FIELDS 제외 필드만.
+router.patch('/suspicious-buyers/:id', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const id = parseInt(req.params.id, 10);
+    const existing = await suspiciousBuyerRepo.getById(id);
+    if (!existing) return res.status(404).json({ error: '진상 바이어를 찾을 수 없습니다' });
+
+    try {
+      const updated = await suspiciousBuyerRepo.update(id, req.body || {}, {
+        adminOnlyFieldsBlocked: !req.user.isAdmin,
+      });
+      res.json({ data: updated });
+    } catch (e) {
+      if (e.code === 'forbidden_fields') {
+        return res.status(403).json({ error: e.message });
+      }
+      throw e;
+    }
+  } catch (e) {
+    console.error('[cs/suspicious-buyers] update error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/cs/suspicious-buyers/:id — admin only soft delete
+router.delete('/suspicious-buyers/:id', requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const existing = await suspiciousBuyerRepo.getById(id);
+    if (!existing) return res.status(404).json({ error: '진상 바이어를 찾을 수 없습니다' });
+    await suspiciousBuyerRepo.softDelete(id, req.user.id);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/cs/suspicious-buyers/:id/incidents — 사건 추가 (모든 직원)
+router.post('/suspicious-buyers/:id/incidents', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const buyerId = parseInt(req.params.id, 10);
+    const buyer = await suspiciousBuyerRepo.getById(buyerId);
+    if (!buyer) return res.status(404).json({ error: '진상 바이어를 찾을 수 없습니다' });
+
+    const created = await suspiciousIncidentRepo.create({
+      buyerId,
+      ...(req.body || {}),
+      createdBy: req.user.id,
+    });
+    res.status(201).json({ data: created });
+  } catch (e) {
+    console.error('[cs/suspicious-buyers/incidents] create error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/cs/suspicious-buyers/:buyerId/incidents/:incidentId — admin only soft delete
+router.delete('/suspicious-buyers/:buyerId/incidents/:incidentId', requireAdmin, async (req, res) => {
+  try {
+    const incidentId = parseInt(req.params.incidentId, 10);
+    await suspiciousIncidentRepo.softDelete(incidentId, req.user.id);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
