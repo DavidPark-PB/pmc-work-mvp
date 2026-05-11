@@ -34,15 +34,20 @@ function decorate(row) {
     sessionId: row.session_id,
     adjustedBy: row.adjusted_by,
     createdAt: row.created_at,
+    // PR S-1 (049 마이그레이션)
+    status: row.status || 'pending',
+    appliedAt: row.applied_at || null,
+    appliedBy: row.applied_by || null,
   };
 }
 
-async function create({ sku, itemId, barcode, title, previousStock, newStock, reason, note, sessionId, userId }) {
-  if (!sku) throw new Error('SKU가 필요합니다');
+async function create({ sku, itemId, barcode, title, previousStock, newStock, reason, note, sessionId, userId, status }) {
+  if (!sku && status !== 'review_required' && status !== 'pending') throw new Error('SKU가 필요합니다');
   const prev = Number(previousStock) || 0;
   const next = Number(newStock) || 0;
+  const initialStatus = ['pending', 'review_required', 'applied', 'cancelled'].includes(status) ? status : 'pending';
   const { data, error } = await getClient().from('stock_adjustments').insert({
-    sku: String(sku).slice(0, 100),
+    sku: sku ? String(sku).slice(0, 100) : null,    // 임시 실사 / 검토 필요는 sku NULL 허용
     item_id: itemId ? String(itemId).slice(0, 100) : null,
     barcode: barcode ? String(barcode).slice(0, 100) : null,
     title: title ? String(title).slice(0, 500) : null,
@@ -53,6 +58,7 @@ async function create({ sku, itemId, barcode, title, previousStock, newStock, re
     note: note ? String(note).slice(0, 2000) : null,
     session_id: sessionId ? String(sessionId).slice(0, 50) : null,
     adjusted_by: userId || null,
+    status: initialStatus,
   }).select().single();
   if (error) throwFriendly(error);
   return decorate(data);
@@ -101,4 +107,97 @@ async function getSessionSummary(sessionId) {
   return { sessionId, totalAdjustments, uniqueSkus, totalPositive, totalNegative, biggestDiff };
 }
 
-module.exports = { create, listBySku, listBySession, listRecent, getSessionSummary };
+// ── PR S-1 (049): 승인 워크플로우 ──
+
+/**
+ * 검토/승인 대기 row 조회.
+ * @param {Object} opts
+ * @param {string} [opts.status]  — 'pending' | 'review_required'  (default: pending)
+ * @param {number} [opts.limit=200]
+ */
+async function listByStatus({ status = 'pending', limit = 200 } = {}) {
+  const { data, error } = await getClient().from('stock_adjustments')
+    .select('*').eq('status', status)
+    .order('created_at', { ascending: false })
+    .limit(Math.min(Math.max(limit, 1), 500));
+  if (error && isMissing(error)) return [];
+  if (error) throw error;
+  return (data || []).map(decorate);
+}
+
+async function getById(id) {
+  const { data, error } = await getClient().from('stock_adjustments')
+    .select('*').eq('id', id).maybeSingle();
+  if (error && error.code !== 'PGRST116') throw error;
+  return decorate(data);
+}
+
+/**
+ * 일괄 승인 — pending row 들의 status='applied' + products.stock = newStock 일괄 반영.
+ * sku NULL row 는 skip (임시 실사 / 검토 필요는 별도 처리 필요).
+ *
+ * @param {Array<number>} ids
+ * @param {number} appliedBy — admin user id
+ * @returns {Promise<{applied, skipped, results: [{id, ok, error?}]}>}
+ */
+async function applyBatch(ids, appliedBy) {
+  if (!Array.isArray(ids) || ids.length === 0) return { applied: 0, skipped: 0, results: [] };
+  const c = getClient();
+  const results = [];
+  let applied = 0, skipped = 0;
+  const nowIso = new Date().toISOString();
+
+  for (const id of ids) {
+    try {
+      const row = await getById(id);
+      if (!row) { results.push({ id, ok: false, error: 'not found' }); skipped++; continue; }
+      if (row.status !== 'pending' && row.status !== 'review_required') {
+        results.push({ id, ok: false, error: `status=${row.status} → 승인 불가` }); skipped++; continue;
+      }
+      if (!row.sku) {
+        results.push({ id, ok: false, error: 'sku NULL → 일괄 승인 불가 (임시/검토 케이스)' }); skipped++; continue;
+      }
+      // products.stock 업데이트
+      const { error: upErr } = await c.from('products').update({ stock: row.newStock }).eq('sku', row.sku);
+      if (upErr) {
+        results.push({ id, ok: false, error: 'products.stock 업데이트 실패: ' + upErr.message });
+        skipped++; continue;
+      }
+      // status='applied'
+      const { error: stErr } = await c.from('stock_adjustments').update({
+        status: 'applied', applied_at: nowIso, applied_by: appliedBy,
+      }).eq('id', id);
+      if (stErr) {
+        results.push({ id, ok: false, error: 'status 업데이트 실패: ' + stErr.message });
+        skipped++; continue;
+      }
+      results.push({ id, ok: true, sku: row.sku, newStock: row.newStock });
+      applied++;
+    } catch (e) {
+      results.push({ id, ok: false, error: e.message });
+      skipped++;
+    }
+  }
+  return { applied, skipped, results };
+}
+
+async function setStatus(id, status, { byUser } = {}) {
+  if (!['pending', 'review_required', 'applied', 'cancelled'].includes(status)) {
+    throw new Error('invalid status');
+  }
+  const patch = { status };
+  if (status === 'applied') {
+    patch.applied_at = new Date().toISOString();
+    patch.applied_by = byUser || null;
+  }
+  const { data, error } = await getClient().from('stock_adjustments')
+    .update(patch).eq('id', id).select().single();
+  if (error) throwFriendly(error);
+  return decorate(data);
+}
+
+module.exports = {
+  create, listBySku, listBySession, listRecent, getSessionSummary,
+  // PR S-1 추가
+  listByStatus, getById, applyBatch, setStatus,
+};
