@@ -106,7 +106,7 @@
 
   function renderShell() {
     const el = document.getElementById('page-expenses');
-    const hasFinance = user.canManageFinance;
+    const hasFinance = user.isAdmin || user.canManageFinance;
     const title = hasFinance ? '💸 지출 관리' : '💸 내 지출 등록';
     const desc = hasFinance
       ? '전 직원 지출을 확인·편집·삭제할 수 있습니다. 직원이 등록한 지출을 승인·확정하세요.'
@@ -211,12 +211,19 @@
 
       <!-- 목록 -->
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:0;">
-        <div style="padding:14px 16px;border-bottom:1px solid #2a2a4a;display:flex;justify-content:space-between;align-items:center;">
+        <div style="padding:14px 16px;border-bottom:1px solid #2a2a4a;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
           <h3 style="color:#fff;font-size:14px;margin:0;">📋 지출 내역</h3>
-          <select id="exp-filter-cat" style="padding:6px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-            <option value="">전체 카테고리</option>
-            ${categories.map(c => `<option value="${esc(c.key)}">${esc(c.label)}</option>`).join('')}
-          </select>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <select id="exp-filter-cat" style="padding:6px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+              <option value="">전체 카테고리</option>
+              ${categories.map(c => `<option value="${esc(c.key)}">${esc(c.label)}</option>`).join('')}
+            </select>
+            <select id="exp-filter-receipt" style="padding:6px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;" title="영수증 첨부 여부">
+              <option value="">전체 (첨부 포함/미포함)</option>
+              <option value="1">📎 첨부 있음</option>
+              <option value="0">📎 첨부 없음</option>
+            </select>
+          </div>
         </div>
         <div id="exp-list"></div>
       </div>
@@ -232,10 +239,12 @@
       refresh();
     });
     document.getElementById('exp-filter-cat').addEventListener('change', refresh);
+    document.getElementById('exp-filter-receipt').addEventListener('change', refresh);
   }
 
   async function refresh() {
     const cat = document.getElementById('exp-filter-cat')?.value || '';
+    const receipt = document.getElementById('exp-filter-receipt')?.value || '';
     const from = currentMonth + '-01';
     const [y, m] = currentMonth.split('-').map(n => parseInt(n, 10));
     const lastDay = new Date(y, m, 0).getDate();
@@ -245,6 +254,7 @@
     params.set('from', from);
     params.set('to', to);
     if (cat) params.set('category', cat);
+    if (receipt) params.set('hasReceipt', receipt);
 
     const [listRes, sumRes] = await Promise.all([
       fetch('/api/expenses?' + params),
@@ -308,14 +318,16 @@
     c.innerHTML = cached.map(e => {
       const info = categoryMap[e.category] || { label: e.category, color: '#8d6e63' };
       const srcLabel = { manual: '수동', csv: 'CSV', recurring: '정기' }[e.source] || e.source;
-      const canEdit = user.canManageFinance || e.createdBy === user.id;
-      const canDelete = user.canManageFinance || e.createdBy === user.id;
-      const canReceipt = user.canManageFinance || e.createdBy === user.id;
-      // 다중 영수증: hasReceipt 가 true 면 "📎 N개" 보이고 클릭 시 모달로 목록.
-      // (옛 단일 영수증도 N=1 로 표시되어 일관 동작)
+      // 2026-05 fix: admin 도 항상 finance 권한 (전체 조회/수정/삭제)
+      const isFinance = user.isAdmin || user.canManageFinance;
+      const canEdit = isFinance || e.createdBy === user.id;
+      const canDelete = isFinance || e.createdBy === user.id;
+      const canReceipt = isFinance || e.createdBy === user.id;
+      // 다중 영수증: hasReceipt=true 면 "📎 N" 표시 (receiptCount or legacy 1). 클릭 시 모달.
       let receiptBtn = '';
       if (e.hasReceipt) {
-        receiptBtn = `<button onclick="pmcExpenses.openReceiptList(${e.id})" title="영수증 보기·추가·삭제" style="padding:4px 8px;background:#0f2a3a;border:1px solid #1565c0;border-radius:4px;color:#64b5f6;cursor:pointer;font-size:11px;">📎 영수증</button>`;
+        const n = e.receiptCount > 0 ? e.receiptCount : 1;
+        receiptBtn = `<button onclick="pmcExpenses.openReceiptList(${e.id})" title="영수증 ${n}개 — 보기·추가·삭제" style="padding:4px 8px;background:#0f2a3a;border:1px solid #1565c0;border-radius:4px;color:#64b5f6;cursor:pointer;font-size:11px;">📎 ${n}</button>`;
         if (canReceipt) receiptBtn += `<button onclick="pmcExpenses.uploadReceiptLater(${e.id})" title="영수증 추가" style="padding:4px 6px;background:transparent;border:1px dashed #1565c0;color:#64b5f6;cursor:pointer;font-size:11px;border-radius:4px;">＋</button>`;
       } else if (canReceipt) {
         receiptBtn = `<button onclick="pmcExpenses.uploadReceiptLater(${e.id})" style="padding:4px 8px;background:#2a2a4a;border:1px dashed #555;border-radius:4px;color:#888;cursor:pointer;font-size:11px;">📎 첨부</button>`;
@@ -1476,7 +1488,7 @@
     }
     const methodBadge = { cash: '💵 현금', bank_transfer: '🏦 이체', card: '💳 카드', other: '기타' };
     host.innerHTML = purchasesCached.map(p => {
-      const canAct = user.canManageFinance || p.createdBy === user.id;
+      const canAct = user.isAdmin || user.canManageFinance || p.createdBy === user.id;
       const itemsText = (p.items || []).slice(0, 2).map(i => `${i.name}${i.quantity > 1 ? '×' + i.quantity : ''}`).join(', ');
       const more = (p.items || []).length > 2 ? ` 외 ${p.items.length - 2}` : '';
       return `

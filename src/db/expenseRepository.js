@@ -22,8 +22,10 @@ function throwFriendly(err) {
   throw err;
 }
 
-function decorate(row) {
+function decorate(row, receiptCount) {
   if (!row) return null;
+  const extra = Number.isFinite(receiptCount) ? receiptCount : 0;
+  const hasLegacy = !!row.receipt_path;
   return {
     id: row.id,
     paidAt: row.paid_at,
@@ -38,12 +40,43 @@ function decorate(row) {
     recurringId: row.recurring_id,
     createdBy: row.created_by,
     createdAt: row.created_at,
+    // legacy 단일 영수증 (036 이전)
     receiptPath: row.receipt_path || null,
     receiptName: row.receipt_name || null,
     receiptMime: row.receipt_mime || null,
     receiptSize: row.receipt_size || null,
-    hasReceipt: !!row.receipt_path,
+    // 다중 영수증 count (036 expense_receipts 테이블 기준)
+    receiptCount: extra,
+    // hasReceipt = legacy 단일 OR 다중 1개 이상 (둘 중 하나라도 있으면 true)
+    hasReceipt: hasLegacy || extra > 0,
+    // 048 신규 컬럼 (W-G2-B / G3)
+    status: row.status || '지급완료',
+    sourceType: row.source_type || null,
+    sourceId: row.source_id || null,
+    paidBy: row.paid_by || null,
   };
+}
+
+/**
+ * expense_id 배열 → { expense_id: receipt_count } map.
+ * expense_receipts 테이블 (036) 미적용 시 빈 map.
+ */
+async function _receiptCountMap(expenseIds) {
+  if (!expenseIds || expenseIds.length === 0) return new Map();
+  const { data, error } = await getClient().from('expense_receipts')
+    .select('expense_id').in('expense_id', expenseIds);
+  if (error) {
+    // 036 미적용 시 silent fallback
+    if (/expense_receipts.*does not exist|relation .* does not exist|PGRST205/.test((error.message || '') + (error.code || ''))) {
+      return new Map();
+    }
+    throw error;
+  }
+  const map = new Map();
+  for (const r of data || []) {
+    map.set(r.expense_id, (map.get(r.expense_id) || 0) + 1);
+  }
+  return map;
 }
 
 /** 과거 지출에 쓰인 카드 뒷자리 목록 (distinct, 최근 사용순). 드롭다운용. */
@@ -139,7 +172,7 @@ function _decorateReceipt(r) {
   };
 }
 
-async function listExpenses({ from, to, category, source, createdBy, limit = 500 } = {}) {
+async function listExpenses({ from, to, category, source, createdBy, hasReceipt, limit = 500 } = {}) {
   let q = getClient().from('expenses')
     .select('*')
     .order('paid_at', { ascending: false })
@@ -153,14 +186,30 @@ async function listExpenses({ from, to, category, source, createdBy, limit = 500
   const { data, error } = await q;
   if (error && isMissingTable(error)) return [];
   if (error) throw error;
-  return (data || []).map(decorate);
+
+  const rows = data || [];
+  // 다중 영수증 count map (N+1 회피 — 한 번 query)
+  const ids = rows.map(r => r.id);
+  const countMap = await _receiptCountMap(ids);
+
+  let decorated = rows.map(r => decorate(r, countMap.get(r.id) || 0));
+
+  // hasReceipt 필터 (사장님 fix #4) — client-side filter (legacy + 다중 모두 검사)
+  if (hasReceipt === true || hasReceipt === 'true' || hasReceipt === '1' || hasReceipt === 1) {
+    decorated = decorated.filter(d => d.hasReceipt);
+  } else if (hasReceipt === false || hasReceipt === 'false' || hasReceipt === '0' || hasReceipt === 0) {
+    decorated = decorated.filter(d => !d.hasReceipt);
+  }
+  return decorated;
 }
 
 async function getExpense(id) {
   const { data, error } = await getClient().from('expenses')
     .select('*').eq('id', id).maybeSingle();
   if (error) throwFriendly(error);
-  return decorate(data);
+  if (!data) return null;
+  const countMap = await _receiptCountMap([id]);
+  return decorate(data, countMap.get(id) || 0);
 }
 
 async function createExpense({

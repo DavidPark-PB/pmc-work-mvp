@@ -45,9 +45,14 @@ function sanitizeFileName(name) {
   return (name || 'receipt').replace(/[\\/\x00-\x1f]/g, '_').slice(0, 150);
 }
 
-// 본인 등록분만 필터할지 여부. finance 권한자는 전체, 아니면 본인 것만.
+// 재무 권한 = admin OR users.can_manage_finance (사장님 요청 2026-05 — admin 도 항상 전체 가능)
+function canFinance(req) {
+  return !!(req.user?.isAdmin || req.user?.canManageFinance);
+}
+
+// 본인 등록분만 필터할지 여부. 재무 권한자(=admin 포함) 는 전체.
 function ownershipFilter(req) {
-  if (req.user?.canManageFinance) return {};
+  if (canFinance(req)) return {};
   return { createdBy: req.user.id };
 }
 
@@ -61,7 +66,7 @@ router.get('/cards', async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
     // 재무 권한자는 전체, 아니면 본인 것만
-    const filter = req.user.canManageFinance ? {} : { createdBy: req.user.id };
+    const filter = canFinance(req) ? {} : { createdBy: req.user.id };
     const cards = await repo.listDistinctCards(filter);
     res.json({ cards });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -76,10 +81,11 @@ router.get('/', async (req, res) => {
       to: req.query.to || undefined,
       category: req.query.category || undefined,
       source: req.query.source || undefined,
+      hasReceipt: req.query.hasReceipt !== undefined ? req.query.hasReceipt : undefined,
       limit: Math.min(2000, parseInt(req.query.limit, 10) || 500),
       ...ownershipFilter(req),
     });
-    res.json({ data, scope: req.user.canManageFinance ? 'all' : 'own' });
+    res.json({ data, scope: canFinance(req) ? 'all' : 'own' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -91,7 +97,7 @@ router.get('/summary', async (req, res) => {
     const defMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : defMonth;
     const summary = await repo.summaryByMonth(month, ownershipFilter(req));
-    res.json({ ...summary, scope: req.user.canManageFinance ? 'all' : 'own' });
+    res.json({ ...summary, scope: canFinance(req) ? 'all' : 'own' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -102,7 +108,7 @@ router.get('/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const data = await repo.getExpense(id);
     if (!data) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
-    if (!req.user.canManageFinance && data.createdBy !== req.user.id) {
+    if (!canFinance(req) && data.createdBy !== req.user.id) {
       return res.status(403).json({ error: '본인이 등록한 지출만 조회할 수 있습니다' });
     }
     res.json({ data });
@@ -129,7 +135,7 @@ router.post('/', async (req, res) => {
       await repo.saveCachedCategory({
         merchant: created.merchant,
         category: created.category,
-        confidence: req.user.canManageFinance ? 100 : 60,
+        confidence: canFinance(req) ? 100 : 60,
         createdBy: req.user.id,
       });
     }
@@ -158,7 +164,7 @@ router.patch('/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const existing = await repo.getExpense(id);
     if (!existing) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
-    if (!req.user.canManageFinance && existing.createdBy !== req.user.id) {
+    if (!canFinance(req) && existing.createdBy !== req.user.id) {
       return res.status(403).json({ error: '본인이 등록한 지출만 수정할 수 있습니다' });
     }
     const updated = await repo.updateExpense(id, req.body || {});
@@ -170,7 +176,7 @@ router.patch('/:id', async (req, res) => {
 // 실제 DB insert는 /csv/confirm에서. 재무 권한자만.
 router.post('/csv', (req, res, next) => {
   if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
-  if (!req.user.canManageFinance) return res.status(403).json({ error: '재무 권한자만 CSV 업로드 가능합니다' });
+  if (!canFinance(req)) return res.status(403).json({ error: '재무 권한자만 CSV 업로드 가능합니다' });
   csvUpload.single('file')(req, res, (err) => {
     if (err) {
       const msg = err.code === 'LIMIT_FILE_SIZE'
@@ -224,7 +230,7 @@ router.post('/csv', (req, res, next) => {
 router.post('/csv/confirm', async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
-    if (!req.user.canManageFinance) return res.status(403).json({ error: '재무 권한자만 확정할 수 있습니다' });
+    if (!canFinance(req)) return res.status(403).json({ error: '재무 권한자만 확정할 수 있습니다' });
     const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
     if (rows.length === 0) return res.status(400).json({ error: '저장할 행이 없습니다' });
 
@@ -274,7 +280,7 @@ router.post('/:id/receipt', (req, res, next) => {
     const id = parseInt(req.params.id, 10);
     const existing = await repo.getExpense(id);
     if (!existing) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
-    if (!req.user.canManageFinance && existing.createdBy !== req.user.id) {
+    if (!canFinance(req) && existing.createdBy !== req.user.id) {
       return res.status(403).json({ error: '본인이 등록한 지출에만 영수증을 첨부할 수 있습니다' });
     }
     const f = req.file;
@@ -334,7 +340,7 @@ router.get('/:id/receipts', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const existing = await repo.getExpense(id);
     if (!existing) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
-    if (!req.user.canManageFinance && existing.createdBy !== req.user.id) {
+    if (!canFinance(req) && existing.createdBy !== req.user.id) {
       return res.status(403).json({ error: '권한이 없습니다' });
     }
     const list = await repo.listReceiptsByExpense(id);
@@ -364,7 +370,7 @@ router.get('/receipts/:receiptId/url', async (req, res) => {
     if (!r) return res.status(404).json({ error: '영수증이 없습니다' });
     const exp = await repo.getExpense(r.expenseId);
     if (!exp) return res.status(404).json({ error: '연결된 지출이 없습니다' });
-    if (!req.user.canManageFinance && exp.createdBy !== req.user.id) {
+    if (!canFinance(req) && exp.createdBy !== req.user.id) {
       return res.status(403).json({ error: '권한이 없습니다' });
     }
     const { data, error } = await getClient().storage.from(RECEIPT_BUCKET)
@@ -383,7 +389,7 @@ router.delete('/receipts/:receiptId', async (req, res) => {
     if (!r) return res.status(404).json({ error: '영수증이 없습니다' });
     const exp = await repo.getExpense(r.expenseId);
     if (!exp) return res.status(404).json({ error: '연결된 지출이 없습니다' });
-    if (!req.user.canManageFinance && exp.createdBy !== req.user.id) {
+    if (!canFinance(req) && exp.createdBy !== req.user.id) {
       return res.status(403).json({ error: '권한이 없습니다' });
     }
     // Storage 도 정리
@@ -402,7 +408,7 @@ router.get('/:id/receipt/url', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const existing = await repo.getExpense(id);
     if (!existing) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
-    if (!req.user.canManageFinance && existing.createdBy !== req.user.id) {
+    if (!canFinance(req) && existing.createdBy !== req.user.id) {
       return res.status(403).json({ error: '권한이 없습니다' });
     }
     if (!existing.receiptPath) return res.status(404).json({ error: '영수증이 없습니다' });
@@ -421,7 +427,7 @@ router.delete('/:id/receipt', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const existing = await repo.getExpense(id);
     if (!existing) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
-    if (!req.user.canManageFinance && existing.createdBy !== req.user.id) {
+    if (!canFinance(req) && existing.createdBy !== req.user.id) {
       return res.status(403).json({ error: '권한이 없습니다' });
     }
     if (existing.receiptPath) {
@@ -439,7 +445,7 @@ router.delete('/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const existing = await repo.getExpense(id);
     if (!existing) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
-    if (!req.user.canManageFinance && existing.createdBy !== req.user.id) {
+    if (!canFinance(req) && existing.createdBy !== req.user.id) {
       return res.status(403).json({ error: '본인이 등록한 지출만 삭제할 수 있습니다' });
     }
     // Storage 영수증도 함께 제거 (실패 무시)
@@ -455,7 +461,7 @@ router.delete('/:id', async (req, res) => {
 // 새 업로드는 이미 YYYY-MM 폴더로 저장되므로 최초 1회만 실행하면 됨.
 router.post('/reorganize-receipts', async (req, res) => {
   try {
-    if (!req.user?.canManageFinance) return res.status(403).json({ error: '재무 권한 필요' });
+    if (!canFinance(req)) return res.status(403).json({ error: '재무 권한 필요' });
     const list = await repo.listExpenses({ limit: 5000 });
     const storage = getClient().storage.from(RECEIPT_BUCKET);
     const withReceipt = list.filter(e => e.receiptPath);
