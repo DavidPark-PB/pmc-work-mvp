@@ -20,6 +20,7 @@ const templateRecommender = require('../../services/cs/templateRecommender');
 const variableSubstitutor = require('../../services/cs/variableSubstitutor');
 const buyerMatcher = require('../../services/cs/suspiciousBuyerMatcher');
 const fraudDetector = require('../../services/cs/fraudPatternDetector');
+const aiToneAdjuster = require('../../services/cs/aiToneAdjuster');
 
 const router = express.Router();
 
@@ -243,6 +244,136 @@ router.get('/responses/:id', async (req, res) => {
     res.json({ data });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// PR CS-G3-B: 의심 케이스 결과 입력 (admin only)
+//   spec: needs_result_entry=true 인 케이스만 결과 7종 중 1개 입력. 입력 후 needs_result_entry=false.
+//   confirmed_fraud / blocked → frontend 가 자동으로 진상 DB 등록 유도.
+router.post('/responses/:id/result-status', requireAdmin, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const resultStatus = String(req.body?.resultStatus || '');
+    if (!responseRepo.VALID_RESULT_STATUS.includes(resultStatus)) {
+      return res.status(400).json({ error: '결과 상태가 유효하지 않습니다 (7종 중 1개)' });
+    }
+    const existing = await responseRepo.getById(id);
+    if (!existing || existing.deletedAt) return res.status(404).json({ error: '응답을 찾을 수 없습니다' });
+    await responseRepo.setResultStatus(id, { resultStatus, enteredBy: req.user.id });
+    const updated = await responseRepo.getById(id);
+    res.json({ data: updated });
+  } catch (e) {
+    console.error('[cs/responses/result-status] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PR CS-G3-B: AI 톤 다듬기 (모든 직원).
+//   1차 mock — 원본 그대로 반환. 환경변수 활성 시 Anthropic 호출.
+//   응답 저장 시 ai_tone_adjusted=true 는 frontend 가 별도 saveResponse 시 set.
+router.post('/responses/:id/ai-tone-adjust', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const id = parseInt(req.params.id, 10);
+    const existing = await responseRepo.getById(id);
+    if (!existing || existing.deletedAt) return res.status(404).json({ error: '응답을 찾을 수 없습니다' });
+    if (!req.user.isAdmin && existing.createdBy !== req.user.id) {
+      return res.status(403).json({ error: '본인 답변만 다듬을 수 있습니다' });
+    }
+    const text = req.body?.text || existing.finalResponseText || '';
+    const language = req.body?.language || null;
+    try {
+      const result = await aiToneAdjuster.adjustTone({ text, language });
+      res.json({
+        text: result.text,
+        provider: result.provider,
+        mock: !!result.mock,
+        costUsd: result.costUsd,
+      });
+    } catch (e) {
+      const code = e?.code || '';
+      const status = code === 'csTone/usage_cap_exceeded' ? 429
+        : code === 'csTone/config_error' ? 503
+        : code === 'csTone/provider_failed' ? 502
+        : code === 'csTone/validation' ? 400
+        : 500;
+      console.error('[cs/ai-tone-adjust] error:', { id, code, message: e.message });
+      res.status(status).json({ error: e.message, code });
+    }
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PR CS-G3-B: 외부 공유용 진상 바이어 read-only API.
+//   - 인증 직원 (향후 마케팅 에이전트 포함)
+//   - is_public_shareable=true 인 row 만
+//   - publicShape() 만 사용 → 실명/이메일/전화/주소/플랫폼ID/evidenceUrls 절대 미포함 (백엔드 차단)
+router.get('/suspicious-buyers/public-view', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const { getClient } = require('../../db/supabaseClient');
+    const { data, error } = await getClient()
+      .from('suspicious_buyers')
+      .select('*')
+      .is('deleted_at', null)
+      .eq('is_public_shareable', true)
+      .order('created_at', { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    const out = (data || []).map(r => suspiciousBuyerRepo.publicShape(r));
+    res.json({ data: out });
+  } catch (e) {
+    console.error('[cs/public-view] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PR CS-G3-B: 마케팅 에이전트 시드용 — 익명화된 케이스 스터디 JSON.
+//   - 인증 직원
+//   - 해당 buyer 가 is_public_shareable=true 가 아니면 404
+//   - publicShape + 사건 요약 (incident_type / resolution / amount 만, 주문번호/플랫폼/스크린샷 등 내부 필드 제외)
+router.get('/suspicious-buyers/:id/case-study-preview', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const id = parseInt(req.params.id, 10);
+    const { getClient } = require('../../db/supabaseClient');
+    const { data, error } = await getClient()
+      .from('suspicious_buyers')
+      .select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    if (!data || data.deleted_at) return res.status(404).json({ error: '진상 바이어를 찾을 수 없습니다' });
+    if (!data.is_public_shareable) return res.status(404).json({ error: '공개 동의 없음 (is_public_shareable=false)' });
+
+    const incidents = await suspiciousIncidentRepo.listByBuyer(id);
+    // 사건 요약 — 익명화. 주문번호/플랫폼/스크린샷 모두 제외.
+    const summarizedIncidents = incidents.map(i => ({
+      incidentType: i.incidentType || null,
+      resolution:   i.resolution || null,
+      amountRange:  _amountRange(i.amount),
+      yearMonth:    i.date ? String(i.date).slice(0, 7) : (i.createdAt ? String(i.createdAt).slice(0, 7) : null),
+    }));
+
+    res.json({
+      buyer: suspiciousBuyerRepo.publicShape(data),
+      incidents: summarizedIncidents,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('[cs/case-study-preview] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 피해액 정확 금액 노출 X — 범위로만 표시 (마케팅 콘텐츠용)
+function _amountRange(amount) {
+  if (amount == null) return null;
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return null;
+  if (n < 50000) return '<50k';
+  if (n < 200000) return '50k~200k';
+  if (n < 1000000) return '200k~1M';
+  if (n < 5000000) return '1M~5M';
+  return '5M+';
+}
 
 // DELETE /api/cs/responses/:id — soft delete (작성자 본인 또는 admin)
 router.delete('/responses/:id', async (req, res) => {
