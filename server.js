@@ -111,6 +111,8 @@ app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));
 app.use('/api/attendance', require('./src/web/routes/attendance'));
 // PR W-G2-B: 2주 급여 확정 — /api/payroll 보다 먼저 mount (`/periods` 가 `/:employeeId` 에 잡히지 않게)
 app.use('/api/payroll/periods', require('./src/web/routes/payrollPeriods'));
+// Phase 2B: 배송사 추천 (DB 변경 없음, 추천 결과 매번 계산)
+app.use('/api/shipping/recommendations', require('./src/web/routes/shippingRecommendations'));
 app.use('/api/payroll', require('./src/web/routes/payroll'));
 app.use('/api/bonuses', require('./src/web/routes/bonuses'));
 

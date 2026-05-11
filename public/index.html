@@ -570,6 +570,7 @@
     <div class="menu-item" data-page="thumbnail" style="color:#ff9800;font-weight:600">썸네일 만들기</div>
     <div class="menu-title">배송</div>
     <div class="menu-item" data-page="shipping" style="color:#0288d1;font-weight:600">배송 관리</div>
+    <div class="menu-item" data-page="shipping-recs" style="color:#81c784;font-weight:600">📦 배송 추천</div>
     <div class="menu-title">분석</div>
     <div class="menu-item" data-page="battle" style="color:#e94560;font-weight:600">전투 상황판</div>
     <div class="menu-item" data-page="analysis">매출/마진 분석</div>
@@ -1608,6 +1609,9 @@
         </div>
       </div>
     </div>
+
+    <!-- ===== 배송 추천 페이지 (Phase 2B) ===== -->
+    <div id="page-shipping-recs" class="page"></div>
 
     <!-- ===== 배송 관리 페이지 ===== -->
     <div id="page-shipping" class="page">
@@ -3389,6 +3393,7 @@
   <script src="/js/opsBriefing.js?v=20260510a"></script>
   <!-- ── PR R-Inbox UI — Opportunity Inbox ── -->
   <script src="/js/opportunityInbox.js?v=20260511a"></script>
+  <script src="/js/shippingRecs.js?v=20260512p2b"></script>
   <script>
   // ===== Inline cost editing for master products =====
   document.addEventListener('click', async (e) => {

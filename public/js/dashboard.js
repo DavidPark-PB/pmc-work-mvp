@@ -69,6 +69,7 @@ function navigateTo(page) {
     case 'remarker': setupRemarker(); break;
     case 'reconstruct': setupReconstructPage(); break;
     case 'shipping': setupShippingPage(); break;
+    case 'shipping-recs': if (window.pmcShippingRecs) pmcShippingRecs.load(); break;
     case 'settings': loadSettingsPage(); break;
     case 'export': loadExportPage(); break;
     case 'automation': loadAutomationPage(); break;
