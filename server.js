@@ -109,6 +109,8 @@ app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));
 
 // ── 출퇴근 + 급여 + Shopee 보너스 (Phase 3) ──
 app.use('/api/attendance', require('./src/web/routes/attendance'));
+// PR W-G2-B: 2주 급여 확정 — /api/payroll 보다 먼저 mount (`/periods` 가 `/:employeeId` 에 잡히지 않게)
+app.use('/api/payroll/periods', require('./src/web/routes/payrollPeriods'));
 app.use('/api/payroll', require('./src/web/routes/payroll'));
 app.use('/api/bonuses', require('./src/web/routes/bonuses'));
 
