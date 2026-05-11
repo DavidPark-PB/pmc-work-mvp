@@ -27,6 +27,11 @@
   let editMode = false;             // 미리보기 편집 모드 여부
   let renderTimer = null;           // debounce 타이머
 
+  // PR CS-G2-F state
+  let currentSuspiciousMatch = null;  // analyze 응답의 suspiciousMatch
+  let currentFraudSignals = [];       // analyze 응답의 fraudSignals
+  let suspiciousList = [];            // 관리 탭 목록 캐시
+
   function esc(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function flagOfLang(l) { return { en: '🇬🇧', ko: '🇰🇷', ja: '🇯🇵', zh: '🇨🇳' }[l] || '🏳️'; }
   // spec 7 카테고리 + 기존 cs_templates 의 추가 카테고리 모두 포함
@@ -73,36 +78,40 @@
     const manageTab = user.isAdmin ? `<button type="button" id="cs-tab-manage" onclick="pmcCs.switchView('manage')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">⚙️ 템플릿 관리</button>` : '';
     el.innerHTML = `
       <div style="margin-bottom:12px;">
-        <h1 style="font-size:22px;color:#fff;">💬 CS 지원 <span style="color:#888;font-weight:400;font-size:13px;">· 템플릿 + 영업 옵션 + AI 톤 다듬기</span></h1>
-        <p style="color:#888;font-size:13px;">고객 메시지를 분석하면 카테고리/변수가 자동 추출되고, 답변은 템플릿 + 영업 옵션 체크로 조립합니다. AI 는 마지막 톤 다듬기만 담당합니다.</p>
+        <h1 style="font-size:22px;color:#fff;">💬 CS 지원 <span style="color:#888;font-weight:400;font-size:13px;">· 템플릿 + 영업 옵션 + 진상 DB</span></h1>
+        <p style="color:#888;font-size:13px;">고객 메시지를 분석하면 카테고리/변수/진상 매칭/위험 신호가 자동 표시됩니다. 답변은 템플릿 + 영업 옵션 체크로 조립.</p>
       </div>
 
       <div style="display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid #2a2a4a;">
         <button type="button" id="cs-tab-compose" onclick="pmcCs.switchView('compose')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid #7c4dff;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">✍️ 답변 작성</button>
+        <button type="button" id="cs-tab-suspicious" onclick="pmcCs.switchView('suspicious')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">🚩 진상 바이어 DB</button>
         ${manageTab}
       </div>
 
       <div id="cs-compose"></div>
+      <div id="cs-suspicious" style="display:none;"></div>
       <div id="cs-manage" style="display:none;"></div>
     `;
   }
 
+  function _setTabActive(id, active) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.color = active ? '#fff' : '#888';
+    el.style.fontWeight = active ? '600' : '400';
+    el.style.borderBottom = active ? '2px solid #7c4dff' : '2px solid transparent';
+  }
+
   function switchView(v) {
     viewMode = v;
-    document.getElementById('cs-tab-compose').style.color = v === 'compose' ? '#fff' : '#888';
-    document.getElementById('cs-tab-compose').style.fontWeight = v === 'compose' ? '600' : '400';
-    document.getElementById('cs-tab-compose').style.borderBottom = v === 'compose' ? '2px solid #7c4dff' : '2px solid transparent';
-    if (user.isAdmin) {
-      const mt = document.getElementById('cs-tab-manage');
-      if (mt) {
-        mt.style.color = v === 'manage' ? '#fff' : '#888';
-        mt.style.fontWeight = v === 'manage' ? '600' : '400';
-        mt.style.borderBottom = v === 'manage' ? '2px solid #7c4dff' : '2px solid transparent';
-      }
-    }
+    _setTabActive('cs-tab-compose', v === 'compose');
+    _setTabActive('cs-tab-suspicious', v === 'suspicious');
+    if (user.isAdmin) _setTabActive('cs-tab-manage', v === 'manage');
     document.getElementById('cs-compose').style.display = v === 'compose' ? '' : 'none';
+    document.getElementById('cs-suspicious').style.display = v === 'suspicious' ? '' : 'none';
     document.getElementById('cs-manage').style.display = v === 'manage' ? '' : 'none';
     if (v === 'manage') renderManage();
+    else if (v === 'suspicious') renderSuspiciousList();
     else renderCompose();
   }
 
@@ -159,7 +168,14 @@
               </select>
             </div>
 
-            <!-- 그룹 2: 진상 매칭 / 위험 신호 영역 신설 예정 (그룹 1 미노출 — 사장님 짚을 점 H) -->
+            <!-- PR CS-G2-F: 진상 매칭 + 위험 신호 (analyze 결과로 채워짐) -->
+            <div id="cs-suspicious-match" style="margin-bottom:10px;"></div>
+            <div id="cs-fraud-signals" style="margin-bottom:10px;"></div>
+
+            <button type="button" id="cs-quick-register-btn" onclick="pmcCs.openQuickRegisterModal()"
+              style="display:none;width:100%;padding:7px;background:#b71c1c;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">
+              🚩 이 바이어 진상 등록
+            </button>
           </div>
         </div>
 
@@ -191,6 +207,8 @@
       currentAnalysis = j;
       recommendedTemplates = j.recommendedTemplates || [];
       salesOptionsByCategory = j.salesOptions || [];
+      currentSuspiciousMatch = j.suspiciousMatch || null;
+      currentFraudSignals = j.fraudSignals || [];
       selectedTemplateId = recommendedTemplates[0]?.id || null;
       selectedSalesOptionIds = new Set();
       editMode = false;
@@ -252,6 +270,66 @@
         `;
       }).join('');
     }
+
+    renderSuspiciousMatch();
+    renderFraudSignals();
+
+    // 빠른 등록 버튼 노출 조건: buyer_name 추출됐거나, 이미 진상 매칭 있음 (재신고 사건 추가 가능)
+    const quickBtn = document.getElementById('cs-quick-register-btn');
+    if (quickBtn) {
+      const hasIdentifier = !!(vars.buyerName || vars.orderId || (currentSuspiciousMatch?.extractedEmails || []).length > 0);
+      quickBtn.style.display = hasIdentifier ? '' : 'none';
+    }
+  }
+
+  // ── PR CS-G2-F: 진상 매칭 카드 (좌측 상단 빨간 경고) ──
+  function renderSuspiciousMatch() {
+    const host = document.getElementById('cs-suspicious-match');
+    if (!host) return;
+    const sm = currentSuspiciousMatch;
+    if (!sm || !sm.primary) { host.innerHTML = ''; return; }
+    const p = sm.primary;
+    const levelColor = ({ '의심': '#ff9800', '주의': '#e94560', '블랙리스트': '#b71c1c' })[p.suspicionLevel] || '#888';
+    const blockedPlatforms = [
+      ['ebay','eBay'], ['shopify','Shopify'], ['qoo10','Qoo10'],
+      ['coupang','쿠팡'], ['smartstore','스마트스토어'], ['alibaba','Alibaba'],
+    ].filter(([k]) => p[`isBlockedOn${k.charAt(0).toUpperCase()}${k.slice(1)}`]).map(([_, n]) => n);
+    host.innerHTML = `
+      <div style="background:#2a1a1a;border:1px solid #b71c1c;border-left:3px solid ${levelColor};border-radius:6px;padding:10px;font-size:11px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <strong style="color:#ff8a80;">⚠️ 진상 DB 매칭 — ${esc(p.suspicionLevel)}</strong>
+          <button type="button" onclick="pmcCs.openSuspiciousDetail(${p.id})"
+            style="padding:2px 8px;background:#3a1a1a;border:0;border-radius:3px;color:#ff8a80;cursor:pointer;font-size:10px;">상세</button>
+        </div>
+        <div style="color:#ddd;line-height:1.5;">
+          ${p.realName ? `<strong>${esc(p.realName)}</strong>` : ''}
+          ${p.email ? ` · ${esc(p.email)}` : ''}
+          ${p.country ? ` · ${esc(p.country)}` : ''}
+        </div>
+        ${p.patternDescription ? `<div style="color:#aaa;margin-top:4px;">📝 ${esc(p.patternDescription.slice(0,200))}${p.patternDescription.length>200?'…':''}</div>` : ''}
+        ${blockedPlatforms.length > 0 ? `<div style="color:#ffb74d;margin-top:4px;">🚫 차단됨: ${blockedPlatforms.join(', ')}</div>` : ''}
+        ${sm.matches.length > 1 ? `<div style="color:#888;margin-top:4px;">+ 다른 매칭 ${sm.matches.length - 1}건</div>` : ''}
+      </div>
+    `;
+  }
+
+  // ── PR CS-G2-F: 위험 신호 chip ──
+  function renderFraudSignals() {
+    const host = document.getElementById('cs-fraud-signals');
+    if (!host) return;
+    if (!currentFraudSignals || currentFraudSignals.length === 0) { host.innerHTML = ''; return; }
+    const colorOf = s => ({ critical: '#b71c1c', high: '#e94560', medium: '#ff9800' })[s] || '#888';
+    host.innerHTML = `
+      <div style="background:#2a1a1a;border:1px solid #b71c1c;border-radius:6px;padding:8px 10px;">
+        <div style="color:#ff8a80;font-size:11px;font-weight:600;margin-bottom:4px;">🚩 위험 신호 ${currentFraudSignals.length}건</div>
+        ${currentFraudSignals.map(f => `
+          <div style="font-size:11px;color:#ddd;padding:2px 0;">
+            <span style="display:inline-block;padding:1px 6px;background:${colorOf(f.severity)};color:#fff;border-radius:8px;font-size:9px;margin-right:4px;">${esc(f.severity)}</span>
+            ${esc(f.description)}
+          </div>
+        `).join('')}
+      </div>
+    `;
   }
 
   function onCategoryChange() {
@@ -467,6 +545,340 @@
     }
   }
 
+  // ── PR CS-G2-F: 빠른 진상 등록 모달 ──
+  // CS 화면 좌측 "🚩 이 바이어 진상 등록" 버튼에서 호출.
+  function openQuickRegisterModal() {
+    const existing = document.getElementById('cs-quick-modal');
+    if (existing) existing.remove();
+    const buyerName = document.getElementById('cs-var-buyer_name')?.value?.trim() || '';
+    const orderId = document.getElementById('cs-var-order_id')?.value?.trim() || '';
+
+    const m = document.createElement('div');
+    m.id = 'cs-quick-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;width:480px;max-width:95vw;color:#e0e0e0;">
+        <h3 style="color:#ff8a80;font-size:15px;margin:0 0 14px;">🚩 진상 바이어 빠른 등록</h3>
+        <div style="font-size:11px;color:#888;margin-bottom:12px;">최소 식별자 (플랫폼 + 플랫폼ID) + 사건 유형이 필요합니다. 추가 정보는 관리 탭에서 편집 가능.</div>
+
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">플랫폼 <span style="color:#ff8a80;">*</span></label>
+        <select id="cs-q-platform" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;margin-bottom:8px;">
+          <option value="">— 선택 —</option>
+          <option value="ebay">eBay</option>
+          <option value="shopify">Shopify</option>
+          <option value="qoo10">Qoo10</option>
+          <option value="coupang">쿠팡</option>
+          <option value="smartstore">스마트스토어</option>
+          <option value="alibaba">Alibaba</option>
+        </select>
+
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">플랫폼 ID (username) <span style="color:#ff8a80;">*</span></label>
+        <input id="cs-q-platformid" type="text" maxlength="120" value="${esc(buyerName)}"
+          style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;margin-bottom:8px;">
+
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">사건 유형 <span style="color:#ff8a80;">*</span></label>
+        <select id="cs-q-incident-type" style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;margin-bottom:8px;">
+          <option value="">— 선택 —</option>
+          <option value="사기">사기</option>
+          <option value="파손사기">파손사기 (사진 없음)</option>
+          <option value="협박">협박 (피드백/디스퓨트)</option>
+          <option value="저격feedback">저격 feedback</option>
+          <option value="카드도용">카드 도용</option>
+          <option value="재포장반품">재포장 반품</option>
+          <option value="기타">기타</option>
+        </select>
+
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">주문번호 (선택)</label>
+        <input id="cs-q-order" type="text" maxlength="120" value="${esc(orderId)}"
+          style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;margin-bottom:8px;">
+
+        <label style="display:block;font-size:11px;color:#aaa;margin-bottom:4px;">수법 설명 (간단히)</label>
+        <textarea id="cs-q-desc" rows="3" maxlength="2000"
+          style="width:100%;padding:7px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;font-family:inherit;resize:vertical;margin-bottom:10px;"></textarea>
+
+        <div id="cs-q-error" style="display:none;margin-bottom:10px;padding:7px 10px;background:#3a1a1a;border-radius:4px;color:#ff8a80;font-size:11px;"></div>
+
+        <div style="display:flex;justify-content:flex-end;gap:6px;">
+          <button type="button" id="cs-q-cancel" style="padding:7px 14px;background:#2a2a4a;border:0;border-radius:4px;color:#ccc;cursor:pointer;font-size:12px;">취소</button>
+          <button type="button" id="cs-q-submit" style="padding:7px 16px;background:#b71c1c;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">🚩 등록</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+    m.querySelector('#cs-q-cancel').addEventListener('click', () => m.remove());
+
+    m.querySelector('#cs-q-submit').addEventListener('click', async () => {
+      const errEl = m.querySelector('#cs-q-error');
+      errEl.style.display = 'none';
+      const payload = {
+        platform: m.querySelector('#cs-q-platform').value,
+        platformId: m.querySelector('#cs-q-platformid').value.trim(),
+        incidentType: m.querySelector('#cs-q-incident-type').value,
+        orderNumber: m.querySelector('#cs-q-order').value.trim(),
+        description: m.querySelector('#cs-q-desc').value.trim(),
+      };
+      if (!payload.platform || !payload.platformId || !payload.incidentType) {
+        errEl.textContent = '플랫폼 + 플랫폼ID + 사건유형은 필수입니다';
+        errEl.style.display = 'block';
+        return;
+      }
+      const btn = m.querySelector('#cs-q-submit');
+      btn.disabled = true; btn.textContent = '등록 중...';
+      try {
+        const res = await fetch('/api/cs/suspicious-buyers/quick', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const j = await res.json();
+        if (!res.ok) { errEl.textContent = j.error || '등록 실패'; errEl.style.display = 'block'; btn.disabled = false; btn.textContent = '🚩 등록'; return; }
+        m.remove();
+        alert(`✓ 진상 등록 완료 (id=${j.data.id})`);
+        // 분석 다시 (매칭 결과 갱신)
+        analyze();
+      } catch (e) {
+        errEl.textContent = '네트워크 오류: ' + e.message;
+        errEl.style.display = 'block';
+        btn.disabled = false; btn.textContent = '🚩 등록';
+      }
+    });
+  }
+
+  // ── PR CS-G2-F: 진상 바이어 상세 모달 ──
+  async function openSuspiciousDetail(id) {
+    const existing = document.getElementById('cs-detail-modal');
+    if (existing) existing.remove();
+    const m = document.createElement('div');
+    m.id = 'cs-detail-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:20px;width:680px;max-width:95vw;max-height:92vh;overflow-y:auto;color:#e0e0e0;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="color:#ff8a80;font-size:15px;margin:0;">🚩 진상 바이어 상세</h3>
+          <button type="button" id="cs-d-close" style="padding:4px 10px;background:transparent;border:0;color:#888;cursor:pointer;font-size:14px;">✕</button>
+        </div>
+        <div id="cs-detail-body" style="font-size:12px;">로딩 중...</div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+    m.querySelector('#cs-d-close').addEventListener('click', () => m.remove());
+
+    try {
+      const res = await fetch(`/api/cs/suspicious-buyers/${id}`);
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '로드 실패');
+      m.querySelector('#cs-detail-body').innerHTML = renderDetailBody(j.data, j.incidents || []);
+      _bindDetailActions(m, j.data);
+    } catch (e) {
+      m.querySelector('#cs-detail-body').innerHTML = `<div style="color:#ff8a80;">로드 실패: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderDetailBody(b, incidents) {
+    const platforms = b.platformIds || {};
+    const platformList = Object.entries(platforms).map(([k,v]) => v ? `${esc(k)}: ${esc(v)}` : '').filter(Boolean).join(', ');
+    const blocked = [
+      ['Ebay','eBay'], ['Shopify','Shopify'], ['Qoo10','Qoo10'],
+      ['Coupang','쿠팡'], ['Smartstore','스마트스토어'], ['Alibaba','Alibaba'],
+    ];
+    const isAdmin = !!user?.isAdmin;
+    return `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;margin-bottom:12px;">
+        <div><strong style="color:#aaa;">실명:</strong> ${esc(b.realName || '—')}</div>
+        <div><strong style="color:#aaa;">익명 ID:</strong> ${esc(b.anonymizedId || '—')}</div>
+        <div><strong style="color:#aaa;">이메일:</strong> ${esc(b.email || '—')}</div>
+        <div><strong style="color:#aaa;">전화:</strong> ${esc(b.phone || '—')}</div>
+        <div><strong style="color:#aaa;">국가:</strong> ${esc(b.country || '—')} ${b.region ? `(${esc(b.region)})` : ''}</div>
+        <div><strong style="color:#aaa;">의심도:</strong> ${esc(b.suspicionLevel)}</div>
+        <div style="grid-column:1/-1;"><strong style="color:#aaa;">플랫폼 ID:</strong> ${platformList ? esc(platformList) : '—'}</div>
+        <div style="grid-column:1/-1;"><strong style="color:#aaa;">주소:</strong> ${esc(b.address || '—')}</div>
+      </div>
+      <div style="margin-bottom:10px;">
+        <strong style="color:#aaa;">수법 설명:</strong>
+        <div style="margin-top:4px;padding:6px 10px;background:#0f0f23;border-radius:4px;color:#ddd;white-space:pre-wrap;">${esc(b.patternDescription || '—')}</div>
+      </div>
+      ${b.notes ? `<div style="margin-bottom:10px;"><strong style="color:#aaa;">메모:</strong><div style="margin-top:4px;padding:6px 10px;background:#0f0f23;border-radius:4px;color:#ddd;white-space:pre-wrap;">${esc(b.notes)}</div></div>` : ''}
+
+      <div style="margin-bottom:12px;">
+        <strong style="color:#aaa;">차단 플랫폼:</strong>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;">
+          ${blocked.map(([key, label]) => {
+            const checked = !!b[`isBlockedOn${key}`];
+            return `
+              <label style="display:flex;align-items:center;gap:4px;padding:4px 8px;background:${checked ? '#3a1a1a' : '#0f0f23'};border:1px solid ${checked ? '#b71c1c' : '#333'};border-radius:4px;font-size:11px;color:#ddd;${isAdmin ? 'cursor:pointer;' : 'opacity:0.6;'}">
+                <input type="checkbox" data-blockfield="isBlockedOn${key}" ${checked ? 'checked' : ''} ${isAdmin ? '' : 'disabled'}>
+                ${esc(label)}
+              </label>
+            `;
+          }).join('')}
+        </div>
+        ${!isAdmin ? '<div style="font-size:10px;color:#888;margin-top:4px;">차단 플래그 토글은 관리자만 가능</div>' : ''}
+      </div>
+
+      <div style="margin-bottom:12px;padding-top:10px;border-top:1px solid #2a2a4a;">
+        <strong style="color:#aaa;">📋 사건 기록 (${incidents.length}건)</strong>
+        <div style="margin-top:6px;">
+          ${incidents.length === 0
+            ? '<div style="color:#666;font-size:11px;">등록된 사건 없음</div>'
+            : incidents.map(i => `
+              <div style="background:#0f0f23;border-radius:4px;padding:6px 10px;margin-bottom:4px;font-size:11px;">
+                <div><strong style="color:#fff;">${esc(i.incidentType || '미분류')}</strong>
+                  ${i.platform ? `<span style="color:#888;"> · ${esc(i.platform)}</span>` : ''}
+                  ${i.amount != null ? `<span style="color:#ffb74d;"> · ${i.amount.toLocaleString()}원</span>` : ''}
+                  <span style="color:#888;float:right;">${esc(i.date || (i.createdAt || '').slice(0,10))}</span>
+                </div>
+                ${i.description ? `<div style="color:#aaa;margin-top:3px;white-space:pre-wrap;">${esc(i.description)}</div>` : ''}
+                ${i.resolution ? `<div style="color:#81c784;margin-top:2px;">→ ${esc(i.resolution)}</div>` : ''}
+              </div>
+            `).join('')
+          }
+        </div>
+        <button type="button" id="cs-d-add-incident" style="margin-top:6px;padding:6px 12px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">+ 사건 추가</button>
+      </div>
+
+      ${isAdmin ? `
+        <div style="padding-top:10px;border-top:1px solid #2a2a4a;display:flex;justify-content:flex-end;gap:6px;">
+          <button type="button" id="cs-d-delete" style="padding:6px 12px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🗑 삭제 (soft)</button>
+        </div>
+      ` : ''}
+    `;
+  }
+
+  function _bindDetailActions(m, buyer) {
+    // 차단 플래그 토글 (admin)
+    if (user?.isAdmin) {
+      m.querySelectorAll('input[data-blockfield]').forEach(cb => {
+        cb.addEventListener('change', async () => {
+          const field = cb.dataset.blockfield;
+          try {
+            const res = await fetch(`/api/cs/suspicious-buyers/${buyer.id}`, {
+              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ [field]: cb.checked }),
+            });
+            if (!res.ok) { cb.checked = !cb.checked; alert((await res.json()).error || '실패'); }
+          } catch (e) { cb.checked = !cb.checked; alert('실패: ' + e.message); }
+        });
+      });
+      const delBtn = m.querySelector('#cs-d-delete');
+      if (delBtn) delBtn.addEventListener('click', async () => {
+        if (!confirm('정말 삭제하시겠습니까?\n(soft delete — 이력 보존)')) return;
+        try {
+          const res = await fetch(`/api/cs/suspicious-buyers/${buyer.id}`, { method: 'DELETE' });
+          if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+          m.remove();
+          renderSuspiciousList();
+        } catch (e) { alert('실패: ' + e.message); }
+      });
+    }
+    const addBtn = m.querySelector('#cs-d-add-incident');
+    if (addBtn) addBtn.addEventListener('click', () => openAddIncidentPrompt(buyer.id));
+  }
+
+  async function openAddIncidentPrompt(buyerId) {
+    const incidentType = prompt('사건 유형 (예: 사기/파손사기/협박/카드도용/재포장반품/기타)');
+    if (!incidentType) return;
+    const description = prompt('수법 설명 (간단히)') || '';
+    const amount = prompt('피해액 (원, 숫자만 — 비워두면 미기록)') || '';
+    const orderNumber = prompt('주문번호 (선택)') || '';
+    try {
+      const res = await fetch(`/api/cs/suspicious-buyers/${buyerId}/incidents`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ incidentType, description, amount: amount || null, orderNumber: orderNumber || null }),
+      });
+      if (!res.ok) { alert((await res.json()).error || '실패'); return; }
+      // 모달 새로고침
+      openSuspiciousDetail(buyerId);
+    } catch (e) { alert('실패: ' + e.message); }
+  }
+
+  // ── PR CS-G2-F: 진상 바이어 관리 탭 ──
+  async function renderSuspiciousList() {
+    const host = document.getElementById('cs-suspicious');
+    if (!host) return;
+    host.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;margin-bottom:12px;">
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input type="text" id="cs-susp-search" placeholder="이름/이메일/플랫폼ID/국가 검색..." oninput="pmcCs.searchSuspicious()"
+            style="flex:1;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          <select id="cs-susp-level" onchange="pmcCs.searchSuspicious()" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+            <option value="">전체 의심도</option>
+            <option value="의심">의심</option>
+            <option value="주의">주의</option>
+            <option value="블랙리스트">블랙리스트</option>
+          </select>
+        </div>
+      </div>
+      <div id="cs-susp-list">로딩 중...</div>
+    `;
+    await _loadSuspiciousList();
+  }
+
+  let _suspSearchTimer = null;
+  function searchSuspicious() {
+    if (_suspSearchTimer) clearTimeout(_suspSearchTimer);
+    _suspSearchTimer = setTimeout(_loadSuspiciousList, 300);
+  }
+
+  async function _loadSuspiciousList() {
+    const list = document.getElementById('cs-susp-list');
+    if (!list) return;
+    const q = document.getElementById('cs-susp-search')?.value?.trim() || '';
+    const level = document.getElementById('cs-susp-level')?.value || '';
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (level) params.set('suspicionLevel', level);
+    try {
+      const res = await fetch('/api/cs/suspicious-buyers?' + params);
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '실패');
+      suspiciousList = j.data || [];
+      _renderSuspiciousRows();
+    } catch (e) {
+      list.innerHTML = `<div style="padding:20px;color:#ff8a80;">로드 실패: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function _renderSuspiciousRows() {
+    const list = document.getElementById('cs-susp-list');
+    if (!list) return;
+    if (suspiciousList.length === 0) {
+      list.innerHTML = '<div style="padding:30px;color:#666;text-align:center;font-size:12px;">진상 바이어가 없습니다.</div>';
+      return;
+    }
+    const levelColor = l => ({ '의심': '#ff9800', '주의': '#e94560', '블랙리스트': '#b71c1c' })[l] || '#888';
+    list.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:0;overflow:hidden;">
+        ${suspiciousList.map(b => {
+          const platforms = Object.entries(b.platformIds || {}).filter(([_,v]) => v).map(([k]) => k).join(',');
+          const blocked = [
+            ['isBlockedOnEbay','eBay'], ['isBlockedOnShopify','Shopify'], ['isBlockedOnQoo10','Qoo10'],
+            ['isBlockedOnCoupang','쿠팡'], ['isBlockedOnSmartstore','스스'], ['isBlockedOnAlibaba','Alibaba'],
+          ].filter(([k]) => b[k]).map(([_,n]) => n).join(',');
+          return `
+            <div onclick="pmcCs.openSuspiciousDetail(${b.id})"
+              style="padding:10px 14px;border-bottom:1px solid #2a2a4a;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12px;"
+              onmouseover="this.style.background='#0f0f23'" onmouseout="this.style.background=''">
+              <div style="flex:1;min-width:0;">
+                <div>
+                  <strong style="color:#fff;">${esc(b.realName || b.anonymizedId || '(이름 없음)')}</strong>
+                  <span style="margin-left:6px;padding:1px 6px;background:${levelColor(b.suspicionLevel)};color:#fff;border-radius:8px;font-size:10px;">${esc(b.suspicionLevel)}</span>
+                  ${b.country ? `<span style="margin-left:4px;color:#888;font-size:11px;">${esc(b.country)}</span>` : ''}
+                </div>
+                <div style="color:#888;font-size:11px;margin-top:3px;">
+                  ${b.email ? `📧 ${esc(b.email)} ` : ''}
+                  ${platforms ? ` · 플랫폼: ${esc(platforms)}` : ''}
+                  ${blocked ? ` · 🚫 ${esc(blocked)}` : ''}
+                </div>
+              </div>
+              <span style="color:#888;font-size:11px;">상세 →</span>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
   // ── 템플릿 관리 (admin) — 보존 ──
   function renderManage() {
     const host = document.getElementById('cs-manage');
@@ -577,6 +989,9 @@
     onTemplateChange, onSalesOptionToggle,
     toggleEditMode, onPreviewEdit,
     copyResponse, saveResponse,
+    // 진상 바이어 (PR CS-G2-F)
+    openQuickRegisterModal, openSuspiciousDetail,
+    searchSuspicious,
     // 관리 (보존)
     editTemplate, deleteTemplate,
   };
