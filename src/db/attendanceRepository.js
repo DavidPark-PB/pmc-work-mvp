@@ -157,9 +157,119 @@ async function deleteAttendance(id) {
   if (error) throw error;
 }
 
+// ── PR W-G1: 시급 없는 기록 재계산 ──
+//
+// 정책:
+//   - 대상: hourly_rate_snapshot 이 NULL 이거나 0 (= 시급 미등록 시점에 생성)
+//   - 제외: payroll_period_id IS NOT NULL (잠긴 기록 보호 — 사장님 짚은점 2)
+//   - 시급 미등록 직원 (users.hourly_rate NULL/0) 은 skip + 카운트 (사장님 짚은점 1)
+
+function _snapIsEmpty(snap) {
+  if (snap == null) return true;
+  const n = Number(snap);
+  return !Number.isFinite(n) || n <= 0;
+}
+
+/**
+ * 재계산 대상 후보 + 시급 미등록 직원 집계.
+ *
+ * @returns {Promise<{candidates: Array, skippedEmployees: Array<{id, display_name}>, totalCount, expectedTotalAmount}>}
+ *   candidates  = 재계산 가능 row (시급 존재 직원의 시급 NULL row)
+ *   skippedEmployees = 시급 미등록 직원 목록 (중복 제거)
+ *   totalCount = candidates.length
+ *   expectedTotalAmount = candidates 각 row 의 (work_hours × users.hourly_rate) 합. day_off/absence 는 0.
+ */
+async function getRecalculateCandidates() {
+  const { data, error } = await getClient()
+    .from('attendance')
+    .select(`
+      id, employee_id, date, clock_in, clock_out, work_hours,
+      hourly_rate_snapshot, daily_pay, status, payroll_period_id,
+      employee:users!attendance_employee_id_users_id_fk ( id, display_name, hourly_rate )
+    `)
+    .is('payroll_period_id', null);
+  if (error) throw error;
+
+  const candidates = [];
+  const skippedMap = new Map(); // employee_id -> { id, display_name }
+
+  for (const row of data || []) {
+    if (!_snapIsEmpty(row.hourly_rate_snapshot)) continue; // 이미 시급 있음
+
+    const emp = row.employee || null;
+    const empRate = Number(emp?.hourly_rate || 0);
+    if (empRate <= 0) {
+      // 시급 미등록 직원 — skip
+      if (emp?.id && !skippedMap.has(emp.id)) {
+        skippedMap.set(emp.id, { id: emp.id, display_name: emp.display_name });
+      }
+      continue;
+    }
+
+    // 재계산 가능. work_hours 가 있고 day_off/absence 가 아니면 daily_pay 계산.
+    let projectedDaily = 0;
+    if (!ZERO_PAY.includes(row.status)) {
+      const wh = row.work_hours != null ? Number(row.work_hours) : null;
+      if (wh != null && Number.isFinite(wh)) {
+        projectedDaily = Math.round(wh * empRate * 100) / 100;
+      }
+    }
+
+    candidates.push({
+      id: row.id,
+      employee_id: row.employee_id,
+      date: row.date,
+      status: row.status,
+      work_hours: row.work_hours,
+      current_rate: empRate,
+      projected_daily_pay: projectedDaily,
+    });
+  }
+
+  const expectedTotalAmount = candidates.reduce((s, c) => s + (Number(c.projected_daily_pay) || 0), 0);
+
+  return {
+    candidates,
+    skippedEmployees: Array.from(skippedMap.values()),
+    totalCount: candidates.length,
+    expectedTotalAmount,
+  };
+}
+
+/**
+ * 후보 row 들에 대해 hourly_rate_snapshot + daily_pay 일괄 update.
+ * 잠긴 기록 (payroll_period_id IS NOT NULL) 은 자동 제외 (getRecalculateCandidates 의 필터).
+ *
+ * @returns {Promise<{updated, skipped, skippedEmployees}>}
+ */
+async function recalculateSnapshots() {
+  const { candidates, skippedEmployees } = await getRecalculateCandidates();
+  let updated = 0;
+  const c = getClient();
+  for (const cand of candidates) {
+    const { error } = await c
+      .from('attendance')
+      .update({
+        hourly_rate_snapshot: String(cand.current_rate),
+        daily_pay: String(cand.projected_daily_pay),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', cand.id)
+      .is('payroll_period_id', null); // race condition 대비 — 그 사이 확정되면 update 안 함
+    if (error) throw error;
+    updated++;
+  }
+  return {
+    updated,
+    skipped: skippedEmployees.length,
+    skippedEmployees,
+  };
+}
+
 module.exports = {
   listAttendance, getById, findByEmployeeDate,
   createAttendance, updateAttendance, deleteAttendance,
   calcWorkHours, todayDateStr, nowHhmmKr, isValidDateStr, getUserHourlyRate,
+  getRecalculateCandidates, recalculateSnapshots,
   VALID_STATUSES, STATUS_LABELS, REASON_REQUIRED, NO_TIMES, ZERO_PAY,
 };

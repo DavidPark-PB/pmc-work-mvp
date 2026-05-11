@@ -91,6 +91,14 @@
             <button type="button" onclick="pmcAttendance.saveRate()" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">💰 시급 저장</button>
           </div>
         </div>
+        <!-- PR W-G1: 시급 없는 기록 재계산 (admin) -->
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid #2a2a4a;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button type="button" onclick="pmcAttendance.openRecalculateModal()"
+            style="padding:8px 14px;background:#2a4a6a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:12px;">
+            🔄 시급 없는 기록 재계산
+          </button>
+          <span style="color:#888;font-size:11px;">시급 등록 후 누적된 시급 NULL 기록을 일괄 재계산 (잠긴 기록 제외)</span>
+        </div>
       </div>` : `
       <div style="margin-bottom:16px;">
         <input type="month" id="filter-month" value="${currentMonth()}" style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
@@ -275,6 +283,7 @@
     tbody.innerHTML = items.map(r => {
       // 수정은 admin만. 직원은 실수 시 사장님께 요청.
       const canEdit = user.isAdmin;
+      const badges = anomalyBadges(r);
       return `
       <tr style="border-bottom:1px solid #2a2a4a;">
         ${user.isAdmin ? `<td style="padding:10px;">${esc(r.employee?.display_name || '-')}</td>` : ''}
@@ -283,7 +292,7 @@
         <td style="padding:10px;text-align:center;">${r.clock_in || '-'}</td>
         <td style="padding:10px;text-align:center;">${r.clock_out || '-'}</td>
         <td style="padding:10px;text-align:center;">${r.work_hours ? Number(r.work_hours).toFixed(2) + 'h' : '-'}</td>
-        <td style="padding:10px;text-align:right;">${money(r.daily_pay)}</td>
+        <td style="padding:10px;text-align:right;">${money(r.daily_pay)}${badges}</td>
         <td style="padding:10px;color:#aaa;font-size:12px;">${esc(r.note || '')}</td>
         <td style="padding:10px;text-align:center;white-space:nowrap;">
           ${canEdit ? `<button onclick="pmcAttendance.editRow(${r.id})" title="수정" style="padding:4px 8px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;margin-right:4px;">✏️ 수정</button>` : ''}
@@ -291,6 +300,35 @@
         </td>
       </tr>
     `;}).join('');
+  }
+
+  // PR W-G1: 이상 데이터 뱃지 (행 단위)
+  //   12h 초과 / 출=퇴 / 퇴근 미입력 / 시급 미등록 — 4종
+  function anomalyBadges(r) {
+    if (!r) return '';
+    const badges = [];
+    // 시급 미등록 (snapshot NULL 또는 0)
+    const snap = r.hourly_rate_snapshot != null ? Number(r.hourly_rate_snapshot) : NaN;
+    if (!Number.isFinite(snap) || snap <= 0) {
+      // day_off/absence 는 0원 정상이라 제외
+      if (r.status !== 'day_off' && r.status !== 'absence') {
+        badges.push('<span style="margin-left:6px;padding:1px 6px;background:#3a3a3a;color:#ccc;border-radius:8px;font-size:10px;" title="직원 시급 미등록 — 일급 0원">시급 미등록</span>');
+      }
+    }
+    // 퇴근 미입력 (출근만 있고 퇴근 없음)
+    if (r.clock_in && !r.clock_out && r.status !== 'day_off' && r.status !== 'absence') {
+      badges.push('<span style="margin-left:6px;padding:1px 6px;background:#e94560;color:#fff;border-radius:8px;font-size:10px;">⚠ 퇴근 미입력</span>');
+    }
+    // 12h 초과
+    const wh = r.work_hours != null ? Number(r.work_hours) : NaN;
+    if (Number.isFinite(wh) && wh > 12) {
+      badges.push('<span style="margin-left:6px;padding:1px 6px;background:#ff9800;color:#fff;border-radius:8px;font-size:10px;" title="근무시간 12h 초과 — 확인 필요">⚠ 12h 초과</span>');
+    }
+    // 출=퇴 (같은 시각) — work_hours = 0 으로 들어오거나 NULL
+    if (r.clock_in && r.clock_out && r.clock_in === r.clock_out) {
+      badges.push('<span style="margin-left:6px;padding:1px 6px;background:#ff9800;color:#fff;border-radius:8px;font-size:10px;" title="출근=퇴근 동일 시각 — 확인 필요">⚠ 시간 확인</span>');
+    }
+    return badges.join('');
   }
 
   function editRow(id) {
@@ -434,6 +472,94 @@
     el.style.display = el.style.display === 'none' ? 'block' : 'none';
   }
 
+  // ── PR W-G1: 시급 없는 기록 재계산 모달 ──
+  // 1) preview API 로 대상 N건 / 예상 총액 / 시급 미등록 직원 fetch
+  // 2) 확인 모달 표시. "재계산" 클릭 → POST recalculate-snapshots → 결과 alert + refresh
+  async function openRecalculateModal() {
+    let preview;
+    try {
+      const res = await fetch('/api/attendance/recalculate-preview');
+      if (!res.ok) { alert('미리보기 실패: ' + (res.status)); return; }
+      preview = await res.json();
+    } catch (e) {
+      alert('네트워크 오류: ' + e.message);
+      return;
+    }
+
+    const existing = document.getElementById('att-recalc-modal');
+    if (existing) existing.remove();
+
+    const m = document.createElement('div');
+    m.id = 'att-recalc-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+    const skippedHtml = preview.skippedEmployees && preview.skippedEmployees.length > 0
+      ? `<div style="margin-top:10px;padding:8px 10px;background:#3a2a1a;border-left:3px solid #ff9800;border-radius:6px;color:#ffb74d;font-size:12px;">
+          <strong>시급 미등록 직원 ${preview.skippedEmployees.length}명 — skip 됨:</strong><br>
+          ${preview.skippedEmployees.map(e => esc(e.display_name)).join(', ')}
+          <div style="color:#aaa;margin-top:4px;">위 직원의 시급을 먼저 등록한 후 다시 실행하세요.</div>
+        </div>`
+      : '';
+
+    const targetCount = preview.targetCount || 0;
+    const totalAmt = preview.expectedTotalAmount || 0;
+
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;width:460px;max-width:95vw;color:#e0e0e0;">
+        <h3 style="color:#fff;font-size:15px;margin:0 0 12px;">🔄 시급 없는 기록 재계산</h3>
+        <div style="font-size:13px;line-height:1.6;color:#ccc;">
+          시급 NULL 기록 <strong style="color:#81c784;">${targetCount}건</strong> 을 일괄 재계산합니다.<br>
+          예상 적용 총액: <strong style="color:#81c784;">${money(totalAmt)}</strong>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:#888;">
+          · 잠긴 기록 (확정된 급여 기간 소속) 은 자동 제외됩니다.<br>
+          · 직원 시급 미등록인 기록은 skip 됩니다.
+        </div>
+        ${skippedHtml}
+        <div id="att-recalc-error" style="display:none;margin-top:10px;padding:8px 10px;background:#3a1a1a;border-radius:6px;color:#ff8a80;font-size:12px;"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+          <button type="button" id="att-recalc-cancel" style="padding:8px 14px;background:#2a2a4a;color:#ccc;border:0;border-radius:6px;cursor:pointer;font-size:13px;">취소</button>
+          <button type="button" id="att-recalc-submit" ${targetCount === 0 ? 'disabled' : ''}
+            style="padding:8px 18px;background:${targetCount === 0 ? '#555' : '#7c4dff'};color:#fff;border:0;border-radius:6px;cursor:${targetCount === 0 ? 'not-allowed' : 'pointer'};font-weight:600;font-size:13px;">
+            ${targetCount === 0 ? '대상 없음' : '재계산 실행'}
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+    m.querySelector('#att-recalc-cancel').addEventListener('click', () => m.remove());
+
+    const submitBtn = m.querySelector('#att-recalc-submit');
+    if (targetCount > 0) {
+      submitBtn.addEventListener('click', async () => {
+        const errEl = m.querySelector('#att-recalc-error');
+        errEl.style.display = 'none';
+        submitBtn.disabled = true;
+        submitBtn.textContent = '실행 중...';
+        try {
+          const res = await fetch('/api/attendance/recalculate-snapshots', { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            errEl.textContent = data.error || '재계산 실패';
+            errEl.style.display = 'block';
+            submitBtn.disabled = false;
+            submitBtn.textContent = '재계산 실행';
+            return;
+          }
+          m.remove();
+          alert(`재계산 완료\n· 업데이트된 기록: ${data.updated || 0}건\n· 시급 미등록 직원 skip: ${data.skipped || 0}명`);
+          refresh();
+        } catch (e) {
+          errEl.textContent = '네트워크 오류: ' + e.message;
+          errEl.style.display = 'block';
+          submitBtn.disabled = false;
+          submitBtn.textContent = '재계산 실행';
+        }
+      });
+    }
+  }
+
   // time/date/month picker 아이콘이 어두운 배경에서 안 보이는 문제 해결
   // (페이지 로드 시 한 번만 <style> 주입 — 모든 페이지 커버)
   (function ensureDarkPickerStyle() {
@@ -459,5 +585,5 @@
     document.head.appendChild(st);
   })();
 
-  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll, editRow, cancelEdit, clockIn, clockOut };
+  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll, editRow, cancelEdit, clockIn, clockOut, openRecalculateModal };
 })();

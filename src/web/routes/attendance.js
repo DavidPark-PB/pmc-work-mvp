@@ -21,6 +21,37 @@ router.get('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// PR W-G1: 시급 없는 기록 재계산
+//   GET  /recalculate-preview — 대상 N건 + 예상 총액 + 시급 미등록 직원 목록 (확인 모달용)
+//   POST /recalculate-snapshots — 실제 일괄 update
+//   둘 다 admin only. 잠긴 기록(payroll_period_id IS NOT NULL)은 자동 제외.
+
+router.get('/recalculate-preview', requireAdmin, async (req, res) => {
+  try {
+    const { candidates, skippedEmployees, totalCount, expectedTotalAmount } =
+      await repo.getRecalculateCandidates();
+    res.json({
+      targetCount: totalCount,
+      expectedTotalAmount,
+      skippedEmployees,
+      sampleCandidates: candidates.slice(0, 20), // 미리보기용 sample only
+    });
+  } catch (e) {
+    console.error('[attendance] recalculate-preview error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/recalculate-snapshots', requireAdmin, async (req, res) => {
+  try {
+    const result = await repo.recalculateSnapshots();
+    res.json(result);
+  } catch (e) {
+    console.error('[attendance] recalculate-snapshots error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/attendance/clock-in — 오늘 출근 (본인, 현재 시각 — Asia/Seoul)
 router.post('/clock-in', async (req, res) => {
   try {
