@@ -254,7 +254,7 @@
               <button onclick="pmcOrders.approve(${o.id})" style="padding:6px 12px;background:#4caf50;border:0;border-radius:4px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">✓ 승인</button>
               <button onclick="pmcOrders.openReject(${o.id})" style="padding:6px 12px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">✗ 반려</button>
             ` : ''}
-            ${user.isAdmin ? `
+            ${(user.isAdmin || (o.requested_by === user.id && o.status === 'pending')) ? `
               <button onclick="pmcOrders.del(${o.id})" title="삭제" style="padding:6px 12px;background:#2a2a4a;border:0;border-radius:4px;color:#aaa;cursor:pointer;font-size:12px;">🗑 삭제</button>
             ` : ''}
           </div>

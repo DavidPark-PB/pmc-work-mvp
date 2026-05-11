@@ -521,12 +521,25 @@ router.patch('/:id/unorder', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// DELETE /api/purchase-requests/:id — admin only
-router.delete('/:id', requireAdmin, async (req, res) => {
+// DELETE /api/purchase-requests/:id
+//  - 사장: 언제든 삭제 가능
+//  - 요청자 본인: status=pending 일 때만 (중복 입력 정정 용도)
+//  - 그 외: 금지
+router.delete('/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
     const existing = await repo.getRequest(id);
     if (!existing) return res.status(404).json({ error: '발주 요청을 찾을 수 없습니다' });
+
+    const isOwner = existing.requested_by === req.user.id;
+    if (!req.user.isAdmin && !isOwner) {
+      return res.status(403).json({ error: '본인 요청만 삭제할 수 있습니다' });
+    }
+    if (!req.user.isAdmin && existing.status !== 'pending') {
+      return res.status(400).json({ error: '이미 처리된 요청은 삭제할 수 없습니다 (관리자 문의)' });
+    }
 
     // 스토리지 파일 정리 (CASCADE는 DB row만 삭제)
     try {
