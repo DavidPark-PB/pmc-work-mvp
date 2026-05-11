@@ -24,8 +24,11 @@ async function recomputeTaskStatus(taskId) {
   if (!recs || recs.length === 0) return;
 
   const allDone = recs.every(r => r.status === 'done');
+  const anyBlocked = recs.some(r => r.status === 'blocked');
   const anyActive = recs.some(r => r.status !== 'pending');
-  const nextStatus = allDone ? 'done' : (anyActive ? 'in_progress' : 'pending');
+  // 우선순위: 모두 done → done / 하나라도 blocked → blocked / 활동 있음 → in_progress / 그 외 pending
+  // (blocked 는 PR T-1 추가 — '막힘' 은 일부만 막혀도 admin 이 즉시 인지해야 하므로 우선)
+  const nextStatus = allDone ? 'done' : (anyBlocked ? 'blocked' : (anyActive ? 'in_progress' : 'pending'));
 
   const updates = { status: nextStatus };
   if (allDone) {

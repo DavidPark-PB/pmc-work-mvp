@@ -293,9 +293,9 @@ router.patch('/:id', async (req, res) => {
     const rec = await repo.getRecipient(id, targetUserId);
     if (!rec) return res.status(404).json({ error: '해당 직원의 업무 수신 기록이 없습니다' });
 
-    // 상태 validation
+    // 상태 validation (PR T-1: 'blocked' 추가)
     const newStatus = body.status;
-    if (newStatus !== undefined && !['pending', 'in_progress', 'done'].includes(newStatus)) {
+    if (newStatus !== undefined && !['pending', 'in_progress', 'done', 'blocked'].includes(newStatus)) {
       return res.status(400).json({ error: '올바른 상태가 아닙니다' });
     }
 
@@ -523,6 +523,88 @@ router.get('/:id/attachments/:attId/url', async (req, res) => {
     if (error) throw error;
     res.json({ signedUrl: data.signedUrl, fileName: att.file_name });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/tasks/:id/blocked — 본인 recipient 막힘 보고 (한줄 사유)   [audit: task_status_update]
+// PR T-1. body: { reason } — completion_note 컬럼 재사용 (status='blocked' 일 때 '막힘 사유' 의미).
+router.post('/:id/blocked', async (req, res) => {
+  const taskId = parseInt(req.params.id, 10);
+  if (!Number.isFinite(taskId)) return res.status(400).json({ error: 'invalid id' });
+
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: '막힘 사유를 한줄로 입력하세요' });
+  if (reason.length > 200) return res.status(400).json({ error: '막힘 사유는 200자 이내로 입력하세요' });
+
+  let task, rec;
+  try {
+    task = await repo.getTask(taskId);
+    if (!task) return res.status(404).json({ error: '업무를 찾을 수 없습니다' });
+
+    rec = await repo.getRecipient(taskId, req.user.id);
+    if (!rec) return res.status(404).json({ error: '해당 업무의 수신자가 아닙니다' });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+
+  const executedBy = req.user.id;
+
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'task_status_update',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'team_tasks',
+      targetId:         taskId,
+      beforeSnapshot:   {
+        ...taskSnapshot(task),
+        recipient_user_id: req.user.id,
+        recipient_status:  rec.status,
+      },
+      relatedTaskId:    taskId,
+      rollbackMethod:   'manual',
+      rollbackHint:
+        'input_snapshot 의 recipient_status 로 team_task_recipients 를 되돌리세요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[tasks] runAction failed (task_status_update via blocked):', {
+      actionName: 'task_status_update', id: taskId, executedBy, message: auditErr.message,
+    });
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
+
+  try {
+    await repo.updateRecipient(taskId, req.user.id, {
+      status: 'blocked',
+      completionNote: reason,
+    });
+
+    if (!req.user.isAdmin) {
+      await notifyAdmins({
+        type: 'task_blocked',
+        title: `${req.user.displayName} 업무 막힘`,
+        body: `${task.title} — ${reason}`,
+        linkUrl: '/?page=tasks',
+        relatedType: 'task',
+        relatedId: taskId,
+      });
+    }
+
+    const updated = await repo.getTask(taskId);
+    safetyExec.updateRun(run.id, {
+      status: 'succeeded',
+      afterSnapshot: {
+        ...taskSnapshot(updated),
+        recipient_user_id: req.user.id,
+        recipient_status:  'blocked',
+      },
+    });
+    res.json({ data: updated });
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
     res.status(500).json({ error: e.message });
   }
 });

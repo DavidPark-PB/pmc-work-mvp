@@ -83,6 +83,7 @@ app.use('/api/ops', opsRoutes);
 
 // ── 업무관리 모듈 (Phase 1) ──
 app.use('/api/users', require('./src/web/routes/users'));
+app.use('/api/tasks/:id/comments', require('./src/web/routes/taskComments'));
 app.use('/api/tasks', require('./src/web/routes/tasks'));
 app.use('/api/notifications', require('./src/web/routes/notifications'));
 // WMS Phase 1 — SKU master + 자동 예외 라우팅 (모두 admin 전용)
