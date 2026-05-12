@@ -43,10 +43,23 @@ const PUBLIC_PATHS = [
 const PUBLIC_API_PREFIXES = [
   '/api/health',         // 헬스체크 (Fly·모니터링용 인증 없이 접근)
 ];
-const PUBLIC_PREFIXES = ['/css/', '/fonts/', '/images/'];
+// 정적 에셋 — 비밀 미포함. authGuard 를 거치면 매 파일 요청마다 Supabase users 조회가
+// 발생해서(SPA 한 페이지에 JS 27개) 부하 폭증의 주범이었음. 공개 처리해서 DB 호출 차단.
+const PUBLIC_PREFIXES = ['/css/', '/fonts/', '/images/', '/js/'];
 
 // 레거시 로그인 시 사용하는 의사 userId (사장 권한)
 const LEGACY_USER_ID = 0;
+
+// ── 유저 세션 캐시 ──
+// 매 인증 요청마다 Supabase users 테이블을 SELECT 하던 패턴(PGRST003 pool 고갈의 주범)을
+// 30초 TTL 메모리 캐시로 차단. 권한·활성 상태가 바뀌면 늦어도 30초 안에 자연 갱신되며,
+// login/logout/비밀번호 변경 시점에 명시 invalidate.
+const USER_CACHE_TTL_MS = 30 * 1000;
+const userCache = new Map(); // userId(number) → { user, expiresAt(ms) }
+
+function invalidateUserCache(userId) {
+  if (userId != null) userCache.delete(userId);
+}
 
 // ── 설정 헬퍼 ──
 function getSharedPassword() {
@@ -132,11 +145,20 @@ async function loadUserFromSession(session) {
     };
   }
 
+  // 캐시 조회 — TTL 안이면 DB 호출 생략
+  const cached = userCache.get(session.userId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.user;
+  }
+
   const row = await userRepo.findById(session.userId);
-  if (!row || !row.is_active) return null;
+  if (!row || !row.is_active) {
+    userCache.delete(session.userId);
+    return null;
+  }
 
   const isAdmin = row.role === 'admin';
-  return {
+  const user = {
     id: row.id,
     username: row.username,
     displayName: row.display_name,
@@ -147,6 +169,8 @@ async function loadUserFromSession(session) {
     uiMode: row.ui_mode || 'normal',
     isLegacy: false,
   };
+  userCache.set(session.userId, { user, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+  return user;
 }
 
 // ── 미들웨어 ──
@@ -284,6 +308,7 @@ async function loginHandler(req, res) {
       }
 
       userRepo.touchLastLogin(user.id).catch(() => {});
+      invalidateUserCache(user.id);
       setSessionCookie(res, user.id);
       return res.json({
         success: true,
@@ -320,6 +345,7 @@ async function loginHandler(req, res) {
 
 /** POST /api/auth/logout */
 function logoutHandler(req, res) {
+  if (req.user?.id) invalidateUserCache(req.user.id);
   res.clearCookie(COOKIE_NAME, { path: '/' });
   res.json({ success: true });
 }
@@ -358,6 +384,7 @@ async function changePasswordHandler(req, res) {
 
     const hash = await userRepo.hashPassword(newPassword);
     await userRepo.updatePassword(user.id, hash);
+    invalidateUserCache(user.id);
     return res.json({ success: true });
   } catch (err) {
     console.error('[Auth] 비밀번호 변경 실패:', err.message);
@@ -383,6 +410,7 @@ async function adminResetPasswordHandler(req, res) {
     const tempPassword = userRepo.generateTempPassword();
     const hash = await userRepo.hashPassword(tempPassword);
     await userRepo.updatePassword(targetId, hash);
+    invalidateUserCache(targetId);
 
     return res.json({
       success: true,
@@ -410,4 +438,6 @@ module.exports = {
   meHandler,
   changePasswordHandler,
   adminResetPasswordHandler,
+  // 캐시 — users 테이블을 외부에서 갱신하는 라우트에서 호출해 stale 방지
+  invalidateUserCache,
 };
