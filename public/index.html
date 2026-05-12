@@ -78,6 +78,53 @@
   </div>
 
   <script>
+  // ── 전역 fetch 래퍼 — non-JSON 에러 응답 (429 'Too many requests' 등) 을
+  //    JSON shape 으로 변환해서 호출자 코드의 await res.json() 이 절대 throw 안 하게 함.
+  //    res.ok 는 그대로 false. 사용자에겐 우측 하단 토스트 한 번 안내.
+  (function installFetchSafetyNet() {
+    if (window.__pmcFetchPatched) return;
+    window.__pmcFetchPatched = true;
+    const origFetch = window.fetch.bind(window);
+    let lastToastAt = 0;
+    function showToast(msg, color) {
+      const now = Date.now();
+      if (now - lastToastAt < 3000) return; // 3초 내 중복 토스트 억제
+      lastToastAt = now;
+      const t = document.createElement('div');
+      t.style.cssText = `position:fixed;bottom:24px;right:24px;background:${color};color:#fff;padding:12px 18px;border-radius:8px;font-size:13px;font-weight:600;z-index:99999;box-shadow:0 4px 12px rgba(0,0,0,.3);max-width:360px;`;
+      t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.4s'; }, 3200);
+      setTimeout(() => t.remove(), 3700);
+    }
+    window.fetch = async function(...args) {
+      let res;
+      try { res = await origFetch(...args); } catch (e) { throw e; }
+      // 200 대 응답은 그대로 통과
+      if (res.ok) return res;
+      const ct = res.headers.get('content-type') || '';
+      // JSON 응답이면 호출자가 알아서 처리하도록 그대로 둠
+      if (ct.includes('application/json')) return res;
+      // non-JSON 에러 응답 → 본문 한 번만 읽고 JSON shape 으로 재포장
+      const text = await res.text().catch(() => '');
+      let friendly;
+      if (res.status === 429) {
+        friendly = '요청이 너무 많아 잠시 막혔습니다. 30초~1분 뒤 다시 시도해주세요.';
+        showToast(`⏳ ${friendly}`, '#ff9800');
+      } else if (res.status >= 500) {
+        friendly = `서버 오류 (${res.status})`;
+      } else {
+        friendly = text.slice(0, 200) || `HTTP ${res.status}`;
+      }
+      const body = JSON.stringify({ error: friendly, code: res.status, success: false });
+      return new Response(body, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+  })();
+
   // 유저 로드 완료를 기다리는 공용 Promise — 다른 IIFE에서 중복 fetch 방지
   window.__pmcUserReady = new Promise(resolve => { window.__resolvePmcUser = resolve; });
 
