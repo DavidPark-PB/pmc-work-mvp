@@ -40,8 +40,19 @@
     if (!user) return;
 
     if (user.isAdmin) {
-      const res = await fetch('/api/users/staff').catch(()=>null);
-      if (res && res.ok) staffList = (await res.json()).data || [];
+      try {
+        const res = await fetch('/api/users/staff');
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          console.error('[tasks] /api/users/staff 응답 실패:', res.status, errBody);
+        } else {
+          const all = (await res.json()).data || [];
+          // 본인은 ★ 본인 (사장) 옵션이 따로 있으니 staff 목록에서 제외
+          staffList = all.filter(s => s.id !== user.id);
+        }
+      } catch (e) {
+        console.error('[tasks] /api/users/staff 호출 실패:', e);
+      }
     }
 
     renderShell();
@@ -68,7 +79,9 @@
       return;
     }
 
-    const staffOptions = staffList.map(s => `<option value="${s.id}" data-duetime="${s.default_due_time || ''}">${escapeHtml(s.display_name)}${s.platform ? ' · ' + escapeHtml(s.platform) : ''}</option>`).join('');
+    const staffOptions = staffList.length > 0
+      ? staffList.map(s => `<option value="${s.id}" data-duetime="${s.default_due_time || ''}">${escapeHtml(s.display_name)}${s.platform ? ' · ' + escapeHtml(s.platform) : ''}</option>`).join('')
+      : `<option value="" disabled>— 직원이 없습니다 (좌측 '직원 관리'에서 추가하세요) —</option>`;
 
     el.innerHTML = html`
       <div class="page-header" style="margin-bottom:16px;">
