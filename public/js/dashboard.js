@@ -8022,7 +8022,7 @@ async function b2bSubmitPayment(invoiceNo) {
 // ─── 구매자 관리 ───
 async function loadB2BBuyers() {
   const tbody = document.getElementById('b2bBuyerListBody');
-  tbody.innerHTML = '<tr><td colspan="8" class="empty">로딩 중...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="10" class="empty">로딩 중...</td></tr>';
 
   try {
     const res = await fetch(`${API}/b2b/buyers`);
@@ -8030,7 +8030,7 @@ async function loadB2BBuyers() {
     const buyers = data.buyers || [];
 
     if (buyers.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">등록된 구매자 없음</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" class="empty">등록된 구매자 없음</td></tr>';
       return;
     }
 
@@ -8039,6 +8039,16 @@ async function loadB2BBuyers() {
       const mapBtn = `<button onclick="b2bOpenMappingModal('${b.BuyerID}', ${JSON.stringify(b.Name || '').replace(/"/g,'&quot;')})" style="padding:3px 8px;background:${extCount > 0 ? '#2a4a6a' : '#2a2a4a'};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">🔗 ${extCount > 0 ? `맵핑 ${extCount}` : '맵핑 없음'}</button>`;
       const editBtn = `<button onclick="b2bEditBuyer('${b.BuyerID}')" title="수정" style="padding:3px 8px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;margin-right:4px;">✏️</button>`;
       const delBtn = `<button onclick="b2bDeleteBuyer('${b.BuyerID}', ${JSON.stringify(b.Name || '').replace(/"/g,'&quot;')})" title="삭제" style="padding:3px 8px;background:#c62828;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;margin-right:4px;">🗑</button>`;
+      // 메모 — 한 줄 인라인 편집. blur 시 변경됐으면 저장.
+      const notesAttr = JSON.stringify(b.Notes || '').replace(/"/g, '&quot;');
+      const notesCell = `<td style="font-size:11px;max-width:260px;">
+        <input type="text" value="${(b.Notes || '').replace(/"/g,'&quot;')}"
+          placeholder="구매자 특성 메모…"
+          data-orig=${notesAttr}
+          onblur="b2bSaveBuyerNotesInline('${b.BuyerID}', this)"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"
+          style="width:100%;padding:4px 6px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:4px;color:#e0e0e0;font-size:11px;">
+      </td>`;
       return `<tr>
         <td style="font-weight:600">${b.BuyerID}</td>
         <td>${b.Name}</td>
@@ -8046,13 +8056,46 @@ async function loadB2BBuyers() {
         <td style="font-size:11px">${b.WhatsApp || ''}</td>
         <td>${b.Country || ''}</td>
         <td>${b.PaymentTerms || ''}</td>
+        ${notesCell}
         <td style="text-align:right">${b.TotalOrders}</td>
         <td style="text-align:right;font-weight:600">${Number(b.TotalRevenue).toFixed(2)}</td>
         <td style="text-align:center;white-space:nowrap">${editBtn}${delBtn}${mapBtn}</td>
       </tr>`;
     }).join('');
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="8" class="empty" style="color:#c62828">${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" class="empty" style="color:#c62828">${err.message}</td></tr>`;
+  }
+}
+
+// 인라인 메모 저장 — blur 시 호출. data-orig 와 비교해 변경 시에만 PATCH.
+async function b2bSaveBuyerNotesInline(buyerId, inputEl) {
+  const next = (inputEl.value || '').trim();
+  const orig = JSON.parse(inputEl.dataset.orig || '""');
+  if (next === orig) return; // 변경 없음
+  // 시각 피드백 — 저장 중
+  inputEl.style.borderColor = '#ffb74d';
+  try {
+    // 기존 POST 라우트가 부분 업데이트 지원 (b2bInvoice.updateBuyer 의 ??-fallback)
+    const res = await fetch(`${API}/b2b/buyers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ buyerId, notes: next }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    inputEl.dataset.orig = JSON.stringify(next);
+    // 성공 — 짧은 초록 깜빡임
+    inputEl.style.borderColor = '#4caf50';
+    setTimeout(() => { inputEl.style.borderColor = '#2a2a4a'; }, 600);
+    // 캐시도 같이 갱신해서 편집 모달 열 때 stale 안 보이게
+    const cached = (b2bBuyersCache || []).find(x => x.BuyerID === buyerId);
+    if (cached) cached.Notes = next;
+  } catch (e) {
+    inputEl.style.borderColor = '#e94560';
+    alert('메모 저장 실패: ' + e.message);
+    inputEl.value = orig; // 롤백
   }
 }
 
