@@ -535,4 +535,158 @@ router.post('/reorganize-receipts', async (req, res) => {
   }
 });
 
+// ────────────────────────────────────────────────────────────────────
+// 세무자료 일괄 다운로드 — 재무 권한자 전용
+// ────────────────────────────────────────────────────────────────────
+
+function _monthBounds(month) {
+  // month: YYYY-MM
+  const [y, m] = month.split('-').map(n => parseInt(n, 10));
+  const last = new Date(y, m, 0).getDate();
+  return { from: `${month}-01`, to: `${month}-${String(last).padStart(2, '0')}` };
+}
+
+// GET /api/expenses/export?month=YYYY-MM&format=xlsx
+//   해당 월 지출 내역을 Excel 한 파일로 다운로드 (세무사 제출용).
+router.get('/export', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    if (!canFinance(req)) return res.status(403).json({ error: '재무 권한이 필요합니다' });
+    const month = req.query.month;
+    if (!/^\d{4}-\d{2}$/.test(month || '')) return res.status(400).json({ error: 'month=YYYY-MM 형식이 필요합니다' });
+
+    const { from, to } = _monthBounds(month);
+    const list = await repo.listExpenses({ from, to, limit: 5000 });
+
+    const ExcelJS = require('exceljs');
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'PMC';
+    const ws = wb.addWorksheet(`${month} 지출`);
+    ws.columns = [
+      { header: '결제일',     key: 'paidAt',     width: 12 },
+      { header: '가맹점/거래처', key: 'merchant',  width: 28 },
+      { header: '카테고리',   key: 'categoryLabel', width: 16 },
+      { header: '금액',       key: 'amount',     width: 14, style: { numFmt: '#,##0' } },
+      { header: '통화',       key: 'currency',   width: 6 },
+      { header: '카드',       key: 'cardLast4',  width: 8 },
+      { header: '메모',       key: 'memo',       width: 30 },
+      { header: '영수증',     key: 'hasReceipt', width: 8 },
+      { header: '등록자',     key: 'createdByName', width: 14 },
+      { header: '등록일시',   key: 'createdAt',  width: 18 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEEEEEE' } };
+
+    let total = 0;
+    for (const e of list) {
+      ws.addRow({
+        paidAt: e.paidAt || '',
+        merchant: e.merchant || '',
+        categoryLabel: (CATEGORIES.find(c => c.key === e.category)?.label) || e.category || '',
+        amount: Number(e.amount) || 0,
+        currency: e.currency || 'KRW',
+        cardLast4: e.cardLast4 || '',
+        memo: e.memo || '',
+        hasReceipt: e.hasReceipt ? '○' : '',
+        createdByName: e.createdByName || e.createdBy || '',
+        createdAt: e.createdAt ? String(e.createdAt).replace('T', ' ').slice(0, 16) : '',
+      });
+      total += Number(e.amount) || 0;
+    }
+
+    // 합계행
+    const totalRow = ws.addRow({ paidAt: '', merchant: '합계', categoryLabel: '', amount: total });
+    totalRow.font = { bold: true };
+    totalRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF59D' } };
+
+    const buf = await wb.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="expenses-${month}.xlsx"`);
+    res.send(Buffer.from(buf));
+  } catch (e) {
+    console.error('[expenses/export] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/expenses/receipts/zip?month=YYYY-MM
+//   해당 월의 모든 영수증을 ZIP 한 파일로. 파일명: {paidAt}_{merchant}_{expenseId}_{원본}.
+router.get('/receipts/zip', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    if (!canFinance(req)) return res.status(403).json({ error: '재무 권한이 필요합니다' });
+    const month = req.query.month;
+    if (!/^\d{4}-\d{2}$/.test(month || '')) return res.status(400).json({ error: 'month=YYYY-MM 형식이 필요합니다' });
+
+    const { from, to } = _monthBounds(month);
+    const list = await repo.listExpenses({ from, to, limit: 5000 });
+    const storage = getClient().storage.from(RECEIPT_BUCKET);
+
+    const archiver = require('archiver');
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="receipts-${month}.zip"`);
+    archive.on('warning', (e) => console.warn('[expenses/zip] warning:', e.message));
+    archive.on('error', (e) => { console.error('[expenses/zip] error:', e.message); res.status(500).end(e.message); });
+    archive.pipe(res);
+
+    // 메니페스트 (어느 영수증이 어느 지출 건인지 — ZIP 안에 함께 동봉)
+    const manifest = [];
+    let added = 0;
+    let missing = 0;
+
+    for (const exp of list) {
+      const merchantSlug = String(exp.merchant || 'unknown').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+      const paths = [];
+      // 멀티 영수증 (036+)
+      let multi = [];
+      try { multi = await repo.listReceiptsByExpense(exp.id); } catch {}
+      for (const r of multi) if (r.path) paths.push({ path: r.path, name: r.name || 'receipt' });
+      // legacy 단일 영수증 (멀티가 없으면)
+      if (paths.length === 0 && exp.receiptPath) {
+        paths.push({ path: exp.receiptPath, name: exp.receiptName || 'receipt' });
+      }
+      if (paths.length === 0) {
+        manifest.push({ id: exp.id, paidAt: exp.paidAt, merchant: exp.merchant, amount: exp.amount, files: [], note: '영수증 없음' });
+        missing++;
+        continue;
+      }
+      const expFiles = [];
+      for (const p of paths) {
+        try {
+          const { data: blob, error } = await storage.download(p.path);
+          if (error) throw new Error(error.message || 'storage download failed');
+          const buf = Buffer.from(await blob.arrayBuffer());
+          // 파일 이름: 결제일_가맹점_id_원본
+          const safeOrig = String(p.name).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+          const fname = `${exp.paidAt || 'unknown'}_${merchantSlug}_${exp.id}_${safeOrig}`;
+          archive.append(buf, { name: fname });
+          expFiles.push(fname);
+          added++;
+        } catch (e) {
+          console.warn('[expenses/zip] receipt download fail', exp.id, p.path, e.message);
+        }
+      }
+      manifest.push({ id: exp.id, paidAt: exp.paidAt, merchant: exp.merchant, amount: exp.amount, files: expFiles });
+    }
+
+    // 메니페스트 CSV 추가 — 한국어 헤더 + Excel 호환 UTF-8 BOM
+    const csvLines = ['﻿id,결제일,가맹점,금액,영수증파일,비고'];
+    for (const m of manifest) {
+      const files = (m.files || []).join(' | ');
+      const note = m.note || '';
+      const merchant = String(m.merchant || '').replace(/"/g, '""');
+      csvLines.push(`${m.id},"${m.paidAt || ''}","${merchant}",${m.amount || 0},"${files}","${note}"`);
+    }
+    csvLines.push('');
+    csvLines.push(`,요약,총 지출 ${list.length}건,영수증 ${added}건 첨부,영수증 없음 ${missing}건,`);
+    archive.append(csvLines.join('\n'), { name: `_INDEX_${month}.csv` });
+
+    await archive.finalize();
+  } catch (e) {
+    console.error('[expenses/zip] error:', e.message);
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

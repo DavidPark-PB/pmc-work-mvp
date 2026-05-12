@@ -118,7 +118,11 @@
           <p style="color:#888;font-size:13px;margin:4px 0 0;">${desc}</p>
         </div>
         ${hasFinance ? `
-          <button type="button" onclick="pmcExpenses.reorganizeReceipts()" title="영수증을 결제일(paid_at) 기준 YYYY-MM 폴더로 이동. 1회만 실행." style="padding:7px 14px;background:#2a4a6a;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">📁 영수증 월별 정리</button>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" onclick="pmcExpenses.exportMonthExcel()" title="현재 선택된 월의 지출 내역을 Excel 한 파일로 다운로드 (세무사 제출용)" style="padding:7px 14px;background:#2e7d32;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">📊 월 Excel</button>
+            <button type="button" onclick="pmcExpenses.downloadReceiptsZip()" title="현재 선택된 월의 모든 영수증을 ZIP 한 파일로 다운로드" style="padding:7px 14px;background:#1565c0;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">📦 영수증 ZIP</button>
+            <button type="button" onclick="pmcExpenses.reorganizeReceipts()" title="영수증을 결제일(paid_at) 기준 YYYY-MM 폴더로 이동. 1회만 실행." style="padding:7px 14px;background:#2a4a6a;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap;">📁 영수증 월별 정리</button>
+          </div>
         ` : ''}
       </div>
 
@@ -1579,6 +1583,56 @@
     }
   }
 
+  // ── 세무자료: 월별 Excel 다운로드 ──
+  // 현재 선택된 월(currentMonth) 의 지출 내역 한 파일로.
+  async function exportMonthExcel() {
+    if (!user.isAdmin && !user.canManageFinance) { alert('재무 권한이 필요합니다'); return; }
+    if (!currentMonth) { alert('월을 먼저 선택하세요'); return; }
+    // 같은 origin 으로 GET — 브라우저가 자동으로 파일 다운로드 처리
+    const url = `/api/expenses/export?month=${encodeURIComponent(currentMonth)}`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `expenses-${currentMonth}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    } catch (e) {
+      alert('Excel 다운로드 실패: ' + e.message);
+    }
+  }
+
+  // ── 세무자료: 월별 영수증 ZIP 다운로드 ──
+  // 영수증 수가 많을 수 있어 진행 표시. 다 끝날 때까지 5~30초 가능.
+  async function downloadReceiptsZip() {
+    if (!user.isAdmin && !user.canManageFinance) { alert('재무 권한이 필요합니다'); return; }
+    if (!currentMonth) { alert('월을 먼저 선택하세요'); return; }
+    if (!confirm(`${currentMonth} 월의 모든 영수증을 ZIP으로 다운로드합니다.\n파일 수에 따라 10~60초 걸릴 수 있습니다. 진행할까요?`)) return;
+    const url = `/api/expenses/receipts/zip?month=${encodeURIComponent(currentMonth)}`;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `receipts-${currentMonth}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    } catch (e) {
+      alert('영수증 ZIP 다운로드 실패: ' + e.message);
+    }
+  }
+
   window.pmcExpenses = {
     load, refresh, edit, del,
     onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater,
@@ -1587,6 +1641,8 @@
     onCsvPick, closeCsvModal, confirmCsv, csvRecalc, csvToggleAll, csvSkipDup,
     toggleRecurring, recRunNow, recToggleActive, recDelete,
     reorganizeReceipts,
+    // 세무자료 일괄 다운로드
+    exportMonthExcel, downloadReceiptsZip,
     onCardChange: onCardSelectChange,
     // Tab switching
     switchTab,
