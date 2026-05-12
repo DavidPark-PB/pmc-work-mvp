@@ -4539,6 +4539,16 @@ router.get('/b2b/invoices/:id/download', async (req, res) => {
     res.send(buffer);
   } catch (error) {
     console.error('❌ B2B invoice 다운로드 에러:', error.message);
+    // Google Drive 용량 초과 — service account Drive 가 가득 차서 XLSX→PDF 변환에 필요한
+    // 임시 파일을 만들지 못하는 상태. 사용자에게 명확한 안내를 돌려준다.
+    const isQuotaErr = /storage quota|storageQuotaExceeded|user's Drive storage quota/i.test(error.message || '');
+    if (isQuotaErr) {
+      return res.status(507).json({
+        success: false,
+        error: 'Google Drive 용량 초과 — PDF 변환 불가. XLSX 버튼은 정상 동작. 관리자에게 Drive 정리(B2B 폴더 오래된 인보이스 삭제 / 휴지통 비우기) 요청 필요.',
+        code: 'DRIVE_QUOTA_EXCEEDED',
+      });
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
