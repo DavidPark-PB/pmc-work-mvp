@@ -564,6 +564,7 @@
     <div class="menu-item" data-page="catalog" style="color:#4db6ac;font-weight:600">📗 카탈로그 가격</div>
     <div class="menu-item" data-page="products">전체 상품</div>
     <!-- 상품 등록 메뉴 제거 — automation에서 처리 -->
+    <div class="menu-item" data-page="ai-workflow" style="color:#ffd54f;font-weight:700">🪄 AI 상품 제작 (통합)</div>
     <div class="menu-item" data-page="remarker" style="color:#7c4dff;font-weight:600">AI 리메이커</div>
     <div class="menu-item" data-page="reconstruct" style="color:#e94560;font-weight:600">상세페이지 재구성</div>
     <div class="menu-item" data-page="thumbnail" style="color:#ff9800;font-weight:600">썸네일 만들기</div>
@@ -1026,6 +1027,9 @@
         <div id="masterProductsPagination" style="margin-top:10px;text-align:center"></div>
       </div>
     </div>
+
+    <!-- ===== 🪄 AI 상품 제작 (통합 워크플로우) ===== -->
+    <div id="page-ai-workflow" class="page"></div>
 
     <!-- ===== AI 리메이커 페이지 ===== -->
     <div id="page-remarker" class="page">
@@ -3391,6 +3395,7 @@
   <!-- ── PR R-Inbox UI — Opportunity Inbox ── -->
   <script src="/js/opportunityInbox.js?v=20260511a"></script>
   <script src="/js/shippingRecs.js?v=20260512p2b"></script>
+  <script src="/js/aiWorkflow.js?v=20260512wfa"></script>
   <script>
   // ===== Inline cost editing for master products =====
   document.addEventListener('click', async (e) => {

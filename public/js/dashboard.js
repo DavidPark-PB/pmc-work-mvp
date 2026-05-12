@@ -66,6 +66,7 @@ function navigateTo(page) {
     // case 'master-products': removed — merged into 상품검색/관리
     case 'ebay-trends': loadEbayTrends(); break;
     case 'battle': loadBattle(); break;
+    case 'ai-workflow': if (window.pmcAIWorkflow) pmcAIWorkflow.load(); break;
     case 'remarker': setupRemarker(); break;
     case 'reconstruct': setupReconstructPage(); break;
     case 'shipping': setupShippingPage(); break;
