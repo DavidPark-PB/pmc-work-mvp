@@ -191,6 +191,11 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
       } catch {}
       window.location.replace('/');
       return;
+    } else if (res.status === 429 && data.retryAfterSeconds) {
+      // 사장님 요청 2026-05: 429 차단 시 남은 시간 표시
+      var mins = Math.ceil(data.retryAfterSeconds / 60);
+      errEl.textContent = (data.error || 'Too many attempts') + ' (약 ' + mins + '분 후 다시 시도 가능)';
+      errEl.style.display = 'block';
     } else {
       errEl.textContent = data.error || '로그인에 실패했습니다';
       errEl.style.display = 'block';

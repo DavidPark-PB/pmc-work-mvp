@@ -253,8 +253,15 @@ function getCurrentUser(req) {
 /** POST /api/auth/login — 유저 또는 레거시 로그인 */
 async function loginHandler(req, res) {
   const { username, password } = req.body || {};
+  // 사장님 요청 2026-05: 실패 추적용 로그 (DB 저장은 본 PR 범위 X — console 만)
+  const _logFail = (reason) => {
+    try {
+      console.warn('[auth] login fail:', { username: username || '(empty)', ip: req.ip, reason, ts: new Date().toISOString() });
+    } catch {}
+  };
 
   if (!password) {
+    _logFail('no_password');
     return res.status(400).json({ error: '비밀번호를 입력하세요' });
   }
 
@@ -263,13 +270,16 @@ async function loginHandler(req, res) {
     try {
       const user = await userRepo.findByUsername(String(username).trim());
       if (!user) {
+        _logFail('user_not_found');
         return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다' });
       }
       if (!user.is_active) {
+        _logFail('inactive');
         return res.status(403).json({ error: '비활성화된 계정입니다. 관리자에게 문의하세요' });
       }
       const ok = await userRepo.verifyPassword(password, user.password_hash);
       if (!ok) {
+        _logFail('wrong_password');
         return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다' });
       }
 

@@ -40,13 +40,41 @@ app.use(helmet({ contentSecurityPolicy: false })); // CSP disabled for inline sc
 app.use(cookieParser());
 app.use(express.json());
 
-// Rate limiting on auth endpoints
-app.use('/api/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { error: 'Too many attempts, try again later' } }));
-// General API rate limiting
+// ── Rate limiting (사장님 요청 2026-05) ──
+//
+// 이전: /api/auth/* 광역 (15분 20회 IP 단독) — 직원 공용 PC 환경에서 /api/auth/me 가 페이지 새로고침마다
+//      카운트되어 빠르게 도달 + 한 직원 실패가 전체 직원 막음.
+// 변경: POST /api/auth/login 에만 좁힘. me/logout/change-password 등은 일반 /api/ 한도만 적용.
+//      key = username + IP 조합 (공용 PC 보호). 성공은 카운트 X. dev 환경 완화. 차단 응답에 retryAfterSeconds.
+const IS_DEV = process.env.NODE_ENV === 'development';
+const LOGIN_WINDOW_MS = 5 * 60 * 1000;          // 5분
+const LOGIN_MAX = IS_DEV ? 100 : 10;            // 운영 10회, dev 100회 (사실상 비활성)
+
+const loginRateLimit = rateLimit({
+  windowMs: LOGIN_WINDOW_MS,
+  max: LOGIN_MAX,
+  skipSuccessfulRequests: true,                  // 성공 시 카운트 X
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const u = String(req.body?.username || '').trim().toLowerCase();
+    return u ? `${u}|${req.ip}` : req.ip;        // username 있으면 조합, 없으면 IP only
+  },
+  handler: (req, res /*, next, options */) => {
+    const retryAfterSeconds = Math.ceil(LOGIN_WINDOW_MS / 1000);
+    res.set('Retry-After', String(retryAfterSeconds));
+    res.status(429).json({
+      error: '로그인 시도가 많습니다. 약 ' + Math.ceil(retryAfterSeconds / 60) + '분 후 다시 시도하세요.',
+      retryAfterSeconds,
+    });
+  },
+});
+
+// 일반 /api/ rate limit — auth 외 모든 endpoint (me / logout / change-password 등 포함)
 app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 300 }));
 
-// Auth routes (before guard)
-app.post('/api/auth/login', loginHandler);
+// Auth routes (before guard) — POST /login 만 별 limit, logout 은 일반 한도만
+app.post('/api/auth/login', loginRateLimit, loginHandler);
 app.post('/api/auth/logout', logoutHandler);
 
 // Auth guard — protects everything below
