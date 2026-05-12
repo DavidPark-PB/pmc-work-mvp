@@ -570,7 +570,9 @@
     </div>
     <div class="menu-item" data-page="attendance" style="color:#81c784;font-weight:600">⏰ 출퇴근</div>
     <div class="menu-item" data-page="payroll" data-admin-only style="color:#81c784;font-weight:600">💰 급여 요약</div>
-    <div class="menu-item" data-page="weekly" style="color:#81c784;font-weight:600">🗓️ 주간 업무</div>
+    <!-- 주간 업무 — 사용 빈도 낮아 메뉴 숨김 (2026-05-12). 라우트·DB·JS 는 유지하여
+         필요 시 이 줄만 다시 노출하면 복구. workspace 가 사실상 대체. -->
+    <div class="menu-item" data-page="weekly" style="display:none;color:#81c784;font-weight:600">🗓️ 주간 업무</div>
     <div class="menu-item" data-page="cs" style="color:#81c784;font-weight:600">💬 CS 지원</div>
     <div class="menu-item" data-page="stocktake" style="color:#81c784;font-weight:600">📦 재고 실사</div>
     <div class="menu-item" data-page="expenses" style="color:#81c784;font-weight:600">💸 지출 관리</div>
