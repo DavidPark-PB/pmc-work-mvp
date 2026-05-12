@@ -71,7 +71,9 @@ const loginRateLimit = rateLimit({
 });
 
 // 일반 /api/ rate limit — auth 외 모든 endpoint (me / logout / change-password 등 포함)
-app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 300 }));
+// 600/15min = 40 req/min. 사무실 공유 IP 에서 3~5명이 동시에 폴링 페이지를 띄워도
+// 여유 있게 통과. 더 빡빡하게 잡으면 정기결제·지출 fetch 가 일시적으로 429 로 막힘.
+app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 600 }));
 
 // Auth routes (before guard) — POST /login 만 별 limit, logout 은 일반 한도만
 app.post('/api/auth/login', loginRateLimit, loginHandler);

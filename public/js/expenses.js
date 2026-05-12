@@ -242,6 +242,21 @@
     document.getElementById('exp-filter-receipt').addEventListener('change', refresh);
   }
 
+  // 429(Too Many Requests) 같이 본문이 JSON 아닌 응답도 안전하게 처리.
+  async function safeJson(res) {
+    if (res.status === 429) {
+      const txt = await res.text().catch(() => '');
+      const e = new Error(`요청이 너무 많습니다 (잠시 후 다시 시도해주세요). ${txt.slice(0, 80)}`);
+      e.code = 429;
+      throw e;
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  }
+
   async function refresh() {
     const cat = document.getElementById('exp-filter-cat')?.value || '';
     const receipt = document.getElementById('exp-filter-receipt')?.value || '';
@@ -256,15 +271,20 @@
     if (cat) params.set('category', cat);
     if (receipt) params.set('hasReceipt', receipt);
 
-    const [listRes, sumRes] = await Promise.all([
-      fetch('/api/expenses?' + params),
-      fetch('/api/expenses/summary?month=' + currentMonth),
-    ]);
-    const list = await listRes.json();
-    const sum = await sumRes.json();
-    cached = list.data || [];
-    renderTotals(sum);
-    renderList();
+    try {
+      const [listRes, sumRes] = await Promise.all([
+        fetch('/api/expenses?' + params),
+        fetch('/api/expenses/summary?month=' + currentMonth),
+      ]);
+      const list = await safeJson(listRes);
+      const sum = await safeJson(sumRes);
+      cached = list.data || [];
+      renderTotals(sum);
+      renderList();
+    } catch (e) {
+      const listEl = document.getElementById('exp-list');
+      if (listEl) listEl.innerHTML = `<div style="padding:20px;color:#ff8a80;">로드 실패: ${esc(e.message)}</div>`;
+    }
   }
 
   function renderTotals(sum) {
@@ -906,8 +926,8 @@
     if (!panel) return;
     try {
       const res = await fetch('/api/recurring');
-      const { data } = await res.json();
-      recurringList = data || [];
+      const body = await safeJson(res);
+      recurringList = body.data || [];
       const countEl = document.getElementById('rec-count');
       if (countEl) {
         const active = recurringList.filter(r => r.active).length;
