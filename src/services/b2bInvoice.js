@@ -344,23 +344,29 @@ class B2BInvoiceService {
       validUntil: isQuote ? dueDate : undefined,
     });
 
-    // 5. Drive 업로드 시도 — 실패 시 API 다운로드 엔드포인트로 fallback.
-    // (과거 로컬 파일 저장 fallback은 Fly.io ephemeral disk라 의미 없어 제거)
+    // 5. Supabase Storage 업로드 (신규 표준). 기존 Drive 업로드 경로는 제거 —
+    //    service account Drive 가 누적 파일로 가득 차서 영구 저장소로 부적합.
+    //    실패 시 API 다운로드 엔드포인트로 fallback (재생성 가능하므로 안전).
     let driveFileId = '';
     let driveUrl = '';
+    let storagePath = null;
     try {
-      const fileName = `${invoiceNo}_${buyer.Name.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`;
-      const uploaded = await this.drive.uploadFile(
-        B2B_DRIVE_FOLDER_ID,
-        fileName,
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        xlsxBuffer
-      );
-      driveFileId = uploaded.id || '';
-      driveUrl = uploaded.webViewLink || '';
-      console.log(`✅ 인보이스 Drive 업로드: ${fileName}`);
-    } catch (driveErr) {
-      console.warn('⚠️ Drive 업로드 실패 — API download 엔드포인트 fallback:', driveErr.message);
+      const { getClient } = require('../db/supabaseClient');
+      const db = getClient();
+      const buyerSlug = (buyer.Name || 'buyer').replace(/[^a-zA-Z0-9]/g, '_');
+      // 같은 인보이스 재생성·재발급 케이스 대비 upsert true. 경로는 invoiceNo 고정.
+      storagePath = `${invoiceNo}_${buyerSlug}.xlsx`;
+      const { error: upErr } = await db.storage.from('b2b-invoices').upload(storagePath, xlsxBuffer, {
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        upsert: true,
+      });
+      if (upErr) throw new Error(upErr.message);
+      const { data: pub } = db.storage.from('b2b-invoices').getPublicUrl(storagePath);
+      driveUrl = pub?.publicUrl || '';
+      console.log(`✅ 인보이스 Supabase Storage 업로드: ${storagePath}`);
+    } catch (storageErr) {
+      console.warn('⚠️ Supabase Storage 업로드 실패 — API download fallback:', storageErr.message);
+      storagePath = null;
       driveUrl = `/api/b2b/invoices/${invoiceNo}/download`;
     }
 
@@ -405,6 +411,7 @@ class B2BInvoiceService {
         DocType: docType,
         DriveFileId: driveFileId,
         DriveUrl: driveUrl,
+        StoragePath: storagePath,
       });
     } catch (err) {
       console.warn('[B2B] Supabase 동기화 실패 (마이그레이션 미적용?):', err.message);
@@ -1298,7 +1305,44 @@ class B2BInvoiceService {
 
     if (!inv) throw new Error(`인보이스 ${invoiceNo} 없음 (Sheets·Supabase 모두 조회 실패)`);
 
-    // Drive에서 다운로드 시도
+    // Supabase Storage 우선 — 신규 인보이스의 표준 경로.
+    // Sheets row 에는 storage_path 가 없어서 Supabase 에서 한 번 더 조회.
+    let storagePath = null;
+    try {
+      const B2BRepo = require('../db/b2bRepository');
+      const repo = new B2BRepo();
+      const { data: row } = await repo.db.from('b2b_invoices')
+        .select('storage_path').eq('invoice_no', invoiceNo).maybeSingle();
+      storagePath = row?.storage_path || null;
+    } catch (e) {
+      // 신규 컬럼 없는 구버전 DB 면 NULL 처럼 처리.
+      if (!/storage_path/.test(e.message || '')) {
+        console.warn('storage_path 조회 실패:', e.message);
+      }
+    }
+
+    if (storagePath) {
+      try {
+        const { getClient } = require('../db/supabaseClient');
+        const db = getClient();
+        const { data: blob, error: dlErr } = await db.storage.from('b2b-invoices').download(storagePath);
+        if (dlErr) throw new Error(dlErr.message);
+        const xlsxBuffer = Buffer.from(await blob.arrayBuffer());
+        if (format === 'pdf') {
+          const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`);
+          return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
+        }
+        return {
+          buffer: xlsxBuffer,
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          fileName: `${invoiceNo}.xlsx`,
+        };
+      } catch (storageErr) {
+        console.warn('Supabase Storage 다운로드 실패, 다음 단계 fallback:', storageErr.message);
+      }
+    }
+
+    // Drive (legacy) — 기존 인보이스들이 가진 drive_file_id 호환.
     if (inv.DriveFileId) {
       try {
         if (format === 'pdf') {

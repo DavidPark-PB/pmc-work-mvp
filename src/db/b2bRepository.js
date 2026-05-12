@@ -261,6 +261,7 @@ class B2BRepository {
       original_mime_type: invoice.OriginalMimeType || invoice.originalMimeType || null,
       drive_file_id: invoice.DriveFileId || invoice.driveFileId || '',
       drive_url: invoice.DriveUrl || invoice.driveUrl || '',
+      storage_path: invoice.StoragePath || invoice.storagePath || null,
       sent_via: invoice.SentVia || invoice.sentVia || '',
       sent_at: invoice.SentAt || invoice.sentAt || null,
     };
@@ -274,7 +275,7 @@ class B2BRepository {
     if (error && error.code === '42703') {
       // 구버전 DB 호환 — 신규 컬럼 하나씩 제거해 재시도
       const fallback = { ...row };
-      for (const col of ['is_manual', 'original_file_path', 'original_mime_type', 'doc_type']) {
+      for (const col of ['is_manual', 'original_file_path', 'original_mime_type', 'doc_type', 'storage_path']) {
         if (new RegExp(col).test(error.message || '')) delete fallback[col];
       }
       const r2 = await upsert(fallback);
