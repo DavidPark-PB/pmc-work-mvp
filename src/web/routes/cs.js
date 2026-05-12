@@ -343,6 +343,22 @@ router.post('/responses/:id/ai-tone-adjust', async (req, res) => {
     const language = req.body?.language || null;
     try {
       const result = await aiToneAdjuster.adjustTone({ text, language });
+      // PR CS-G3 후속: cs_responses 에 cost / provider / model / at 저장 (cap query 의 source)
+      try {
+        const { getClient } = require('../../db/supabaseClient');
+        await getClient().from('cs_responses').update({
+          ai_tone_adjusted: true,
+          ai_tone_cost_usd: result.costUsd || 0,
+          ai_tone_provider: result.provider || 'unknown',
+          ai_tone_model:    result.model    || null,
+          ai_tone_at:       new Date().toISOString(),
+          final_response_text: result.text,  // 다듬어진 텍스트로 저장
+          updated_at:       new Date().toISOString(),
+        }).eq('id', id);
+      } catch (saveErr) {
+        // 저장 실패는 silent (응답 자체는 성공). 050 미적용 시 컬럼 없을 수 있음.
+        console.warn('[cs/ai-tone-adjust] save failed:', saveErr.message);
+      }
       res.json({
         text: result.text,
         provider: result.provider,

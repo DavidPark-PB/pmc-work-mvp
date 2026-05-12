@@ -356,14 +356,23 @@
       } else if (canReceipt) {
         receiptBtn = `<button onclick="pmcExpenses.uploadReceiptLater(${e.id})" style="padding:4px 8px;background:#2a2a4a;border:1px dashed #555;border-radius:4px;color:#888;cursor:pointer;font-size:11px;">📎 첨부</button>`;
       }
+      // PR W-G3: status / sourceType 뱃지 (048 신규 컬럼)
+      const statusBadge = e.status === '예정'
+        ? '<span title="지급 예정 (인건비 자동 연동 등)" style="margin-left:4px;padding:1px 6px;background:#ffa726;color:#fff;border-radius:8px;font-size:9px;">예정</span>'
+        : e.status === '취소됨'
+        ? '<span title="취소된 자동 연동 expense (감사 보존)" style="margin-left:4px;padding:1px 6px;background:#555;color:#fff;border-radius:8px;font-size:9px;">취소</span>'
+        : ''; // '지급완료' 는 기본 — 뱃지 안 표시 (양 줄임)
+      const autoLink = e.sourceType === 'payroll' && e.sourceId
+        ? `<span onclick="pmcExpenses.gotoPayrollPeriod(${e.sourceId})" title="급여 기간 #${e.sourceId} 로 이동" style="margin-left:4px;padding:1px 6px;background:#1a3a4a;color:#64b5f6;border-radius:8px;font-size:9px;cursor:pointer;">📅 급여 자동</span>`
+        : '';
       return `
-        <div style="padding:12px 16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+        <div style="padding:12px 16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:center;flex-wrap:wrap;${e.status === '취소됨' ? 'opacity:0.5;' : ''}">
           <div style="font-size:11px;color:#888;min-width:80px;">${esc(dt(e.paidAt))}</div>
           <div style="min-width:90px;">
             <span style="padding:2px 8px;background:${info.color};color:#fff;border-radius:10px;font-size:11px;">${esc(info.label)}</span>
           </div>
           <div style="flex:1;min-width:120px;color:#fff;font-size:13px;">
-            ${esc(e.merchant || '-')}
+            ${esc(e.merchant || '-')}${statusBadge}${autoLink}
             ${e.memo ? `<span style="color:#999;font-size:11px;"> · ${esc(e.memo)}</span>` : ''}
           </div>
           <div style="min-width:120px;text-align:right;color:#ff8a80;font-weight:600;font-size:14px;">${money(e.amount, e.currency)}</div>
@@ -1633,8 +1642,19 @@
     }
   }
 
+  // PR W-G3: 인건비 expense 의 source_type='payroll' → 급여 기간 화면으로 이동
+  function gotoPayrollPeriod(periodId) {
+    location.href = '/?page=payroll';
+    setTimeout(() => {
+      if (window.pmcPayroll && window.pmcPayroll.switchView) {
+        window.pmcPayroll.switchView('periods');
+        setTimeout(() => { if (window.pmcPayroll.viewPeriod) window.pmcPayroll.viewPeriod(periodId); }, 300);
+      }
+    }, 200);
+  }
+
   window.pmcExpenses = {
-    load, refresh, edit, del,
+    load, refresh, edit, del, gotoPayrollPeriod,
     onReceiptPick, viewReceipt, deleteReceipt, uploadReceiptLater,
     openReceiptList, viewReceiptById, deleteReceiptById,
     closeEditModal, saveEditModal, replaceReceiptInModal, deleteReceiptInModal,

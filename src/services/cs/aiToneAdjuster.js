@@ -24,6 +24,8 @@ const PROMPT_VERSION = 'cs-tone-v1.0';
 const DEFAULT_MODEL = process.env.CS_TONE_DEFAULT_MODEL || 'claude-sonnet-4-6';
 const MOCK_MODE = process.env.CS_TONE_MOCK_MODE === 'true';
 const MAX_OUTPUT_TOKENS = 1500;
+// PR CS-G3 후속: daily cap (mock 제외, 실 호출만 카운트)
+const DAILY_USD_CAP = parseFloat(process.env.CS_TONE_DAILY_USD_CAP || '3.00');
 
 class UsageCapError extends Error {
   constructor(message) { super(message); this.code = 'csTone/usage_cap_exceeded'; }
@@ -131,6 +133,23 @@ function mockAdjust(text) {
  * @param {string} [params.language] — en/ko/ja/zh — 언어 변경 금지 (prompt 강제)
  * @returns {Promise<{text, provider, model, inputTokens, outputTokens, costUsd, promptVersion, mock}>}
  */
+// PR CS-G3 후속: daily cap query — 오늘 누적 cost (mock 제외)
+async function _getDailyUsdUsage() {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const { data, error } = await getClient()
+      .from('cs_responses')
+      .select('ai_tone_cost_usd')
+      .gte('ai_tone_at', todayStart.toISOString())
+      .neq('ai_tone_provider', 'mock')
+      .limit(1000);
+    if (error) return 0;  // 컬럼 미적용 시 silent
+    return (data || []).reduce((s, r) => s + (Number(r.ai_tone_cost_usd) || 0), 0);
+  } catch { return 0; }
+}
+
 async function adjustTone({ text, language } = {}) {
   if (!text || !String(text).trim()) {
     throw new ValidationError('다듬을 본문이 비어있습니다');
@@ -139,6 +158,12 @@ async function adjustTone({ text, language } = {}) {
   // MOCK_MODE 또는 ANTHROPIC_API_KEY 미설정 시 mock 반환 (안전 fallback)
   if (MOCK_MODE || !process.env.ANTHROPIC_API_KEY) {
     return { ...mockAdjust(text), mock: true };
+  }
+
+  // PR CS-G3 후속: daily cap 체크 (mock 호출 제외 — 실 호출만 카운트)
+  const used = await _getDailyUsdUsage();
+  if (used >= DAILY_USD_CAP) {
+    throw new UsageCapError(`오늘 AI 톤 다듬기 비용 cap 초과 ($${used.toFixed(4)} / $${DAILY_USD_CAP.toFixed(2)}). 내일 다시 시도하세요.`);
   }
 
   // 실제 호출 (환경 변수 활성 + key 존재 시)
