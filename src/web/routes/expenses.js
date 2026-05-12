@@ -41,8 +41,34 @@ const receiptUpload = multer({
   },
 });
 
+// multer 가 multipart 의 filename 을 latin1 로 디코드해서 한글이 깨지는 케이스 보정.
+// utf8 로 재해석해서 정상이면 그 결과를 사용. 화면·DB 에 보일 표시용 이름.
+function decodeOriginalName(name) {
+  if (!name) return 'receipt';
+  try {
+    const utf8 = Buffer.from(name, 'latin1').toString('utf8');
+    if (!utf8.includes('�')) return utf8;
+  } catch {}
+  return name;
+}
+
 function sanitizeFileName(name) {
-  return (name || 'receipt').replace(/[\\/\x00-\x1f]/g, '_').slice(0, 150);
+  return decodeOriginalName(name).replace(/[\\/\x00-\x1f]/g, '_').slice(0, 150);
+}
+
+// Supabase Storage key 는 ASCII 안전문자만 허용 (한글·공백·특수문자 X).
+// 표시용 이름과 별개로 storage path 용 ASCII slug 를 만든다.
+function asciiSafeKey(name) {
+  const decoded = decodeOriginalName(name);
+  const m = decoded.match(/\.([a-zA-Z0-9]{1,8})$/);
+  const ext = m ? '.' + m[1].toLowerCase() : '';
+  const base = decoded
+    .replace(/\.[a-zA-Z0-9]{1,8}$/, '')
+    .replace(/[^a-zA-Z0-9._-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+  return (base || 'file') + ext;
 }
 
 // 재무 권한 = admin OR users.can_manage_finance (사장님 요청 2026-05 — admin 도 항상 전체 가능)
@@ -287,12 +313,15 @@ router.post('/:id/receipt', (req, res, next) => {
     if (!f) return res.status(400).json({ error: '파일이 없습니다' });
 
     const storage = getClient().storage.from(RECEIPT_BUCKET);
-    const clean = sanitizeFileName(f.originalname);
+    // 표시용(DB record) — 원본 한글 보존
+    const displayName = sanitizeFileName(f.originalname);
+    // Storage key 용 — ASCII 안전 (Supabase 'Invalid key' 회피)
+    const keySlug = asciiSafeKey(f.originalname);
     const rand = crypto.randomBytes(6).toString('hex');
     // 지출일(paid_at) 기준으로 YYYY-MM 폴더로 묶음 (월별 정리 편의)
     const paidIso = String(existing.paidAt || new Date().toISOString()).slice(0, 10);
     const monthFolder = paidIso.slice(0, 7); // 'YYYY-MM'
-    const newPath = `${monthFolder}/${id}/${Date.now()}-${rand}-${clean}`;
+    const newPath = `${monthFolder}/${id}/${Date.now()}-${rand}-${keySlug}`;
 
     const { error: upErr } = await storage.upload(newPath, f.buffer, {
       contentType: f.mimetype,
@@ -312,7 +341,7 @@ router.post('/:id/receipt', (req, res, next) => {
     let receiptRecord = null;
     try {
       receiptRecord = await repo.addReceiptRecord({
-        expenseId: id, path: newPath, name: clean, mime: f.mimetype, size: f.size, userId: req.user.id,
+        expenseId: id, path: newPath, name: displayName, mime: f.mimetype, size: f.size, userId: req.user.id,
       });
     } catch (e) {
       // expense_receipts 테이블 없으면 (036 마이그레이션 미적용) → 옛 단일 영수증 모드 fallback
@@ -323,7 +352,7 @@ router.post('/:id/receipt', (req, res, next) => {
     let updated;
     if (!existing.receiptPath) {
       updated = await repo.setReceipt(id, {
-        path: newPath, name: clean, mime: f.mimetype, size: f.size,
+        path: newPath, name: displayName, mime: f.mimetype, size: f.size,
       });
     } else {
       updated = existing;
