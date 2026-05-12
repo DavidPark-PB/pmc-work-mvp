@@ -2,7 +2,7 @@
  * Users API — 유저 목록 조회 (admin 전용) + 생성/수정 (Phase 2에서 추가)
  */
 const express = require('express');
-const { requireAdmin } = require('../../middleware/auth');
+const { requireAdmin, invalidateUserCache } = require('../../middleware/auth');
 const userRepo = require('../../db/userRepository');
 const { getClient } = require('../../db/supabaseClient');
 
@@ -95,6 +95,8 @@ router.patch('/:id', requireAdmin, async (req, res) => {
       .select('id, username, display_name, role, platform, is_active')
       .single();
     if (error) throw error;
+    // 권한/role/활성 상태가 바뀌었으면 auth 캐시 즉시 무효화 — 직원이 F5 한 번이면 반영됨
+    invalidateUserCache(id);
     res.json({ data });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

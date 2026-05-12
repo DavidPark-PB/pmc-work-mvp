@@ -23,9 +23,11 @@ async function findByUsername(username) {
 }
 
 async function findById(id) {
+  // can_manage_finance 가 빠져 있으면 auth.loadUserFromSession 에서
+  // canManageFinance 가 항상 false 가 되어 직원에게 부여한 재무 권한이 무효화됨.
   const { data, error } = await getClient()
     .from('users')
-    .select('id, username, display_name, role, is_active, platform, ui_mode')
+    .select('id, username, display_name, role, is_active, platform, ui_mode, can_manage_finance')
     .eq('id', id)
     .maybeSingle();
   if (error) throw error;
