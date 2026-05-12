@@ -17,8 +17,17 @@
     if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r=>r.json())).user;
     if (!user) return;
     if (user.isAdmin) {
-      const res = await fetch('/api/users/staff');
-      if (res.ok) staffList = (await res.json()).data || [];
+      try {
+        const res = await fetch('/api/users/staff');
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          console.error('[attendance] /api/users/staff 응답 실패:', res.status, errBody);
+        } else {
+          staffList = (await res.json()).data || [];
+        }
+      } catch (e) {
+        console.error('[attendance] /api/users/staff 호출 실패:', e);
+      }
     }
     renderShell();
     await refresh();
@@ -26,7 +35,9 @@
 
   function renderShell() {
     const el = document.getElementById('page-attendance');
-    const staffOptions = (staffList || []).map(s => `<option value="${s.id}" data-rate="${s.hourly_rate || 0}">${esc(s.display_name)}${s.platform ? ' · ' + esc(s.platform) : ''}</option>`).join('');
+    const staffOptions = (staffList && staffList.length > 0)
+      ? staffList.map(s => `<option value="${s.id}" data-rate="${s.hourly_rate || 0}">${esc(s.display_name)}${s.platform ? ' · ' + esc(s.platform) : ''}</option>`).join('')
+      : `<option value="" disabled>— 직원 목록 없음 (좌측 '직원 관리'에서 추가하거나 콘솔 로그 확인) —</option>`;
 
     el.innerHTML = `
       <div style="margin-bottom:16px;">
