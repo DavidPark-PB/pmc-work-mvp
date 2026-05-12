@@ -408,6 +408,12 @@
           <label style="font-size:11px;color:#aaa;">📋 미리보기 ${editMode ? '(편집 모드)' : '(읽기 전용)'}</label>
           <div style="display:flex;gap:4px;">
             <button type="button" onclick="pmcCs.toggleEditMode()" style="padding:3px 8px;background:#2a2a4a;border:0;border-radius:3px;color:#ccc;cursor:pointer;font-size:10px;">${editMode ? '👁 읽기 전용' : '✏️ 편집'}</button>
+            <button type="button" id="cs-translate-btn" onclick="pmcCs.translate('en')"
+              title="현재 본문을 영어로 번역 (숫자·주문번호 보존)"
+              style="padding:3px 8px;background:#4db8ff;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;font-weight:600;">🌐 한→영</button>
+            <button type="button" id="cs-translate-ko-btn" onclick="pmcCs.translate('ko')"
+              title="현재 본문을 한국어로 번역"
+              style="padding:3px 8px;background:#2a4a6a;border:0;border-radius:3px;color:#ccc;cursor:pointer;font-size:10px;">영→한</button>
             <button type="button" id="cs-ai-tone-btn" onclick="pmcCs.aiToneAdjust()"
               title="AI 가 톤만 다듬음 (사실/숫자/언어 변경 X)"
               style="padding:3px 8px;background:#7c4dff;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">🤖 AI 톤 다듬기</button>
@@ -887,6 +893,41 @@
     `;
   }
 
+  // ── 한국어 ↔ 영어 번역 (저장 안 된 미리보기 기준) ──
+  // 직원이 한글로 초안 쓰고 한 번에 영어 CS 답변으로 변환. ChatGPT 외부 사용 대체.
+  async function translate(targetLang) {
+    const ta = document.getElementById('cs-preview');
+    if (!ta) return;
+    const text = ta.value || previewText || '';
+    if (!text.trim()) { alert('번역할 본문이 비어있습니다'); return; }
+    const target = targetLang === 'ko' ? 'ko' : 'en';
+    const btn = document.getElementById(target === 'en' ? 'cs-translate-btn' : 'cs-translate-ko-btn');
+    const origLabel = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '번역 중...'; }
+    try {
+      const res = await fetch('/api/cs/translate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, targetLang: target }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '실패');
+      ta.value = j.text || text;
+      previewText = ta.value;
+      const status = document.getElementById('cs-save-status');
+      if (status) {
+        status.style.color = j.mock ? '#888' : '#81c784';
+        status.textContent = j.mock
+          ? `🌐 mock 모드 — 번역 시뮬레이션 (CS_TRANSLATE_MOCK_MODE=true 또는 ANTHROPIC_API_KEY 미설정)`
+          : `✓ ${target === 'en' ? '영어' : '한국어'} 번역 완료 (${j.provider} · $${(j.costUsd || 0).toFixed(4)})`;
+      }
+    } catch (e) {
+      const status = document.getElementById('cs-save-status');
+      if (status) { status.style.color = '#ff8a80'; status.textContent = '번역 실패: ' + e.message; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+    }
+  }
+
   // ── PR CS-G3-F: AI 톤 다듬기 (저장 안 된 미리보기 기준) ──
   async function aiToneAdjust() {
     const ta = document.getElementById('cs-preview');
@@ -1204,6 +1245,8 @@
     searchSuspicious,
     // 결과 + AI (PR CS-G3-F)
     aiToneAdjust, setResultStatus,
+    // 한↔영 번역 (한글 초안 → 영어 CS 답변)
+    translate,
     // 관리 (보존)
     editTemplate, deleteTemplate,
   };

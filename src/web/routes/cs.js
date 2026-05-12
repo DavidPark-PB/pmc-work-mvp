@@ -21,6 +21,7 @@ const variableSubstitutor = require('../../services/cs/variableSubstitutor');
 const buyerMatcher = require('../../services/cs/suspiciousBuyerMatcher');
 const fraudDetector = require('../../services/cs/fraudPatternDetector');
 const aiToneAdjuster = require('../../services/cs/aiToneAdjuster');
+const koEnTranslator = require('../../services/cs/koEnTranslator');
 
 const router = express.Router();
 
@@ -264,6 +265,36 @@ router.post('/responses/:id/result-status', requireAdmin, async (req, res) => {
     console.error('[cs/responses/result-status] error:', e.message);
     res.status(500).json({ error: e.message });
   }
+});
+
+// 한국어 ↔ 영어 번역 (저장 안 된 미리보기용).
+//   body: { text, targetLang? } — targetLang 'en'(default) | 'ko'
+//   ChatGPT 외부 사용 대체 — 직원이 한글로 초안 쓰고 버튼 한 번에 영어 변환.
+router.post('/translate', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const text = String(req.body?.text || '');
+    const targetLang = req.body?.targetLang === 'ko' ? 'ko' : 'en';
+    if (!text.trim()) return res.status(400).json({ error: '번역할 본문이 비어있습니다' });
+    try {
+      const result = await koEnTranslator.translate({ text, targetLang });
+      res.json({
+        text: result.text,
+        targetLang,
+        provider: result.provider,
+        mock: !!result.mock,
+        costUsd: result.costUsd,
+      });
+    } catch (e) {
+      const code = e?.code || '';
+      const status = code === 'csTranslate/config_error' ? 503
+        : code === 'csTranslate/provider_failed' ? 502
+        : code === 'csTranslate/validation' ? 400
+        : 500;
+      console.error('[cs/translate] error:', { code, message: e.message });
+      res.status(status).json({ error: e.message, code });
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // PR CS-G3-B: AI 톤 다듬기 (저장 안 된 미리보기용 — 모든 직원).
