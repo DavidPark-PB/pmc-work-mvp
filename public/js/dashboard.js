@@ -7074,14 +7074,8 @@ async function loadB2BInvoiceList() {
               ? `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/manual-download" style="background:#ff9800;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">📎 원본</a>`
               : `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/download" style="background:#0288d1;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">XLSX</a>
                  <a href="${API}/b2b/invoices/${inv.InvoiceNo}/download?format=pdf" style="background:#e53935;color:#fff;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:600">📄 PDF</a>`}
-            ${inv.OriginalFilePath && !isManual
-              ? `<a href="${API}/b2b/invoices/${inv.InvoiceNo}/manual-download" style="background:#81c784;color:#1a1a2e;padding:3px 8px;border-radius:4px;font-size:10px;text-decoration:none;font-weight:700">📎 첨부</a>`
-              : ''}
-            <button onclick="b2bAttachFile('${inv.InvoiceNo}', ${inv.OriginalFilePath ? 'true' : 'false'})" title="${inv.OriginalFilePath ? '첨부 파일 교체' : '파일 첨부'}" style="background:#4caf50;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">${inv.OriginalFilePath ? '🔁' : '📎'}</button>
-            ${paidStatus !== 'PAID' ? `<button onclick="b2bMarkPaid('${inv.InvoiceNo}')" style="background:#27ae60;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">PAID</button>` : ''}
             <button onclick="b2bSendWhatsApp('${inv.InvoiceNo}')" style="background:#25d366;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">WA</button>
             <button onclick="b2bEditInvoice('${inv.InvoiceNo}','${(inv.Date||'').replace(/'/g,'')}','${(inv.DueDate||'').replace(/'/g,'')}','${inv.Currency||'USD'}','${inv.Status||''}')" title="수정" style="background:#7c4dff;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">✏️</button>
-            <button onclick="b2bDeleteInvoice('${inv.InvoiceNo}')" title="영구 삭제" style="background:#9c1a1a;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🗑</button>
             <button onclick="b2bVoidInvoice('${inv.InvoiceNo}')" title="무효화" style="background:#c62828;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600">🚫</button>
           </div>
         </td>

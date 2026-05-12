@@ -1338,6 +1338,14 @@ class B2BInvoiceService {
       notes: '',
     });
 
+    // PDF 요청 시 재생성한 XLSX 도 PDF 로 변환해서 돌려준다
+    // (이전엔 Drive fallback 경로에서 format=pdf 를 무시하고 xlsx 를 그대로 반환해서
+    //  PDF 버튼이 사실상 .xlsx 를 다운로드시키는 버그가 있었음)
+    if (format === 'pdf') {
+      const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`);
+      return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
+    }
+
     return {
       buffer: xlsxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
