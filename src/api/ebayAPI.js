@@ -140,28 +140,49 @@ class EbayAPI {
     }
 
     try {
-      const response = await axios.post(this.apiUrl, xml, { headers });
+      // 사장님 요청 2026-05: 4xx/5xx 도 throw X. 응답 body 자체로 검증해서 토큰 만료 자동 회복.
+      const response = await axios.post(this.apiUrl, xml, {
+        headers,
+        validateStatus: () => true,
+      });
       const data = response.data;
+      const dataStr = typeof data === 'string' ? data : JSON.stringify(data || '');
 
-      // 토큰 만료/무효 감지 → 자동 갱신 후 재시도 (1회)
-      const isTokenInvalid = typeof data === 'string' && (
-        data.includes('token is hard expired') ||
-        data.includes('Expired IAF token') ||
-        data.includes('Auth token is invalid') ||
-        data.includes('<ErrorCode>931</ErrorCode>')
-      );
+      // 토큰 만료/무효 감지 — 200 OK 본문 키워드 + 4xx status code 모두 검사
+      const isTokenInvalid =
+        response.status === 401 ||
+        dataStr.includes('token is hard expired') ||
+        dataStr.includes('Expired IAF token') ||
+        dataStr.includes('Auth token is invalid') ||
+        dataStr.includes('<ErrorCode>931</ErrorCode>') ||
+        (response.status >= 400 && response.status < 500 &&
+          /token|auth|expired|unauthorized/i.test(dataStr));
+
       if (!this._tokenRefreshed && isTokenInvalid && this.refreshToken) {
-        console.log('eBay 토큰 무효/만료 감지, 자동 갱신 시도...');
-        const newToken = await this.refreshAccessToken();
-        process.env.EBAY_USER_TOKEN = newToken;
-        this.userToken = newToken;
-        // 갱신된 토큰으로 재시도
-        return this.callTradingAPI(callName, requestBody);
+        console.log(`[eBay] 토큰 만료/무효 감지 (status=${response.status}) — 자동 갱신 시도`);
+        this._tokenRefreshed = true;
+        try {
+          const newToken = await this.refreshAccessToken();
+          process.env.EBAY_USER_TOKEN = newToken;
+          this.userToken = newToken;
+          return this.callTradingAPI(callName, requestBody);  // 1회 재시도
+        } catch (refreshErr) {
+          console.error('[eBay] 토큰 자동 갱신 실패:', refreshErr.message);
+          throw new Error('eBay 토큰 만료 + 자동 갱신 실패 — Railway 환경변수 EBAY_USER_TOKEN 수동 교체 필요');
+        }
+      }
+
+      // 토큰과 무관한 4xx/5xx — 본문의 eBay 에러 메시지 추출해서 명확하게
+      if (response.status >= 400) {
+        const shortMsg = (dataStr.match(/<ShortMessage>(.*?)<\/ShortMessage>/) || [])[1] || '';
+        const longMsg  = (dataStr.match(/<LongMessage>(.*?)<\/LongMessage>/) || [])[1] || '';
+        throw new Error(`eBay API ${response.status}: ${shortMsg || longMsg || 'Bad request'}`);
       }
 
       this._tokenRefreshed = false; // 다음 호출을 위해 리셋
       return data;
     } catch (error) {
+      // 네트워크 / DNS / timeout 등 — 본문 검증 못한 경우
       throw new Error(`eBay API Error: ${error.message}`);
     }
   }
