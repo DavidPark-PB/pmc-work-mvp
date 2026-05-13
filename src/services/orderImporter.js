@@ -297,6 +297,24 @@ async function importMockOrder(payload, options = {}) {
   const matchedCount = matchedLines.filter((l) => l.match_status && l.match_status.startsWith('matched_')).length;
   const failedCount  = matchedLines.filter((l) => l.match_status === 'failed').length;
 
+  // 배송 무게 자동 계산 (Phase 3) — best-effort. 실패해도 import 자체는 성공으로 반환.
+  // 마이그레이션 051/052 미적용 환경에서도 import 가 안 깨지도록 try/catch.
+  let shipmentCalc = null;
+  try {
+    const shippingCalc = require('./shippingWeightCalculator');
+    const result = await shippingCalc.calculateForOrder(order.id);
+    shipmentCalc = {
+      ok: result.ok,
+      missing_sku_count: (result.missingSkus || []).length,
+      recommended_carrier: result.shipment?.recommendedCarrier || null,
+      chargeable_weight_g: result.shipment?.chargeableWeightG ?? null,
+      error: result.error || null,
+    };
+  } catch (e) {
+    console.warn('[orderImporter] shipping calc failed (마이그레이션 051/052 미적용?):', e.message);
+    shipmentCalc = { ok: false, error: e.message };
+  }
+
   return {
     order,
     lines: matchedLines,
@@ -308,6 +326,7 @@ async function importMockOrder(payload, options = {}) {
       overflow_card_created: overflowCardCreated,
       capped_line_count: failedLineContexts.length,
     },
+    shipmentCalc,
   };
 }
 
