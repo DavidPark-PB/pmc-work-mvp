@@ -17,6 +17,7 @@
     "auto:start": "cd automation && npm start",
     "dev:all": "concurrently \"node server.js\" \"cd automation && npm run dev\"",
     "qa:safety": "bash scripts/qa-safety-foundation.sh",
+    "test:shipping": "node scripts/test-shipping-phase5.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
