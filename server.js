@@ -15,6 +15,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 const {
   authGuard,
   blockLegacyWrites,
@@ -56,9 +57,12 @@ const loginRateLimit = rateLimit({
   skipSuccessfulRequests: true,                  // 성공 시 카운트 X
   standardHeaders: true,
   legacyHeaders: false,
+  // express-rate-limit v8+ 는 req.ip 직접 사용을 거부 (IPv6 /56 subnet 처리 누락 방지).
+  // ipKeyGenerator(ip) 가 v4 는 그대로, v6 는 /56 prefix 로 정규화.
   keyGenerator: (req) => {
     const u = String(req.body?.username || '').trim().toLowerCase();
-    return u ? `${u}|${req.ip}` : req.ip;        // username 있으면 조합, 없으면 IP only
+    const ipKey = ipKeyGenerator(req.ip);
+    return u ? `${u}|${ipKey}` : ipKey;
   },
   handler: (req, res /*, next, options */) => {
     const retryAfterSeconds = Math.ceil(LOGIN_WINDOW_MS / 1000);
