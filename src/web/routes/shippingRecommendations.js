@@ -32,6 +32,8 @@ const express = require('express');
 const { requireAdmin } = require('../../middleware/auth');
 const { getClient } = require('../../db/supabaseClient');
 const recommender = require('../../services/shippingRecommender');
+const orderShipmentRepo = require('../../db/orderShipmentRepository');
+const shippingCalc = require('../../services/shippingWeightCalculator');
 
 const router = express.Router();
 router.use(requireAdmin);
@@ -183,6 +185,274 @@ router.get('/', async (req, res) => {
     });
   } catch (e) {
     console.error('[shipping/recommendations] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// WMS 기반 라우트 (Phase 4 of 배송비 계산/배송추천 리디자인)
+// ════════════════════════════════════════════════════════════════════════════
+// 기존 /api/shipping/recommendations 는 레거시 orders 테이블 기반으로 유지.
+// 신규 /api/shipping/recommendations/wms/* 는 wms_orders + order_shipments 기반.
+
+// ±50% 이상 차이는 경고 표시 — 배송추천 화면 spec 의 '차이 큰 경우 경고'.
+const WEIGHT_DEVIATION_WARNING_PCT = 0.5;
+
+const WMS_ALLOWED_STATUS = ['pending', 'paid', 'ready_to_ship', 'shipped', 'cancelled', 'refunded', 'ALL'];
+
+// GET /api/shipping/recommendations/wms
+//   query:
+//     days=14              — 최근 며칠 (default 14)
+//     status=paid          — wms_orders.order_status 또는 ALL
+//     carrier=fedex        — order_shipments.recommended_carrier 필터
+//     weight_status=missing — '무게 입력 필요' 주문만 (계산 안됨 또는 review)
+router.get('/wms', async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(parseInt(req.query.days, 10) || 14, 90));
+    const statusInput = String(req.query.status || 'ALL');
+    const status = WMS_ALLOWED_STATUS.includes(statusInput) ? statusInput : 'ALL';
+    const carrier = req.query.carrier ? String(req.query.carrier).toLowerCase() : null;
+    const weightFilter = req.query.weight_status === 'missing' ? 'missing' : null;
+
+    const sinceIso = new Date(Date.now() - days * 86400000).toISOString();
+
+    // 1) 주문 + line + matched SKU + shipment 일괄 조회 (N+1 회피)
+    const db = getClient();
+    let oq = db.from('wms_orders')
+      .select(`
+        id, marketplace, external_order_id, order_status, buyer_country,
+        buyer_name, ordered_at, total_amount, currency,
+        lines:wms_order_lines (
+          id, marketplace_sku, listing_id, option_id,
+          title, quantity, unit_price, currency,
+          matched_sku_id, match_status, match_reason,
+          sku:matched_sku_id ( id, internal_sku, weight_gram, weight_status,
+                               default_packaging_weight_g, shipping_group )
+        )
+      `)
+      .gte('ordered_at', sinceIso)
+      .order('ordered_at', { ascending: false })
+      .limit(500);
+    if (status !== 'ALL') oq = oq.eq('order_status', status);
+    const { data: orders, error: e1 } = await oq;
+    if (e1) throw e1;
+
+    const orderIds = (orders || []).map(o => o.id);
+    const shipmentMap = await orderShipmentRepo.listByOrderIds(orderIds);
+
+    // 2) 행 빌드
+    const rows = (orders || []).map(o => {
+      const shipment = shipmentMap.get(o.id) || null;
+      const lines = (o.lines || []).map(l => {
+        const sku = Array.isArray(l.sku) ? l.sku[0] : l.sku; // supabase nested select 호환
+        return {
+          lineId: l.id,
+          marketplaceSku: l.marketplace_sku,
+          internalSku: sku?.internal_sku || null,
+          title: l.title,
+          quantity: l.quantity,
+          unitPrice: l.unit_price ? Number(l.unit_price) : null,
+          currency: l.currency || o.currency || null,
+          matchStatus: l.match_status,
+          matchReason: l.match_reason || null,
+          weightG: sku?.weight_gram != null ? Number(sku.weight_gram) : null,
+          weightStatus: sku?.weight_status || 'unknown',
+          shippingGroup: sku?.shipping_group || null,
+        };
+      });
+
+      const missingSkus = lines.filter(l => l.weightG == null || !(l.weightG > 0));
+
+      // 경고 계산 — 수동 수정값이 자동 계산 final_weight_g 와 50% 이상 차이
+      const warnings = [];
+      if (shipment?.isWeightOverridden && shipment.overriddenWeightG && shipment.finalWeightG) {
+        const dev = Math.abs(shipment.overriddenWeightG - shipment.finalWeightG) / shipment.finalWeightG;
+        if (dev >= WEIGHT_DEVIATION_WARNING_PCT) {
+          warnings.push({
+            code: 'large_weight_deviation',
+            message: `수동 수정 무게(${shipment.overriddenWeightG}g) 가 자동 계산(${shipment.finalWeightG}g) 보다 ${Math.round(dev * 100)}% 차이`,
+          });
+        }
+      }
+      if (missingSkus.length > 0) {
+        warnings.push({
+          code: 'weight_input_required',
+          message: `${missingSkus.length}개 SKU 의 무게가 등록되지 않음 — SKU 마스터에서 입력 필요`,
+        });
+      }
+
+      return {
+        orderId: o.id,
+        marketplace: o.marketplace,
+        externalOrderId: o.external_order_id,
+        orderStatus: o.order_status,
+        buyerCountry: o.buyer_country,
+        buyerName: o.buyer_name,
+        orderedAt: o.ordered_at,
+        totalAmount: o.total_amount ? Number(o.total_amount) : null,
+        currency: o.currency,
+        lines,
+        shipment,                // null 이면 미계산 상태
+        missingSkus,
+        warnings,
+        needsCalc: !shipment,
+      };
+    });
+
+    // 3) 필터 적용 (carrier / weight_status=missing)
+    let filtered = rows;
+    if (carrier) {
+      filtered = filtered.filter(r => r.shipment?.recommendedCarrier === carrier);
+    }
+    if (weightFilter === 'missing') {
+      filtered = filtered.filter(r => r.needsCalc || r.shipment?.recommendedCarrier === 'review' || r.missingSkus.length > 0);
+    }
+
+    // 4) 통계 — recommended_carrier 별 count
+    const counts = {};
+    let calculated = 0;
+    let pending = 0;
+    for (const r of filtered) {
+      const key = r.shipment?.recommendedCarrier || 'pending';
+      counts[key] = (counts[key] || 0) + 1;
+      if (r.shipment) calculated++;
+      else pending++;
+    }
+
+    res.json({
+      filter: { days, status, carrier, weight_status: weightFilter, allowedStatuses: WMS_ALLOWED_STATUS },
+      counts,
+      summary: { total: filtered.length, calculated, pending },
+      orders: filtered,
+    });
+  } catch (e) {
+    console.error('[shipping/wms] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/shipping/recommendations/wms/:orderId/weight
+//   주문별 무게 인라인 수정.
+//   body: {
+//     overriddenWeightG: number,   // 필수 — 적용할 무게 (g)
+//     overrideReason: string?,     // 사유 (선택)
+//     applyToMaster: boolean?,     // true 면 단일 SKU 주문에 한해 sku_master.weight_gram 까지 업데이트
+//   }
+router.patch('/wms/:orderId/weight', async (req, res) => {
+  try {
+    const orderId = parseInt(req.params.orderId, 10);
+    if (!Number.isFinite(orderId)) return res.status(400).json({ error: 'orderId invalid' });
+
+    const overriddenWeightG = Number(req.body?.overriddenWeightG);
+    if (!Number.isFinite(overriddenWeightG) || overriddenWeightG <= 0) {
+      return res.status(400).json({ error: 'overriddenWeightG 는 양수여야 합니다' });
+    }
+    const overrideReason = req.body?.overrideReason ? String(req.body.overrideReason).slice(0, 500) : null;
+    const applyToMaster = req.body?.applyToMaster === true;
+
+    // 1) override 저장
+    const shipment = await orderShipmentRepo.setOverride({ orderId, overriddenWeightG, overrideReason });
+
+    // 2) applyToMaster=true 시 — wms_order_lines 중 matched_sku_id 가 정확히 1개여야 안전하게 SKU 마스터 업데이트.
+    //    다중 line 주문은 어느 SKU 에 반영해야 할지 모호 → 거절.
+    let masterUpdate = null;
+    if (applyToMaster) {
+      const db = getClient();
+      const { data: lines, error: e1 } = await db
+        .from('wms_order_lines')
+        .select('id, quantity, matched_sku_id')
+        .eq('order_id', orderId);
+      if (e1) throw e1;
+      const matched = (lines || []).filter(l => l.matched_sku_id);
+      if (matched.length !== 1) {
+        masterUpdate = {
+          ok: false,
+          reason: matched.length === 0
+            ? '매칭된 SKU 가 없어 마스터 반영 불가'
+            : `다중 SKU 주문 — 마스터 반영은 단일 SKU 주문에서만 가능 (현재 ${matched.length}개)`,
+        };
+      } else {
+        const line = matched[0];
+        const qty = Number(line.quantity) || 1;
+        // 마스터 반영 시 단품무게 = (override - packaging) / qty.
+        // packaging 은 shipment.packagingWeightG 가 있으면 그 값, 아니면 50g fallback.
+        const pkg = shipment?.packagingWeightG != null ? Number(shipment.packagingWeightG) : 50;
+        const inferredItemWeight = Math.max(1, Math.round(((overriddenWeightG - pkg) / qty) * 100) / 100);
+        const { data: updated, error: e2 } = await db
+          .from('sku_master')
+          .update({
+            weight_gram: inferredItemWeight,
+            weight_status: 'measured',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', line.matched_sku_id)
+          .select('id, internal_sku, weight_gram, weight_status')
+          .single();
+        if (e2) {
+          masterUpdate = { ok: false, reason: `sku_master 업데이트 실패: ${e2.message}` };
+        } else {
+          masterUpdate = {
+            ok: true,
+            sku: updated,
+            inferredItemWeight,
+            packagingApplied: pkg,
+            qty,
+          };
+          await orderShipmentRepo.markMasterUpdated(orderId, true);
+          // 캐시 무효화: 다른 주문의 무게 자동 계산도 새 마스터값으로 다시 잡혀야 함 — 후속 자동 재계산은 운영 트리거(POST /recalculate) 가 담당
+        }
+      }
+    }
+
+    // 3) 최신 shipment 반환 (markMasterUpdated 호출됐으면 그 값 반영)
+    const finalShipment = await orderShipmentRepo.getByOrderId(orderId);
+    res.json({ shipment: finalShipment, masterUpdate });
+  } catch (e) {
+    console.error('[shipping/wms/weight] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/shipping/recommendations/wms/recalculate
+//   body: { orderIds?: [...], days?: 14, all?: false }
+//   - orderIds 우선. 없으면 days 안의 wms_orders 전체.
+//   - 각 주문에 대해 calculateForOrder() 다시 호출 — 새 무게/추천/예상비로 갱신.
+router.post('/wms/recalculate', async (req, res) => {
+  try {
+    const body = req.body || {};
+    let ids = [];
+
+    if (Array.isArray(body.orderIds) && body.orderIds.length > 0) {
+      ids = body.orderIds.map(n => parseInt(n, 10)).filter(Number.isFinite);
+    } else {
+      const days = Math.max(1, Math.min(parseInt(body.days, 10) || 14, 90));
+      const sinceIso = new Date(Date.now() - days * 86400000).toISOString();
+      const { data, error } = await getClient()
+        .from('wms_orders').select('id').gte('ordered_at', sinceIso)
+        .order('ordered_at', { ascending: false }).limit(200);
+      if (error) throw error;
+      ids = (data || []).map(r => r.id);
+    }
+    if (ids.length === 0) return res.json({ ran: 0, results: [] });
+
+    const results = await shippingCalc.calculateForOrders(ids);
+    const ok = results.filter(r => r.ok).length;
+    const review = results.filter(r => !r.ok && !r.error).length;
+    const errors = results.filter(r => r.error).length;
+    res.json({
+      ran: results.length,
+      ok, review, errors,
+      results: results.map(r => ({
+        orderId: r.orderId,
+        ok: r.ok,
+        carrier: r.shipment?.recommendedCarrier || null,
+        chargeable: r.shipment?.chargeableWeightG ?? null,
+        missingSkuCount: (r.missingSkus || []).length,
+        error: r.error || null,
+      })),
+    });
+  } catch (e) {
+    console.error('[shipping/wms/recalculate] error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

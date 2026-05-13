@@ -71,6 +71,7 @@ function navigateTo(page) {
     case 'reconstruct': setupReconstructPage(); break;
     case 'shipping': setupShippingPage(); break;
     case 'shipping-recs': if (window.pmcShippingRecs) pmcShippingRecs.load(); break;
+    case 'shipping-recs-wms': if (window.pmcShippingRecsWms) pmcShippingRecsWms.load(); break;
     case 'settings': loadSettingsPage(); break;
     case 'export': loadExportPage(); break;
     case 'automation': loadAutomationPage(); break;

@@ -644,6 +644,7 @@
     <div class="menu-title">배송</div>
     <div class="menu-item" data-page="shipping" style="color:#0288d1;font-weight:600">배송 관리</div>
     <div class="menu-item" data-page="shipping-recs" style="color:#81c784;font-weight:600">📦 배송 추천</div>
+    <div class="menu-item" data-page="shipping-recs-wms" style="color:#ffd54f;font-weight:700">🆕 배송 추천 (자동계산)</div>
     <div class="menu-title">분석</div>
     <div class="menu-item" data-page="battle" style="color:#e94560;font-weight:600">전투 상황판</div>
     <div class="menu-item" data-page="analysis">매출/마진 분석</div>
@@ -1687,6 +1688,9 @@
 
     <!-- ===== 배송 추천 페이지 (Phase 2B) ===== -->
     <div id="page-shipping-recs" class="page"></div>
+
+    <!-- ===== 배송 추천 (자동계산, Phase 4 — WMS 주문 기반) ===== -->
+    <div id="page-shipping-recs-wms" class="page"></div>
 
     <!-- ===== 배송 관리 페이지 ===== -->
     <div id="page-shipping" class="page">
@@ -3469,6 +3473,7 @@
   <!-- ── PR R-Inbox UI — Opportunity Inbox ── -->
   <script src="/js/opportunityInbox.js?v=20260511a"></script>
   <script src="/js/shippingRecs.js?v=20260512p2b"></script>
+  <script src="/js/shippingRecsWms.js?v=20260513p4a"></script>
   <script src="/js/aiWorkflow.js?v=20260512wfa"></script>
   <script>
   // ===== Inline cost editing for master products =====
