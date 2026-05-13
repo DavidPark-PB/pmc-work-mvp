@@ -54,8 +54,12 @@ const LEGACY_USER_ID = 0;
 // 매 인증 요청마다 Supabase users 테이블을 SELECT 하던 패턴(PGRST003 pool 고갈의 주범)을
 // 30초 TTL 메모리 캐시로 차단. 권한·활성 상태가 바뀌면 늦어도 30초 안에 자연 갱신되며,
 // login/logout/비밀번호 변경 시점에 명시 invalidate.
-const USER_CACHE_TTL_MS = 30 * 1000;
-const userCache = new Map(); // userId(number) → { user, expiresAt(ms) }
+//
+// STALE-WHILE-ERROR: Supabase 가 522/timeout 등으로 죽으면 만료된 캐시도 일정 시간(GRACE)
+// 동안 재사용해서 로그인된 직원이 계속 일할 수 있게 함 (graceful degradation).
+const USER_CACHE_TTL_MS   = 30 * 1000;
+const USER_CACHE_GRACE_MS = 10 * 60 * 1000; // 10분
+const userCache = new Map(); // userId(number) → { user, expiresAt(ms), staleUntil(ms) }
 
 function invalidateUserCache(userId) {
   if (userId != null) userCache.delete(userId);
@@ -146,12 +150,29 @@ async function loadUserFromSession(session) {
   }
 
   // 캐시 조회 — TTL 안이면 DB 호출 생략
+  const now = Date.now();
   const cached = userCache.get(session.userId);
-  if (cached && cached.expiresAt > Date.now()) {
+  if (cached && cached.expiresAt > now) {
     return cached.user;
   }
 
-  const row = await userRepo.findById(session.userId);
+  // DB 조회. 실패 시 STALE-WHILE-ERROR — Supabase 가 죽어도 staleUntil 안이면 옛 캐시 재사용.
+  let row;
+  try {
+    row = await userRepo.findById(session.userId);
+  } catch (err) {
+    if (cached && cached.staleUntil > now) {
+      // 로그 노이즈 억제 — 같은 stale 사용을 매번 찍지 않음
+      if (!cached._staleLogged || now - cached._staleLogged > 60_000) {
+        const reason = err?.cause?.code || err?.status || err?.message || 'unknown';
+        console.warn(`[Auth] DB 실패 → stale 캐시 재사용 (userId=${session.userId}, reason=${String(reason).slice(0, 80)})`);
+        cached._staleLogged = now;
+      }
+      return cached.user;
+    }
+    throw err; // grace 도 없으면 호출자(authGuard catch)가 처리
+  }
+
   if (!row || !row.is_active) {
     userCache.delete(session.userId);
     return null;
@@ -169,7 +190,11 @@ async function loadUserFromSession(session) {
     uiMode: row.ui_mode || 'normal',
     isLegacy: false,
   };
-  userCache.set(session.userId, { user, expiresAt: Date.now() + USER_CACHE_TTL_MS });
+  userCache.set(session.userId, {
+    user,
+    expiresAt: now + USER_CACHE_TTL_MS,
+    staleUntil: now + USER_CACHE_GRACE_MS,
+  });
   return user;
 }
 
