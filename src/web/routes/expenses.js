@@ -128,10 +128,13 @@ router.get('/summary', async (req, res) => {
 });
 
 // GET /api/expenses/:id — 본인 것 or finance
-router.get('/:id', async (req, res) => {
+router.get('/:id', async (req, res, next) => {
   try {
     if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
     const id = parseInt(req.params.id, 10);
+    // /:id 가 /export, /receipts/zip 같은 비숫자 path 를 잡아채는 것을 방지.
+    // next() 호출로 Express 가 후속 라우트를 시도하게 함.
+    if (!Number.isFinite(id)) return next();
     const data = await repo.getExpense(id);
     if (!data) return res.status(404).json({ error: '지출을 찾을 수 없습니다' });
     if (!canFinance(req) && data.createdBy !== req.user.id) {

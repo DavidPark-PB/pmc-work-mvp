@@ -22,7 +22,7 @@ function throwFriendly(err) {
   throw err;
 }
 
-function decorate(row, receiptCount) {
+function decorate(row, receiptCount, userName) {
   if (!row) return null;
   const extra = Number.isFinite(receiptCount) ? receiptCount : 0;
   const hasLegacy = !!row.receipt_path;
@@ -39,6 +39,7 @@ function decorate(row, receiptCount) {
     taskId: row.task_id,
     recurringId: row.recurring_id,
     createdBy: row.created_by,
+    createdByName: userName || null,  // '등록자' 표시용 — users.display_name lookup 결과
     createdAt: row.created_at,
     // legacy 단일 영수증 (036 이전)
     receiptPath: row.receipt_path || null,
@@ -75,6 +76,29 @@ async function _receiptCountMap(expenseIds) {
   const map = new Map();
   for (const r of data || []) {
     map.set(r.expense_id, (map.get(r.expense_id) || 0) + 1);
+  }
+  return map;
+}
+
+/**
+ * userId 배열 → { userId: display_name } map.
+ * '등록자' 표시용 — listExpenses / getExpense 가 decorate 시 동봉.
+ */
+async function _userNameMap(userIds) {
+  if (!userIds || userIds.length === 0) return new Map();
+  const unique = [...new Set(userIds.filter(Number.isFinite))];
+  if (unique.length === 0) return new Map();
+  const { data, error } = await getClient().from('users')
+    .select('id, display_name, username')
+    .in('id', unique);
+  if (error) {
+    // 신뢰 못 할 경우에도 갱신 안 함. 빈 map 으로 fallback.
+    console.warn('[expenseRepo] _userNameMap 실패:', error.message);
+    return new Map();
+  }
+  const map = new Map();
+  for (const r of data || []) {
+    map.set(r.id, r.display_name || r.username || `#${r.id}`);
   }
   return map;
 }
@@ -190,9 +214,13 @@ async function listExpenses({ from, to, category, source, createdBy, hasReceipt,
   const rows = data || [];
   // 다중 영수증 count map (N+1 회피 — 한 번 query)
   const ids = rows.map(r => r.id);
-  const countMap = await _receiptCountMap(ids);
+  const userIds = rows.map(r => r.created_by).filter(Boolean);
+  const [countMap, userMap] = await Promise.all([
+    _receiptCountMap(ids),
+    _userNameMap(userIds),
+  ]);
 
-  let decorated = rows.map(r => decorate(r, countMap.get(r.id) || 0));
+  let decorated = rows.map(r => decorate(r, countMap.get(r.id) || 0, userMap.get(r.created_by)));
 
   // hasReceipt 필터 (사장님 fix #4) — client-side filter (legacy + 다중 모두 검사)
   if (hasReceipt === true || hasReceipt === 'true' || hasReceipt === '1' || hasReceipt === 1) {
@@ -208,8 +236,11 @@ async function getExpense(id) {
     .select('*').eq('id', id).maybeSingle();
   if (error) throwFriendly(error);
   if (!data) return null;
-  const countMap = await _receiptCountMap([id]);
-  return decorate(data, countMap.get(id) || 0);
+  const [countMap, userMap] = await Promise.all([
+    _receiptCountMap([id]),
+    _userNameMap(data.created_by ? [data.created_by] : []),
+  ]);
+  return decorate(data, countMap.get(id) || 0, userMap.get(data.created_by));
 }
 
 async function createExpense({

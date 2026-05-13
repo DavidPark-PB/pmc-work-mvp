@@ -376,7 +376,10 @@
             ${e.memo ? `<span style="color:#999;font-size:11px;"> · ${esc(e.memo)}</span>` : ''}
           </div>
           <div style="min-width:120px;text-align:right;color:#ff8a80;font-weight:600;font-size:14px;">${money(e.amount, e.currency)}</div>
-          <div style="min-width:50px;font-size:10px;color:#666;">${esc(srcLabel)}${e.cardLast4 ? ' ·' + esc(e.cardLast4) : ''}</div>
+          <div style="min-width:100px;font-size:10px;color:#666;">
+            ${esc(srcLabel)}${e.cardLast4 ? ' ·' + esc(e.cardLast4) : ''}
+            ${e.createdByName ? `<div style="color:#81c784;margin-top:1px;">👤 ${esc(e.createdByName)}</div>` : ''}
+          </div>
           <div style="display:flex;gap:4px;align-items:center;">
             ${receiptBtn}
             ${canEdit ? `<button onclick="pmcExpenses.edit(${e.id})" style="padding:4px 8px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">✏️</button>` : ''}
