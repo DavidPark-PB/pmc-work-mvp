@@ -273,10 +273,14 @@ async function undoSkuMasterUpdate(original, supabase) {
     throw new UndoError('safetyUndo/invalid_snapshot', 'input snapshot 부재 — 복구 데이터 없음');
   }
 
-  // PR U5 spec — 허용 필드 10개. internal_sku / id / created_by / created_at 제외.
+  // PR U5 spec — 허용 필드. internal_sku / id / created_by / created_at 제외.
+  // Phase 1 (2026-05-13) 배송 컬럼 6개 추가.
   const ALLOWED_FIELDS = [
     'title', 'product_type', 'brand', 'category', 'status',
     'automation_enabled', 'cost_krw', 'weight_gram', 'hs_code', 'notes',
+    // 배송 컬럼
+    'default_packaging_weight_g', 'width_cm', 'height_cm', 'length_cm',
+    'shipping_group', 'weight_status',
   ];
 
   const patch = { updated_at: new Date().toISOString() };

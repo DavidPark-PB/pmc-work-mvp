@@ -40,6 +40,19 @@ router.use(requireAdmin);
 
 const VALID_STATUS = new Set(['active', 'paused', 'discontinued']);
 const VALID_MARKETPLACES = new Set(['ebay', 'shopify', 'naver', 'shopee', 'alibaba', 'coupang', 'qoo10']);
+// 배송 컬럼 — Phase 1 (사장님 spec 2026-05-12). weight_status 는 application
+// 레이어가 weight_gram 입력 여부에 따라 자동 셋팅한다.
+const VALID_WEIGHT_STATUS = new Set(['unknown', 'estimated', 'measured']);
+
+// item_weight_g 가 들어오면 measured 로, 빠지면 unknown 으로 자동 정렬.
+// 호출자가 weight_status 를 명시(예: CSV import 가 'estimated') 하면 우선 적용.
+function resolveWeightStatus({ weightGram, explicit, currentStatus }) {
+  if (explicit && VALID_WEIGHT_STATUS.has(explicit)) return explicit;
+  if (weightGram !== null && weightGram !== undefined && weightGram > 0) return 'measured';
+  if (weightGram === null) return 'unknown';
+  // weightGram 안 건드린 PATCH 면 현재 상태 유지
+  return currentStatus || null;
+}
 
 // ── helpers ─────────────────────────────────────────────
 function trimOrNull(v, max) {
@@ -78,6 +91,10 @@ router.get('/', async (req, res) => {
 
     if (req.query.automation_enabled === 'true') q = q.eq('automation_enabled', true);
     else if (req.query.automation_enabled === 'false') q = q.eq('automation_enabled', false);
+
+    // weight_status 필터 — 배송추천 워크플로우에서 '무게 입력 필요' SKU 빠른 조회
+    const ws = trimOrNull(req.query.weight_status, 20);
+    if (ws && VALID_WEIGHT_STATUS.has(ws)) q = q.eq('weight_status', ws);
 
     const { data, error } = await q.limit(500);
     if (error) throw error;
@@ -145,6 +162,7 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    const weightGramVal = parseIntOrNull(body.weight_gram);
     const row = {
       internal_sku: internalSku,
       title,
@@ -154,10 +172,20 @@ router.post('/', async (req, res) => {
       status:       statusVal,
       automation_enabled: body.automation_enabled === true,
       cost_krw:    parseNumOrNull(body.cost_krw),
-      weight_gram: parseIntOrNull(body.weight_gram),
+      weight_gram: weightGramVal,
       hs_code:     trimOrNull(body.hs_code, 50),
       notes:       trimOrNull(body.notes),
       created_by:  createdBy,
+      // Phase 1 배송 컬럼
+      default_packaging_weight_g: parseIntOrNull(body.default_packaging_weight_g),
+      width_cm:  parseNumOrNull(body.width_cm),
+      height_cm: parseNumOrNull(body.height_cm),
+      length_cm: parseNumOrNull(body.length_cm),
+      shipping_group: trimOrNull(body.shipping_group, 30),
+      weight_status: resolveWeightStatus({
+        weightGram: weightGramVal,
+        explicit: trimOrNull(body.weight_status, 20),
+      }) || 'unknown',
     };
 
     const { data, error } = await getClient().from('sku_master').insert(row).select().single();
@@ -220,6 +248,20 @@ router.patch('/:id', async (req, res) => {
   if (body.weight_gram !== undefined)  updates.weight_gram = parseIntOrNull(body.weight_gram);
   if (body.hs_code !== undefined)      updates.hs_code     = trimOrNull(body.hs_code, 50);
   if (body.notes !== undefined)        updates.notes       = trimOrNull(body.notes);
+  // Phase 1 배송 컬럼
+  if (body.default_packaging_weight_g !== undefined) updates.default_packaging_weight_g = parseIntOrNull(body.default_packaging_weight_g);
+  if (body.width_cm  !== undefined) updates.width_cm  = parseNumOrNull(body.width_cm);
+  if (body.height_cm !== undefined) updates.height_cm = parseNumOrNull(body.height_cm);
+  if (body.length_cm !== undefined) updates.length_cm = parseNumOrNull(body.length_cm);
+  if (body.shipping_group !== undefined) updates.shipping_group = trimOrNull(body.shipping_group, 30);
+  // weight_status 는 weight_gram 변경 / 명시 입력에 따라 자동 정렬
+  if (body.weight_gram !== undefined || body.weight_status !== undefined) {
+    const next = resolveWeightStatus({
+      weightGram: body.weight_gram !== undefined ? updates.weight_gram : undefined,
+      explicit:   body.weight_status !== undefined ? trimOrNull(body.weight_status, 20) : null,
+    });
+    if (next) updates.weight_status = next;
+  }
 
   // internal_sku 변경 금지 (식별자 안정성)
   if (body.internal_sku !== undefined) {

@@ -26,6 +26,22 @@
   function fmtGram(v)  { return v == null || v === '' ? '-' : Number(v).toLocaleString() + 'g'; }
   function fmtDate(iso) { return iso ? new Date(iso).toLocaleDateString('ko-KR') : '-'; }
 
+  // weight_status 뱃지 — 한 눈에 입력 필요 SKU 식별
+  function weightStatusBadge(s) {
+    const map = {
+      measured:  { color: '#2e7d32', label: '실측' },
+      estimated: { color: '#f9a825', label: '추정' },
+      unknown:   { color: '#c62828', label: '미입력' },
+    };
+    const cfg = map[s] || map.unknown;
+    return `<span style="display:inline-block;padding:1px 6px;background:${cfg.color};color:#fff;border-radius:8px;font-size:9px;font-weight:700;vertical-align:middle;">${cfg.label}</span>`;
+  }
+  // 치수 요약 — '10×8×3' 형태. 하나라도 비면 '-'
+  function fmtDims(w, h, l) {
+    if (w == null && h == null && l == null) return '';
+    return `${w ?? '?'}×${h ?? '?'}×${l ?? '?'}cm`;
+  }
+
   async function load() {
     if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r => r.json())).user;
     const el = document.getElementById('page-sku-master');
@@ -56,8 +72,26 @@
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:8px;">
             <input id="sm-product_type" placeholder="유형 (예: tcg-box)" maxlength="50" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
             <input id="sm-cost_krw" type="number" min="0" step="100" placeholder="원가 (KRW)" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
-            <input id="sm-weight_gram" type="number" min="0" step="10" placeholder="무게 (g)" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+            <input id="sm-weight_gram" type="number" min="0" step="1" placeholder="단품무게 (g)" title="단품 실무게. 입력 시 weight_status 가 measured 로 자동 표시" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
             <input id="sm-hs_code" placeholder="HS Code" maxlength="50" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+          </div>
+          <!-- Phase 1: 배송비 계산용 필드 — 미입력 OK, 나중에 배송추천에서 보완 가능 -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:8px;">
+            <input id="sm-default_packaging_weight_g" type="number" min="0" step="1" placeholder="포장재 무게 (g)" title="배송그룹 기본값 대신 사용할 SKU별 포장재 무게" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+            <input id="sm-width_cm" type="number" min="0" step="0.1" placeholder="가로 (cm)" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+            <input id="sm-height_cm" type="number" min="0" step="0.1" placeholder="세로 (cm)" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+            <input id="sm-length_cm" type="number" min="0" step="0.1" placeholder="높이 (cm)" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+            <select id="sm-shipping_group" title="배송그룹 — 그룹별 기본 포장무게·배송사 룰 적용 (Phase 3)" style="padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+              <option value="">배송 그룹 (선택)</option>
+              <option value="card">카드 (포켓몬·유희왕)</option>
+              <option value="photocard">포토카드 (K-pop)</option>
+              <option value="sticker">스티커</option>
+              <option value="album">앨범</option>
+              <option value="figure">피규어</option>
+              <option value="toy">장난감</option>
+              <option value="apparel">의류</option>
+              <option value="general">일반</option>
+            </select>
           </div>
           <button type="submit" style="padding:9px 18px;background:#1565c0;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">생성</button>
         </form>
@@ -77,6 +111,12 @@
             <option value="true">자동화 ON</option>
             <option value="false">자동화 OFF</option>
           </select>
+          <select id="sm-weight-filter" title="무게 데이터 신뢰도 필터" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
+            <option value="">무게 전체</option>
+            <option value="unknown">⚠️ 무게 미입력</option>
+            <option value="estimated">추정치</option>
+            <option value="measured">실측</option>
+          </select>
           <button id="sm-refresh" style="padding:8px 14px;background:#37474f;border:none;border-radius:6px;color:#fff;cursor:pointer;">새로고침</button>
         </div>
         <div id="sm-list" style="overflow-x:auto;"></div>
@@ -88,6 +128,7 @@
     document.getElementById('sm-search').addEventListener('input', debounce(refresh, 300));
     document.getElementById('sm-status-filter').addEventListener('change', refresh);
     document.getElementById('sm-auto-filter').addEventListener('change', refresh);
+    document.getElementById('sm-weight-filter').addEventListener('change', refresh);
   }
 
   function debounce(fn, ms) {
@@ -99,10 +140,12 @@
     const q = document.getElementById('sm-search')?.value?.trim() || '';
     const status = document.getElementById('sm-status-filter')?.value || '';
     const auto = document.getElementById('sm-auto-filter')?.value || '';
+    const weightStatus = document.getElementById('sm-weight-filter')?.value || '';
     const params = new URLSearchParams();
     if (q) params.set('q', q);
     if (status) params.set('status', status);
     if (auto) params.set('automation_enabled', auto);
+    if (weightStatus) params.set('weight_status', weightStatus);
 
     try {
       const res = await fetch('/api/sku-master?' + params.toString());
@@ -122,14 +165,24 @@
       el.innerHTML = '<div style="padding:20px;color:#888;">SKU 가 없습니다. 위의 폼에서 신규 SKU 를 등록해 보세요.</div>';
       return;
     }
-    const rows = cache.map(s => `
+    const rows = cache.map(s => {
+      const dimsStr = fmtDims(s.width_cm, s.height_cm, s.length_cm);
+      const pkgStr = s.default_packaging_weight_g != null ? `+${s.default_packaging_weight_g}g 포장` : '';
+      return `
       <tr data-id="${s.id}">
         <td style="padding:10px;font-family:monospace;color:#81d4fa;">${esc(s.internal_sku)}</td>
         <td style="padding:10px;color:#fff;">${esc(s.title)}</td>
         <td style="padding:10px;color:#aaa;">${esc(s.brand || '-')}</td>
-        <td style="padding:10px;color:#aaa;">${esc(s.product_type || '-')}</td>
+        <td style="padding:10px;color:#aaa;">
+          ${esc(s.product_type || '-')}
+          ${s.shipping_group ? `<div style="font-size:10px;color:#81c784;margin-top:2px;">📦 ${esc(s.shipping_group)}</div>` : ''}
+        </td>
         <td style="padding:10px;text-align:right;color:#fff;">${fmtMoney(s.cost_krw)}</td>
-        <td style="padding:10px;text-align:right;color:#aaa;">${fmtGram(s.weight_gram)}</td>
+        <td style="padding:10px;text-align:right;color:#aaa;white-space:nowrap;">
+          ${fmtGram(s.weight_gram)} ${weightStatusBadge(s.weight_status)}
+          ${dimsStr ? `<div style="font-size:10px;color:#666;margin-top:2px;">${dimsStr}</div>` : ''}
+          ${pkgStr ? `<div style="font-size:10px;color:#888;">${pkgStr}</div>` : ''}
+        </td>
         <td style="padding:10px;">
           <select class="sm-status" data-id="${s.id}" style="padding:4px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;">
             <option value="active" ${s.status==='active'?'selected':''}>active</option>
@@ -153,7 +206,8 @@
           <div id="sm-link-panel-${s.id}" style="padding:12px 16px;border-top:1px solid #333;"></div>
         </td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     el.innerHTML = `
       <table style="width:100%;border-collapse:collapse;">
@@ -194,6 +248,12 @@
       cost_krw:     document.getElementById('sm-cost_krw').value || null,
       weight_gram:  document.getElementById('sm-weight_gram').value || null,
       hs_code:      document.getElementById('sm-hs_code').value.trim() || null,
+      // Phase 1 — 배송 컬럼
+      default_packaging_weight_g: document.getElementById('sm-default_packaging_weight_g').value || null,
+      width_cm:  document.getElementById('sm-width_cm').value || null,
+      height_cm: document.getElementById('sm-height_cm').value || null,
+      length_cm: document.getElementById('sm-length_cm').value || null,
+      shipping_group: document.getElementById('sm-shipping_group').value || null,
     };
     try {
       const res = await fetch('/api/sku-master', {
