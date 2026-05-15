@@ -74,10 +74,32 @@ const loginRateLimit = rateLimit({
   },
 });
 
-// 일반 /api/ rate limit — auth 외 모든 endpoint (me / logout / change-password 등 포함)
-// 600/15min = 40 req/min. 사무실 공유 IP 에서 3~5명이 동시에 폴링 페이지를 띄워도
-// 여유 있게 통과. 더 빡빡하게 잡으면 정기결제·지출 fetch 가 일시적으로 429 로 막힘.
-app.use('/api/', rateLimit({ windowMs: 15 * 60 * 1000, max: 600 }));
+// 일반 /api/ rate limit — auth 외 모든 endpoint.
+// key 정책 (2026-05-15 변경): 세션 쿠키에서 userId 추출 → 유저 기준 카운트.
+// 세션 없으면 IP 기준 fallback. 이렇게 하면 사무실 공유 IP 에서 직원 5명이
+// 동시에 폴링 페이지를 띄워도 각자 별도 bucket (600/15min) 사용.
+// 이전엔 IP 기준이라 합산 600 으로 묶여서 자주 429 폭주했음.
+app.use('/api/', rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 600,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    // pmc_session 쿠키 포맷: 'userId.timestamp.sig' (신규) 또는 'timestamp.sig' (레거시=admin)
+    // signature 검증 안 함 — bucket key 용도. 위조해도 그 가짜 유저의 한도만 영향.
+    const token = req.cookies?.pmc_session;
+    if (token) {
+      const parts = String(token).split('.');
+      if (parts.length === 3) {
+        const uid = parseInt(parts[0], 10);
+        if (Number.isFinite(uid)) return `u:${uid}`;
+      } else if (parts.length === 2) {
+        return 'u:0'; // 레거시 admin
+      }
+    }
+    return `ip:${ipKeyGenerator(req.ip)}`;
+  },
+}));
 
 // Auth routes (before guard) — POST /login 만 별 limit, logout 은 일반 한도만
 app.post('/api/auth/login', loginRateLimit, loginHandler);
