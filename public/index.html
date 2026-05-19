@@ -109,7 +109,9 @@
       const text = await res.text().catch(() => '');
       let friendly;
       if (res.status === 429) {
-        friendly = '요청이 너무 많아 잠시 막혔습니다. 30초~1분 뒤 다시 시도해주세요.';
+        // 백엔드가 이제 JSON 429 로 응답하므로 이 분기는 우리 라우트 외에서만 트리거됨.
+        // (Supabase 자체 429, 외부 API 등) — 안내 문구 일반화.
+        friendly = '요청 한도 초과 — 잠시 후 다시 시도해주세요.';
         showToast(`⏳ ${friendly}`, '#ff9800');
       } else if (res.status >= 500) {
         friendly = `서버 오류 (${res.status})`;

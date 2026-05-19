@@ -75,13 +75,13 @@ const loginRateLimit = rateLimit({
 });
 
 // 일반 /api/ rate limit — auth 외 모든 endpoint.
-// key 정책 (2026-05-15 변경): 세션 쿠키에서 userId 추출 → 유저 기준 카운트.
-// 세션 없으면 IP 기준 fallback. 이렇게 하면 사무실 공유 IP 에서 직원 5명이
-// 동시에 폴링 페이지를 띄워도 각자 별도 bucket (600/15min) 사용.
-// 이전엔 IP 기준이라 합산 600 으로 묶여서 자주 429 폭주했음.
+// 정책 (2026-05-18 상향): 유저 기준 카운트, 2000/15min = ~133 req/min/유저.
+// 일반 사용으로는 사실상 안 막힘. 봇/버그성 폭주만 차단 목적.
+// 진단 로그 — 429 hit 시 key·path 출력 (운영 중 원인 파악용).
+const apiLimitedKeys = new Set(); // key 당 첫 hit 만 로깅 (스팸 억제)
 app.use('/api/', rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 600,
+  max: 2000,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
@@ -98,6 +98,21 @@ app.use('/api/', rateLimit({
       }
     }
     return `ip:${ipKeyGenerator(req.ip)}`;
+  },
+  handler: (req, res, _next, options) => {
+    const key = options.keyGenerator(req);
+    if (!apiLimitedKeys.has(key)) {
+      apiLimitedKeys.add(key);
+      console.warn(`[rate-limit] 429 first-hit key=${key} path=${req.path} method=${req.method} — 15분 window 동안 ${options.max} 초과. 동일 키 추가 로그 억제.`);
+      // 15분 후 로그 reset 허용
+      setTimeout(() => apiLimitedKeys.delete(key), options.windowMs).unref?.();
+    }
+    res.status(429).json({
+      success: false,
+      error: '요청이 너무 많습니다. 15분 후 자동 복구. 같은 화면을 여러 탭에 띄웠거나 봇이 의심되면 한 탭만 남기세요.',
+      retryAfterSeconds: 60,
+      windowMinutes: 15,
+    });
   },
 }));
 
