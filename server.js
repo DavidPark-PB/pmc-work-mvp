@@ -75,15 +75,24 @@ const loginRateLimit = rateLimit({
 });
 
 // 일반 /api/ rate limit — auth 외 모든 endpoint.
-// 정책 (2026-05-18 상향): 유저 기준 카운트, 2000/15min = ~133 req/min/유저.
-// 일반 사용으로는 사실상 안 막힘. 봇/버그성 폭주만 차단 목적.
+// 정책 (2026-05-19 추가 손봄): 유저 기준 카운트, 2000/15min = ~133 req/min/유저.
+// + skip 정책: cheap·고빈도 엔드포인트(/auth/me, /notifications, /events, /health)
+//   는 카운트 제외. 매 페이지 로드마다 호출되는데 한도 차감 의미 없음.
 // 진단 로그 — 429 hit 시 key·path 출력 (운영 중 원인 파악용).
 const apiLimitedKeys = new Set(); // key 당 첫 hit 만 로깅 (스팸 억제)
+// 카운트에서 제외할 path prefix — 매 페이지마다 빈번하게 호출되는 메타 조회
+const RATE_LIMIT_SKIP_PREFIXES = [
+  '/api/auth/me',         // 모든 페이지 로드 시 호출
+  '/api/notifications',   // 30s 폴링 배지
+  '/api/events',          // SSE 장기 연결
+  '/api/health',          // 헬스체크
+];
 app.use('/api/', rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 2000,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => RATE_LIMIT_SKIP_PREFIXES.some(p => req.path.startsWith(p)),
   keyGenerator: (req) => {
     // pmc_session 쿠키 포맷: 'userId.timestamp.sig' (신규) 또는 'timestamp.sig' (레거시=admin)
     // signature 검증 안 함 — bucket key 용도. 위조해도 그 가짜 유저의 한도만 영향.
