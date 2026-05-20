@@ -62,6 +62,30 @@
 
       <div id="st-view-count">
 
+      <!-- 진행 배너 — 입력 중에도 항상 보이는 큰 카운트 -->
+      <div id="st-progress-banner" style="position:sticky;top:0;z-index:10;background:linear-gradient(90deg,#0a3a2a,#0a4a3a);border:1px solid #1a6a4a;border-radius:10px;padding:14px 18px;margin-bottom:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;align-items:center;">
+        <div>
+          <div style="color:#a5d6a7;font-size:11px;margin-bottom:2px;">등록 건수</div>
+          <div style="color:#fff;font-size:28px;font-weight:800;line-height:1;"><span id="st-prog-count">0</span><span style="color:#a5d6a7;font-size:13px;font-weight:400;margin-left:4px;">건</span></div>
+        </div>
+        <div>
+          <div style="color:#a5d6a7;font-size:11px;margin-bottom:2px;">고유 SKU</div>
+          <div style="color:#fff;font-size:20px;font-weight:700;line-height:1;"><span id="st-prog-unique">0</span></div>
+        </div>
+        <div>
+          <div style="color:#a5d6a7;font-size:11px;margin-bottom:2px;">증감 합계</div>
+          <div style="font-size:20px;font-weight:700;line-height:1;"><span id="st-prog-delta" style="color:#fff;">0</span></div>
+        </div>
+        <div>
+          <div style="color:#a5d6a7;font-size:11px;margin-bottom:2px;">검토 필요</div>
+          <div style="color:#fff;font-size:20px;font-weight:700;line-height:1;"><span id="st-prog-review" style="color:#ffb74d;">0</span></div>
+        </div>
+        <div style="text-align:right;">
+          <div style="color:#a5d6a7;font-size:11px;margin-bottom:2px;">세션</div>
+          <code id="st-prog-session" style="color:#81d4fa;font-size:11px;background:rgba(0,0,0,0.3);padding:2px 6px;border-radius:4px;">...</code>
+        </div>
+      </div>
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
         <!-- 좌: 검색 & 결과 -->
         <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;">
@@ -351,6 +375,25 @@
     const countEl = document.getElementById('st-session-count');
     if (!host) return;
     if (countEl) countEl.textContent = sessionLog.length > 0 ? `· ${sessionLog.length}건` : '';
+
+    // 진행 배너 갱신 — cancelled 제외하고 의미 있는 항목만 카운트
+    const active = sessionLog.filter(a => a.status !== 'cancelled');
+    const uniqueSkus = new Set(active.map(a => a.sku).filter(Boolean)).size;
+    const deltaSum = active.reduce((s, a) => s + (Number(a.delta) || 0), 0);
+    const reviewCount = active.filter(a => a.status === 'review_required').length;
+    const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    setText('st-prog-count', active.length);
+    setText('st-prog-unique', uniqueSkus);
+    const deltaEl = document.getElementById('st-prog-delta');
+    if (deltaEl) {
+      const sign = deltaSum > 0 ? '+' : '';
+      deltaEl.textContent = `${sign}${deltaSum}`;
+      deltaEl.style.color = deltaSum > 0 ? '#81c784' : deltaSum < 0 ? '#ff8a80' : '#fff';
+    }
+    setText('st-prog-review', reviewCount);
+    const sessionShort = (sessionId || '').slice(0, 16) + (sessionId && sessionId.length > 16 ? '…' : '');
+    setText('st-prog-session', sessionShort || '...');
+
     if (sessionLog.length === 0) {
       host.innerHTML = '<div style="padding:16px;color:#666;text-align:center;font-size:12px;">아직 실사 기록이 없습니다.</div>';
       return;
