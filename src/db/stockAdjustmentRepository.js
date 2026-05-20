@@ -196,8 +196,46 @@ async function setStatus(id, status, { byUser } = {}) {
   return decorate(data);
 }
 
+/**
+ * 실사 항목 수정 — newStock / reason / note 만 변경 가능. delta 는 자동 재계산.
+ * sku / previousStock / sessionId / adjusted_by / status / created_at 는 불변.
+ * applied / cancelled 상태는 수정 금지 (호출자가 사전 차단).
+ *
+ * @param {number} id
+ * @param {{newStock?: number, reason?: string, note?: string}} patch
+ */
+async function update(id, patch = {}) {
+  const updates = {};
+  if (patch.newStock !== undefined) {
+    const n = parseInt(patch.newStock, 10);
+    if (!Number.isFinite(n) || n < 0) throw new Error('newStock 은 0 이상의 정수');
+    updates.new_stock = n;
+  }
+  if (patch.reason !== undefined) {
+    updates.reason = patch.reason ? String(patch.reason).slice(0, 200) : null;
+  }
+  if (patch.note !== undefined) {
+    updates.note = patch.note ? String(patch.note) : null;
+  }
+  if (Object.keys(updates).length === 0) throw new Error('변경할 필드가 없습니다');
+
+  // newStock 바뀌면 delta 재계산 — 기존 previous_stock 기준
+  if (updates.new_stock !== undefined) {
+    const existing = await getById(id);
+    if (!existing) throw new Error('항목을 찾을 수 없습니다');
+    updates.delta = updates.new_stock - (existing.previousStock || 0);
+  }
+
+  const { data, error } = await getClient().from('stock_adjustments')
+    .update(updates).eq('id', id).select().single();
+  if (error) throwFriendly(error);
+  return decorate(data);
+}
+
 module.exports = {
   create, listBySku, listBySession, listRecent, getSessionSummary,
   // PR S-1 추가
   listByStatus, getById, applyBatch, setStatus,
+  // 인라인 수정 (사장님 요청 2026-05-20)
+  update,
 };

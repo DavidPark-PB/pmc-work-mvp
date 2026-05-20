@@ -455,4 +455,36 @@ router.post('/:id/cancel', requireAdmin, async (req, res) => {
   }
 });
 
+// PATCH /api/stocktake/:id — 실사 항목 수정 (newStock / reason / note).
+// 본인 등록분 또는 admin 만. applied 또는 cancelled 상태는 수정 금지.
+router.patch('/:id', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+    const existing = await adjRepo.getById(id);
+    if (!existing) return res.status(404).json({ error: '항목을 찾을 수 없습니다' });
+
+    // 권한: admin OR 본인 등록분
+    if (!req.user.isAdmin && existing.adjustedBy !== req.user.id) {
+      return res.status(403).json({ error: '본인이 등록한 실사만 수정할 수 있습니다' });
+    }
+
+    // 상태 가드 — 이미 마스터에 반영됐거나 취소된 항목은 수정 불가
+    if (existing.status === 'applied') {
+      return res.status(400).json({ error: '이미 마스터에 반영된 항목은 수정할 수 없습니다 (관리자에게 문의)' });
+    }
+    if (existing.status === 'cancelled') {
+      return res.status(400).json({ error: '취소된 항목은 수정할 수 없습니다' });
+    }
+
+    const { newStock, reason, note } = req.body || {};
+    const updated = await adjRepo.update(id, { newStock, reason, note });
+    res.json({ ok: true, data: updated });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

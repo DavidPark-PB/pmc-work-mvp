@@ -449,7 +449,7 @@
           <th style="padding:6px 8px;text-align:right;">실제</th>
           <th style="padding:6px 8px;text-align:right;">차이</th>
           <th style="padding:6px 8px;">사유</th>
-          ${user?.isAdmin ? '<th style="padding:6px 8px;text-align:center;">관리</th>' : ''}
+          <th style="padding:6px 8px;text-align:center;">관리</th>
         </tr></thead>
         <tbody>
           ${sessionLog.map(a => {
@@ -459,7 +459,19 @@
               ? '<span style="margin-left:4px;padding:1px 5px;background:#e94560;color:#fff;border-radius:6px;font-size:9px;">검토</span>'
               : a.status === 'cancelled'
               ? '<span style="margin-left:4px;padding:1px 5px;background:#555;color:#fff;border-radius:6px;font-size:9px;">취소</span>'
+              : a.status === 'applied'
+              ? '<span style="margin-left:4px;padding:1px 5px;background:#2e7d32;color:#fff;border-radius:6px;font-size:9px;">반영</span>'
               : '';
+            // 수정 권한 — 본인 또는 admin, 그리고 아직 반영/취소 안 됐을 때만
+            const editable = (user?.isAdmin || a.adjustedBy === user?.id)
+              && a.status !== 'applied' && a.status !== 'cancelled';
+            const editBtn = editable
+              ? `<button onclick="pmcStocktake.openEdit(${a.id})" title="수정" style="padding:2px 8px;background:#2a4a6a;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;margin-right:2px;">✏️</button>`
+              : '';
+            const cancelBtn = user?.isAdmin && a.status !== 'cancelled'
+              ? `<button onclick="pmcStocktake.cancelLog(${a.id})" title="취소" style="padding:2px 8px;background:#2a2a4a;border:0;border-radius:3px;color:#aaa;cursor:pointer;font-size:10px;">✕</button>`
+              : '';
+            const actionCell = (editBtn || cancelBtn) ? `${editBtn}${cancelBtn}` : '<span style="color:#444;">-</span>';
             return `<tr style="border-bottom:1px solid #2a2a4a;${a.status === 'cancelled' ? 'opacity:0.4;' : ''}">
               <td style="padding:5px 8px;color:#888;">${fmtTime(a.createdAt)}</td>
               <td style="padding:5px 8px;">${a.sku ? `<code style="color:#81d4fa;">${esc(a.sku)}</code>` : '<span style="color:#888;">-</span>'}</td>
@@ -467,13 +479,83 @@
               <td style="padding:5px 8px;text-align:right;color:#aaa;">${a.previousStock}</td>
               <td style="padding:5px 8px;text-align:right;font-weight:600;">${a.newStock}</td>
               <td style="padding:5px 8px;text-align:right;color:${color};font-weight:700;">${sign}${a.delta}</td>
-              <td style="padding:5px 8px;color:#888;font-size:11px;">${esc(a.reason || '')}</td>
-              ${user?.isAdmin ? `<td style="padding:5px 8px;text-align:center;"><button onclick="pmcStocktake.cancelLog(${a.id})" title="취소" style="padding:2px 8px;background:#2a2a4a;border:0;border-radius:3px;color:#aaa;cursor:pointer;font-size:10px;">✕</button></td>` : ''}
+              <td style="padding:5px 8px;color:#888;font-size:11px;">${esc(a.reason || '')}${a.note ? `<div style="color:#666;font-size:10px;">${esc(a.note)}</div>` : ''}</td>
+              <td style="padding:5px 8px;text-align:center;white-space:nowrap;">${actionCell}</td>
             </tr>`;
           }).join('')}
         </tbody>
       </table>
     `;
+  }
+
+  // ── 수정 모달 ─────────────────────────────────────────────
+  function openEdit(id) {
+    const a = sessionLog.find(x => x.id === id);
+    if (!a) { alert('항목을 찾을 수 없습니다'); return; }
+
+    document.getElementById('st-edit-modal')?.remove();
+    const m = document.createElement('div');
+    m.id = 'st-edit-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+    const reasonOpts = REASONS.map(r => `<option value="${esc(r)}" ${r === a.reason ? 'selected' : ''}>${esc(r)}</option>`).join('');
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:20px;width:460px;max-width:95vw;color:#e0e0e0;" onclick="event.stopPropagation()">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <h2 style="color:#fff;font-size:16px;margin:0;">✏️ 실사 항목 수정</h2>
+          <button onclick="document.getElementById('st-edit-modal').remove()" style="background:transparent;border:0;color:#888;cursor:pointer;font-size:20px;">✕</button>
+        </div>
+        <div style="font-size:12px;color:#aaa;margin-bottom:14px;line-height:1.6;">
+          ${a.sku ? `<code style="color:#81d4fa;">${esc(a.sku)}</code> · ` : ''}${esc(a.title || '-')}
+          <div style="color:#888;font-size:11px;margin-top:2px;">이전 재고: <strong style="color:#fff;">${a.previousStock}</strong></div>
+        </div>
+
+        <label style="display:block;font-size:11px;color:#888;margin-bottom:4px;">실제 카운트</label>
+        <input id="st-edit-newstock" type="number" min="0" step="1" value="${a.newStock}"
+          style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:14px;margin-bottom:12px;">
+
+        <label style="display:block;font-size:11px;color:#888;margin-bottom:4px;">사유</label>
+        <select id="st-edit-reason" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;margin-bottom:12px;">
+          ${reasonOpts}
+        </select>
+
+        <label style="display:block;font-size:11px;color:#888;margin-bottom:4px;">메모 (선택)</label>
+        <input id="st-edit-note" type="text" value="${esc(a.note || '')}" maxlength="500"
+          style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;margin-bottom:14px;">
+
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button onclick="document.getElementById('st-edit-modal').remove()" style="padding:9px 16px;background:#2a2a4a;border:0;border-radius:6px;color:#ccc;cursor:pointer;font-size:13px;">취소</button>
+          <button onclick="pmcStocktake.submitEdit(${a.id})" style="padding:9px 16px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:700;font-size:13px;">저장</button>
+        </div>
+      </div>
+    `;
+    m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+    document.body.appendChild(m);
+    setTimeout(() => document.getElementById('st-edit-newstock')?.focus(), 50);
+  }
+
+  async function submitEdit(id) {
+    const newStock = parseInt(document.getElementById('st-edit-newstock')?.value, 10);
+    if (!Number.isFinite(newStock) || newStock < 0) { alert('실제 카운트는 0 이상의 정수'); return; }
+    const reason = document.getElementById('st-edit-reason')?.value || '실사';
+    const note = (document.getElementById('st-edit-note')?.value || '').trim() || null;
+
+    try {
+      const r = await fetch(`/api/stocktake/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newStock, reason, note }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || '수정 실패');
+
+      // 메모리 sessionLog 의 해당 row 갱신
+      const idx = sessionLog.findIndex(x => x.id === id);
+      if (idx >= 0) sessionLog[idx] = j.data;
+      document.getElementById('st-edit-modal')?.remove();
+      renderSessionLog();
+    } catch (e) {
+      alert('실패: ' + e.message);
+    }
   }
 
   function newSession() {
@@ -915,6 +997,7 @@
     switchView,
     openAddBarcodeModal, openTemporaryModal, openReviewModal, gotoNewProduct,
     cancelLog,
+    openEdit, submitEdit,
     loadPending, applyPending,
     _abSearch, _abPick, _tmpSave, _rvSave,
     _togglePend, _togglePendAll, _cancelPend,
