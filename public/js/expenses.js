@@ -181,8 +181,8 @@
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
             <label style="padding:7px 14px;background:#2a4a6a;color:#fff;border-radius:6px;cursor:pointer;font-size:12px;">
-              📎 영수증 첨부 (선택)
-              <input type="file" id="exp-receipt" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" style="display:none" onchange="pmcExpenses.onReceiptPick()">
+              📎 영수증 첨부 (여러 장 가능)
+              <input type="file" id="exp-receipt" multiple accept="image/jpeg,image/png,image/webp,image/heic,image/heif,application/pdf" style="display:none" onchange="pmcExpenses.onReceiptPick()">
             </label>
             <span id="exp-receipt-name" style="color:#888;font-size:11px;"></span>
           </div>
@@ -410,26 +410,37 @@
     // 새 카드를 썼다면 드롭다운 캐시 갱신
     if (payload.cardLast4 && !knownCards.includes(payload.cardLast4)) await refreshKnownCards();
 
-    // 영수증 파일이 있으면 뒤이어 업로드
+    // 영수증 파일이 있으면 뒤이어 업로드 (여러 장 지원)
     const receiptInput = document.getElementById('exp-receipt');
-    const file = receiptInput?.files?.[0];
-    if (file) {
+    const files = Array.from(receiptInput?.files || []);
+    if (files.length > 0) {
       if (!created?.id) {
         alert('지출은 저장됐지만 영수증 첨부 실패: 지출 ID 응답 누락 (개발자에게 문의)');
         console.error('[expense-receipt] created.id missing in POST /api/expenses response', created);
       } else {
-        const fd = new FormData();
-        fd.append('file', file);
-        try {
-          const upRes = await fetch('/api/expenses/' + created.id + '/receipt', { method: 'POST', body: fd });
-          const upBody = await upRes.json().catch(() => ({}));
-          if (!upRes.ok) {
-            console.error('[expense-receipt] upload failed', upRes.status, upBody);
-            alert(`영수증 업로드 실패 (HTTP ${upRes.status}): ${upBody.error || '알 수 없음'}\n\n파일: ${file.name} (${(file.size/1024).toFixed(1)} KB, ${file.type || '타입 미지정'})\n\n관리자에게 문의 시 콘솔 로그 확인.`);
+        let okCount = 0, failCount = 0;
+        const failMsgs = [];
+        for (const file of files) {
+          const fd = new FormData();
+          fd.append('file', file);
+          try {
+            const upRes = await fetch('/api/expenses/' + created.id + '/receipt', { method: 'POST', body: fd });
+            const upBody = await upRes.json().catch(() => ({}));
+            if (!upRes.ok) {
+              failCount++;
+              failMsgs.push(`${file.name}: ${upBody.error || 'HTTP ' + upRes.status}`);
+              console.error('[expense-receipt] upload failed', upRes.status, upBody);
+            } else {
+              okCount++;
+            }
+          } catch (e) {
+            failCount++;
+            failMsgs.push(`${file.name}: ${e.message}`);
+            console.error('[expense-receipt] network/fetch error', e);
           }
-        } catch (e) {
-          console.error('[expense-receipt] network/fetch error', e);
-          alert('영수증 업로드 네트워크 오류: ' + e.message);
+        }
+        if (failCount > 0) {
+          alert(`영수증 ${okCount}개 성공 / ${failCount}개 실패\n\n실패:\n${failMsgs.join('\n')}\n\n실패한 파일은 목록의 📎 + 버튼으로 다시 시도 가능합니다.`);
         }
       }
     }
@@ -444,10 +455,17 @@
   function onReceiptPick() {
     const input = document.getElementById('exp-receipt');
     const label = document.getElementById('exp-receipt-name');
-    const f = input?.files?.[0];
-    if (!f) { label.textContent = ''; return; }
-    const sz = f.size < 1024 * 1024 ? (f.size / 1024).toFixed(1) + ' KB' : (f.size / 1024 / 1024).toFixed(1) + ' MB';
-    label.innerHTML = '📎 ' + (f.name || '') + ' <span style="color:#666">(' + sz + ')</span>';
+    const files = Array.from(input?.files || []);
+    if (files.length === 0) { label.textContent = ''; return; }
+    if (files.length === 1) {
+      const f = files[0];
+      const sz = f.size < 1024 * 1024 ? (f.size / 1024).toFixed(1) + ' KB' : (f.size / 1024 / 1024).toFixed(1) + ' MB';
+      label.innerHTML = '📎 ' + (f.name || '') + ' <span style="color:#666">(' + sz + ')</span>';
+    } else {
+      const totalKB = files.reduce((s, f) => s + f.size, 0) / 1024;
+      const sz = totalKB < 1024 ? totalKB.toFixed(1) + ' KB' : (totalKB / 1024).toFixed(1) + ' MB';
+      label.innerHTML = `📎 ${files.length}개 선택 <span style="color:#666">(총 ${sz})</span>`;
+    }
   }
 
   async function viewReceipt(id) {
