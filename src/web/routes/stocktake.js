@@ -287,6 +287,15 @@ router.get('/session/:sessionId/summary', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/stocktake/session/:sessionId/adjustments — 세션 이력 전체
+// 사장님이 다른 메뉴 갔다가 실사 재고로 돌아왔을 때 프론트가 sessionLog 복원용.
+router.get('/session/:sessionId/adjustments', async (req, res) => {
+  try {
+    const adjustments = await adjRepo.listBySession(req.params.sessionId);
+    res.json({ adjustments });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // PR S-1: 검색 실패 4 옵션 + 승인 endpoints
 // ──────────────────────────────────────────────────────────────────────────

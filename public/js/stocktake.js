@@ -17,6 +17,26 @@
 
   const REASONS = ['실사', '파손', '분실', '이벤트', '반품', '기타'];
 
+  // localStorage 키 — 사용자가 '새 세션' 누르기 전까지 세션 영구 유지 (PC 단위).
+  // 저장 shape: { sessionId, userId } — userId 안 맞으면 (shared PC 의 다른 사용자) 복원 안 함.
+  const SESSION_STORAGE_KEY = 'pmc_stocktake_session';
+
+  function _readStoredSession() {
+    try {
+      const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj.sessionId !== 'string') return null;
+      return obj;
+    } catch { return null; }
+  }
+  function _writeStoredSession(sid, uid) {
+    try { localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({ sessionId: sid, userId: uid })); } catch {}
+  }
+  function _clearStoredSession() {
+    try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch {}
+  }
+
   function esc(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function fmtTime(iso) { try { return new Date(iso).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }); } catch { return ''; } }
 
@@ -24,6 +44,26 @@
     if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r => r.json())).user;
     if (!user) return;
     renderShell();
+
+    // 이전 세션 복원 시도 — '새 세션' 명시 호출 전까지 영구 유지.
+    // shared PC 안전 가드: 저장된 userId 가 현재 로그인 사용자와 일치할 때만 복원.
+    const stored = _readStoredSession();
+    if (stored && stored.sessionId && stored.userId === user.id) {
+      try {
+        const r = await fetch(`/api/stocktake/session/${encodeURIComponent(stored.sessionId)}/adjustments`);
+        if (r.ok) {
+          const j = await r.json();
+          sessionId = stored.sessionId;
+          sessionLog = Array.isArray(j.adjustments) ? j.adjustments : [];
+          const idEl = document.getElementById('st-session-id');
+          if (idEl) idEl.textContent = sessionId;
+          renderSessionLog();
+          return; // 복원 성공 — 새 세션 발급 생략
+        }
+      } catch (_) {
+        // 네트워크 실패 등 — 아래 startSession 으로 fallback
+      }
+    }
     await startSession();
   }
 
@@ -33,6 +73,7 @@
       const j = await r.json();
       sessionId = j.sessionId;
       sessionLog = [];
+      _writeStoredSession(sessionId, user?.id);
       document.getElementById('st-session-id').textContent = sessionId;
       renderSessionLog();
     } catch (e) {
@@ -437,6 +478,7 @@
 
   function newSession() {
     if (sessionLog.length > 0 && !confirm('현재 세션을 종료하고 새 세션을 시작합니다. 계속할까요?')) return;
+    _clearStoredSession();  // 영구 저장된 sessionId 도 같이 정리 — startSession 이 곧 새 값으로 덮어씀
     startSession();
   }
 
