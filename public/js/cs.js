@@ -18,7 +18,8 @@
   let viewMode = 'workspace'; // 'workspace' (default) | 'compose' (legacy) | 'manage' | 'suspicious' | 'results'
 
   // 워크스페이스 상태 (2026-05-21 리팩토링)
-  let wsAnalysis = null;       // csMessageAnalyzer 결과
+  let wsMode = 'inbound';      // 'inbound' (응대) | 'outbound' (선제 연락)
+  let wsAnalysis = null;       // csMessageAnalyzer 결과 (inbound 모드만)
   let wsPolicyHits = [];
   let wsLastReply = null;      // csReplyGenerator 결과
   let wsLoadingAnalyze = false;
@@ -151,7 +152,6 @@
     critical: '#c62828', high: '#e94560', medium: '#f9a825', low: '#388e3c',
   };
   // 답변 목적 버튼 — 백엔드 /api/cs/reply-purposes 와 일치 유지.
-  // 라벨은 백엔드 기준이지만 UI 빠른 렌더 위해 상수 미리 박음.
   const WS_PURPOSES = [
     { key: 'customs_notice',     label: '🛃 통관/세관 안내' },
     { key: 'request_tax_id',     label: '🪪 세금번호 요청' },
@@ -162,48 +162,101 @@
     { key: 'b2b_quote',          label: '💼 B2B 견적' },
     { key: 'dispute_protection', label: '🛡️ 클레임 방어' },
   ];
+  // 선제 연락 시나리오 — 백엔드 OUTBOUND_SITUATIONS 와 일치.
+  const WS_SITUATIONS = [
+    { key: 'out_of_stock',      label: '품절 통보' },
+    { key: 'packaging_change',  label: '패키징 변경 안내' },
+    { key: 'shipping_delay',    label: '배송 지연 통보' },
+    { key: 'customs_warning',   label: '통관 사전 안내' },
+    { key: 'tax_id_request',    label: '세금번호 사전 요청' },
+    { key: 'partial_shipment',  label: '부분 발송 안내' },
+    { key: 'price_change',      label: '가격 변경 안내' },
+    { key: 'cancellation',      label: '주문 취소 요청' },
+    { key: 'b2b_proposal',      label: 'B2B 제안·견적 발송' },
+    { key: 'general',           label: '일반 안내' },
+  ];
 
   function renderWorkspace() {
     const host = document.getElementById('cs-workspace');
     if (!host) return;
+    const isOutbound = wsMode === 'outbound';
+
     host.innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;min-height:560px;">
+      <!-- 모드 토글 -->
+      <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;">
+        <span style="color:#888;font-size:12px;margin-right:4px;">모드:</span>
+        <button type="button" onclick="pmcCs.wsSetMode('inbound')"
+          style="padding:6px 14px;background:${!isOutbound ? '#1565c0' : '#0f0f23'};color:${!isOutbound ? '#fff' : '#888'};border:1px solid ${!isOutbound ? '#1565c0' : '#2a2a4a'};border-radius:6px;cursor:pointer;font-weight:${!isOutbound ? '700' : '400'};font-size:12px;">💬 응대 (고객 메시지 받음)</button>
+        <button type="button" onclick="pmcCs.wsSetMode('outbound')"
+          style="padding:6px 14px;background:${isOutbound ? '#ef6c00' : '#0f0f23'};color:${isOutbound ? '#fff' : '#888'};border:1px solid ${isOutbound ? '#ef6c00' : '#2a2a4a'};border-radius:6px;cursor:pointer;font-weight:${isOutbound ? '700' : '400'};font-size:12px;">📣 선제 연락 (PMC 가 먼저)</button>
+        <span style="color:#666;font-size:11px;margin-left:auto;">
+          ${isOutbound
+            ? '품절/패키징 변경/배송 지연 등 사전 안내. 분석 없이 시나리오 + 한국어 지시문으로 영어 메시지 작성.'
+            : '고객이 보낸 메시지 분석 후 위험도·정책 참조해서 영어 답변 생성.'}
+        </span>
+      </div>
 
-        <!-- ─── 왼쪽: 고객 메시지 입력 & 분석 ─── -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;min-height:540px;">
+
+        <!-- ─── 왼쪽: 모드별 입력 ─── -->
         <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;display:flex;flex-direction:column;">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-            <h3 style="color:#fff;font-size:14px;margin:0;">① 고객 메시지</h3>
-            <button type="button" onclick="pmcCs.wsAnalyze()" id="ws-analyze-btn"
-              style="padding:7px 14px;background:#1565c0;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">🔍 분석</button>
-          </div>
-          <textarea id="ws-message" rows="10" placeholder="고객의 영어/한국어 원문을 그대로 붙여넣으세요…"
-            style="flex:1;width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-family:inherit;font-size:13px;resize:vertical;min-height:200px;line-height:1.5;"></textarea>
-          <div id="ws-translate-block" style="margin-top:10px;display:none;">
-            <div style="color:#888;font-size:11px;margin-bottom:4px;">📝 한국어 번역</div>
-            <div id="ws-translated" style="padding:10px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;color:#a5d6a7;font-size:13px;line-height:1.6;max-height:160px;overflow:auto;"></div>
-          </div>
-          <div id="ws-suspicious-mini" style="margin-top:10px;display:none;"></div>
+          ${isOutbound ? `
+            <h3 style="color:#fff;font-size:14px;margin:0 0 8px;">① 시나리오 설정</h3>
+            <label style="color:#888;font-size:11px;margin-bottom:4px;">상황 종류</label>
+            <select id="ws-situation" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:13px;margin-bottom:10px;">
+              ${WS_SITUATIONS.map(s => `<option value="${s.key}">${s.label}</option>`).join('')}
+            </select>
+            <label style="color:#888;font-size:11px;margin-bottom:4px;">상세 정보 (상품명, 주문번호, 날짜 등)</label>
+            <textarea id="ws-situation-detail" rows="6" placeholder="예시:&#10;주문 #ORD-2026-001234&#10;상품: PMC Special Album (red ver.)&#10;품절 — 파란색·검은색은 가능&#10;배송 가능일: 5/25 이후"
+              style="flex:1;width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-family:inherit;font-size:13px;resize:vertical;min-height:180px;line-height:1.5;"></textarea>
+            <div style="margin-top:10px;padding:8px 10px;background:#0a2a3a;border:1px solid #1a3a4a;border-radius:6px;color:#81d4fa;font-size:11px;line-height:1.5;">
+              💡 선제 연락은 PMC 가 먼저 보내는 메시지. 분석 단계 없음. 시나리오와 한국어 지시문만으로 영어 메시지 작성됩니다.
+            </div>
+          ` : `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <h3 style="color:#fff;font-size:14px;margin:0;">① 고객 메시지</h3>
+              <button type="button" onclick="pmcCs.wsAnalyze()" id="ws-analyze-btn"
+                style="padding:7px 14px;background:#1565c0;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">🔍 분석</button>
+            </div>
+            <textarea id="ws-message" rows="10" placeholder="고객의 영어/한국어 원문을 그대로 붙여넣으세요…"
+              style="flex:1;width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-family:inherit;font-size:13px;resize:vertical;min-height:200px;line-height:1.5;"></textarea>
+            <div id="ws-translate-block" style="margin-top:10px;display:none;">
+              <div style="color:#888;font-size:11px;margin-bottom:4px;">📝 한국어 번역</div>
+              <div id="ws-translated" style="padding:10px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;color:#a5d6a7;font-size:13px;line-height:1.6;max-height:160px;overflow:auto;"></div>
+            </div>
+          `}
         </div>
 
-        <!-- ─── 가운데: AI 분석 결과 & 가이드 ─── -->
+        <!-- ─── 가운데: 분석 결과 또는 예상 반응 ─── -->
         <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;display:flex;flex-direction:column;overflow-y:auto;">
-          <h3 style="color:#fff;font-size:14px;margin:0 0 8px;">② AI 분석 · 답변 가이드</h3>
-          <div id="ws-analysis-empty" style="padding:40px;text-align:center;color:#666;font-size:12px;">
-            ← 왼쪽에 메시지 붙여넣고 🔍 분석 클릭<br>
-            <span style="color:#888;font-size:11px;">고객 의도 · 위험도 · 답변에 꼭 넣을 점 · 피해야 할 점 자동 분석</span>
-          </div>
-          <div id="ws-analysis-body" style="display:none;"></div>
+          ${isOutbound ? `
+            <h3 style="color:#fff;font-size:14px;margin:0 0 8px;">② 예상 고객 반응 · 후속 대응</h3>
+            <div id="ws-outbound-empty" style="padding:40px;text-align:center;color:#666;font-size:12px;">
+              ← 시나리오 입력 후 오른쪽에서 🤖 메시지 생성<br>
+              <span style="color:#888;font-size:11px;">생성 후 예상되는 고객 우려·후속 액션이 여기에 표시됩니다</span>
+            </div>
+            <div id="ws-outbound-body" style="display:none;"></div>
+          ` : `
+            <h3 style="color:#fff;font-size:14px;margin:0 0 8px;">② AI 분석 · 답변 가이드</h3>
+            <div id="ws-analysis-empty" style="padding:40px;text-align:center;color:#666;font-size:12px;">
+              ← 왼쪽에 메시지 붙여넣고 🔍 분석 클릭<br>
+              <span style="color:#888;font-size:11px;">고객 의도 · 위험도 · 답변에 꼭 넣을 점 · 피해야 할 점 자동 분석</span>
+            </div>
+            <div id="ws-analysis-body" style="display:none;"></div>
+          `}
         </div>
 
-        <!-- ─── 오른쪽: 한국어 지시문 + 답변 목적 + 영어 답변 ─── -->
+        <!-- ─── 오른쪽: 한국어 지시문 + 목적 + 영어 메시지 ─── -->
         <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;display:flex;flex-direction:column;">
-          <h3 style="color:#fff;font-size:14px;margin:0 0 8px;">③ 내 지시문 → 영어 답변</h3>
+          <h3 style="color:#fff;font-size:14px;margin:0 0 8px;">③ 내 지시문 → 영어 ${isOutbound ? '메시지' : '답변'}</h3>
 
-          <label style="color:#888;font-size:11px;margin-bottom:4px;">한국어 답변 지시문 (어떻게 응대할지)</label>
-          <textarea id="ws-korean-draft" rows="4" placeholder="예: 정중하지만 단호하게 허위 신고 불가 안내하고 통관비 구매자 부담 명확히…"
+          <label style="color:#888;font-size:11px;margin-bottom:4px;">한국어 ${isOutbound ? '메시지 지시문 (어떤 내용을 전달할지)' : '답변 지시문 (어떻게 응대할지)'}</label>
+          <textarea id="ws-korean-draft" rows="4" placeholder="${isOutbound
+            ? '예: 빨간색 품절 알리고, 파란색·검은색 대안 제시. 환불 옵션도 명시. 정중하지만 명확하게.'
+            : '예: 정중하지만 단호하게 허위 신고 불가 안내하고 통관비 구매자 부담 명확히…'}"
             style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:13px;resize:vertical;min-height:80px;line-height:1.5;margin-bottom:10px;"></textarea>
 
-          <div style="color:#888;font-size:11px;margin-bottom:4px;">답변 목적 (선택)</div>
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">답변 목적 (선택${isOutbound ? ' — 시나리오와 매핑되면 자동' : ''})</div>
           <div id="ws-purpose-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px;">
             ${WS_PURPOSES.map(p => `
               <button type="button" data-purpose="${p.key}" onclick="pmcCs.wsSelectPurpose('${p.key}')"
@@ -214,33 +267,48 @@
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
             <label style="color:#888;font-size:11px;">톤</label>
             <select id="ws-tone" style="padding:6px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:5px;color:#e0e0e0;font-size:11px;">
-              <option value="">자동 (위험도/목적 기반)</option>
+              <option value="">자동</option>
               <option value="friendly">친근하게</option>
               <option value="professional">전문적으로</option>
               <option value="firm">단호하게</option>
             </select>
             <button type="button" onclick="pmcCs.wsGenerate()" id="ws-gen-btn"
-              style="margin-left:auto;padding:7px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:700;font-size:12px;">🤖 영어 답변 생성</button>
+              style="margin-left:auto;padding:7px 14px;background:${isOutbound ? '#ef6c00' : '#7c4dff'};border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:700;font-size:12px;">🤖 영어 ${isOutbound ? '메시지' : '답변'} 생성</button>
           </div>
 
           <div id="ws-warning-block" style="display:none;margin-bottom:10px;"></div>
 
-          <div style="color:#888;font-size:11px;margin-bottom:4px;">📋 생성된 영어 답변</div>
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">📋 생성된 영어 ${isOutbound ? '메시지' : '답변'}</div>
           <textarea id="ws-reply" rows="10" readonly placeholder="아직 생성되지 않음"
             style="flex:1;width:100%;padding:10px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;color:#e0e0e0;font-family:inherit;font-size:13px;resize:vertical;min-height:200px;line-height:1.5;margin-bottom:8px;"></textarea>
 
           <div style="display:flex;gap:6px;">
             <button type="button" onclick="pmcCs.wsCopyReply()" style="flex:1;padding:9px;background:#2e7d32;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">📋 복사</button>
-            <button type="button" onclick="pmcCs.wsSaveSuspicious()" id="ws-save-suspicious-btn" style="padding:9px 14px;background:#c62828;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;display:none;">🚩 진상 등록</button>
+            ${!isOutbound ? `<button type="button" onclick="pmcCs.wsSaveSuspicious()" id="ws-save-suspicious-btn" style="padding:9px 14px;background:#c62828;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;display:none;">🚩 진상 등록</button>` : ''}
           </div>
           <div id="ws-reply-meta" style="margin-top:6px;color:#666;font-size:11px;"></div>
         </div>
       </div>
     `;
 
-    // 이전 분석 있으면 복원
-    if (wsAnalysis) renderWsAnalysisBody();
-    if (wsLastReply) renderWsReply(wsLastReply);
+    // 모드별 상태 복원
+    if (!isOutbound && wsAnalysis) renderWsAnalysisBody();
+    if (wsLastReply) {
+      if (isOutbound) renderWsOutboundBody(wsLastReply);
+      renderWsReply(wsLastReply);
+    }
+  }
+
+  function wsSetMode(mode) {
+    if (mode !== 'inbound' && mode !== 'outbound') return;
+    if (wsMode === mode) return;
+    // 모드 전환 시 결과 초기화 (혼동 방지)
+    wsMode = mode;
+    wsAnalysis = null;
+    wsPolicyHits = [];
+    wsLastReply = null;
+    wsSelectedPurpose = null;
+    renderWorkspace();
   }
 
   function renderWsAnalysisBody() {
@@ -352,53 +420,110 @@
   }
 
   async function wsGenerate(opts = {}) {
-    if (!wsAnalysis) { alert('먼저 ① 고객 메시지를 분석하세요'); return; }
     const koreanDraft = document.getElementById('ws-korean-draft')?.value || '';
     const tone = document.getElementById('ws-tone')?.value || '';
     const purpose = wsSelectedPurpose || null;
     const force = opts.force === true;
+    const isOutbound = wsMode === 'outbound';
+
+    if (!isOutbound && !wsAnalysis) { alert('먼저 ① 고객 메시지를 분석하세요'); return; }
 
     const btn = document.getElementById('ws-gen-btn');
+    const origLabel = btn?.textContent || '';
     if (btn) { btn.disabled = true; btn.textContent = '생성 중…'; }
     wsLoadingReply = true;
     try {
-      const res = await fetch('/api/cs/generate-reply', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ analysis: wsAnalysis, koreanDraft, tone: tone || undefined, purpose, force }),
-      });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error || '생성 실패');
-
-      const warn = document.getElementById('ws-warning-block');
-      if (j.blocked) {
-        // 경고 표시 — 사장님 spec 4
-        if (warn) {
-          warn.style.display = '';
-          warn.innerHTML = `
-            <div style="background:#3a1a1a;border:1px solid #c62828;border-left:4px solid #c62828;border-radius:6px;padding:10px;">
-              <div style="color:#ff8a80;font-weight:700;font-size:12px;margin-bottom:6px;">⚠️ 답변 지시문이 정책 대응을 누락했습니다</div>
-              <ul style="margin:0;padding-left:18px;font-size:12px;color:#ffab91;line-height:1.6;">
-                ${(j.uncoveredPolicies || []).map(u => `<li>${esc(u.message)}</li>`).join('')}
-              </ul>
-              <div style="margin-top:8px;display:flex;gap:6px;">
-                <button onclick="pmcCs.wsGenerateForce()" style="padding:6px 12px;background:#c62828;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">그래도 생성</button>
-                <button onclick="document.getElementById('ws-korean-draft').focus()" style="padding:6px 12px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">지시문 수정</button>
-              </div>
-            </div>
-          `;
+      let res, j;
+      if (isOutbound) {
+        // 선제 연락 — 시나리오 + 한국어 지시문으로 outbound 메시지 생성.
+        const situationType = document.getElementById('ws-situation')?.value || 'general';
+        const situationDetail = document.getElementById('ws-situation-detail')?.value || '';
+        if (!koreanDraft.trim() && !situationDetail.trim()) {
+          alert('상세 정보 또는 한국어 지시문 중 하나는 입력해야 합니다');
+          return;
         }
-        return;
+        res = await fetch('/api/cs/generate-outbound', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ situationType, situationDetail, koreanIntent: koreanDraft, tone: tone || undefined, purpose }),
+        });
+        j = await res.json();
+        if (!res.ok) throw new Error(j.error || '생성 실패');
+        wsLastReply = j;
+        renderWsOutboundBody(j);
+        renderWsReply(j);
+      } else {
+        // 응대 — 분석 결과 참조해서 영어 답변 생성. uncovered 시 차단/경고.
+        res = await fetch('/api/cs/generate-reply', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ analysis: wsAnalysis, koreanDraft, tone: tone || undefined, purpose, force }),
+        });
+        j = await res.json();
+        if (!res.ok) throw new Error(j.error || '생성 실패');
+
+        const warn = document.getElementById('ws-warning-block');
+        if (j.blocked) {
+          if (warn) {
+            warn.style.display = '';
+            warn.innerHTML = `
+              <div style="background:#3a1a1a;border:1px solid #c62828;border-left:4px solid #c62828;border-radius:6px;padding:10px;">
+                <div style="color:#ff8a80;font-weight:700;font-size:12px;margin-bottom:6px;">⚠️ 답변 지시문이 정책 대응을 누락했습니다</div>
+                <ul style="margin:0;padding-left:18px;font-size:12px;color:#ffab91;line-height:1.6;">
+                  ${(j.uncoveredPolicies || []).map(u => `<li>${esc(u.message)}</li>`).join('')}
+                </ul>
+                <div style="margin-top:8px;display:flex;gap:6px;">
+                  <button onclick="pmcCs.wsGenerateForce()" style="padding:6px 12px;background:#c62828;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">그래도 생성</button>
+                  <button onclick="document.getElementById('ws-korean-draft').focus()" style="padding:6px 12px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">지시문 수정</button>
+                </div>
+              </div>
+            `;
+          }
+          return;
+        }
+        if (warn) warn.style.display = 'none';
+        wsLastReply = j;
+        renderWsReply(j);
       }
-      // 정상 생성
-      if (warn) warn.style.display = 'none';
-      wsLastReply = j;
-      renderWsReply(j);
     } catch (e) {
       alert('생성 실패: ' + e.message);
     } finally {
       wsLoadingReply = false;
-      if (btn) { btn.disabled = false; btn.textContent = '🤖 영어 답변 생성'; }
+      if (btn) { btn.disabled = false; btn.textContent = origLabel; }
     }
+  }
+
+  // 선제 연락 결과 — 가운데 패널에 '예상 고객 반응 · 후속 대응' 표시
+  function renderWsOutboundBody(j) {
+    const empty = document.getElementById('ws-outbound-empty');
+    const body = document.getElementById('ws-outbound-body');
+    if (!body) return;
+    if (empty) empty.style.display = 'none';
+    body.style.display = '';
+
+    const concerns = (j.anticipated_customer_concerns || []);
+    const followups = (j.suggested_followups || []);
+    const flags = (j.safety_flags || []);
+    body.innerHTML = `
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;padding:10px;margin-bottom:8px;">
+        <div style="color:#ffb74d;font-size:11px;font-weight:600;margin-bottom:4px;">🤔 예상되는 고객 우려</div>
+        <ul style="margin:0;padding-left:18px;font-size:12px;color:#e0e0e0;line-height:1.6;">
+          ${concerns.length ? concerns.map(c => `<li>${esc(c)}</li>`).join('') : '<li style="color:#666;">없음</li>'}
+        </ul>
+      </div>
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;padding:10px;margin-bottom:8px;">
+        <div style="color:#81d4fa;font-size:11px;font-weight:600;margin-bottom:4px;">🔮 예상 후속 액션</div>
+        <ul style="margin:0;padding-left:18px;font-size:12px;color:#e0e0e0;line-height:1.6;">
+          ${followups.length ? followups.map(f => `<li>${esc(f)}</li>`).join('') : '<li style="color:#666;">없음</li>'}
+        </ul>
+      </div>
+      ${flags.length ? `
+        <div style="background:#3a2a1a;border:1px solid #ff9800;border-left:4px solid #ff9800;border-radius:6px;padding:10px;">
+          <div style="color:#ffb74d;font-size:11px;font-weight:700;margin-bottom:4px;">⚠️ 안전 점검</div>
+          <ul style="margin:0;padding-left:18px;font-size:11px;color:#ffcc80;line-height:1.5;">
+            ${flags.map(f => `<li>${esc(f)}</li>`).join('')}
+          </ul>
+        </div>
+      ` : ''}
+    `;
   }
 
   function wsGenerateForce() { return wsGenerate({ force: true }); }
@@ -1568,6 +1693,7 @@
     translate,
     // 🪄 워크스페이스 (2026-05-21 리팩토링)
     wsAnalyze, wsSelectPurpose, wsGenerate, wsGenerateForce, wsCopyReply, wsSaveSuspicious,
+    wsSetMode,
     // 관리 (보존)
     editTemplate, deleteTemplate,
   };

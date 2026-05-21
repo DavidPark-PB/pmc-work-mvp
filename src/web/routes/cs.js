@@ -380,13 +380,51 @@ router.post('/generate-reply', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/cs/reply-purposes — UI 의 답변 목적 버튼 목록
+// GET /api/cs/reply-purposes — UI 의 답변 목적 버튼 목록 + 선제 연락 시나리오 옵션
 router.get('/reply-purposes', (req, res) => {
   if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
-  const items = Object.entries(csReplyGenerator.PURPOSES).map(([key, v]) => ({
+  const purposes = Object.entries(csReplyGenerator.PURPOSES).map(([key, v]) => ({
     key, label: v.label, defaultTone: v.defaultTone,
   }));
-  res.json({ purposes: items, tones: csReplyGenerator.TONES });
+  const situations = Object.entries(csReplyGenerator.OUTBOUND_SITUATIONS).map(([key, v]) => ({
+    key, label: v.label, defaultTone: v.defaultTone, defaultPurpose: v.defaultPurpose,
+  }));
+  res.json({ purposes, situations, tones: csReplyGenerator.TONES });
+});
+
+// POST /api/cs/generate-outbound — 선제 연락 메시지 생성 (사장님 보강 spec 2026-05-21).
+//   고객이 메시지 안 보낸 상황에서 PMC 가 먼저 영어로 안내 보낼 때.
+//   body: { situationType, situationDetail?, koreanIntent?, tone?, purpose? }
+//   response: { reply_text, safety_flags, anticipated_customer_concerns, suggested_followups, ... }
+router.post('/generate-outbound', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const { situationType, situationDetail, koreanIntent, tone, purpose } = req.body || {};
+    if (!situationType) return res.status(400).json({ error: 'situationType 필수' });
+    try {
+      const result = await csReplyGenerator.generateOutbound({ situationType, situationDetail, koreanIntent, tone, purpose });
+      res.json({
+        reply_text: result.reply_text,
+        safety_flags: result.safety_flags,
+        anticipated_customer_concerns: result.anticipated_customer_concerns,
+        suggested_followups: result.suggested_followups,
+        situationType: result.situationType,
+        tone: result.tone,
+        purpose: result.purpose,
+        provider: result.provider,
+        mock: !!result.mock,
+        costUsd: result.costUsd,
+      });
+    } catch (e) {
+      const code = e?.code || '';
+      const status = code === 'csReplyGen/config_error' ? 503
+        : code === 'csReplyGen/provider_failed' ? 502
+        : code === 'csReplyGen/validation' ? 400
+        : 500;
+      console.error('[cs/generate-outbound] error:', { code, message: e.message });
+      res.status(status).json({ error: e.message, code });
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // PR CS-G3-B: AI 톤 다듬기 (저장 안 된 미리보기용 — 모든 직원).

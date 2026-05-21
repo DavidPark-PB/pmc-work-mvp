@@ -238,10 +238,162 @@ async function generateReply({ analysis, koreanDraft, tone, purpose } = {}) {
   };
 }
 
+// ════════════════════════════════════════════════════════════════
+// 선제 연락 (Outbound / Proactive) — 사장님 보강 요청 2026-05-21
+// 고객이 메시지 안 보낸 상황에서도 PMC 가 먼저 영어 메시지 작성.
+// (예: 품절 통보, 패키징 변경, 배송 지연, 통관 사전 안내, 세금번호 사전 요청 등)
+// ════════════════════════════════════════════════════════════════
+
+// 선제 연락 시나리오 종류 — UI 의 첫 번째 selectbox 옵션
+const OUTBOUND_SITUATIONS = {
+  out_of_stock:       { label: '품절 통보',         defaultTone: 'professional', defaultPurpose: 'shipping_delay' },
+  packaging_change:   { label: '패키징 변경 안내',  defaultTone: 'friendly',     defaultPurpose: null },
+  shipping_delay:     { label: '배송 지연 통보',    defaultTone: 'professional', defaultPurpose: 'shipping_delay' },
+  customs_warning:    { label: '통관 사전 안내',    defaultTone: 'professional', defaultPurpose: 'customs_notice' },
+  tax_id_request:     { label: '세금번호 사전 요청', defaultTone: 'professional', defaultPurpose: 'request_tax_id' },
+  partial_shipment:   { label: '부분 발송 안내',    defaultTone: 'friendly',     defaultPurpose: null },
+  price_change:       { label: '가격 변경 안내',    defaultTone: 'professional', defaultPurpose: null },
+  cancellation:       { label: '주문 취소 요청',    defaultTone: 'professional', defaultPurpose: 'refuse_transaction' },
+  b2b_proposal:       { label: 'B2B 제안·견적 발송', defaultTone: 'professional', defaultPurpose: 'b2b_quote' },
+  general:            { label: '일반 안내',         defaultTone: 'friendly',     defaultPurpose: null },
+};
+
+function buildOutboundPrompt({ situationType, situationDetail, koreanIntent, tone, purpose }) {
+  const sit = OUTBOUND_SITUATIONS[situationType] || OUTBOUND_SITUATIONS.general;
+  const purposeLabel = purpose && PURPOSES[purpose]?.label || sit.label;
+
+  return `You are PMC's senior CS writer. PMC is a Korean global e-commerce seller.
+This is a PROACTIVE OUTBOUND message — the customer has NOT contacted us. PMC is initiating contact.
+
+═══ SITUATION ═══
+- Situation type: ${sit.label}
+- Detail (Korean staff notes): ${situationDetail || '(상세 정보 없음)'}
+
+═══ STAFF KOREAN INTENT ═══
+${koreanIntent || '(직원 한국어 지시 없음 — situation type 기반 표준 안내)'}
+
+═══ TONE / PURPOSE ═══
+- Tone: ${tone}   (friendly = warm, professional = neutral business, firm = polite but unyielding)
+- Purpose: ${purposeLabel}
+
+═══ RULES ═══
+1. Output ONLY a JSON object with this exact shape:
+   {
+     "reply_text": "the English outbound message, ready to copy-paste",
+     "safety_flags": ["flag_key", ...],
+     "anticipated_customer_concerns": ["concern1", ...],
+     "suggested_followups": ["followup1", ...]
+   }
+2. reply_text rules:
+   - English only, natural CS tone matching the requested 'tone'
+   - OPEN with brief context (why PMC is reaching out)
+   - Be honest and clear about the issue — don't be vague or evasive
+   - Give the customer 1-2 clear OPTIONS where possible (continue / refund / switch / wait)
+   - For 품절/지연: include realistic timeline if known, otherwise apologize and offer alternatives
+   - For 패키징 변경: emphasize product content is identical
+   - For 통관/세금번호 안내: clear what customer must provide, why, and consequence of not providing
+   - Preserve any specific numbers, dates, order/tracking IDs from the staff intent or situation detail
+   - DO NOT promise things PMC can't control (carrier ETAs as facts, free shipping unless stated, etc.)
+   - Length: 2-5 short paragraphs, no emojis unless Korean intent uses them
+   - End with appropriate sign-off ("Best regards, PMC Team")
+3. safety_flags values for OUTBOUND messages:
+   - "missing_timeline"       — situation needs date but staff didn't provide
+   - "missing_alternative"    — issue needs options offered but only describes problem
+   - "overpromise_risk"       — staff intent contained promise PMC might not deliver
+   - "tone_too_apologetic"    — excessive sorry can sound like fault admission
+   - "missing_action_request" — customer needs to do something but message doesn't say what
+   - empty array if all good
+4. anticipated_customer_concerns: 1-3 short Korean phrases describing what the customer
+   might worry about or push back on after reading this message. (직원이 미리 대비할 수 있게)
+5. suggested_followups: 1-3 short Korean phrases of follow-up actions the customer might
+   take (예: '환불 요구', '다른 상품 추천 요청', '클레임 가능성').
+
+NO markdown. NO explanation outside JSON. Just the JSON object.`;
+}
+
+function _mockOutbound({ situationType, situationDetail, koreanIntent, tone, purpose }) {
+  const sit = OUTBOUND_SITUATIONS[situationType] || OUTBOUND_SITUATIONS.general;
+  return {
+    reply_text: `[MOCK ${tone} outbound - ${sit.label}]\n\nDear customer,\n\nWe are reaching out regarding ${sit.label}.\n\n${koreanIntent ? '[Staff intent reflected here]' : '[Standard ' + sit.label + ' notice here]'}\n\n${situationDetail ? '[Situation detail incorporated]' : ''}\n\nPlease let us know how you would like to proceed.\n\nBest regards,\nPMC Team`,
+    safety_flags: [],
+    anticipated_customer_concerns: ['환불 요구 가능성', '대체 상품 문의 가능성'],
+    suggested_followups: ['상황 확인 메시지', '환불/대체 선택 답변 대기'],
+  };
+}
+
+/**
+ * 선제 연락 영어 메시지 생성.
+ * 분석(analysis) 불필요 — situation + koreanIntent + tone + purpose 만으로 작성.
+ *
+ * @param {Object} params
+ * @param {string} params.situationType    - OUTBOUND_SITUATIONS 의 key (필수)
+ * @param {string} [params.situationDetail] - 한국어 상세 (상품명, 주문번호, 날짜 등)
+ * @param {string} [params.koreanIntent]   - 직원 한국어 지시문
+ * @param {string} [params.tone]
+ * @param {string} [params.purpose]
+ */
+async function generateOutbound({ situationType, situationDetail, koreanIntent, tone, purpose } = {}) {
+  if (!situationType || !OUTBOUND_SITUATIONS[situationType]) {
+    throw new ValidationError(`situationType 필수 (${Object.keys(OUTBOUND_SITUATIONS).join('|')})`);
+  }
+  if (purpose && !PURPOSES[purpose]) {
+    throw new ValidationError(`알 수 없는 purpose: ${purpose}`);
+  }
+  const sit = OUTBOUND_SITUATIONS[situationType];
+  // tone 결정 — explicit > situation default
+  const resolvedTone = TONES.has(tone) ? tone : sit.defaultTone;
+  // purpose 결정 — explicit > situation default > null
+  const resolvedPurpose = purpose || sit.defaultPurpose || null;
+
+  if (MOCK_MODE || !process.env.ANTHROPIC_API_KEY) {
+    const mock = _mockOutbound({ situationType, situationDetail, koreanIntent, tone: resolvedTone, purpose: resolvedPurpose });
+    return {
+      ...mock,
+      situationType,
+      tone: resolvedTone,
+      purpose: resolvedPurpose,
+      provider: 'mock', model: 'mock',
+      inputTokens: 0, outputTokens: 0, costUsd: 0,
+      mock: true, promptVersion: PROMPT_VERSION,
+    };
+  }
+
+  const prompt = buildOutboundPrompt({ situationType, situationDetail, koreanIntent, tone: resolvedTone, purpose: resolvedPurpose });
+  const { text, inputTokens, outputTokens } = await callAnthropic({ prompt, model: DEFAULT_MODEL });
+
+  let parsed;
+  try { parsed = extractJson(text); }
+  catch (e) { throw new ProviderError('AI 응답 JSON 파싱 실패: ' + e.message); }
+
+  const PRICE_PER_MTOK_INPUT = 3.00;
+  const PRICE_PER_MTOK_OUTPUT = 15.00;
+  const costUsd = Math.round(
+    ((inputTokens / 1_000_000) * PRICE_PER_MTOK_INPUT +
+     (outputTokens / 1_000_000) * PRICE_PER_MTOK_OUTPUT) * 10000
+  ) / 10000;
+
+  return {
+    reply_text: parsed.reply_text || '',
+    safety_flags: Array.isArray(parsed.safety_flags) ? parsed.safety_flags : [],
+    anticipated_customer_concerns: Array.isArray(parsed.anticipated_customer_concerns) ? parsed.anticipated_customer_concerns : [],
+    suggested_followups: Array.isArray(parsed.suggested_followups) ? parsed.suggested_followups : [],
+    situationType,
+    tone: resolvedTone,
+    purpose: resolvedPurpose,
+    provider: 'anthropic',
+    model: DEFAULT_MODEL,
+    inputTokens, outputTokens, costUsd,
+    mock: false,
+    promptVersion: PROMPT_VERSION,
+  };
+}
+
 module.exports = {
   generateReply,
+  generateOutbound,
   preflightCheck,
   PURPOSES,
+  OUTBOUND_SITUATIONS,
   TONES: [...TONES],
   ProviderError, ConfigError, ValidationError,
   PROMPT_VERSION,
