@@ -15,7 +15,14 @@
 (function() {
   let user = null;
   let templates = [];
-  let viewMode = 'compose'; // 'compose' | 'manage'
+  let viewMode = 'workspace'; // 'workspace' (default) | 'compose' (legacy) | 'manage' | 'suspicious' | 'results'
+
+  // 워크스페이스 상태 (2026-05-21 리팩토링)
+  let wsAnalysis = null;       // csMessageAnalyzer 결과
+  let wsPolicyHits = [];
+  let wsLastReply = null;      // csReplyGenerator 결과
+  let wsLoadingAnalyze = false;
+  let wsLoadingReply = false;
 
   // 새 state (PR CS-G1-F)
   let currentAnalysis = null;       // POST /api/cs/analyze 결과 캐시
@@ -83,13 +90,15 @@
       </div>
 
       <div style="display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid #2a2a4a;">
-        <button type="button" id="cs-tab-compose" onclick="pmcCs.switchView('compose')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid #7c4dff;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">✍️ 답변 작성</button>
+        <button type="button" id="cs-tab-workspace" onclick="pmcCs.switchView('workspace')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid #ffd54f;color:#ffd54f;cursor:pointer;font-weight:700;font-size:13px;">🪄 워크스페이스</button>
+        <button type="button" id="cs-tab-compose" onclick="pmcCs.switchView('compose')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">✍️ 답변 작성 (legacy)</button>
         <button type="button" id="cs-tab-suspicious" onclick="pmcCs.switchView('suspicious')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">🚩 진상 바이어 DB</button>
         ${user.isAdmin ? `<button type="button" id="cs-tab-results" onclick="pmcCs.switchView('results')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">📝 결과 입력 대기</button>` : ''}
         ${manageTab}
       </div>
 
-      <div id="cs-compose"></div>
+      <div id="cs-workspace"></div>
+      <div id="cs-compose" style="display:none;"></div>
       <div id="cs-suspicious" style="display:none;"></div>
       <div id="cs-results" style="display:none;"></div>
       <div id="cs-manage" style="display:none;"></div>
@@ -106,20 +115,330 @@
 
   function switchView(v) {
     viewMode = v;
+    // workspace 탭은 노란 강조 유지 (다른 탭은 보라)
+    const wsTab = document.getElementById('cs-tab-workspace');
+    if (wsTab) {
+      const active = v === 'workspace';
+      wsTab.style.color = active ? '#ffd54f' : '#888';
+      wsTab.style.fontWeight = active ? '700' : '400';
+      wsTab.style.borderBottom = active ? '2px solid #ffd54f' : '2px solid transparent';
+    }
     _setTabActive('cs-tab-compose', v === 'compose');
     _setTabActive('cs-tab-suspicious', v === 'suspicious');
     if (user.isAdmin) {
       _setTabActive('cs-tab-results', v === 'results');
       _setTabActive('cs-tab-manage', v === 'manage');
     }
+    document.getElementById('cs-workspace').style.display = v === 'workspace' ? '' : 'none';
     document.getElementById('cs-compose').style.display = v === 'compose' ? '' : 'none';
     document.getElementById('cs-suspicious').style.display = v === 'suspicious' ? '' : 'none';
     document.getElementById('cs-results').style.display = v === 'results' ? '' : 'none';
     document.getElementById('cs-manage').style.display = v === 'manage' ? '' : 'none';
-    if (v === 'manage') renderManage();
+    if (v === 'workspace') renderWorkspace();
+    else if (v === 'manage') renderManage();
     else if (v === 'suspicious') renderSuspiciousList();
     else if (v === 'results') renderResultsDashboard();
     else renderCompose();
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // 🪄 워크스페이스 (2026-05-21 리팩토링)
+  // 3-panel: [고객 메시지 + 분석] [AI 가이드] [한국어 지시문 + 영어 답변]
+  // 한국어 지시문 단독 번역 금지 — 분석 결과를 참조해서 영어 답변 생성.
+  // ════════════════════════════════════════════════════════════════
+
+  const RISK_COLORS = {
+    critical: '#c62828', high: '#e94560', medium: '#f9a825', low: '#388e3c',
+  };
+  // 답변 목적 버튼 — 백엔드 /api/cs/reply-purposes 와 일치 유지.
+  // 라벨은 백엔드 기준이지만 UI 빠른 렌더 위해 상수 미리 박음.
+  const WS_PURPOSES = [
+    { key: 'customs_notice',     label: '🛃 통관/세관 안내' },
+    { key: 'request_tax_id',     label: '🪪 세금번호 요청' },
+    { key: 'shipping_delay',     label: '🚚 배송 지연 안내' },
+    { key: 'stock_check',        label: '📦 재고 확인 답변' },
+    { key: 'reject_discount',    label: '🛑 할인 거절' },
+    { key: 'refuse_transaction', label: '⛔ 거래 거절' },
+    { key: 'b2b_quote',          label: '💼 B2B 견적' },
+    { key: 'dispute_protection', label: '🛡️ 클레임 방어' },
+  ];
+
+  function renderWorkspace() {
+    const host = document.getElementById('cs-workspace');
+    if (!host) return;
+    host.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;min-height:560px;">
+
+        <!-- ─── 왼쪽: 고객 메시지 입력 & 분석 ─── -->
+        <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;display:flex;flex-direction:column;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <h3 style="color:#fff;font-size:14px;margin:0;">① 고객 메시지</h3>
+            <button type="button" onclick="pmcCs.wsAnalyze()" id="ws-analyze-btn"
+              style="padding:7px 14px;background:#1565c0;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">🔍 분석</button>
+          </div>
+          <textarea id="ws-message" rows="10" placeholder="고객의 영어/한국어 원문을 그대로 붙여넣으세요…"
+            style="flex:1;width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-family:inherit;font-size:13px;resize:vertical;min-height:200px;line-height:1.5;"></textarea>
+          <div id="ws-translate-block" style="margin-top:10px;display:none;">
+            <div style="color:#888;font-size:11px;margin-bottom:4px;">📝 한국어 번역</div>
+            <div id="ws-translated" style="padding:10px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;color:#a5d6a7;font-size:13px;line-height:1.6;max-height:160px;overflow:auto;"></div>
+          </div>
+          <div id="ws-suspicious-mini" style="margin-top:10px;display:none;"></div>
+        </div>
+
+        <!-- ─── 가운데: AI 분석 결과 & 가이드 ─── -->
+        <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;display:flex;flex-direction:column;overflow-y:auto;">
+          <h3 style="color:#fff;font-size:14px;margin:0 0 8px;">② AI 분석 · 답변 가이드</h3>
+          <div id="ws-analysis-empty" style="padding:40px;text-align:center;color:#666;font-size:12px;">
+            ← 왼쪽에 메시지 붙여넣고 🔍 분석 클릭<br>
+            <span style="color:#888;font-size:11px;">고객 의도 · 위험도 · 답변에 꼭 넣을 점 · 피해야 할 점 자동 분석</span>
+          </div>
+          <div id="ws-analysis-body" style="display:none;"></div>
+        </div>
+
+        <!-- ─── 오른쪽: 한국어 지시문 + 답변 목적 + 영어 답변 ─── -->
+        <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:14px;display:flex;flex-direction:column;">
+          <h3 style="color:#fff;font-size:14px;margin:0 0 8px;">③ 내 지시문 → 영어 답변</h3>
+
+          <label style="color:#888;font-size:11px;margin-bottom:4px;">한국어 답변 지시문 (어떻게 응대할지)</label>
+          <textarea id="ws-korean-draft" rows="4" placeholder="예: 정중하지만 단호하게 허위 신고 불가 안내하고 통관비 구매자 부담 명확히…"
+            style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#e0e0e0;font-size:13px;resize:vertical;min-height:80px;line-height:1.5;margin-bottom:10px;"></textarea>
+
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">답변 목적 (선택)</div>
+          <div id="ws-purpose-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px;">
+            ${WS_PURPOSES.map(p => `
+              <button type="button" data-purpose="${p.key}" onclick="pmcCs.wsSelectPurpose('${p.key}')"
+                style="padding:6px 8px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:5px;color:#aaa;cursor:pointer;font-size:11px;text-align:left;">${p.label}</button>
+            `).join('')}
+          </div>
+
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+            <label style="color:#888;font-size:11px;">톤</label>
+            <select id="ws-tone" style="padding:6px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:5px;color:#e0e0e0;font-size:11px;">
+              <option value="">자동 (위험도/목적 기반)</option>
+              <option value="friendly">친근하게</option>
+              <option value="professional">전문적으로</option>
+              <option value="firm">단호하게</option>
+            </select>
+            <button type="button" onclick="pmcCs.wsGenerate()" id="ws-gen-btn"
+              style="margin-left:auto;padding:7px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:700;font-size:12px;">🤖 영어 답변 생성</button>
+          </div>
+
+          <div id="ws-warning-block" style="display:none;margin-bottom:10px;"></div>
+
+          <div style="color:#888;font-size:11px;margin-bottom:4px;">📋 생성된 영어 답변</div>
+          <textarea id="ws-reply" rows="10" readonly placeholder="아직 생성되지 않음"
+            style="flex:1;width:100%;padding:10px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;color:#e0e0e0;font-family:inherit;font-size:13px;resize:vertical;min-height:200px;line-height:1.5;margin-bottom:8px;"></textarea>
+
+          <div style="display:flex;gap:6px;">
+            <button type="button" onclick="pmcCs.wsCopyReply()" style="flex:1;padding:9px;background:#2e7d32;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">📋 복사</button>
+            <button type="button" onclick="pmcCs.wsSaveSuspicious()" id="ws-save-suspicious-btn" style="padding:9px 14px;background:#c62828;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;display:none;">🚩 진상 등록</button>
+          </div>
+          <div id="ws-reply-meta" style="margin-top:6px;color:#666;font-size:11px;"></div>
+        </div>
+      </div>
+    `;
+
+    // 이전 분석 있으면 복원
+    if (wsAnalysis) renderWsAnalysisBody();
+    if (wsLastReply) renderWsReply(wsLastReply);
+  }
+
+  function renderWsAnalysisBody() {
+    const empty = document.getElementById('ws-analysis-empty');
+    const body  = document.getElementById('ws-analysis-body');
+    if (!body) return;
+    if (!wsAnalysis) {
+      if (empty) empty.style.display = '';
+      body.style.display = 'none';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    body.style.display = '';
+
+    const a = wsAnalysis;
+    const riskColor = RISK_COLORS[a.risk_level] || '#888';
+    const tagBadges = (a.risk_tags || []).map(t =>
+      `<span style="display:inline-block;padding:2px 8px;background:#3a2a4a;color:#ce93d8;border-radius:10px;font-size:10px;font-weight:600;margin:1px 2px;">${esc(t)}</span>`
+    ).join('');
+    const reqBullets = (a.required_reply_points || []).map(p =>
+      `<li style="margin:3px 0;color:#a5d6a7;">${esc(p)}</li>`
+    ).join('');
+    const forbBullets = (a.forbidden_reply_points || []).map(p =>
+      `<li style="margin:3px 0;color:#ff8a80;">${esc(p)}</li>`
+    ).join('');
+
+    body.innerHTML = `
+      <div style="background:#0f0f23;border:1px solid ${riskColor};border-left:4px solid ${riskColor};border-radius:6px;padding:10px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <span style="color:${riskColor};font-weight:700;font-size:12px;">위험도: ${(a.risk_level || '').toUpperCase()}</span>
+          <span style="color:#888;font-size:11px;">의도: <strong style="color:#fff;">${esc(a.customer_intent || '-')}</strong></span>
+        </div>
+        <div style="margin-top:4px;">${tagBadges || '<span style="color:#666;font-size:11px;">위험 태그 없음</span>'}</div>
+      </div>
+
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;padding:10px;margin-bottom:8px;">
+        <div style="color:#64b5f6;font-size:11px;font-weight:600;margin-bottom:4px;">🎯 추천 대응</div>
+        <div style="color:#e0e0e0;font-size:12px;line-height:1.5;">${esc(a.recommended_action || '')}</div>
+      </div>
+
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;padding:10px;margin-bottom:8px;">
+        <div style="color:#81c784;font-size:11px;font-weight:600;margin-bottom:4px;">✅ 답변에 꼭 포함할 점</div>
+        <ul style="margin:0;padding-left:18px;font-size:12px;line-height:1.5;">${reqBullets || '<li style="color:#666;">없음</li>'}</ul>
+      </div>
+
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;padding:10px;margin-bottom:8px;">
+        <div style="color:#ef9a9a;font-size:11px;font-weight:600;margin-bottom:4px;">⛔ 답변에서 피할 점</div>
+        <ul style="margin:0;padding-left:18px;font-size:12px;line-height:1.5;">${forbBullets || '<li style="color:#666;">없음</li>'}</ul>
+      </div>
+
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;padding:10px;">
+        <div style="color:#aaa;font-size:11px;font-weight:600;margin-bottom:4px;">📝 직원 요약</div>
+        <div style="color:#e0e0e0;font-size:12px;line-height:1.5;">${esc(a.staff_summary || '')}</div>
+      </div>
+    `;
+
+    // 번역 블록도 같이
+    const tBlock = document.getElementById('ws-translate-block');
+    const tBody = document.getElementById('ws-translated');
+    if (tBlock && tBody && a.translated_message_ko) {
+      tBlock.style.display = '';
+      tBody.textContent = a.translated_message_ko;
+    }
+
+    // critical/high 위험이면 진상 등록 버튼 노출
+    const susBtn = document.getElementById('ws-save-suspicious-btn');
+    if (susBtn) susBtn.style.display = (a.risk_level === 'critical' || a.risk_level === 'high') ? '' : 'none';
+  }
+
+  async function wsAnalyze() {
+    const msg = document.getElementById('ws-message')?.value?.trim();
+    if (!msg) { alert('고객 메시지를 입력하세요'); return; }
+    const btn = document.getElementById('ws-analyze-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '분석 중…'; }
+    wsLoadingAnalyze = true;
+    try {
+      const res = await fetch('/api/cs/analyze-message', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '분석 실패');
+      wsAnalysis = j.analysis;
+      wsPolicyHits = j.policyHits || [];
+      wsLastReply = null;
+      // 이전 답변 영역도 초기화
+      const replyEl = document.getElementById('ws-reply');
+      if (replyEl) replyEl.value = '';
+      const meta = document.getElementById('ws-reply-meta');
+      if (meta) meta.textContent = j.mock ? '🧪 분석: mock 모드' : `✓ 분석 완료 (${j.provider} · $${(j.costUsd || 0).toFixed(4)})`;
+      renderWsAnalysisBody();
+    } catch (e) {
+      alert('분석 실패: ' + e.message);
+    } finally {
+      wsLoadingAnalyze = false;
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 분석'; }
+    }
+  }
+
+  let wsSelectedPurpose = null;
+  function wsSelectPurpose(key) {
+    wsSelectedPurpose = (wsSelectedPurpose === key) ? null : key;  // 토글
+    document.querySelectorAll('#ws-purpose-grid button[data-purpose]').forEach(b => {
+      const on = b.dataset.purpose === wsSelectedPurpose;
+      b.style.background = on ? '#7c4dff' : '#0f0f23';
+      b.style.color = on ? '#fff' : '#aaa';
+      b.style.borderColor = on ? '#7c4dff' : '#2a2a4a';
+    });
+  }
+
+  async function wsGenerate(opts = {}) {
+    if (!wsAnalysis) { alert('먼저 ① 고객 메시지를 분석하세요'); return; }
+    const koreanDraft = document.getElementById('ws-korean-draft')?.value || '';
+    const tone = document.getElementById('ws-tone')?.value || '';
+    const purpose = wsSelectedPurpose || null;
+    const force = opts.force === true;
+
+    const btn = document.getElementById('ws-gen-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '생성 중…'; }
+    wsLoadingReply = true;
+    try {
+      const res = await fetch('/api/cs/generate-reply', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analysis: wsAnalysis, koreanDraft, tone: tone || undefined, purpose, force }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '생성 실패');
+
+      const warn = document.getElementById('ws-warning-block');
+      if (j.blocked) {
+        // 경고 표시 — 사장님 spec 4
+        if (warn) {
+          warn.style.display = '';
+          warn.innerHTML = `
+            <div style="background:#3a1a1a;border:1px solid #c62828;border-left:4px solid #c62828;border-radius:6px;padding:10px;">
+              <div style="color:#ff8a80;font-weight:700;font-size:12px;margin-bottom:6px;">⚠️ 답변 지시문이 정책 대응을 누락했습니다</div>
+              <ul style="margin:0;padding-left:18px;font-size:12px;color:#ffab91;line-height:1.6;">
+                ${(j.uncoveredPolicies || []).map(u => `<li>${esc(u.message)}</li>`).join('')}
+              </ul>
+              <div style="margin-top:8px;display:flex;gap:6px;">
+                <button onclick="pmcCs.wsGenerateForce()" style="padding:6px 12px;background:#c62828;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">그래도 생성</button>
+                <button onclick="document.getElementById('ws-korean-draft').focus()" style="padding:6px 12px;background:#2a4a6a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">지시문 수정</button>
+              </div>
+            </div>
+          `;
+        }
+        return;
+      }
+      // 정상 생성
+      if (warn) warn.style.display = 'none';
+      wsLastReply = j;
+      renderWsReply(j);
+    } catch (e) {
+      alert('생성 실패: ' + e.message);
+    } finally {
+      wsLoadingReply = false;
+      if (btn) { btn.disabled = false; btn.textContent = '🤖 영어 답변 생성'; }
+    }
+  }
+
+  function wsGenerateForce() { return wsGenerate({ force: true }); }
+
+  function renderWsReply(j) {
+    const replyEl = document.getElementById('ws-reply');
+    const meta = document.getElementById('ws-reply-meta');
+    if (replyEl) replyEl.value = j.reply_text || '';
+    const flags = (j.safety_flags || []).length > 0
+      ? ` · ⚠️ ${j.safety_flags.join(', ')}`
+      : '';
+    if (meta) {
+      meta.textContent = j.mock
+        ? `🧪 생성: mock 모드 · 톤=${j.tone}${flags}`
+        : `✓ 생성 (${j.provider} · 톤=${j.tone}${j.purpose ? ' · 목적='+j.purpose : ''} · $${(j.costUsd || 0).toFixed(4)})${flags}`;
+    }
+  }
+
+  function wsCopyReply() {
+    const el = document.getElementById('ws-reply');
+    const txt = el?.value || '';
+    if (!txt.trim()) { alert('복사할 답변 없음'); return; }
+    navigator.clipboard.writeText(txt).then(() => {
+      const meta = document.getElementById('ws-reply-meta');
+      if (meta) { const prev = meta.textContent; meta.textContent = '📋 복사됨!'; setTimeout(() => { meta.textContent = prev; }, 1500); }
+    }).catch(() => alert('복사 실패 — 수동으로 선택해주세요'));
+  }
+
+  function wsSaveSuspicious() {
+    if (!wsAnalysis) return;
+    // 진상 등록 모달 — 기존 openQuickRegisterModal 재사용. 분석 결과로 prefill.
+    if (typeof openQuickRegisterModal === 'function') {
+      openQuickRegisterModal({
+        message: wsAnalysis.original_message,
+        suggestedLevel: wsAnalysis.risk_level === 'critical' ? '블랙리스트' : '주의',
+        suggestedTags: (wsAnalysis.risk_tags || []).join(', '),
+      });
+    } else {
+      alert('진상 등록 모달 미구현 — 진상 바이어 DB 탭에서 수동 등록하세요');
+    }
   }
 
   // ── 답변 작성 (PR CS-G1-F 신규 워크플로우) ──
@@ -1247,6 +1566,8 @@
     aiToneAdjust, setResultStatus,
     // 한↔영 번역 (한글 초안 → 영어 CS 답변)
     translate,
+    // 🪄 워크스페이스 (2026-05-21 리팩토링)
+    wsAnalyze, wsSelectPurpose, wsGenerate, wsGenerateForce, wsCopyReply, wsSaveSuspicious,
     // 관리 (보존)
     editTemplate, deleteTemplate,
   };

@@ -22,6 +22,8 @@ const buyerMatcher = require('../../services/cs/suspiciousBuyerMatcher');
 const fraudDetector = require('../../services/cs/fraudPatternDetector');
 const aiToneAdjuster = require('../../services/cs/aiToneAdjuster');
 const koEnTranslator = require('../../services/cs/koEnTranslator');
+const csMessageAnalyzer = require('../../services/cs/csMessageAnalyzer');
+const csReplyGenerator = require('../../services/cs/csReplyGenerator');
 
 const router = express.Router();
 
@@ -295,6 +297,96 @@ router.post('/translate', async (req, res) => {
       res.status(status).json({ error: e.message, code });
     }
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── 상호 참조형 CS 워크스페이스 (2026-05-21 리팩토링) ───
+// 사장님 spec: 고객 메시지 분석 → 그 결과를 참조해서 영어 답변 생성.
+// 한국어 지시문 단독 번역 금지. 정책 미커버 시 사전 경고.
+
+// POST /api/cs/analyze-message
+//   body: { message: string }
+//   response: { analysis: 9-field, policyHits: [...], provider, mock, costUsd }
+router.post('/analyze-message', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const message = String(req.body?.message || '');
+    if (!message.trim()) return res.status(400).json({ error: '메시지가 비어있습니다' });
+    try {
+      const result = await csMessageAnalyzer.analyze({ message });
+      res.json({
+        analysis: result.analysis,
+        policyHits: result.policyHits,
+        provider: result.provider,
+        mock: !!result.mock,
+        costUsd: result.costUsd,
+      });
+    } catch (e) {
+      const code = e?.code || '';
+      const status = code === 'csAnalyzer/config_error' ? 503
+        : code === 'csAnalyzer/provider_failed' ? 502
+        : code === 'csAnalyzer/validation' ? 400
+        : 500;
+      console.error('[cs/analyze-message] error:', { code, message: e.message });
+      res.status(status).json({ error: e.message, code });
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/cs/generate-reply
+//   body: { analysis, koreanDraft?, tone?, purpose?, force? }
+//   - force=true 면 uncoveredPolicies 무시하고 강제 생성. 기본은 false → uncovered 있으면
+//     생성 안 하고 경고만 반환 (사장님 spec 4: '생성 전에 경고 표시').
+//   response: { reply_text, safety_flags, uncoveredPolicies, tone, purpose, ... }
+router.post('/generate-reply', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+    const { analysis, koreanDraft, tone, purpose, force } = req.body || {};
+    if (!analysis || !analysis.original_message) {
+      return res.status(400).json({ error: 'analysis (csMessageAnalyzer 결과) 필수' });
+    }
+    try {
+      // 사전 가드 — force 가 아니면 uncovered 있을 때 생성 중단
+      if (!force) {
+        const uncovered = csReplyGenerator.preflightCheck(koreanDraft, analysis);
+        if (uncovered.length > 0) {
+          return res.json({
+            blocked: true,
+            uncoveredPolicies: uncovered,
+            message: '한국어 지시문이 일부 정책 대응을 누락했습니다. 확인 후 force=true 로 재요청하세요.',
+          });
+        }
+      }
+      const result = await csReplyGenerator.generateReply({ analysis, koreanDraft, tone, purpose });
+      res.json({
+        blocked: false,
+        reply_text: result.reply_text,
+        safety_flags: result.safety_flags,
+        uncoveredPolicies: result.uncoveredPolicies,
+        tone: result.tone,
+        purpose: result.purpose,
+        provider: result.provider,
+        mock: !!result.mock,
+        costUsd: result.costUsd,
+      });
+    } catch (e) {
+      const code = e?.code || '';
+      const status = code === 'csReplyGen/config_error' ? 503
+        : code === 'csReplyGen/provider_failed' ? 502
+        : code === 'csReplyGen/validation' ? 400
+        : 500;
+      console.error('[cs/generate-reply] error:', { code, message: e.message });
+      res.status(status).json({ error: e.message, code });
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/cs/reply-purposes — UI 의 답변 목적 버튼 목록
+router.get('/reply-purposes', (req, res) => {
+  if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
+  const items = Object.entries(csReplyGenerator.PURPOSES).map(([key, v]) => ({
+    key, label: v.label, defaultTone: v.defaultTone,
+  }));
+  res.json({ purposes: items, tones: csReplyGenerator.TONES });
 });
 
 // PR CS-G3-B: AI 톤 다듬기 (저장 안 된 미리보기용 — 모든 직원).
