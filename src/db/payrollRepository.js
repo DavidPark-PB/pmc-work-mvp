@@ -2,15 +2,27 @@
  * 급여 집계 + Shopee 보너스 관리
  */
 const { getClient } = require('./supabaseClient');
+const holidayCalc = require('../services/payroll/holidayAllowanceCalc');
 
 function isValidMonth(s) { return /^\d{4}-\d{2}$/.test(s); }
+
+/**
+ * 직원 1명의 월 attendance records → 주휴수당 총합 (사장님 요청 2026-05).
+ * holidayAllowanceCalc (W-G2 와 동일 로직) 재사용 — 월~일 주 단위, ≥15h + 결근 0회 조건.
+ * 월 경계 걸친 주는 그 달 records 만으로 계산 (참고 추정치 — 정밀 정산은 2주 급여 확정 화면).
+ */
+function _holidayAllowanceTotal(records) {
+  const weeks = holidayCalc.calcAllWeeksForEmployee(records || []);
+  return weeks.reduce((s, w) => s + (Number(w.amount) || 0), 0);
+}
 
 /** 월 전체 요약 (사장 대시보드) */
 async function getMonthlySummary(month) {
   const c = getClient();
   const [attRes, bonusRes, staffRes] = await Promise.all([
     c.from('attendance')
-      .select('employee_id, work_hours, daily_pay, status')
+      // 주휴수당 계산 위해 date / hourly_rate_snapshot 추가 (사장님 요청 2026-05)
+      .select('employee_id, date, work_hours, daily_pay, status, hourly_rate_snapshot')
       .gte('date', `${month}-01`)
       .lte('date', `${month}-31`),
     c.from('shopee_bonuses')
@@ -27,6 +39,7 @@ async function getMonthlySummary(month) {
   if (staffRes.error) throw staffRes.error;
 
   const attMap = new Map();
+  const recordsMap = new Map();   // employee_id → attendance records[] (주휴수당 계산용)
   for (const a of attRes.data || []) {
     const cur = attMap.get(a.employee_id) || {
       totalHours: 0, totalBase: 0, workDays: 0,
@@ -41,6 +54,9 @@ async function getMonthlySummary(month) {
     else if (a.status === 'day_off') cur.dayOff += 1;
     else if (a.status === 'absence') cur.absence += 1;
     attMap.set(a.employee_id, cur);
+
+    if (!recordsMap.has(a.employee_id)) recordsMap.set(a.employee_id, []);
+    recordsMap.get(a.employee_id).push(a);
   }
   const bonusMap = new Map((bonusRes.data || []).map(b => [b.employee_id, Number(b.bonus_amount)]));
 
@@ -50,6 +66,7 @@ async function getMonthlySummary(month) {
       late: 0, earlyLeave: 0, dayOff: 0, absence: 0,
     };
     const bonus = bonusMap.get(s.id) || 0;
+    const holidayAllowance = Math.round(_holidayAllowanceTotal(recordsMap.get(s.id)) * 100) / 100;
     return {
       id: s.id,
       displayName: s.display_name,
@@ -58,8 +75,9 @@ async function getMonthlySummary(month) {
       totalHours: Math.round(att.totalHours * 100) / 100,
       workDays: att.workDays,
       basePay: att.totalBase,
+      holidayAllowance,                                   // 주휴수당 (사장님 요청 2026-05)
       shopeeBonus: bonus,
-      totalPay: att.totalBase + bonus,
+      totalPay: att.totalBase + holidayAllowance + bonus, // 주휴수당 포함
       late: att.late,
       earlyLeave: att.earlyLeave,
       dayOff: att.dayOff,
@@ -87,6 +105,11 @@ async function getEmployeeMonthly(employeeId, month) {
   const totalHours = records.reduce((a, r) => a + Number(r.work_hours || 0), 0);
   const basePay = records.reduce((a, r) => a + Number(r.daily_pay || 0), 0);
   const bonus = bonusRes.data;
+  const bonusAmount = bonus ? Number(bonus.bonus_amount) : 0;
+
+  // 주휴수당 (사장님 요청 2026-05) — 주별 발생 내역 + 총합
+  const weeks = holidayCalc.calcAllWeeksForEmployee(records);
+  const holidayAllowance = Math.round(weeks.reduce((s, w) => s + (Number(w.amount) || 0), 0) * 100) / 100;
 
   return {
     employee,
@@ -95,12 +118,14 @@ async function getEmployeeMonthly(employeeId, month) {
     totalHours: Math.round(totalHours * 100) / 100,
     workDays: records.length,
     basePay,
+    holidayAllowance,                  // 주휴수당 총합
+    holidayWeeks: weeks,               // 주별 상세 (eligible / amount / 사유)
     shopeeBonus: bonus ? {
       monthlyRevenue: Number(bonus.monthly_revenue),
       bonusRate: Number(bonus.bonus_rate),
-      bonusAmount: Number(bonus.bonus_amount),
+      bonusAmount,
     } : null,
-    totalPay: basePay + (bonus ? Number(bonus.bonus_amount) : 0),
+    totalPay: basePay + holidayAllowance + bonusAmount,  // 주휴수당 포함
   };
 }
 

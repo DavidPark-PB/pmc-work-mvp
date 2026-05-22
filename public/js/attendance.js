@@ -120,13 +120,16 @@
           <h3 style="color:#fff;font-size:14px;margin:0;">💰 급여 합계</h3>
           <button type="button" onclick="pmcAttendance.togglePayroll()" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">닫기</button>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:12px;">
           <div><div style="font-size:11px;color:#888;">근무일수</div><div id="sum-days" style="font-size:18px;font-weight:700;color:#fff;">-</div></div>
           <div><div style="font-size:11px;color:#888;">총 근무시간</div><div id="sum-hours" style="font-size:18px;font-weight:700;color:#fff;">-</div></div>
           <div><div style="font-size:11px;color:#888;">기본급</div><div id="sum-base" style="font-size:18px;font-weight:700;color:#b39ddb;">-</div></div>
+          <div><div style="font-size:11px;color:#888;" title="주 15시간 이상 + 결근 0회인 주에 발생 (월~일 기준)">주휴수당</div><div id="sum-holiday" style="font-size:18px;font-weight:700;color:#4dd0e1;">-</div></div>
           <div><div style="font-size:11px;color:#888;">보너스</div><div id="sum-bonus" style="font-size:18px;font-weight:700;color:#81c784;">-</div></div>
           <div><div style="font-size:11px;color:#888;">총 지급액</div><div id="sum-total" style="font-size:18px;font-weight:700;color:#fff;">-</div></div>
         </div>
+        <div id="sum-holiday-detail" style="margin-top:10px;font-size:11px;color:#888;"></div>
+        <div style="margin-top:6px;font-size:10px;color:#666;">※ 주휴수당은 월~일 주 기준 추정치입니다. 월 경계에 걸친 주는 정확한 정산이 「급여 관리 → 2주 급여 확정」에서 됩니다.</div>
       </div>
 
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:0;overflow:auto;">
@@ -356,14 +359,34 @@
     set('sum-days', s.workDays);
     set('sum-hours', (s.totalHours || 0).toFixed(2) + 'h');
     set('sum-base', money(s.basePay));
+    set('sum-holiday', money(s.holidayAllowance || 0));
     set('sum-bonus', s.shopeeBonus ? money(s.shopeeBonus.bonusAmount) : '-');
     set('sum-total', money(s.totalPay));
+
+    // 주별 주휴수당 발생 내역 — 사장님이 손계산과 대조할 수 있게
+    const detailEl = document.getElementById('sum-holiday-detail');
+    if (detailEl) {
+      const weeks = s.holidayWeeks || [];
+      if (weeks.length === 0) {
+        detailEl.innerHTML = '';
+      } else {
+        detailEl.innerHTML = '주별: ' + weeks.map(w => {
+          if (w.eligible) {
+            return `<span style="color:#4dd0e1;">${esc(w.weekStartDate.slice(5))}~ ${money(w.amount)}</span>`;
+          }
+          const reason = w.hasAbsence ? '결근' : (w.totalWorkHours < 15 ? `${w.totalWorkHours}h<15` : '미발생');
+          return `<span style="color:#888;">${esc(w.weekStartDate.slice(5))}~ 0원(${reason})</span>`;
+        }).join(' · ');
+      }
+    }
   }
 
   function clearSummary() {
-    ['sum-days','sum-hours','sum-base','sum-bonus','sum-total'].forEach(id => {
+    ['sum-days','sum-hours','sum-base','sum-holiday','sum-bonus','sum-total'].forEach(id => {
       const el = document.getElementById(id); if (el) el.textContent = '-';
     });
+    const d = document.getElementById('sum-holiday-detail');
+    if (d) d.innerHTML = '';
   }
 
   function fillNow(id) {

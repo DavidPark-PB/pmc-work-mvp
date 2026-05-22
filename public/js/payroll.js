@@ -61,6 +61,7 @@
                 <th style="padding:10px;text-align:center;">총시간</th>
                 <th style="padding:10px;text-align:center;" title="지각/조퇴/결근/휴무">근태</th>
                 <th style="padding:10px;text-align:right;">기본급</th>
+                <th style="padding:10px;text-align:right;" title="주 15시간 이상 + 결근 0회인 주에 발생">주휴수당</th>
                 <th style="padding:10px;text-align:center;">상여/인센티브</th>
                 <th style="padding:10px;text-align:right;">총 지급액</th>
               </tr>
@@ -129,6 +130,7 @@
         <td style="padding:10px;text-align:center;">${s.totalHours.toFixed(2)}h</td>
         <td style="padding:10px;text-align:center;white-space:nowrap;">${attCell}</td>
         <td style="padding:10px;text-align:right;">${money(s.basePay)}</td>
+        <td style="padding:10px;text-align:right;color:#4dd0e1;">${money(s.holidayAllowance || 0)}</td>
         <td style="padding:10px;text-align:center;">
           <div style="display:flex;gap:4px;align-items:center;justify-content:center;">
             <input type="number" value="${s.bonusInput || ''}" placeholder="금액" id="bonus-${s.id}" style="width:120px;padding:6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
