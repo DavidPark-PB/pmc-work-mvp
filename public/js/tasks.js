@@ -710,7 +710,11 @@
   async function deleteTask(id) {
     if (!confirm('이 업무를 삭제하시겠습니까?')) return;
     const res = await fetch('/api/tasks/' + id, { method: 'DELETE' });
-    if (!res.ok) { alert('삭제 실패'); return; }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert('삭제 실패: ' + (body.error || `HTTP ${res.status}`));
+      return;
+    }
     refresh();
   }
 

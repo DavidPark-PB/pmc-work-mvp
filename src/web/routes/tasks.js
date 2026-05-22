@@ -656,7 +656,15 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     });
     res.json({ ok: true });
   } catch (e) {
-    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'fk_violation_or_other', errorMessage: e.message });
+    // FK 위반 (PostgreSQL 23503) 이면 사용자 친화적 메시지
+    const msg = e.message || '';
+    if (e.code === '23503' || /violates foreign key constraint|foreign key/i.test(msg)) {
+      return res.status(409).json({
+        error: '이 업무를 참조하는 다른 데이터가 있어 삭제할 수 없습니다 (' + (msg.match(/constraint "([^"]+)"/) || [, '확인 필요'])[1] + '). 관리자에게 마이그레이션 053 확인 요청.',
+        code: 'FK_VIOLATION',
+      });
+    }
     res.status(500).json({ error: e.message });
   }
 });
