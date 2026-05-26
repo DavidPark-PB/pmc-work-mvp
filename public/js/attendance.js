@@ -142,6 +142,7 @@
               <th style="padding:10px;">출근</th>
               <th style="padding:10px;">퇴근</th>
               <th style="padding:10px;">근무</th>
+              <th style="padding:10px;text-align:center;" title="주 15h 이상 + 결근 0회 충족 시 그 주 마지막 출근일에 발생">주휴</th>
               <th style="padding:10px;text-align:right;">일급</th>
               <th style="padding:10px;text-align:left;">메모 / 사유</th>
               <th style="padding:10px;text-align:center;">관리</th>
@@ -149,6 +150,10 @@
           </thead>
           <tbody id="att-tbody"></tbody>
         </table>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:#666;line-height:1.5;">
+        ※ "주휴" 칸은 주(월~일) 단위로 ≥15h + 결근 0회 충족 시 그 주의 마지막 출근일에 자동 발생됩니다.
+        월 경계에 걸친 주는 부분 집계라 미발생으로 잡힐 수 있으며, 정확한 정산은 「급여 관리 → 2주 급여 확정」에서 확인하세요.
       </div>
     `;
 
@@ -289,7 +294,7 @@
 
   function renderRows(items) {
     const tbody = document.getElementById('att-tbody');
-    const cols = user.isAdmin ? 9 : 8; // staff도 '관리' 컬럼 추가됨
+    const cols = user.isAdmin ? 10 : 9; // 직원/날짜/근태/출근/퇴근/근무/주휴/일급/메모/관리 — staff 은 직원 컬럼 없음
     if (!items || items.length === 0) {
       tbody.innerHTML = `<tr><td colspan="${cols}" style="padding:30px;text-align:center;color:#888;">기록이 없습니다.</td></tr>`;
       return;
@@ -301,10 +306,12 @@
       day_off: '<span style="padding:2px 6px;background:#0288d1;color:#fff;border-radius:8px;font-size:10px;">휴무</span>',
       absence: '<span style="padding:2px 6px;background:#e94560;color:#fff;border-radius:8px;font-size:10px;">결근</span>',
     };
+    const weeklyMap = computeWeeklyAllowance(items);
     tbody.innerHTML = items.map(r => {
       // 수정은 admin만. 직원은 실수 시 사장님께 요청.
       const canEdit = user.isAdmin;
       const badges = anomalyBadges(r);
+      const holidayInfo = weeklyMap.get(r.id);
       return `
       <tr style="border-bottom:1px solid #2a2a4a;">
         ${user.isAdmin ? `<td style="padding:10px;">${esc(r.employee?.display_name || '-')}</td>` : ''}
@@ -313,6 +320,7 @@
         <td style="padding:10px;text-align:center;">${r.clock_in || '-'}</td>
         <td style="padding:10px;text-align:center;">${r.clock_out || '-'}</td>
         <td style="padding:10px;text-align:center;">${r.work_hours ? Number(r.work_hours).toFixed(2) + 'h' : '-'}</td>
+        <td style="padding:10px;text-align:center;">${holidayCellHtml(holidayInfo)}</td>
         <td style="padding:10px;text-align:right;">${money(r.daily_pay)}${badges}</td>
         <td style="padding:10px;color:#aaa;font-size:12px;">${esc(r.note || '')}</td>
         <td style="padding:10px;text-align:center;white-space:nowrap;">
@@ -350,6 +358,119 @@
       badges.push('<span style="margin-left:6px;padding:1px 6px;background:#ff9800;color:#fff;border-radius:8px;font-size:10px;" title="출근=퇴근 동일 시각 — 확인 필요">⚠ 시간 확인</span>');
     }
     return badges.join('');
+  }
+
+  // 주휴수당 — 클라이언트 미러링 (서버 src/services/payroll/holidayAllowanceCalc.js 와 동일 로직).
+  // 같은 attendance row 들로 (employee_id, 주월요일) 그룹화 → 주별 eligible/amount/reason 산출.
+  // 표 안 각 row 의 "주휴" 칸 렌더에 사용.
+  const STATUS_WORK = ['regular', 'late', 'early_leave'];
+  const MIN_WEEKLY_HOURS = 15;
+  const MAX_DAILY_HOURS_FOR_ALLOWANCE = 8;
+  const WEEKDAY_MAP = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+  function _mondayOfWeekKST(dateStr) {
+    const d = new Date(`${dateStr}T00:00:00+09:00`);
+    const dayName = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', weekday: 'short' }).format(d);
+    const dow = WEEKDAY_MAP[dayName] ?? 0;
+    const offset = dow === 0 ? -6 : (1 - dow);
+    const monday = new Date(d.getTime() + offset * 86400 * 1000);
+    const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' });
+    const parts = fmt.formatToParts(monday).reduce((acc, p) => { if (p.type !== 'literal') acc[p.type] = p.value; return acc; }, {});
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  }
+
+  function computeWeeklyAllowance(items) {
+    const result = new Map();
+    if (!items || items.length === 0) return result;
+
+    // (empId, weekStart) → records[]
+    const groups = new Map();
+    for (const r of items) {
+      if (!r.date) continue;
+      const weekStart = _mondayOfWeekKST(r.date);
+      const key = `${r.employee_id}|${weekStart}`;
+      if (!groups.has(key)) groups.set(key, { weekStart, records: [] });
+      groups.get(key).records.push(r);
+    }
+
+    for (const { weekStart, records } of groups.values()) {
+      let totalWorkHours = 0;
+      let workDays = 0;
+      let hasAbsence = false;
+      let wageSum = 0;
+      let wageCount = 0;
+      let lastWorkRow = null;
+
+      for (const r of records) {
+        if (r.status === 'absence') hasAbsence = true;
+        if (r.status === 'day_off') continue;
+        if (STATUS_WORK.includes(r.status)) {
+          workDays++;
+          const wh = r.work_hours != null ? Number(r.work_hours) : 0;
+          if (Number.isFinite(wh)) totalWorkHours += wh;
+          const wage = r.hourly_rate_snapshot != null ? Number(r.hourly_rate_snapshot) : 0;
+          if (Number.isFinite(wage) && wage > 0) { wageSum += wage; wageCount++; }
+          if (!lastWorkRow || r.date > lastWorkRow.date) lastWorkRow = r;
+        }
+      }
+
+      const hourlyWageUsed = wageCount > 0 ? Math.round(wageSum / wageCount) : 0;
+      const averageDailyHours = workDays > 0
+        ? Math.min(MAX_DAILY_HOURS_FOR_ALLOWANCE, totalWorkHours / workDays)
+        : 0;
+
+      // eligible / reason 판정 — 사장님이 표 안에서 사유까지 보고 싶다고 함
+      let eligible = false, amount = 0, reason = null;
+      if (workDays === 0) reason = '출근 없음';
+      else if (hasAbsence) reason = '결근';
+      else if (totalWorkHours < MIN_WEEKLY_HOURS) reason = `${Math.round(totalWorkHours * 10) / 10}h / 15h`;
+      else if (hourlyWageUsed === 0) reason = '시급 미등록';
+      else {
+        eligible = true;
+        amount = Math.round(averageDailyHours * hourlyWageUsed);
+      }
+
+      const info = {
+        eligible, amount, reason,
+        totalHours: Math.round(totalWorkHours * 10) / 10,
+        workDays,
+        weekStart,
+        weekEnd: (() => {
+          const d = new Date(`${weekStart}T00:00:00+09:00`);
+          const e = new Date(d.getTime() + 6 * 86400 * 1000);
+          const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' });
+          const parts = fmt.formatToParts(e).reduce((acc, p) => { if (p.type !== 'literal') acc[p.type] = p.value; return acc; }, {});
+          return `${parts.year}-${parts.month}-${parts.day}`;
+        })(),
+      };
+
+      // 그 주의 모든 출근 row 에 info 매핑 — 마지막 출근 row 만 isLastWorkRow=true
+      for (const r of records) {
+        if (!STATUS_WORK.includes(r.status)) continue;
+        result.set(r.id, {
+          ...info,
+          isLastWorkRow: lastWorkRow != null && r.id === lastWorkRow.id,
+        });
+      }
+    }
+
+    return result;
+  }
+
+  // 주휴 칸 1개의 HTML — weeklyMap.get(r.id) 결과 → 표시
+  function holidayCellHtml(info) {
+    if (!info) return '';   // 휴무/결근 row
+    if (info.isLastWorkRow) {
+      if (info.eligible) {
+        return `<span style="display:inline-block;padding:3px 8px;background:#3a2e00;border:1px solid #6a5400;border-radius:8px;color:#ffd54f;font-size:11px;font-weight:700;" title="${info.weekStart}~${info.weekEnd} · ${info.totalHours}h × ${info.workDays}일">✓ ${Number(info.amount).toLocaleString('ko-KR')}원</span>`;
+      }
+      return `<span style="display:inline-block;padding:3px 8px;background:#2a2a2a;border:1px solid #444;border-radius:8px;color:#999;font-size:10px;" title="${info.weekStart}~${info.weekEnd} · ${info.totalHours}h × ${info.workDays}일">✗ 미발생 (${info.reason})</span>`;
+    }
+    // 그 주의 다른 출근 row — 작은 점선/점만
+    if (info.eligible) {
+      return `<span style="color:#666;font-size:11px;" title="${info.weekStart}~${info.weekEnd} 주 · 마지막 출근일에 합산">· 발생</span>`;
+    }
+    return `<span style="color:#555;font-size:11px;" title="${info.weekStart}~${info.weekEnd} 주 · ${info.reason}">·</span>`;
   }
 
   function editRow(id) {
