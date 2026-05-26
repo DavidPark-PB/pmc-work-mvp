@@ -115,9 +115,9 @@
         <input type="month" id="filter-month" value="${currentMonth()}" style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
       </div>`}
 
-      <div id="payroll-summary" style="display:none;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
+      <div id="payroll-summary" style="display:block;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-          <h3 style="color:#fff;font-size:14px;margin:0;">💰 급여 합계</h3>
+          <h3 style="color:#fff;font-size:14px;margin:0;">💰 급여 합계 <span style="color:#888;font-weight:400;font-size:11px;">(주휴수당 포함)</span></h3>
           <button type="button" onclick="pmcAttendance.togglePayroll()" style="padding:4px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">닫기</button>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:12px;">
@@ -173,8 +173,15 @@
     // 내가 선택한 날짜에 본인 기록이 있으면 자동으로 수정 모드 진입 (편의)
     autoEnterEditIfExists();
 
-    if (empId && month) await loadSummary(empId, month);
-    else clearSummary();
+    // 급여 합계 패널 — 직원 선택 안 됐으면(admin 전체보기) 숨김, 선택했으면 펼침 + 자동 로드
+    const summaryEl = document.getElementById('payroll-summary');
+    if (empId && month) {
+      if (summaryEl) summaryEl.style.display = 'block';
+      await loadSummary(empId, month);
+    } else {
+      if (summaryEl) summaryEl.style.display = 'none';
+      clearSummary();
+    }
   }
 
   function renderQuickCard() {
