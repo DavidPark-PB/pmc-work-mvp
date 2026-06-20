@@ -94,19 +94,19 @@ this.sessionId = sessionData.SESSION_ID;
     return res;
   }
 
-  async getOrders(opts) {
-    const body = {
-      START_DATE: opts.startDate,
-      END_DATE: opts.endDate,
-      ORDER_STATUS: opts.status || '1',
-    };
-    if (opts.platform && PLATFORM_CODES[opts.platform]) {
-      body.MALL_CODE = PLATFORM_CODES[opts.platform];
-    }
-    const res = await this.call('/OAPI/V2/Sale/GetOrderListMall', body);
-    if (!res || !res.Data) return [];
-    return Array.isArray(res.Data) ? res.Data : [];
+ async getOrders(opts) {
+  const body = {
+    START_DATE: opts.startDate,
+    END_DATE:   opts.endDate,
+  };
+  if (opts.platform && PLATFORM_CODES[opts.platform]) {
+    body.MALL_CODE = PLATFORM_CODES[opts.platform];
   }
+  const res = await this.call('/OAPI/V2/Sale/GetOrderListMall', body);
+  console.log('[Ecount] getOrders 응답:', JSON.stringify(res).slice(0, 500));
+  if (!res || !res.Data) return [];
+  return Array.isArray(res.Data) ? res.Data : [];
+}
 
   normalizeOrder(r) {
     return {
