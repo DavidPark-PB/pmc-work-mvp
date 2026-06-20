@@ -74,12 +74,11 @@ class EcountAPI {
         ZONE: zone,
       }
     );
-    if (!res || !res.Data || !res.Data.SESSION_ID) {
-      throw new Error('로그인 실패: ' + JSON.stringify(res));
-    }
-    this.sessionId = res.Data.SESSION_ID;
-    this.sessionAt = Date.now();
-    return this.sessionId;
+    const sessionData = (res.Data && res.Data.Datas) ? res.Data.Datas : res.Data;
+if (!sessionData || !sessionData.SESSION_ID) {
+  throw new Error('로그인 실패: ' + JSON.stringify(res));
+}
+this.sessionId = sessionData.SESSION_ID;
   }
 
   async call(path, body, retry) {
