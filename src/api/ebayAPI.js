@@ -566,6 +566,10 @@ class EbayAPI {
           const checkoutStatus = this.extractValue(order, 'eBayPaymentStatus')
             || this.extractValue(order, 'CompleteStatus') || '';
           const paidTime = this.extractValue(order, 'PaidTime') || '';
+          // 진단 강화 2026-06-23: OrderStatus 자체도 같이 보관 (eBay API filter 가
+          // 정확히 작동하지 않을 가능성 — 응답에 AwaitingShipment 외 다른 상태가
+          // 섞여 있는지 확인 필요)
+          const orderStatus = this.extractValue(order, 'OrderStatus') || '';
 
           allOrders.push({
             ebayOrderId: this.extractValue(order, 'OrderID'),
@@ -589,6 +593,7 @@ class EbayAPI {
             _cancelStatus: cancelStatus,
             _checkoutStatus: checkoutStatus,
             _paidTime: paidTime,
+            _orderStatus: orderStatus,
           });
         }
 

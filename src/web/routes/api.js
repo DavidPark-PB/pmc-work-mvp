@@ -3189,6 +3189,37 @@ router.get('/orders/sync-debug', async (req, res) => {
     const OrderSync = require('../../services/orderSync');
     const sync = new OrderSync();
 
+    // eBay raw 데이터 직접 받기 — 필터 전 분포 확인용
+    const ebayRaw = await sync.ebay.getAwaitingShipmentOrders(days).catch(() => []);
+
+    // 1) OrderStatus 별 분포
+    const orderStatusBreakdown = {};
+    // 2) ShippedTime 있는 것 vs 없는 것 분포
+    const shippedTimeBreakdown = { withShippedTime: 0, withoutShippedTime: 0, epoch: 0 };
+    // 3) 첫 5개 sample (사장님이 seller hub 에서 검색 후 비교 가능)
+    const samples = [];
+    for (const o of ebayRaw) {
+      const os = o._orderStatus || '(empty)';
+      orderStatusBreakdown[os] = (orderStatusBreakdown[os] || 0) + 1;
+      const st = (o._shippedTime || '').trim();
+      if (!st) shippedTimeBreakdown.withoutShippedTime++;
+      else if (/^0001-01-01/.test(st)) shippedTimeBreakdown.epoch++;
+      else shippedTimeBreakdown.withShippedTime++;
+      if (samples.length < 5) {
+        samples.push({
+          ebayOrderId: o.ebayOrderId,
+          createdDate: o.createdDate,
+          orderStatus: o._orderStatus,
+          shippedTime: o._shippedTime,
+          cancelStatus: o._cancelStatus,
+          checkoutStatus: o._checkoutStatus,
+          paidTime: o._paidTime,
+          buyerName: o.shippingName,
+          country: o.shippingCountry,
+        });
+      }
+    }
+
     const [ebayResult, shopifyResult] = await Promise.all([
       sync.fetchEbayOrders(days).then(orders => ({ ok: true, count: orders.length, sample: orders.slice(0, 3) }))
                                 .catch(e => ({ ok: false, error: e.message })),
@@ -3230,7 +3261,13 @@ router.get('/orders/sync-debug', async (req, res) => {
         ok: ebayResult.ok,
         error: ebayResult.error,
         skipBreakdown: sync._lastEbaySkipCounts || null,
-        note: 'eBay GetOrders OrderStatus=AwaitingShipment 후 ShippedTime/CancelStatus/PaidTime 보강 필터링. skipBreakdown 으로 어떤 사유로 제외됐는지 확인.',
+        rawDistribution: {
+          orderStatus: orderStatusBreakdown,
+          shippedTime: shippedTimeBreakdown,
+          totalRaw: ebayRaw.length,
+        },
+        samples,  // 첫 5개 — 사장님 seller hub 에서 같은 ID 검색해서 상태 비교
+        note: 'rawDistribution 으로 진짜 분포 확인. samples 의 ebayOrderId 를 seller hub 에서 검색해서 우리 시스템 판정과 실제 상태가 일치하는지 확인.',
       },
       shopify: {
         recordsAfterLineItemSplit: shopifyResult.count,
