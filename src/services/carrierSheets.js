@@ -376,7 +376,10 @@ class CarrierSheets {
 
     // 상품 정보 → 직원 수동 입력 (row[44]~row[69] 비워둠)
 
-    const nextRow = await this.findNextRow(spreadsheetId, sheetTab);
+    // A열(주문번호)에서 첫 빈 행 찾기 — 헤더 바로 다음부터 채워지게.
+    // (사장님 보고 2026-06-23 — findNextRow 는 템플릿의 흩어진 셀 때문에 38행쯤에서
+    //  시작했음. 쉽터/findNextEmptyRow 와 동일 패턴으로 A열만 보고 정확히 다음 행 잡음.)
+    const nextRow = await this.findNextEmptyRow(spreadsheetId, sheetTab, 'A');
     await this.sheets.writeData(spreadsheetId, `'${sheetTab}'!A${nextRow}`, [row]);
     console.log(`✅ KPL 시트 '${sheetTab}' 행 ${nextRow}에 주문 ${orderNo} 추가`);
 
