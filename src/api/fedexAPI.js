@@ -106,7 +106,10 @@ class FedexAPI {
         totalWeight,
         requestedPackageLineItems: this._packages(packages),
         customsClearanceDetail: customsValue ? {
-          dutiesPayment: { paymentType: 'RECIPIENT' },
+          // PMC FedEx 계정 (675115532) 은 SENDER 만 허용 — RECIPIENT 면 'Selected Payment
+// Type is not allowed' 에러. 즉 관세는 발송인(PMC) 이 부담하는 DDP 방식.
+// (이게 청구 부담이라 운영상 추후 EAB 계정 변경 / 수취인 부담 옵션 신청 검토 필요)
+dutiesPayment: { paymentType: 'SENDER', payor: { responsibleParty: { accountNumber: { value: this.accountNumber } } } },
           commodities: [{
             description: 'General Merchandise',
             quantity: 1,
@@ -180,7 +183,10 @@ class FedexAPI {
           payor: { responsibleParty: { accountNumber: { value: this.accountNumber } } },
         },
         customsClearanceDetail: customs ? {
-          dutiesPayment: { paymentType: 'RECIPIENT' },
+          // PMC FedEx 계정 (675115532) 은 SENDER 만 허용 — RECIPIENT 면 'Selected Payment
+// Type is not allowed' 에러. 즉 관세는 발송인(PMC) 이 부담하는 DDP 방식.
+// (이게 청구 부담이라 운영상 추후 EAB 계정 변경 / 수취인 부담 옵션 신청 검토 필요)
+dutiesPayment: { paymentType: 'SENDER', payor: { responsibleParty: { accountNumber: { value: this.accountNumber } } } },
           commercialInvoice: { termsOfSale: 'FOB' },
           commodities: (customs.commodities || [{
             description: 'General Merchandise',
