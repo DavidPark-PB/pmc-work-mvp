@@ -509,13 +509,18 @@ class EbayAPI {
    * GetOrders with OrderStatus=Active — 배송 대기 주문 전체 (시간 제한 없음)
    * GetSellerTransactions은 최근 N일만 조회하지만, 이 API는 현재 미배송 주문을 전부 가져옴
    */
-  async getAwaitingShipmentOrders() {
+  async getAwaitingShipmentOrders(daysOverride = null) {
     const allOrders = [];
     let pageNumber = 1;
 
     // eBay GetOrders requires a date filter (max 30 days for ModTime).
-    // AwaitingShipment orders are always recent — 30 days covers all practical cases.
-    const modTimeFrom = new Date(Date.now() - 30 * 86400000).toISOString();
+    // 사장님 보고 2026-06-23: ModTime 30일 + AwaitingShipment 으로 900건 반환되는데
+    // seller hub 는 35건. 트래킹 입력 안 된 옛 주문이 모두 awaiting 으로 남는 eBay 특성.
+    // 호출 시 daysOverride 명시하면 그것 사용 (운영 환경에서 7~14일로 좁힐 수 있음).
+    const days = daysOverride != null
+      ? Math.max(1, Math.min(30, parseInt(daysOverride, 10)))
+      : 30;
+    const modTimeFrom = new Date(Date.now() - days * 86400000).toISOString();
     const modTimeTo = new Date().toISOString();
 
     try {

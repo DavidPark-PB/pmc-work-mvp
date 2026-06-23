@@ -43,9 +43,9 @@ class OrderSync {
     await this.ensureSheet();
 
     // 2. 플랫폼별 주문 수집 (병렬) — awaiting shipment / unfulfilled 주문만
-    //    days 범위로 최근 주문만 (Shopify는 오래된 unfulfilled 주문이 1000건+ 쌓여있을 수 있음)
+    //    days 범위로 최근 주문만 (eBay 도 trackingless 옛 주문 누적 방지용으로 동일 days 적용).
     const [ebayOrders, shopifyOrders] = await Promise.all([
-      this.fetchEbayOrders().catch(err => {
+      this.fetchEbayOrders(days).catch(err => {
         errors.push(`eBay: ${err.message}`);
         return [];
       }),
@@ -310,8 +310,8 @@ class OrderSync {
    * eBay 주문 가져오기 — AwaitingShipment(결제완료+미배송) 주문만 수집
    * 날짜 기반 조회(getSellerTransactions)를 제거하고 배송 대기 주문만 가져옴
    */
-  async fetchEbayOrders() {
-    const awaitingOrders = await this.ebay.getAwaitingShipmentOrders();
+  async fetchEbayOrders(daysOverride = null) {
+    const awaitingOrders = await this.ebay.getAwaitingShipmentOrders(daysOverride);
 
     const seen = new Set();
     const result = [];

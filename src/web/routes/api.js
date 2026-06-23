@@ -3190,8 +3190,8 @@ router.get('/orders/sync-debug', async (req, res) => {
     const sync = new OrderSync();
 
     const [ebayResult, shopifyResult] = await Promise.all([
-      sync.fetchEbayOrders().then(orders => ({ ok: true, count: orders.length, sample: orders.slice(0, 3) }))
-                            .catch(e => ({ ok: false, error: e.message })),
+      sync.fetchEbayOrders(days).then(orders => ({ ok: true, count: orders.length, sample: orders.slice(0, 3) }))
+                                .catch(e => ({ ok: false, error: e.message })),
       sync.fetchShopifyOrders(days).then(orders => ({ ok: true, count: orders.length, sample: orders.slice(0, 3) }))
                                    .catch(e => ({ ok: false, error: e.message })),
     ]);
