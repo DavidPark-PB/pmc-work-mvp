@@ -644,8 +644,14 @@
     <div class="menu-item" data-page="thumbnail" style="color:#ff9800;font-weight:600">썸네일 만들기</div>
     <div class="menu-title">배송</div>
     <div class="menu-item" data-page="shipping" style="color:#0288d1;font-weight:600">배송 관리</div>
+    <!-- 사장님 결정 2026-06-23: 모든 배송 기능 (견적 비교 + 페덱스 + 무게 수정) 을 '배송 관리' 한 화면에 통합.
+         아래 두 메뉴는 페이지 div(#page-shipping-recs, #page-shipping-recs-wms) 와 라우팅은 유지하되
+         사이드바에서만 숨김 — 필요하면 style="" 제거로 재노출 가능.
     <div class="menu-item" data-page="shipping-recs" style="color:#81c784;font-weight:600">📦 배송 추천</div>
     <div class="menu-item" data-page="shipping-recs-wms" style="color:#ffd54f;font-weight:700">🆕 배송 추천 (자동계산)</div>
+    -->
+    <div class="menu-item" data-page="shipping-recs" style="display:none">📦 배송 추천 (숨김)</div>
+    <div class="menu-item" data-page="shipping-recs-wms" style="display:none">🆕 배송 추천 (자동계산) (숨김)</div>
     <div class="menu-title">분석</div>
     <div class="menu-item" data-page="battle" style="color:#e94560;font-weight:600">전투 상황판</div>
     <div class="menu-item" data-page="analysis">매출/마진 분석</div>
@@ -3441,7 +3447,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260506b"></script>
+  <script src="/js/dashboard.js?v=20260623unified"></script>
   <script src="/js/operations.js?v=20260420a"></script>
   <script src="/js/catalog.js?v=20260512batch"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->

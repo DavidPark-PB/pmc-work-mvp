@@ -448,9 +448,11 @@ router.get('/fedex-status', async (req, res) => {
 
 router.post('/fedex-quote', async (req, res) => {
   try {
-    const orderId = parseInt(req.body?.orderId, 10);
-    if (!Number.isFinite(orderId)) {
-      return res.status(400).json({ ok: false, error: 'orderId 가 필요합니다' });
+    // orderId (배송 추천 화면) 또는 orderNo (배송 관리 화면) — 양방향 lookup 지원
+    const orderId = req.body?.orderId != null ? parseInt(req.body.orderId, 10) : null;
+    const orderNo = req.body?.orderNo ? String(req.body.orderNo).trim() : null;
+    if (!Number.isFinite(orderId) && !orderNo) {
+      return res.status(400).json({ ok: false, error: 'orderId 또는 orderNo 가 필요합니다' });
     }
 
     const { getFedexAPI } = require('../../api/fedexAPI');
@@ -463,17 +465,16 @@ router.post('/fedex-quote', async (req, res) => {
     }
 
     const db = getClient();
-    const { data: order, error } = await db.from('orders')
-      .select(`
-        id, order_no, sku, quantity,
-        street, city, province, zip_code, country_code,
-        weight_kg, box_length, box_width, box_height,
-        payment_amount, currency
-      `)
-      .eq('id', orderId)
-      .maybeSingle();
+    let oq = db.from('orders').select(`
+      id, order_no, sku, quantity,
+      street, city, province, zip_code, country_code,
+      weight_kg, box_length, box_width, box_height,
+      payment_amount, currency
+    `);
+    oq = Number.isFinite(orderId) ? oq.eq('id', orderId) : oq.eq('order_no', orderNo);
+    const { data: order, error } = await oq.maybeSingle();
     if (error) throw error;
-    if (!order) return res.status(404).json({ ok: false, error: `주문 ${orderId} 없음` });
+    if (!order) return res.status(404).json({ ok: false, error: `주문 ${orderId || orderNo} 없음` });
 
     if (!order.street || !order.zip_code || !order.country_code) {
       return res.status(400).json({

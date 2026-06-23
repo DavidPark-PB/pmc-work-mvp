@@ -6460,6 +6460,119 @@ async function shippingSaveWeight(rowIdx, sku, orderNo) {
   }
 }
 
+// 배송 추천 패널 렌더링 (분리 — 페덱스 자동 추가 후 재호출용)
+// 사장님 spec 2026-06-23: 한 화면에 모든 기능 통합 (배송 추천 메뉴 따로 X).
+// 페덱스도 자동 견적 + 무게/치수 항상 수정 가능.
+function shippingRenderEstimatePanel(rowIdx, orderNo, data) {
+  const panel = document.getElementById(`est-panel-${rowIdx}`);
+  if (!panel) return;
+  const sku = data.sku || '';
+  const wKg = data.weightKg || '';
+  const dims = data.dims || {};
+
+  let html = `<div style="border:1px solid #e0e0e0;border-radius:6px;padding:6px;background:#fafafa;font-size:10px;min-width:340px">`;
+
+  // 무게/치수 입력 — 항상 표시 (사장님 spec: 잘못 입력해도 재수정 가능)
+  // 무게 없으면 주황 강조, 있으면 회색 (이미 입력됨 상태로 표시)
+  const hasWeight = !!data.weightKg;
+  const headerBg = hasWeight ? '#f5f5f5' : '#fff3e0';
+  const headerBorder = hasWeight ? '#ccc' : '#ffb74d';
+  const headerColor = hasWeight ? '#555' : '#e65100';
+  const headerLabel = hasWeight
+    ? `✏️ 무게/치수 수정 — 현재: ${wKg}kg ${dims.l ? `· ${dims.l}×${dims.w}×${dims.h}cm` : ''}`
+    : '⚠️ 무게 미설정 — 입력하면 견적 자동 계산';
+  html += `<div style="background:${headerBg};border:1px solid ${headerBorder};border-radius:4px;padding:5px 6px;margin-bottom:6px;font-size:9px">
+    <div style="color:${headerColor};font-weight:600;margin-bottom:4px">${headerLabel}</div>
+    <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+      <label style="font-size:9px;color:#555">무게(kg)</label>
+      <input id="wgt-${rowIdx}" type="number" step="0.01" min="0" value="${wKg}" placeholder="0.00" style="width:55px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
+      <label style="font-size:9px;color:#555">가로</label>
+      <input id="diml-${rowIdx}" type="number" step="0.1" min="0" value="${dims.l || ''}" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
+      <label style="font-size:9px;color:#555">세로</label>
+      <input id="dimw-${rowIdx}" type="number" step="0.1" min="0" value="${dims.w || ''}" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
+      <label style="font-size:9px;color:#555">높이</label>
+      <input id="dimh-${rowIdx}" type="number" step="0.1" min="0" value="${dims.h || ''}" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
+      <button onclick="shippingSaveWeight('${rowIdx}','${sku}','${orderNo}')"
+              style="padding:2px 8px;border:none;border-radius:4px;background:#e65100;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap">💾 저장 후 재계산</button>
+    </div>
+  </div>`;
+
+  // 견적 list — 가격순. FedEx 라이브가 통합돼 있을 수 있음.
+  if (data.estimates && data.estimates.length > 0) {
+    data.estimates.forEach((e) => {
+      const star = e.isRecommended ? '⭐' : '　';
+      const bg = e.isRecommended ? '#e3f2fd' : '#fff';
+      const isFedexLive = e.carrier === 'FedEx' && e.live === true;
+      const isKPacketLive = e.carrier === 'KPacket' && e.live === true;
+      const liveBadge = (isFedexLive || isKPacketLive)
+        ? '<span style="background:#2e7d32;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-left:2px">LIVE</span>'
+        : '';
+      let labelBtn = '';
+      if (isFedexLive) {
+        // serviceType 는 e.serviceType (페덱스 코드). 없으면 e.service.
+        const svcType = e.serviceType || e.service;
+        labelBtn = `<button onclick='shippingFedexLabel(${JSON.stringify({orderNo, rowIdx, serviceType: svcType, weightKg: data.weightKg, dims: data.dims})})' style="padding:1px 6px;border:1px solid #2e7d32;border-radius:8px;background:#2e7d32;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap;margin-left:2px" title="FedEx 라벨 즉시 발급">🖨 라벨</button>`;
+      } else if (isKPacketLive) {
+        const kpService = /EMS/i.test(e.service) ? 'EMS' : 'KPACKET';
+        labelBtn = `<button onclick='shippingKoreaPostLabel(${JSON.stringify({orderNo, rowIdx, serviceType: kpService, weightKg: data.weightKg, dims: data.dims})})' style="padding:1px 6px;border:1px solid #2e7d32;border-radius:8px;background:#2e7d32;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap;margin-left:2px" title="우체국 라벨 즉시 발급">🖨 라벨</button>`;
+      }
+      html += `<div style="display:flex;align-items:center;gap:5px;padding:3px 4px;border-radius:4px;background:${bg};margin-bottom:2px">
+        <span style="width:16px;font-size:10px">${star}</span>
+        <span style="font-weight:600;min-width:110px;font-size:9px">${esc(e.carrier)} <span style="color:#666;font-weight:400">${esc(e.service)}</span>${liveBadge}</span>
+        <span style="color:${e.priceKRW ? '#c62828' : '#f57c00'};font-weight:700;min-width:55px;font-size:10px">${e.priceKRW ? '₩' + e.priceKRW.toLocaleString() : '무게 필요'}</span>
+        <span style="color:#666;min-width:40px;font-size:9px">${esc(e.days)}</span>
+        <button onclick="shippingSetCarrier('${rowIdx}','${e.carrier.replace(/'/g,"\\'")}');document.getElementById('est-panel-${rowIdx}').style.display='none';document.getElementById('est-btn-${rowIdx}').textContent='배송사 추천 ▼';"
+                style="padding:1px 8px;border:1px solid #1565c0;border-radius:8px;background:#1565c0;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap">선택</button>
+        ${labelBtn}
+      </div>`;
+    });
+  } else if (data.weightKg) {
+    html += `<div style="color:#666;font-size:9px">해당 국가 배송 가능한 배송사 없음</div>`;
+  } else {
+    html += `<div style="color:#888;font-size:9px;padding:4px">무게를 입력하면 5~6개 배송사 견적이 계산됩니다.</div>`;
+  }
+
+  // FedEx 견적 상태 (자동 호출 중 / 완료 / 실패)
+  html += `<div id="fedex-status-${rowIdx}" style="color:#888;font-size:9px;margin-top:4px"></div>`;
+  html += `</div>`;
+  panel.innerHTML = html;
+}
+
+// 패널에 FedEx 라이브 견적 추가 (자동 호출). 이미 estimates 에 페덱스 있으면 skip.
+async function shippingAddFedexEstimate(rowIdx, orderNo, data) {
+  if (!data.weightKg) return;
+  if ((data.estimates || []).some(e => e.carrier === 'FedEx' && e.live === true)) return;
+
+  const status = document.getElementById(`fedex-status-${rowIdx}`);
+  if (status) { status.textContent = '⏳ FedEx 라이브 견적 호출 중...'; status.style.color = '#1565c0'; }
+
+  try {
+    const res = await fetch('/api/shipping/recommendations/fedex-quote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderNo }),
+    });
+    const j = await res.json();
+    if (!res.ok || !j.ok) throw new Error(j.error || 'FedEx 견적 실패');
+    if (!j.cheapest) { if (status) status.textContent = 'FedEx 견적 없음 (해당 국가/무게 미지원)'; return; }
+
+    data.estimates = data.estimates || [];
+    data.estimates.push({
+      carrier: 'FedEx',
+      service: j.cheapest.serviceName || j.cheapest.serviceType,
+      serviceType: j.cheapest.serviceType,
+      priceKRW: Math.round(j.cheapest.cost),
+      days: j.cheapest.etaDays ? `${j.cheapest.etaDays}일` : '',
+      live: true,
+    });
+    data.estimates.sort((a, b) => (a.priceKRW || 9e9) - (b.priceKRW || 9e9));
+    data.estimates.forEach((e, i) => { e.isRecommended = i === 0; });
+    shippingRenderEstimatePanel(rowIdx, orderNo, data);
+  } catch (e) {
+    if (status) { status.textContent = '❌ FedEx 견적 실패: ' + e.message; status.style.color = '#c62828'; }
+  }
+}
+
 async function shippingShowEstimate(rowIdx, orderNo) {
   const panel = document.getElementById(`est-panel-${rowIdx}`);
   const btn = document.getElementById(`est-btn-${rowIdx}`);
@@ -6477,60 +6590,11 @@ async function shippingShowEstimate(rowIdx, orderNo) {
     const data = await res.json();
     if (!data.success) throw new Error(data.error);
 
-    let html = `<div style="border:1px solid #e0e0e0;border-radius:6px;padding:6px;background:#fafafa;font-size:10px;min-width:300px">`;
-    if (!data.weightKg) {
-      html += `<div style="background:#fff3e0;border:1px solid #ffb74d;border-radius:4px;padding:5px 6px;margin-bottom:6px;font-size:9px">
-        <div style="color:#e65100;font-weight:600;margin-bottom:4px">⚠️ 무게 미설정 — 제품 정보를 입력하세요</div>
-        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-          <label style="font-size:9px;color:#555">무게(kg)</label>
-          <input id="wgt-${rowIdx}" type="number" step="0.01" placeholder="0.00" style="width:55px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
-          <label style="font-size:9px;color:#555">가로</label>
-          <input id="diml-${rowIdx}" type="number" step="0.1" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
-          <label style="font-size:9px;color:#555">세로</label>
-          <input id="dimw-${rowIdx}" type="number" step="0.1" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
-          <label style="font-size:9px;color:#555">높이</label>
-          <input id="dimh-${rowIdx}" type="number" step="0.1" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
-          <button onclick="shippingSaveWeight('${rowIdx}','${data.sku}','${orderNo}')"
-                  style="padding:2px 8px;border:none;border-radius:4px;background:#e65100;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap">저장 후 계산</button>
-        </div>
-      </div>`;
-    }
-    if (data.estimates && data.estimates.length > 0) {
-      data.estimates.forEach((e, eIdx) => {
-        const star = e.isRecommended ? '⭐' : '　';
-        const bg = e.isRecommended ? '#e3f2fd' : '#fff';
-        // 라이브 견적 (FedEx, 우체국 KPacket/EMS) 이면 라벨 즉시 발급 버튼 추가
-        const isFedexLive = e.carrier === 'FedEx' && e.live === true;
-        const isKPacketLive = e.carrier === 'KPacket' && e.live === true;
-        const liveBadge = (isFedexLive || isKPacketLive)
-          ? '<span style="background:#2e7d32;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-left:2px">LIVE</span>'
-          : '';
-        let labelBtn = '';
-        if (isFedexLive) {
-          labelBtn = `<button onclick='shippingFedexLabel(${JSON.stringify({orderNo, rowIdx, serviceType:e.service, weightKg:data.weightKg, dims:data.dims})})' style="padding:1px 6px;border:1px solid #2e7d32;border-radius:8px;background:#2e7d32;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap;margin-left:2px" title="FedEx 라벨 즉시 발급">🖨 라벨</button>`;
-        } else if (isKPacketLive) {
-          // service 문자열에서 EMS / KPACKET 구분
-          const kpService = /EMS/i.test(e.service) ? 'EMS' : 'KPACKET';
-          labelBtn = `<button onclick='shippingKoreaPostLabel(${JSON.stringify({orderNo, rowIdx, serviceType: kpService, weightKg:data.weightKg, dims:data.dims})})' style="padding:1px 6px;border:1px solid #2e7d32;border-radius:8px;background:#2e7d32;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap;margin-left:2px" title="우체국 라벨 즉시 발급">🖨 라벨</button>`;
-        }
-        const fedexLabelBtn = labelBtn;
-        html += `<div style="display:flex;align-items:center;gap:5px;padding:3px 4px;border-radius:4px;background:${bg};margin-bottom:2px">
-          <span style="width:16px;font-size:10px">${star}</span>
-          <span style="font-weight:600;min-width:110px;font-size:9px">${esc(e.carrier)} <span style="color:#666;font-weight:400">${esc(e.service)}</span>${liveBadge}</span>
-          <span style="color:${e.priceKRW ? '#c62828' : '#f57c00'};font-weight:700;min-width:55px;font-size:10px">${e.priceKRW ? '₩' + e.priceKRW.toLocaleString() : '무게 필요'}</span>
-          <span style="color:#666;min-width:40px;font-size:9px">${esc(e.days)}</span>
-          <button onclick="shippingSetCarrier('${rowIdx}','${e.carrier.replace(/'/g,"\\'")}');document.getElementById('est-panel-${rowIdx}').style.display='none';document.getElementById('est-btn-${rowIdx}').textContent='배송사 추천 ▼';"
-                  style="padding:1px 8px;border:1px solid #1565c0;border-radius:8px;background:#1565c0;color:#fff;font-size:9px;cursor:pointer;white-space:nowrap">선택</button>
-          ${fedexLabelBtn}
-        </div>`;
-      });
-    } else {
-      html += `<div style="color:#666;font-size:9px">해당 국가 배송 가능한 배송사 없음</div>`;
-    }
-    html += `</div>`;
-    panel.innerHTML = html;
+    shippingRenderEstimatePanel(rowIdx, orderNo, data);
     panel.style.display = 'block';
     btn.textContent = '배송사 추천 ▲';
+    // 무게 있으면 FedEx 라이브 견적 자동 호출 (백그라운드)
+    if (data.weightKg) shippingAddFedexEstimate(rowIdx, orderNo, data);
   } catch (err) {
     panel.innerHTML = `<div style="color:red;font-size:10px;padding:4px">오류: ${err.message}</div>`;
     panel.style.display = 'block';
