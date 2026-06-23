@@ -387,6 +387,65 @@ router.post('/export', async (req, res) => {
 //
 // 라벨 발급은 기존 POST /api/orders/:orderNo/fedex-label 그대로 사용.
 
+// GET /api/shipping/recommendations/fedex-status — admin 진단용
+// production / 로컬에서 FedEx 환경변수가 제대로 세팅됐는지 확인.
+// 비밀값은 노출 안 함 — 채워졌는지 여부만.
+router.get('/fedex-status', async (req, res) => {
+  try {
+    const { getFedexAPI } = require('../../api/fedexAPI');
+    const fedex = getFedexAPI();
+    const isConfigured = fedex.isConfigured();
+    const apiBase = process.env.FEDEX_API_BASE || 'https://apis-sandbox.fedex.com';
+    const isProd = apiBase.includes('apis.fedex.com') && !apiBase.includes('sandbox');
+
+    const credentials = {
+      FEDEX_CLIENT_ID:       !!process.env.FEDEX_CLIENT_ID,
+      FEDEX_CLIENT_SECRET:   !!process.env.FEDEX_CLIENT_SECRET,
+      FEDEX_ACCOUNT_NUMBER:  !!process.env.FEDEX_ACCOUNT_NUMBER,
+    };
+    const origin = {
+      FEDEX_ORIGIN_NAME:    !!process.env.FEDEX_ORIGIN_NAME,
+      FEDEX_ORIGIN_PHONE:   !!process.env.FEDEX_ORIGIN_PHONE,
+      FEDEX_ORIGIN_STREET:  !!process.env.FEDEX_ORIGIN_STREET,
+      FEDEX_ORIGIN_CITY:    !!process.env.FEDEX_ORIGIN_CITY,
+      FEDEX_ORIGIN_STATE:   !!process.env.FEDEX_ORIGIN_STATE,
+      FEDEX_ORIGIN_ZIP:     !!process.env.FEDEX_ORIGIN_ZIP,
+      FEDEX_ORIGIN_COUNTRY: !!process.env.FEDEX_ORIGIN_COUNTRY,
+    };
+    const allOriginSet = Object.values(origin).every(v => v);
+    const missingCredentials = Object.entries(credentials).filter(([k, v]) => !v).map(([k]) => k);
+    const missingOrigin = Object.entries(origin).filter(([k, v]) => !v).map(([k]) => k);
+
+    // 토큰 발급까지 실제로 시도해서 자격증명이 실제로 유효한지 확인 (선택적)
+    let tokenTest = null;
+    if (isConfigured && req.query.test === '1') {
+      try {
+        await fedex.getAccessToken();
+        tokenTest = { ok: true };
+      } catch (e) {
+        tokenTest = { ok: false, error: e.message };
+      }
+    }
+
+    res.json({
+      isConfigured,             // 자격증명 3개 모두 세팅됐는지
+      mode: isProd ? 'production' : 'sandbox',
+      apiBase,
+      credentials,
+      origin,
+      allOriginSet,
+      missingCredentials,
+      missingOrigin,
+      tokenTest,                // ?test=1 시에만 실제 토큰 발급 시도 결과
+      hint: !isConfigured
+        ? `Railway 환경변수에 [${missingCredentials.join(', ')}] 설정 필요`
+        : (!allOriginSet ? `출발지 정보 누락: [${missingOrigin.join(', ')}]` : '✅ 모든 환경변수 OK'),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.post('/fedex-quote', async (req, res) => {
   try {
     const orderId = parseInt(req.body?.orderId, 10);
