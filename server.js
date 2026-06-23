@@ -194,6 +194,8 @@ app.use('/api/payroll/periods', require('./src/web/routes/payrollPeriods'));
 // Phase 2B: 배송사 추천 (DB 변경 없음, 추천 결과 매번 계산)
 app.use('/api/shipping/recommendations', require('./src/web/routes/shippingRecommendations'));
 app.use('/api/ecount', require('./src/web/routes/ecountShipping'));
+// 사장님 spec 2026-06-23: ecountERP 국내 (naver/coupang) 주문 → 배송 관리 + 우체국 자동 라벨
+app.use('/api/ecount-domestic', require('./src/web/routes/ecountDomestic'));
 app.use('/api/payroll', require('./src/web/routes/payroll'));
 app.use('/api/bonuses', require('./src/web/routes/bonuses'));
 
