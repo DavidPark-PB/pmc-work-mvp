@@ -3178,6 +3178,77 @@ router.post('/remarker/register', async (req, res) => {
 
 // ==================== 주문 배송 관리 ====================
 
+// GET /api/orders/sync-debug — 주문 수집 분포만 보기 (write X, read only)
+//
+// 사장님 진단용 (2026-06-23):
+//   eBay seller hub 의 awaiting shipment 건수와 우리 시스템의 sync 결과가
+//   안 맞을 때, 실제 어디서 몇 건이 오는지 분리해서 확인.
+router.get('/orders/sync-debug', async (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 30;
+    const OrderSync = require('../../services/orderSync');
+    const sync = new OrderSync();
+
+    const [ebayResult, shopifyResult] = await Promise.all([
+      sync.fetchEbayOrders().then(orders => ({ ok: true, count: orders.length, sample: orders.slice(0, 3) }))
+                            .catch(e => ({ ok: false, error: e.message })),
+      sync.fetchShopifyOrders(days).then(orders => ({ ok: true, count: orders.length, sample: orders.slice(0, 3) }))
+                                   .catch(e => ({ ok: false, error: e.message })),
+    ]);
+
+    // Shopify 원본 (line_items 분할 전) 건수도 따로 보고 싶다 — shopify.getOrders 직접 호출
+    let shopifyRawCount = null;
+    let shopifyLineItemsBreakdown = null;
+    try {
+      const createdAtMin = new Date(Date.now() - Math.max(1, days) * 86400000).toISOString();
+      const rawOrders = await sync.shopify.getOrders({
+        fulfillment_status: 'unfulfilled',
+        status: 'open',
+        created_at_min: createdAtMin,
+      });
+      shopifyRawCount = (rawOrders || []).filter(o => !o.cancelled_at).length;
+      // line_items 분포
+      const lineItemCounts = (rawOrders || []).filter(o => !o.cancelled_at).map(o => (o.line_items || []).length);
+      shopifyLineItemsBreakdown = {
+        totalOrders: lineItemCounts.length,
+        totalLineItems: lineItemCounts.reduce((s, n) => s + n, 0),
+        avgPerOrder: lineItemCounts.length > 0
+          ? (lineItemCounts.reduce((s, n) => s + n, 0) / lineItemCounts.length).toFixed(2)
+          : 0,
+        max: Math.max(0, ...lineItemCounts),
+        ordersWithMultipleItems: lineItemCounts.filter(n => n > 1).length,
+      };
+    } catch (e) {
+      shopifyRawCount = `error: ${e.message}`;
+    }
+
+    res.json({
+      success: true,
+      days,
+      ebay: {
+        count: ebayResult.count,
+        ok: ebayResult.ok,
+        error: ebayResult.error,
+        note: 'eBay GetOrders OrderStatus=AwaitingShipment (ModTime 30일). 1주문=1record.',
+      },
+      shopify: {
+        recordsAfterLineItemSplit: shopifyResult.count,
+        rawOrderCount: shopifyRawCount,
+        lineItemsBreakdown: shopifyLineItemsBreakdown,
+        ok: shopifyResult.ok,
+        error: shopifyResult.error,
+        note: 'Shopify orders 를 line_items 별로 분할해서 record 생성. 1주문에 line_items N개면 N records.',
+      },
+      totalRecords: (ebayResult.count || 0) + (shopifyResult.count || 0),
+      diagnosis: {
+        hint_if_total_too_high: '대부분 Shopify 의 line_items 분할이거나 오래된 unfulfilled 누적. Shopify 어드민에서 archive/fulfill 처리 또는 days 줄이기.',
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // GET /api/orders/sync — 주문 자동수집 → 시트 기록
 router.get('/orders/sync', async (req, res) => {
   try {
