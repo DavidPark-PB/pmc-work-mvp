@@ -3440,20 +3440,31 @@ router.get('/orders/shipping-estimate/:orderNo', async (req, res) => {
       ? { l: srcDimL, w: srcDimW, h: srcDimH }
       : null;
 
-    const { getShippingEstimatesLive } = require('../../services/shippingRates');
-    const destination = {
-      street: order.street || '',
-      city: order.city || '',
-      state: order.province || '',
-      zip: order.zip_code || '',
-      country: (order.country_code || '').toUpperCase(),
-    };
-    const estimates = await getShippingEstimatesLive(
-      (order.country_code || '').toUpperCase(),
-      weightKg,
-      dims,
-      destination,
-    );
+    // 2026-06-23: 옛 shippingRates.js (KPL 없음) → 새 shippingRateEngine 으로 통일.
+    // 5개 배송사 (KPL/쉽터/윤익스프레스/EMS프리미엄/K-Packet) 동시 견적 + 최저가 추천.
+    let estimates = [];
+    if (weightKg > 0) {
+      const { getQuotes } = require('../../services/shippingRateEngine');
+      const quotes = getQuotes({
+        country: (order.country_code || '').toUpperCase(),
+        actualKg: weightKg,
+        lengthCm: dims?.l || 0,
+        widthCm:  dims?.w || 0,
+        heightCm: dims?.h || 0,
+      });
+      // dashboard.js 가 기대하는 shape: { carrier(한글), service, priceKRW, days, isRecommended }
+      // carrierLabel 은 carrierSheets.js 의 한글 key 와 1:1 일치 — set-carrier 가 그대로 사용.
+      estimates = quotes.map(q => ({
+        carrier: q.carrierLabel,
+        service: q.service,
+        priceKRW: q.total,
+        days: '',                    // 새 엔진엔 일수 정보 없음 — 추후 추가 시 carrierLabel 별로
+        isRecommended: !!q.isCheapest,
+        note: q.note || '',
+        chargeKg: q.chargeKg,
+        volKg: q.volKg,
+      }));
+    }
 
     res.json({ success: true, orderNo, sku: order.sku, countryCode: (order.country_code || '').toUpperCase(), weightKg, dims, estimates });
   } catch (e) {
