@@ -511,21 +511,29 @@ router.post('/fedex-quote', async (req, res) => {
     const customsValue = Number(order.payment_amount) || 1;
     const currency = order.currency || 'USD';
 
+    const destination = {
+      street: order.street, city: order.city, state: order.province,
+      zip: order.zip_code, country: order.country_code,
+    };
     let services = [];
     try {
       services = await fedex.getRates({
-        destination: {
-          street: order.street, city: order.city, state: order.province,
-          zip: order.zip_code, country: order.country_code,
-        },
+        destination,
         packages: [{ weightKg, dimensions: dims }],
         customsValue,
         currency,
       });
     } catch (fedexErr) {
+      // 진단 정보 포함 — Railway 로그 + 사용자 화면 양쪽에 가시화
       return res.status(502).json({
         ok: false,
-        error: `FedEx 견적 실패: ${fedexErr.message}`,
+        error: fedexErr.message,
+        debug: {
+          destination,
+          weightKg,
+          dims,
+          hint: '주소 누락/잘못 형식 가능성 — orders.street/city/province/zip_code/country_code 확인',
+        },
       });
     }
 

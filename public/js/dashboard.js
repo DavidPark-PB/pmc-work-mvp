@@ -6553,7 +6553,11 @@ async function shippingAddFedexEstimate(rowIdx, orderNo, data) {
       body: JSON.stringify({ orderNo }),
     });
     const j = await res.json();
-    if (!res.ok || !j.ok) throw new Error(j.error || 'FedEx 견적 실패');
+    if (!res.ok || !j.ok) {
+      // backend 에서 debug 정보 같이 오면 콘솔에 출력 (운영자 진단용)
+      if (j?.debug) console.warn('[FedEx debug]', j.debug);
+      throw new Error(j.error || 'FedEx 견적 실패');
+    }
     if (!j.cheapest) { if (status) status.textContent = 'FedEx 견적 없음 (해당 국가/무게 미지원)'; return; }
 
     data.estimates = data.estimates || [];
@@ -6569,7 +6573,12 @@ async function shippingAddFedexEstimate(rowIdx, orderNo, data) {
     data.estimates.forEach((e, i) => { e.isRecommended = i === 0; });
     shippingRenderEstimatePanel(rowIdx, orderNo, data);
   } catch (e) {
-    if (status) { status.textContent = '❌ FedEx 견적 실패: ' + e.message; status.style.color = '#c62828'; }
+    if (status) {
+      // wrapping 단순화 — 'FedEx 견적 실패:' 가 메시지에 이미 있으면 추가 안 함
+      const msg = String(e.message || '').replace(/^(FedEx 견적 실패:\s*)+/, '');
+      status.innerHTML = '❌ FedEx 견적 실패: ' + esc(msg) + ' <span style="color:#888">(브라우저 콘솔 F12 에 destination 데이터 확인)</span>';
+      status.style.color = '#c62828';
+    }
   }
 }
 

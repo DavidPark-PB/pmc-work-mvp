@@ -1,6 +1,26 @@
 require('../config');
 const axios = require('axios');
 
+// 미국 주 풀네임/약자 → ISO 2-letter (FedEx 필수). 입력은 다양 ('California', 'CA', 'california') 정규화.
+const US_STATE_TO_CODE = {
+  'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA','colorado':'CO',
+  'connecticut':'CT','delaware':'DE','florida':'FL','georgia':'GA','hawaii':'HI','idaho':'ID',
+  'illinois':'IL','indiana':'IN','iowa':'IA','kansas':'KS','kentucky':'KY','louisiana':'LA',
+  'maine':'ME','maryland':'MD','massachusetts':'MA','michigan':'MI','minnesota':'MN','mississippi':'MS',
+  'missouri':'MO','montana':'MT','nebraska':'NE','nevada':'NV','new hampshire':'NH','new jersey':'NJ',
+  'new mexico':'NM','new york':'NY','north carolina':'NC','north dakota':'ND','ohio':'OH','oklahoma':'OK',
+  'oregon':'OR','pennsylvania':'PA','rhode island':'RI','south carolina':'SC','south dakota':'SD',
+  'tennessee':'TN','texas':'TX','utah':'UT','vermont':'VT','virginia':'VA','washington':'WA',
+  'west virginia':'WV','wisconsin':'WI','wyoming':'WY','district of columbia':'DC','puerto rico':'PR',
+  // 약자도 self-map (이미 약자면 그대로)
+  'al':'AL','ak':'AK','az':'AZ','ar':'AR','ca':'CA','co':'CO','ct':'CT','de':'DE','fl':'FL','ga':'GA',
+  'hi':'HI','id':'ID','il':'IL','in':'IN','ia':'IA','ks':'KS','ky':'KY','la':'LA','me':'ME','md':'MD',
+  'ma':'MA','mi':'MI','mn':'MN','ms':'MS','mo':'MO','mt':'MT','ne':'NE','nv':'NV','nh':'NH','nj':'NJ',
+  'nm':'NM','ny':'NY','nc':'NC','nd':'ND','oh':'OH','ok':'OK','or':'OR','pa':'PA','ri':'RI','sc':'SC',
+  'sd':'SD','tn':'TN','tx':'TX','ut':'UT','vt':'VT','va':'VA','wa':'WA','wv':'WV','wi':'WI','wy':'WY',
+  'dc':'DC','pr':'PR',
+};
+
 /**
  * FedEx API 클라이언트.
  * - OAuth 2.0 client_credentials grant (1시간 토큰 캐시).
@@ -64,13 +84,22 @@ class FedexAPI {
   }
 
   // 주소 객체 정규화 (구조화된 b2b_buyers 필드 → FedEx 페이로드).
+  // 사장님 보고 2026-06-23: 'service is not currently available to this origin/destination combination'
+  // 원인 — 1) 한국 origin 의 state ('Gyeonggi-do') 를 FedEx 가 인식 못함 → KR 은 state 생략.
+  //         2) 미국 destination 의 state 가 풀네임 또는 빈 값 → ISO 2자리 약자로 변환.
   _addr({ street, city, state, zip, country }) {
+    const cc = String(country || '').trim().toUpperCase();
+    let stateCode = String(state || '').trim();
+    // US 풀네임 → 2자리 약자 매핑
+    if (cc === 'US' && stateCode) stateCode = US_STATE_TO_CODE[stateCode.toLowerCase()] || stateCode.toUpperCase();
+    // KR 은 state 자체를 페이로드에서 생략 (FedEx 가 KR address 에 stateOrProvinceCode 요구 X)
+    const includeState = cc !== 'KR' && stateCode;
     return {
       streetLines: [String(street || '').trim()].filter(Boolean),
       city: String(city || '').trim() || undefined,
-      stateOrProvinceCode: String(state || '').trim() || undefined,
+      stateOrProvinceCode: includeState ? stateCode : undefined,
       postalCode: String(zip || '').trim() || undefined,
-      countryCode: String(country || '').trim().toUpperCase(),
+      countryCode: cc,
     };
   }
 
@@ -143,9 +172,17 @@ dutiesPayment: { paymentType: 'SENDER', payor: { responsibleParty: { accountNumb
         };
       }).filter(s => s.cost > 0);
     } catch (e) {
-      const err = e.response?.data?.errors?.[0]?.message || e.message;
-      console.error('[FedEx] Rate API 실패:', e.response?.data || e.message);
-      throw new Error('FedEx 견적 실패: ' + err);
+      const fedexErrors = e.response?.data?.errors || [];
+      const firstMsg = fedexErrors[0]?.message || e.message;
+      // 진단 로그: 우리가 보낸 origin/destination + FedEx 응답 전체
+      console.error('[FedEx] Rate API 실패:', JSON.stringify({
+        shipperAddr: body.requestedShipment.shipper.address,
+        recipientAddr: body.requestedShipment.recipient.address,
+        totalWeight,
+        errors: fedexErrors,
+      }, null, 2));
+      // 원본 메시지만 throw (wrapping 단순화 — caller 가 한 번만 prefix 붙임)
+      throw new Error(firstMsg);
     }
   }
 
