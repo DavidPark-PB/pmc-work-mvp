@@ -3229,75 +3229,117 @@ router.post('/orders/set-carrier', async (req, res) => {
     }
     const OrderSync = require('../../services/orderSync');
     const CarrierSheets = require('../../services/carrierSheets');
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
     const sync = new OrderSync();
 
-    // 주문번호로 실제 시트 행 번호 조회
-    const sheetRow = await sync.findOrderRow(orderNo);
-    if (!sheetRow) {
-      return res.status(404).json({ success: false, error: `주문번호 "${orderNo}" 시트에서 찾을 수 없음` });
+    // 1) 주문번호로 시트 행 번호 시도 (옵셔널 — Supabase 단독 주문은 시트에 없음)
+    let sheetRow = null;
+    try {
+      sheetRow = await sync.findOrderRow(orderNo);
+    } catch (sheetErr) {
+      console.warn(`   findOrderRow 에러 (무시): ${sheetErr.message}`);
     }
 
-    // 1. 주문 배송 시트에 배송사 기록
-    console.log(`   [1/3] 주문 시트에 배송사 '${carrier}' 기록 (행 ${sheetRow})...`);
-    await sync.setCarrier(sheetRow, carrier);
-    console.log(`   [1/3] ✅ 완료`);
+    if (sheetRow) {
+      console.log(`   [1] 시트 행 ${sheetRow} 에 배송사 '${carrier}' 기록...`);
+      try {
+        await sync.setCarrier(sheetRow, carrier);
+        console.log(`   [1] ✅ 시트 업데이트 완료`);
+      } catch (e) {
+        console.warn(`   [1] ⚠️ 시트 업데이트 실패 (무시 후 진행): ${e.message}`);
+      }
+    } else {
+      console.log(`   [1] ℹ️ 시트에 주문 없음 — Supabase 단독 주문. 시트 step 건너뛰고 DB + carrierSheets 진행.`);
+    }
 
-    // 2. 캐리어 시트에 자동 추가 (윤익스프레스 등 지원 배송사만)
+    // 2) 캐리어 시트 자동 추가용 order payload 구성
+    //    시트 행이 있으면 시트에서, 없으면 orders 테이블에서.
+    let order = null;
+    if (sheetRow) {
+      try { order = await sync.getOrderRow(sheetRow); } catch (e) {
+        console.warn(`   getOrderRow 실패 (무시): ${e.message}`);
+      }
+    }
+    if (!order) {
+      // Supabase orders 에서 동일 shape 으로 구성
+      const { data: o, error: oErr } = await db.from('orders')
+        .select('order_no, platform, sku, title, quantity, payment_amount, currency, buyer_name, country, country_code, street, city, province, zip_code, phone, email, weight_kg, box_length, box_width, box_height')
+        .eq('order_no', orderNo)
+        .maybeSingle();
+      if (oErr) throw oErr;
+      if (!o) {
+        return res.status(404).json({ success: false, error: `주문번호 "${orderNo}" DB·시트 모두에 없음` });
+      }
+      order = {
+        orderId:     o.order_no,
+        platform:    o.platform || '',
+        sku:         o.sku || '',
+        title:       o.title || '',
+        quantity:    o.quantity || 1,
+        amount:      o.payment_amount || 0,
+        currency:    o.currency || '',
+        buyerName:   o.buyer_name || '',
+        country:     o.country || '',
+        countryCode: o.country_code || '',
+        street:      o.street || '',
+        city:        o.city || '',
+        province:    o.province || '',
+        zipCode:     o.zip_code || '',
+        phone:       o.phone || '',
+        email:       o.email || '',
+        weightKg:    Number(o.weight_kg) || 0,
+        dimL:        Number(o.box_length) || 0,
+        dimW:        Number(o.box_width)  || 0,
+        dimH:        Number(o.box_height) || 0,
+      };
+    } else {
+      // 시트 기반 order — 무게/치수만 DB 에서 보강 (기존 로직 유지)
+      try {
+        const { data: orderWeight } = await db.from('orders')
+          .select('weight_kg, box_length, box_width, box_height')
+          .eq('order_no', orderNo).maybeSingle();
+        if (orderWeight && parseFloat(orderWeight.weight_kg) > 0) {
+          order.weightKg = parseFloat(orderWeight.weight_kg);
+          order.dimL = parseFloat(orderWeight.box_length) || 0;
+          order.dimW = parseFloat(orderWeight.box_width) || 0;
+          order.dimH = parseFloat(orderWeight.box_height) || 0;
+        } else if (order.sku) {
+          const { data: prod } = await db.from('products')
+            .select('weight_kg, box_length, box_width, box_height')
+            .eq('sku', order.sku).maybeSingle();
+          if (prod && parseFloat(prod.weight_kg) > 0) {
+            order.weightKg = parseFloat(prod.weight_kg);
+            order.dimL = parseFloat(prod.box_length) || 0;
+            order.dimW = parseFloat(prod.box_width) || 0;
+            order.dimH = parseFloat(prod.box_height) || 0;
+          }
+        }
+      } catch {}
+    }
+
+    // 3) 캐리어 시트에 자동 추가 (지원 배송사만)
     let carrierResult = null;
     const supported = CarrierSheets.getSupportedCarriers();
     if (supported.includes(carrier)) {
-      console.log(`   [2/3] 주문 데이터 읽기 (행 ${sheetRow})...`);
-      const order = await sync.getOrderRow(sheetRow);
-      if (order) {
-        console.log(`   [2/3] ✅ 주문 데이터 로드 완료`);
-        // 무게/치수 조회: orders 테이블 우선, products 테이블 fallback
-        try {
-          const { getClient } = require('../../db/supabaseClient');
-          const db = getClient();
-          // 1) orders 테이블에서 직접 저장된 무게 확인
-          const { data: orderWeight } = await db
-            .from('orders').select('weight_kg, box_length, box_width, box_height')
-            .eq('order_no', orderNo).single();
-          if (orderWeight && parseFloat(orderWeight.weight_kg) > 0) {
-            order.weightKg = parseFloat(orderWeight.weight_kg);
-            order.dimL = parseFloat(orderWeight.box_length) || 0;
-            order.dimW = parseFloat(orderWeight.box_width) || 0;
-            order.dimH = parseFloat(orderWeight.box_height) || 0;
-          } else if (order.sku) {
-            // 2) products 테이블 fallback
-            const { data: prod } = await db
-              .from('products').select('weight_kg, box_length, box_width, box_height')
-              .eq('sku', order.sku).single();
-            if (prod && parseFloat(prod.weight_kg) > 0) {
-              order.weightKg = parseFloat(prod.weight_kg);
-              order.dimL = parseFloat(prod.box_length) || 0;
-              order.dimW = parseFloat(prod.box_width) || 0;
-              order.dimH = parseFloat(prod.box_height) || 0;
-            }
-          }
-        } catch {}
-        console.log(`   [3/3] 캐리어 시트 '${carrier}'에 등록...`);
-        const cs = new CarrierSheets();
-        const opts = sheetTab ? { sheetTab } : {};
-        carrierResult = await cs.addToCarrierSheet(carrier, order, opts);
-        console.log(`   [3/3] ✅ 캐리어 시트 등록 완료:`, carrierResult);
-      } else {
-        console.warn(`   [2/3] ⚠️ 주문 데이터 없음 (행 ${sheetRow})`);
-      }
+      console.log(`   [2] 캐리어 시트 '${carrier}' 에 등록...`);
+      const cs = new CarrierSheets();
+      const opts = sheetTab ? { sheetTab } : {};
+      carrierResult = await cs.addToCarrierSheet(carrier, order, opts);
+      console.log(`   [2] ✅ 등록 완료:`, carrierResult);
     } else {
       console.log(`   ℹ️ '${carrier}'은 시트 미지원 배송사 (지원: ${supported.join(', ')})`);
     }
 
-    // Supabase: order_no 기준으로 carrier + status 업데이트
+    // 4) Supabase orders: carrier + status='READY'
     try {
-      const { getClient } = require('../../db/supabaseClient');
-      await getClient().from('orders').update({ carrier, status: 'READY' }).eq('order_no', orderNo);
+      await db.from('orders').update({ carrier, status: 'READY' }).eq('order_no', orderNo);
       console.log(`✅ Supabase 상태 업데이트: order_no=${orderNo} → READY`);
     } catch (dbErr) {
       console.warn('Supabase 상태 업데이트 실패 (무시):', dbErr.message);
     }
 
-    res.json({ success: true, rowIndex: orderNo, carrier, carrierResult });
+    res.json({ success: true, rowIndex: orderNo, carrier, carrierResult, source: sheetRow ? 'sheet+db' : 'db_only' });
   } catch (error) {
     console.error(`❌ set-carrier 에러:`, error.message);
     console.error(error.stack);
@@ -3317,27 +3359,35 @@ router.post('/orders/cancel-carrier', async (req, res) => {
     const { getClient } = require('../../db/supabaseClient');
     const sync = new OrderSync();
 
-    // 주문번호로 실제 시트 행 번호 조회
-    const sheetRow = await sync.findOrderRow(orderNo);
-    if (!sheetRow) {
-      return res.status(404).json({ success: false, error: `주문번호 "${orderNo}" 시트에서 찾을 수 없음` });
+    // 주문번호로 시트 행 조회 (옵셔널 — Supabase 단독 주문은 시트에 없음)
+    let sheetRow = null;
+    try {
+      sheetRow = await sync.findOrderRow(orderNo);
+    } catch (sheetErr) {
+      console.warn(`   findOrderRow 에러 (무시): ${sheetErr.message}`);
     }
 
-    // K~M열 초기화: 배송사='', 운송장번호='', 상태='NEW'
-    await sync.sheets.writeData(
-      process.env.GOOGLE_SPREADSHEET_ID,
-      `주문 배송!K${sheetRow}:M${sheetRow}`,
-      [['', '', 'NEW']]
-    );
+    if (sheetRow) {
+      // 시트에 있으면 K~M열 초기화: 배송사='', 운송장번호='', 상태='NEW'
+      try {
+        await sync.sheets.writeData(
+          process.env.GOOGLE_SPREADSHEET_ID,
+          `주문 배송!K${sheetRow}:M${sheetRow}`,
+          [['', '', 'NEW']]
+        );
+      } catch (e) {
+        console.warn(`   시트 초기화 실패 (무시): ${e.message}`);
+      }
+    }
 
-    // Supabase 상태 복원
+    // Supabase 상태 복원 (항상)
     try {
       await getClient().from('orders').update({ carrier: null, status: 'NEW' }).eq('order_no', orderNo);
     } catch (dbErr) {
       console.warn('Supabase 상태 복원 실패 (무시):', dbErr.message);
     }
 
-    console.log(`🔴 배송사 취소: orderNo=${orderNo} (행 ${sheetRow})`);
+    console.log(`🔴 배송사 취소: orderNo=${orderNo}${sheetRow ? ` (시트 행 ${sheetRow})` : ' (DB only)'}`);
     res.json({ success: true, rowIndex: orderNo });
   } catch (error) {
     console.error('❌ cancel-carrier 에러:', error.message);
