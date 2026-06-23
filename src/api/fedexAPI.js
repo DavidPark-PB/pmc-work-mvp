@@ -106,9 +106,9 @@ class FedexAPI {
         totalWeight,
         requestedPackageLineItems: this._packages(packages),
         customsClearanceDetail: customsValue ? {
-          // PMC FedEx 계정 (675115532) 은 SENDER 만 허용 — RECIPIENT 면 'Selected Payment
-// Type is not allowed' 에러. 즉 관세는 발송인(PMC) 이 부담하는 DDP 방식.
-// (이게 청구 부담이라 운영상 추후 EAB 계정 변경 / 수취인 부담 옵션 신청 검토 필요)
+          // 사장님 정책 (2026-06-23): B2C (eBay/Shopify) 주문은 모두 DDP (관세 PMC 부담).
+// 시스템에서 발급되는 라벨은 전부 B2C 이므로 SENDER 고정.
+// B2B 는 DAP 가 필요하면 시스템 외부에서 사장님이 FedEx 사이트에 직접 로그인하여 처리.
 dutiesPayment: { paymentType: 'SENDER', payor: { responsibleParty: { accountNumber: { value: this.accountNumber } } } },
           commodities: [{
             description: 'General Merchandise',
@@ -183,9 +183,9 @@ dutiesPayment: { paymentType: 'SENDER', payor: { responsibleParty: { accountNumb
           payor: { responsibleParty: { accountNumber: { value: this.accountNumber } } },
         },
         customsClearanceDetail: customs ? {
-          // PMC FedEx 계정 (675115532) 은 SENDER 만 허용 — RECIPIENT 면 'Selected Payment
-// Type is not allowed' 에러. 즉 관세는 발송인(PMC) 이 부담하는 DDP 방식.
-// (이게 청구 부담이라 운영상 추후 EAB 계정 변경 / 수취인 부담 옵션 신청 검토 필요)
+          // 사장님 정책 (2026-06-23): B2C (eBay/Shopify) 주문은 모두 DDP (관세 PMC 부담).
+// 시스템에서 발급되는 라벨은 전부 B2C 이므로 SENDER 고정.
+// B2B 는 DAP 가 필요하면 시스템 외부에서 사장님이 FedEx 사이트에 직접 로그인하여 처리.
 dutiesPayment: { paymentType: 'SENDER', payor: { responsibleParty: { accountNumber: { value: this.accountNumber } } } },
           commercialInvoice: { termsOfSale: 'FOB' },
           commodities: (customs.commodities || [{
