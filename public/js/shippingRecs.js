@@ -225,30 +225,60 @@
     return Number(n).toLocaleString('ko-KR') + '원';
   }
 
-  // 5개 배송사 견적 비교표 — 직원이 한눈에 보고 결정.
-  // 최저가 행은 ✅ + 강조. 본인이 추천된 carrier 인지 확인용.
-  function renderQuotesTable(quotes) {
+  // 페덱스 견적을 5개 quotes 배열에 통합 후 가격 재정렬. isCheapest 갱신.
+  function mergeFedexQuotes(quotes, fedexResult) {
+    if (!Array.isArray(quotes)) return [];
+    if (!fedexResult || !fedexResult.cheapest) return quotes;
+    const fedexQuote = {
+      carrier: 'fedex',
+      carrierLabel: 'FedEx',
+      service: fedexResult.cheapest.serviceName || fedexResult.cheapest.serviceType,
+      chargeKg: fedexResult.weightKg,
+      volKg: 0,
+      base: Math.round(fedexResult.cheapest.cost),
+      fuel: 0,
+      total: Math.round(fedexResult.cheapest.cost),
+      note: `라이브 견적 · ETA ${fedexResult.cheapest.etaDays || '?'}일 · ${fedexResult.cheapest.currency || ''}`,
+      isFedex: true,
+    };
+    const merged = [...quotes.map(q => ({ ...q, isCheapest: false })), fedexQuote];
+    merged.sort((a, b) => a.total - b.total);
+    merged[0].isCheapest = true;
+    return merged;
+  }
+
+  // 5개 배송사 + (선택) FedEx 견적 비교표. 최저가 ✅ 강조.
+  // hasFedex=true 이고 페덱스가 행이면 라벨 발급 버튼 노출.
+  function renderQuotesTable(quotes, hasFedex, orderId) {
     if (!Array.isArray(quotes) || quotes.length === 0) return '';
     const rows = quotes.map(q => {
       const fuelTxt = q.fuel ? fmtMoney(q.fuel) : '포함';
+      const isFedex = q.isFedex === true;
+      const labelBtn = isFedex
+        ? ` <button onclick="pmcShippingRecs.labelFedex(${orderId}, '${esc(q.service)}')" style="margin-left:6px;padding:2px 8px;background:#e94560;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;font-weight:600;">🖨 라벨</button>`
+        : '';
       return `
-        <tr style="${q.isCheapest ? 'background:#1a3a2a;' : ''}">
-          <td style="padding:5px 8px;color:${q.isCheapest ? '#81c784' : '#ccc'};white-space:nowrap;">
-            ${q.isCheapest ? '✅ ' : ''}<strong>${esc(q.carrierLabel)}</strong>
+        <tr style="${q.isCheapest ? 'background:#1a3a2a;' : ''}${isFedex && !q.isCheapest ? 'background:#2a1a1a;' : ''}">
+          <td style="padding:5px 8px;color:${q.isCheapest ? '#81c784' : (isFedex ? '#ff8a80' : '#ccc')};white-space:nowrap;">
+            ${q.isCheapest ? '✅ ' : ''}<strong>${esc(q.carrierLabel)}</strong>${labelBtn}
           </td>
           <td style="padding:5px 8px;color:#888;font-size:10px;">${esc(q.service || '')}</td>
           <td style="padding:5px 8px;color:#aaa;text-align:right;white-space:nowrap;">${Number(q.chargeKg).toFixed(2)}kg</td>
           <td style="padding:5px 8px;color:#aaa;text-align:right;white-space:nowrap;">${fmtMoney(q.base)}</td>
           <td style="padding:5px 8px;color:#aaa;text-align:right;white-space:nowrap;">${fuelTxt}</td>
-          <td style="padding:5px 8px;color:${q.isCheapest ? '#81c784' : '#fff'};text-align:right;white-space:nowrap;font-weight:600;">${fmtMoney(q.total)}</td>
+          <td style="padding:5px 8px;color:${q.isCheapest ? '#81c784' : (isFedex ? '#ff8a80' : '#fff')};text-align:right;white-space:nowrap;font-weight:600;">${fmtMoney(q.total)}</td>
         </tr>
-        ${q.note ? `<tr><td colspan="6" style="padding:0 8px 5px;color:#888;font-size:10px;font-style:italic;">⚠️ ${esc(q.note)}</td></tr>` : ''}
+        ${q.note ? `<tr><td colspan="6" style="padding:0 8px 5px;color:#888;font-size:10px;font-style:italic;">${isFedex ? '🔴' : '⚠️'} ${esc(q.note)}</td></tr>` : ''}
       `;
     }).join('');
 
+    const title = hasFedex
+      ? '📊 6개 배송사 견적 비교 (FedEx 라이브 포함)'
+      : '📊 5개 배송사 견적 비교 (부피중량 + 유류할증 포함)';
+
     return `
       <div style="margin-top:8px;border:1px solid #2a2a4a;border-radius:6px;overflow:hidden;">
-        <div style="padding:5px 10px;background:#16213e;color:#81d4fa;font-size:10px;font-weight:600;">📊 5개 배송사 견적 비교 (부피중량 + 유류할증 포함)</div>
+        <div style="padding:5px 10px;background:#16213e;color:#81d4fa;font-size:10px;font-weight:600;">${title}</div>
         <table style="width:100%;border-collapse:collapse;font-size:11px;">
           <thead>
             <tr style="background:#0d1326;color:#888;">
@@ -272,6 +302,9 @@
     const dim = it.dimensions_cm;
     // FedEx 견적/라벨 버튼 — review 아니고 매칭+무게 있을 때만 (FedEx API 호출 가능 조건)
     const fedexEligible = !isReview && it.matched && it.weight_gram;
+    // 페덱스 견적 캐시 — 이미 있으면 quotes 표에 통합
+    const fedexCache = fedexQuoteCache.get(it.order_id);
+    const mergedQuotes = mergeFedexQuotes(it.quotes, fedexCache);
     return `
       <div style="padding:10px 16px;border-bottom:1px solid #1f1f3a;font-size:12px;" id="rec-item-${it.order_id}">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px;">
@@ -282,7 +315,9 @@
           </div>
           <div style="display:flex;gap:6px;align-items:center;">
             <span style="color:${reasonColor};font-size:11px;font-weight:600;">${esc(it.recommendation?.reason || '')}</span>
-            ${fedexEligible ? `<button type="button" onclick="pmcShippingRecs.quoteFedex(${it.order_id})"
+            <button type="button" onclick="pmcShippingRecs.toggleWeightEdit(${it.order_id})"
+              style="padding:3px 8px;background:#0f0f23;border:1px solid #555;border-radius:4px;color:#aaa;cursor:pointer;font-size:10px;white-space:nowrap;" title="무게/치수 수정">✏️ 무게</button>
+            ${fedexEligible && !fedexCache ? `<button type="button" onclick="pmcShippingRecs.quoteFedex(${it.order_id})"
               id="rec-fedex-btn-${it.order_id}"
               style="padding:3px 8px;background:#0f0f23;border:1px solid #e94560;border-radius:4px;color:#e94560;cursor:pointer;font-size:10px;font-weight:600;white-space:nowrap;">🔴 FedEx 견적</button>` : ''}
           </div>
@@ -298,7 +333,8 @@
           <span>🏷️ SKU: <code style="color:#81d4fa;">${esc(it.sku || '(빈 값)')}</code></span>
           ${it.matched ? `<span style="color:#81c784;">✓ ${esc(it.internal_sku)}</span>` : ''}
         </div>
-        ${renderQuotesTable(it.quotes)}
+        ${renderWeightEditPanel(it)}
+        ${renderQuotesTable(mergedQuotes, !!fedexCache, it.order_id)}
         <div id="rec-fedex-result-${it.order_id}"></div>
         ${review ? `
           <div style="margin-top:6px;padding:6px 10px;background:#2a1a1a;border-left:3px solid #e94560;border-radius:4px;font-size:11px;color:#ff8a80;">
@@ -312,9 +348,15 @@
   }
 
   function toggle(carrierKey) {
-    if (state.expanded.has(carrierKey)) state.expanded.delete(carrierKey);
+    const wasExpanded = state.expanded.has(carrierKey);
+    if (wasExpanded) state.expanded.delete(carrierKey);
     else state.expanded.add(carrierKey);
     renderGroups();
+    // 펼친 순간 → 그 그룹의 매칭+무게 있는 주문에 페덱스 자동 견적 (캐시 미스만).
+    // review 그룹은 견적 호출 X (매칭 안된 주문만 있음).
+    if (!wasExpanded && carrierKey !== 'review') {
+      autoQuoteFedexForGroup(carrierKey);
+    }
   }
 
   // 묶음 출력 — Phase 2B 는 송장 API 연동 X. 직원이 어떤 주문번호를 인쇄해야 하는지 list 보여줌.
@@ -342,23 +384,122 @@
   }
 
   // ════════════════════════════════════════════════════════════
+  // 무게/치수 수정 (사장님 요청 2026-06-23 — 잘못 입력해도 다시 수정 가능)
+  // 각 주문 카드의 '✏️ 무게' 버튼 → 입력 폼 토글. 저장 시 PATCH /api/orders/save-weight.
+  // ════════════════════════════════════════════════════════════
+  function renderWeightEditPanel(it) {
+    const dim = it.dimensions_cm || { l: '', w: '', h: '' };
+    const wKg = it.weight_gram ? (Number(it.weight_gram) / 1000).toFixed(3) : '';
+    return `
+      <div id="rec-wedit-${it.order_id}" style="display:none;margin-top:8px;padding:10px;background:#16213e;border:1px solid #2a4a6a;border-radius:6px;">
+        <div style="color:#81d4fa;font-size:10px;font-weight:600;margin-bottom:6px;">✏️ 무게/치수 수정 (저장하면 견적 자동 재계산)</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <label style="color:#aaa;font-size:11px;">무게(kg)</label>
+          <input id="rec-w-${it.order_id}" type="number" step="0.01" min="0" value="${wKg}" style="width:70px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+          <label style="color:#aaa;font-size:11px;">가로(cm)</label>
+          <input id="rec-l-${it.order_id}" type="number" step="0.1" min="0" value="${dim.l || ''}" style="width:60px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+          <label style="color:#aaa;font-size:11px;">세로(cm)</label>
+          <input id="rec-ww-${it.order_id}" type="number" step="0.1" min="0" value="${dim.w || ''}" style="width:60px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+          <label style="color:#aaa;font-size:11px;">높이(cm)</label>
+          <input id="rec-h-${it.order_id}" type="number" step="0.1" min="0" value="${dim.h || ''}" style="width:60px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+          <button type="button" onclick="pmcShippingRecs.saveWeight(${it.order_id}, '${esc(it.order_no || '')}', '${esc(it.sku || '')}')"
+            style="padding:4px 12px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">💾 저장 후 재계산</button>
+          <span id="rec-wstatus-${it.order_id}" style="color:#888;font-size:10px;"></span>
+        </div>
+      </div>
+    `;
+  }
+
+  function toggleWeightEdit(orderId) {
+    const el = document.getElementById('rec-wedit-' + orderId);
+    if (!el) return;
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+
+  async function saveWeight(orderId, orderNo, sku) {
+    const wKg = parseFloat(document.getElementById('rec-w-' + orderId)?.value) || 0;
+    const l   = parseFloat(document.getElementById('rec-l-' + orderId)?.value) || 0;
+    const w   = parseFloat(document.getElementById('rec-ww-' + orderId)?.value) || 0;
+    const h   = parseFloat(document.getElementById('rec-h-' + orderId)?.value) || 0;
+    const status = document.getElementById('rec-wstatus-' + orderId);
+    if (!orderNo) { if (status) { status.textContent = '❌ 주문번호 누락'; status.style.color = '#ff8a80'; } return; }
+    if (wKg <= 0) { if (status) { status.textContent = '⚠️ 무게는 0보다 커야 함'; status.style.color = '#ffb74d'; } return; }
+
+    if (status) { status.textContent = '⏳ 저장 중...'; status.style.color = '#81d4fa'; }
+    try {
+      const res = await fetch('/api/orders/save-weight', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderNo, sku,
+          weight_kg: wKg,
+          box_length: l, box_width: w, box_height: h,
+        }),
+      });
+      const j = await res.json();
+      if (!j.success) throw new Error(j.error || '실패');
+      if (status) { status.textContent = '✅ 저장됨 — 견적 재계산 중...'; status.style.color = '#81c784'; }
+      // 페덱스 캐시 무효화 — 무게 바뀌었으니 재호출 필요
+      fedexQuoteCache.delete(orderId);
+      // 전체 새로고침 — 5개 견적 + dimensions_cm 다시 그려짐
+      setTimeout(() => refresh(), 600);
+    } catch (e) {
+      if (status) { status.textContent = '❌ 저장 실패: ' + e.message; status.style.color = '#ff8a80'; }
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════
   // FedEx 견적 + 라벨 발급 (사장님 spec 2026-06-23)
-  // 자동 호출 X. 사용자가 주문별 'FedEx 견적' 버튼 클릭 시만 호출.
-  // 견적 받으면 5개 견적과 비교 + 'FedEx 라벨' 버튼 활성화.
+  // 그룹 펼침 시 그 그룹의 매칭+무게 있는 주문에 자동 호출 (병렬).
+  // 사용자가 카드별 'FedEx 견적' 버튼 클릭으로 개별 호출도 가능 (재호출).
+  // 견적 받으면 5개 견적과 통합 표시 + 'FedEx 라벨' 발급 버튼.
   // ════════════════════════════════════════════════════════════
 
   // 견적 결과 캐시 (재호출 방지) — 주문ID → { weightKg, dims, cheapest, services, customsValue, currency }
   const fedexQuoteCache = new Map();
 
+  // 그룹 펼침 시 자동 페덱스 호출 — 그 그룹의 매칭+무게 있는 주문에 일괄.
+  // 최대 5개 동시 호출 (FedEx API 부담 + 브라우저 한도).
+  async function autoQuoteFedexForGroup(carrierKey) {
+    const g = (state.groups || []).find(x => x.carrier.key === carrierKey);
+    if (!g) return;
+    const eligible = g.items.filter(it =>
+      it.matched && it.weight_gram && !fedexQuoteCache.has(it.order_id)
+    );
+    if (eligible.length === 0) return;
+
+    const CONCURRENCY = 5;
+    let idx = 0;
+    async function worker() {
+      while (idx < eligible.length) {
+        const it = eligible[idx++];
+        try {
+          const res = await fetch('/api/shipping/recommendations/fedex-quote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ orderId: it.order_id }),
+          });
+          const j = await res.json();
+          if (res.ok && j.ok) {
+            fedexQuoteCache.set(it.order_id, j);
+          } else {
+            // 실패한 주문은 캐시에 'failed' 마커 저장해서 재호출 방지
+            fedexQuoteCache.set(it.order_id, { failed: true, error: j.error });
+          }
+        } catch (e) {
+          fedexQuoteCache.set(it.order_id, { failed: true, error: e.message });
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, eligible.length) }, () => worker()));
+    // 끝나면 해당 그룹만 다시 그리기 (전체 refresh X)
+    renderGroups();
+  }
+
+  // 단일 주문 페덱스 견적 — 자동 호출 실패 후 수동 재시도 / 캐시 무효화 후 재호출 용도
   async function quoteFedex(orderId) {
     const btn = document.getElementById('rec-fedex-btn-' + orderId);
-    const result = document.getElementById('rec-fedex-result-' + orderId);
-    if (!btn || !result) return;
-
-    const origText = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '⏳ 호출 중...';
-
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 호출 중...'; }
     try {
       const res = await fetch('/api/shipping/recommendations/fedex-quote', {
         method: 'POST',
@@ -367,60 +508,17 @@
       });
       const j = await res.json();
       if (!res.ok || !j.ok) throw new Error(j.error || '실패');
-
       fedexQuoteCache.set(orderId, j);
-      result.innerHTML = renderFedexResult(orderId, j);
-      btn.textContent = '✓ FedEx 견적 받음';
-      btn.style.background = '#1a3a2a';
-      btn.style.color = '#81c784';
-      btn.style.borderColor = '#81c784';
+      renderGroups();  // 통합 표에 페덱스 행 추가됨
     } catch (e) {
-      result.innerHTML = `<div style="margin-top:6px;padding:6px 10px;background:#2a1a1a;border-left:3px solid #e94560;border-radius:4px;font-size:11px;color:#ff8a80;">❌ FedEx 견적 실패: ${esc(e.message)}</div>`;
-      btn.textContent = origText;
-      btn.disabled = false;
+      fedexQuoteCache.set(orderId, { failed: true, error: e.message });
+      renderGroups();
     }
-  }
-
-  function renderFedexResult(orderId, j) {
-    if (!j.services || j.services.length === 0) {
-      return `<div style="margin-top:6px;padding:6px 10px;background:#2a2a4a;border-radius:4px;font-size:11px;color:#aaa;">FedEx 견적 결과 없음 — 해당 국가/무게 미지원 가능성</div>`;
-    }
-    const rows = j.services.map((s, i) => `
-      <tr style="${i === 0 ? 'background:#2a1a1a;' : ''}">
-        <td style="padding:5px 8px;color:${i === 0 ? '#ff8a80' : '#ccc'};white-space:nowrap;">
-          ${i === 0 ? '⭐ ' : ''}<strong>${esc(s.serviceName || s.serviceType)}</strong>
-        </td>
-        <td style="padding:5px 8px;color:#888;font-size:10px;">${esc(s.serviceType)}</td>
-        <td style="padding:5px 8px;color:#aaa;text-align:right;white-space:nowrap;">${s.etaDays ? s.etaDays + '일' : '-'}</td>
-        <td style="padding:5px 8px;color:${i === 0 ? '#ff8a80' : '#fff'};text-align:right;white-space:nowrap;font-weight:600;">${fmtMoney(Math.round(s.cost))} ${esc(s.currency || '')}</td>
-        <td style="padding:5px 8px;text-align:center;">
-          <button type="button" onclick="pmcShippingRecs.labelFedex(${orderId}, '${esc(s.serviceType)}')"
-            style="padding:3px 10px;background:#e94560;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:10px;font-weight:600;">🖨 라벨</button>
-        </td>
-      </tr>
-    `).join('');
-    return `
-      <div style="margin-top:8px;border:1px solid #e94560;border-radius:6px;overflow:hidden;">
-        <div style="padding:5px 10px;background:#2a1a1a;color:#ff8a80;font-size:10px;font-weight:600;">🔴 FedEx 라이브 견적 (적용중량 ${Number(j.weightKg).toFixed(2)}kg)</div>
-        <table style="width:100%;border-collapse:collapse;font-size:11px;">
-          <thead>
-            <tr style="background:#0d1326;color:#888;">
-              <th style="padding:5px 8px;text-align:left;font-weight:600;">서비스</th>
-              <th style="padding:5px 8px;text-align:left;font-weight:600;">코드</th>
-              <th style="padding:5px 8px;text-align:right;font-weight:600;">ETA</th>
-              <th style="padding:5px 8px;text-align:right;font-weight:600;">요금</th>
-              <th style="padding:5px 8px;text-align:center;font-weight:600;">발급</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    `;
   }
 
   async function labelFedex(orderId, serviceType) {
     const cache = fedexQuoteCache.get(orderId);
-    if (!cache) { alert('견적 정보가 없습니다. 먼저 FedEx 견적을 받으세요.'); return; }
+    if (!cache || cache.failed) { alert('견적 정보가 없습니다. 먼저 FedEx 견적을 받으세요.'); return; }
 
     // 주문번호 = cache.orderNo. /api/orders/:orderNo/fedex-label 호출.
     const ok = confirm(`주문 ${cache.orderNo} 의 FedEx 라벨을 발급하시겠습니까?\n\n서비스: ${serviceType}\n요금: ${cache.cheapest?.cost || '?'} ${cache.currency || ''}\n\n발급 후 취소 불가.`);
@@ -494,5 +592,6 @@
   window.pmcShippingRecs = {
     load, refresh, onStatusChange, onDaysChange, toggle, printGroup, exportGroup,
     quoteFedex, labelFedex, viewLabel,
+    toggleWeightEdit, saveWeight,
   };
 })();
