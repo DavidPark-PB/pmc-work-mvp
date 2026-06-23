@@ -6479,13 +6479,13 @@ function shippingRenderEstimatePanel(rowIdx, orderNo, data) {
   const headerBorder = hasWeight ? '#ccc' : '#ffb74d';
   const headerColor = hasWeight ? '#555' : '#e65100';
   const headerLabel = hasWeight
-    ? `✏️ 무게/치수 수정 — 현재: ${wKg}kg ${dims.l ? `· ${dims.l}×${dims.w}×${dims.h}cm` : ''}`
-    : '⚠️ 무게 미설정 — 입력하면 견적 자동 계산';
+    ? `✏️ 주문 전체 무게/치수 수정 — 현재: ${wKg}kg ${dims.l ? `· ${dims.l}×${dims.w}×${dims.h}cm` : ''}`
+    : '⚠️ 주문 전체 무게 미설정 — 입력하면 견적 자동 계산';
   html += `<div style="background:${headerBg};border:1px solid ${headerBorder};border-radius:4px;padding:5px 6px;margin-bottom:6px;font-size:9px">
     <div style="color:${headerColor};font-weight:600;margin-bottom:4px">${headerLabel}</div>
     <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-      <label style="font-size:9px;color:#555">무게(kg)</label>
-      <input id="wgt-${rowIdx}" type="number" step="0.01" min="0" value="${wKg}" placeholder="0.00" style="width:55px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
+      <label style="font-size:9px;color:#555" title="주문 전체 무게 — 수량 곱하지 X, 박스 무게 포함">총무게(kg)</label>
+      <input id="wgt-${rowIdx}" type="number" step="0.01" min="0" value="${wKg}" placeholder="0.00" style="width:55px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px" title="주문 전체 무게 (포장 포함). 수량으로 곱하지 않음.">
       <label style="font-size:9px;color:#555">가로</label>
       <input id="diml-${rowIdx}" type="number" step="0.1" min="0" value="${dims.l || ''}" placeholder="cm" style="width:40px;padding:2px 4px;border:1px solid #ccc;border-radius:3px;font-size:9px">
       <label style="font-size:9px;color:#555">세로</label>

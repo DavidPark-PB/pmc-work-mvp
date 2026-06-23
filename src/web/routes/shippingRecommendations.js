@@ -483,30 +483,31 @@ router.post('/fedex-quote', async (req, res) => {
       });
     }
 
-    // 무게/치수 — orders 우선, sku_master fallback
-    let weightKg = Number(order.weight_kg) || 0;
+    // 사장님 정책 (2026-06-23): orders.weight_kg = '주문 전체 무게'. 직접 사용.
+    // 없으면 sku_master 단품 무게 × quantity 로 추정.
+    let weightKg = Number(order.weight_kg) || 0;          // 주문 전체 무게 (직접 입력값)
     let dimL = Number(order.box_length) || 0;
     let dimW = Number(order.box_width) || 0;
     let dimH = Number(order.box_height) || 0;
     if (weightKg <= 0 && order.sku) {
+      // orders.weight_kg 없음 → sku_master 에서 단품 추정 + quantity 곱
       const { data: m } = await db.from('sku_master')
         .select('weight_gram, length_cm, width_cm, height_cm')
         .eq('internal_sku', String(order.sku).trim())
         .maybeSingle();
       if (m) {
-        if (m.weight_gram > 0) weightKg = Number(m.weight_gram) / 1000;
+        if (m.weight_gram > 0) {
+          const qty = Number(order.quantity) || 1;
+          weightKg = (Number(m.weight_gram) / 1000) * qty;  // 단품 × 수량
+        }
         if (m.length_cm) dimL = Number(m.length_cm);
         if (m.width_cm)  dimW = Number(m.width_cm);
         if (m.height_cm) dimH = Number(m.height_cm);
       }
     }
     if (weightKg <= 0) {
-      return res.status(400).json({ ok: false, error: '무게 미등록 — sku_master.weight_gram 입력 필요' });
+      return res.status(400).json({ ok: false, error: '무게 미등록 — 주문 무게 입력 또는 sku_master.weight_gram 등록 필요' });
     }
-
-    // FedEx Rate API 호출
-    const qty = Number(order.quantity) || 1;
-    weightKg = weightKg * qty;
     const dims = (dimL && dimW && dimH) ? { length: dimL, width: dimW, height: dimH } : null;
     const customsValue = Number(order.payment_amount) || 1;
     const currency = order.currency || 'USD';

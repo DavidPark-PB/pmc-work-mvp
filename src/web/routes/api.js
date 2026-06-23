@@ -3429,13 +3429,20 @@ router.get('/orders/shipping-estimate/:orderNo', async (req, res) => {
       product = p;
     }
 
-    // 주문에 직접 저장된 무게 우선, 없으면 제품 무게 사용
-    const srcWeight = parseFloat(orderFull?.weight_kg) || parseFloat(product?.weight_kg) || 0;
+    // 사장님 정책 (2026-06-23): orders.weight_kg = '주문 전체 무게' (포장 포함).
+    // 직원/사장님이 화면에서 입력하는 값이 곧 주문 무게. 수량 곱하지 않음.
+    // - orders.weight_kg 있으면 → 그대로 사용 (사용자가 직접 측정/입력함)
+    // - 없으면 → products.weight_kg × quantity (단품 무게 × 수량 추정)
+    const directOrderWeight = parseFloat(orderFull?.weight_kg) || 0;
+    const productWeight = parseFloat(product?.weight_kg) || 0;
+    const weightKg = directOrderWeight > 0
+      ? directOrderWeight
+      : productWeight * (order.quantity || 1);
+
+    // 박스 치수: orders 우선, products fallback. 둘 다 주문 단위 (수량 곱하지 X).
     const srcDimL = parseFloat(orderFull?.box_length) || parseFloat(product?.box_length) || 0;
     const srcDimW = parseFloat(orderFull?.box_width) || parseFloat(product?.box_width) || 0;
     const srcDimH = parseFloat(orderFull?.box_height) || parseFloat(product?.box_height) || 0;
-
-    const weightKg = srcWeight * (order.quantity || 1);
     const dims = (srcDimL && srcDimW && srcDimH)
       ? { l: srcDimL, w: srcDimW, h: srcDimH }
       : null;
