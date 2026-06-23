@@ -754,6 +754,67 @@ class CarrierSheets {
   static getSupportedCarriers() {
     return Object.keys(CARRIER_SHEETS);
   }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Batch — N건을 1번의 Sheets API 호출로 처리 (Quota 절약)
+  // 사장님 보고 2026-06-23: eBay sync 901건 중 EU 주문 자동 배정 시
+  // 1건씩 write → 분당 60건 한도 초과. 윤익스프레스만 batch 추가 (EU 자동
+  // 배정의 유일한 사용처). 다른 배송사는 fallback 으로 개별 호출 유지.
+  // ════════════════════════════════════════════════════════════════════════
+  async addManyToCarrierSheet(carrier, orders, opts = {}) {
+    if (!Array.isArray(orders) || orders.length === 0) return { success: true, added: 0 };
+    if (carrier === '윤익스프레스') return this.addManyToYunExpress(orders, opts);
+    // 다른 배송사는 batch 미지원 — fallback (느림, 사용 X)
+    let added = 0;
+    for (const o of orders) {
+      try { await this.addToCarrierSheet(carrier, o, opts); added++; } catch (e) {
+        console.warn(`addManyToCarrierSheet[${carrier}] 1건 실패:`, e.message);
+      }
+    }
+    return { success: true, added };
+  }
+
+  async addManyToYunExpress(orders, opts = {}) {
+    const config = CARRIER_SHEETS['윤익스프레스'];
+    const { spreadsheetId, routingCode } = config;
+    const sheetTab = opts.sheetTab || await this.getOrCreateYunikTab(spreadsheetId);
+
+    const rows = orders.map(order => {
+      const countryCode = (order.countryCode || order.country || '').toUpperCase();
+      const orderNo = order.orderId || '';
+      let vatNumber = '';
+      let iossCode = '';
+      if (countryCode === 'AU') vatNumber = AU_ABN;
+      if (EU_COUNTRIES.has(countryCode)) iossCode = YUNEXPRESS_IOSS;
+
+      return [
+        orderNo, routingCode, '',
+        '', '', '', '',
+        vatNumber, '', iossCode, '', '',
+        countryCode,
+        order.buyerName || '',
+        '', '',
+        order.street || '',
+        order.city || '',
+        order.province || '',
+        order.zipCode || '',
+        (order.phone || '').replace(/^\+/, ''),
+        '',
+        order.email || '',
+        '', order.weightKg ? String(order.weightKg) : '',
+        '', '', '', '', '', '', '', '', '', '',
+        '', '', '', '', '', '',
+        '', '', '',
+        '', '', '', '', '', '', '', '',
+      ];
+    });
+
+    // 다음 빈 행에 N개 row 를 한 번에 write (1 API call)
+    const nextRow = await this.findNextEmptyRow(spreadsheetId, sheetTab, 'A');
+    await this.sheets.writeData(spreadsheetId, `'${sheetTab}'!A${nextRow}`, rows);
+    console.log(`✅ 윤익스프레스 시트 '${sheetTab}' 행 ${nextRow} 부터 ${rows.length}건 batch 추가 (1 API call)`);
+    return { success: true, added: rows.length, sheetTab, startRow: nextRow, spreadsheetId };
+  }
 }
 
 CarrierSheets.EU_COUNTRIES = EU_COUNTRIES;
