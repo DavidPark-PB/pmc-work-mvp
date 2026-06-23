@@ -80,12 +80,13 @@ async function listOrdersByStatus({ status, fromDate, toDate }) {
  * 매칭 성공: Map<sku, sku_master row>
  *
  * 정책: orders.sku === sku_master.internal_sku 의 정확 매칭만 (단순화). 부분 매칭 / fuzzy X.
+ * sku_master 의 box_length/width/height 도 함께 가져옴 — 견적 엔진의 부피중량 계산용.
  */
 async function lookupSkuMasterMap(skus) {
   const unique = [...new Set(skus.filter(s => s && String(s).trim()).map(s => String(s).trim()))];
   if (unique.length === 0) return new Map();
   const { data, error } = await getClient().from('sku_master')
-    .select('internal_sku, title, weight_gram, status')
+    .select('internal_sku, title, weight_gram, status, length_cm, width_cm, height_cm')
     .in('internal_sku', unique);
   if (error) throw error;
   const map = new Map();
@@ -93,15 +94,14 @@ async function lookupSkuMasterMap(skus) {
   return map;
 }
 
-// 캐리어 순서대로 정렬할 group helper
+// 캐리어 순서대로 정렬할 group helper — 견적 엔진의 5개 배송사 + REVIEW
 function _initialGroups() {
   const order = [
-    recommender.CARRIERS.KOREA_POST,
-    recommender.CARRIERS.SHIPTER,
+    recommender.CARRIERS.KPACKET,
     recommender.CARRIERS.KPL,
-    recommender.CARRIERS.FEDEX,
+    recommender.CARRIERS.SHIPTER,
     recommender.CARRIERS.YUN_EXPRESS,
-    recommender.CARRIERS.K_PACKET,
+    recommender.CARRIERS.EMS_PREMIUM,
     recommender.REVIEW,
   ];
   return order.map(c => ({ carrier: c, count: 0, items: [] }));
@@ -120,8 +120,7 @@ router.get('/', async (req, res) => {
     const fromDate = new Date(now.getTime() - (days - 1) * 86400000).toISOString().slice(0, 10);
 
     const orders = await listOrdersByStatus({ status, fromDate, toDate });
-    const skus = orders.map(o => o.sku);
-    const skuMap = await lookupSkuMasterMap(skus);
+    const skuMap = await lookupSkuMasterMap(orders.map(o => o.sku));
 
     const groups = _initialGroups();
     const carrierIndex = new Map();
@@ -133,7 +132,14 @@ router.get('/', async (req, res) => {
       const weightGram = matched ? matched.weight_gram : null;
       const countryCode = o.country_code || null;
 
-      const rec = recommender.recommend({ weightGram, countryCode, matchInfo });
+      // 부피중량 계산용 — sku_master 치수 우선
+      const dimensions = matched ? {
+        lengthCm: Number(matched.length_cm) || 0,
+        widthCm:  Number(matched.width_cm)  || 0,
+        heightCm: Number(matched.height_cm) || 0,
+      } : null;
+
+      const rec = recommender.recommend({ weightGram, countryCode, matchInfo, dimensions });
 
       const item = {
         order_id:       o.id,
@@ -149,17 +155,22 @@ router.get('/', async (req, res) => {
         title:          o.title,
         quantity:       o.quantity,
         weight_gram:    weightGram,
+        dimensions_cm:  dimensions && (dimensions.lengthCm || dimensions.widthCm || dimensions.heightCm)
+                          ? { l: dimensions.lengthCm, w: dimensions.widthCm, h: dimensions.heightCm }
+                          : null,
         internal_sku:   matched ? matched.internal_sku : null,
         matched:        !!matched,
         match_attempt:  matchInfo.attemptedSku || '',
         match_reason:   matchInfo.reason || null,
         recommendation: {
-          carrier_key:  rec.carrier?.key,
+          carrier_key:   rec.carrier?.key,
           carrier_label: rec.carrier?.label,
           carrier_color: rec.carrier?.color,
-          reason:       rec.reason,
-          review:       rec.review || null,
+          reason:        rec.reason,
+          review:        rec.review || null,
         },
+        // 견적 비교 — 5개 배송사 가격 (최저가 정렬). 직원 화면에서 펼쳐 보기.
+        quotes: Array.isArray(rec.quotes) ? rec.quotes : null,
       };
 
       const idx = carrierIndex.get(rec.carrier.key);
@@ -271,10 +282,16 @@ router.post('/export', async (req, res) => {
       let carrierKey = forcedCarrierKey;
       let recReason = forcedCarrierKey ? `사용자 지정: ${forcedCarrierKey}` : null;
       if (!carrierKey) {
+        const dimensions = matched ? {
+          lengthCm: Number(matched.length_cm) || 0,
+          widthCm:  Number(matched.width_cm)  || 0,
+          heightCm: Number(matched.height_cm) || 0,
+        } : null;
         const rec = recommender.recommend({
           weightGram: weightGramFromMaster,
           countryCode,
           matchInfo,
+          dimensions,
         });
         carrierKey = rec.carrier?.key;
         recReason = rec.reason;

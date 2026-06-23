@@ -220,9 +220,56 @@
     }
   }
 
+  function fmtMoney(n) {
+    if (n == null || !isFinite(n)) return '-';
+    return Number(n).toLocaleString('ko-KR') + '원';
+  }
+
+  // 5개 배송사 견적 비교표 — 직원이 한눈에 보고 결정.
+  // 최저가 행은 ✅ + 강조. 본인이 추천된 carrier 인지 확인용.
+  function renderQuotesTable(quotes) {
+    if (!Array.isArray(quotes) || quotes.length === 0) return '';
+    const rows = quotes.map(q => {
+      const fuelTxt = q.fuel ? fmtMoney(q.fuel) : '포함';
+      return `
+        <tr style="${q.isCheapest ? 'background:#1a3a2a;' : ''}">
+          <td style="padding:5px 8px;color:${q.isCheapest ? '#81c784' : '#ccc'};white-space:nowrap;">
+            ${q.isCheapest ? '✅ ' : ''}<strong>${esc(q.carrierLabel)}</strong>
+          </td>
+          <td style="padding:5px 8px;color:#888;font-size:10px;">${esc(q.service || '')}</td>
+          <td style="padding:5px 8px;color:#aaa;text-align:right;white-space:nowrap;">${Number(q.chargeKg).toFixed(2)}kg</td>
+          <td style="padding:5px 8px;color:#aaa;text-align:right;white-space:nowrap;">${fmtMoney(q.base)}</td>
+          <td style="padding:5px 8px;color:#aaa;text-align:right;white-space:nowrap;">${fuelTxt}</td>
+          <td style="padding:5px 8px;color:${q.isCheapest ? '#81c784' : '#fff'};text-align:right;white-space:nowrap;font-weight:600;">${fmtMoney(q.total)}</td>
+        </tr>
+        ${q.note ? `<tr><td colspan="6" style="padding:0 8px 5px;color:#888;font-size:10px;font-style:italic;">⚠️ ${esc(q.note)}</td></tr>` : ''}
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-top:8px;border:1px solid #2a2a4a;border-radius:6px;overflow:hidden;">
+        <div style="padding:5px 10px;background:#16213e;color:#81d4fa;font-size:10px;font-weight:600;">📊 5개 배송사 견적 비교 (부피중량 + 유류할증 포함)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead>
+            <tr style="background:#0d1326;color:#888;">
+              <th style="padding:5px 8px;text-align:left;font-weight:600;">배송사</th>
+              <th style="padding:5px 8px;text-align:left;font-weight:600;">서비스</th>
+              <th style="padding:5px 8px;text-align:right;font-weight:600;">적용중량</th>
+              <th style="padding:5px 8px;text-align:right;font-weight:600;">기본운임</th>
+              <th style="padding:5px 8px;text-align:right;font-weight:600;">유류</th>
+              <th style="padding:5px 8px;text-align:right;font-weight:600;">합계</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
   function renderItem(it, isReview) {
     const review = it.recommendation?.review;
-    const reasonColor = isReview ? '#ff8a80' : '#81d4fa';
+    const reasonColor = isReview ? '#ff8a80' : '#81c784';
+    const dim = it.dimensions_cm;
     return `
       <div style="padding:10px 16px;border-bottom:1px solid #1f1f3a;font-size:12px;">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px;">
@@ -231,7 +278,7 @@
             <span style="color:#888;margin-left:6px;">${esc(it.platform || '')}</span>
             <span style="color:#888;margin-left:6px;">${esc(fmtDate(it.order_date))}</span>
           </div>
-          <div style="color:${reasonColor};font-size:11px;">
+          <div style="color:${reasonColor};font-size:11px;font-weight:600;">
             ${esc(it.recommendation?.reason || '')}
           </div>
         </div>
@@ -242,9 +289,11 @@
           ${it.buyer_name ? `<span>👤 ${esc(it.buyer_name)}</span>` : ''}
           ${it.country_code ? `<span>🌍 ${esc(it.country_code)}</span>` : (it.country ? `<span>🌍 ${esc(it.country)}</span>` : '')}
           ${it.weight_gram ? `<span>⚖️ ${esc(it.weight_gram)}g</span>` : ''}
+          ${dim ? `<span>📐 ${esc(dim.l)}×${esc(dim.w)}×${esc(dim.h)}cm</span>` : ''}
           <span>🏷️ SKU: <code style="color:#81d4fa;">${esc(it.sku || '(빈 값)')}</code></span>
           ${it.matched ? `<span style="color:#81c784;">✓ ${esc(it.internal_sku)}</span>` : ''}
         </div>
+        ${renderQuotesTable(it.quotes)}
         ${review ? `
           <div style="margin-top:6px;padding:6px 10px;background:#2a1a1a;border-left:3px solid #e94560;border-radius:4px;font-size:11px;color:#ff8a80;">
             <strong>⚠️ ${esc(review.code)}:</strong> ${esc(review.message)}
