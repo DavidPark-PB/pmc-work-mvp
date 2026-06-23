@@ -375,6 +375,124 @@ router.post('/export', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// POST /api/shipping/recommendations/fedex-quote — FedEx 라이브 견적 (단일 주문)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// 사장님 spec (2026-06-23):
+//   FedEx 는 라이브 API 호출 (1건당 1~3초) 이라 배송 추천 화면에서 자동 호출 X.
+//   사용자가 주문별 'FedEx 견적' 버튼 클릭 시만 호출. 견적 받고 5개와 비교 → 라벨 발급.
+//
+// body: { orderId }
+// 응답: { ok, orderNo, weightKg, dims, services: [{serviceType, serviceName, cost, etaDays}], cheapest }
+//
+// 라벨 발급은 기존 POST /api/orders/:orderNo/fedex-label 그대로 사용.
+
+router.post('/fedex-quote', async (req, res) => {
+  try {
+    const orderId = parseInt(req.body?.orderId, 10);
+    if (!Number.isFinite(orderId)) {
+      return res.status(400).json({ ok: false, error: 'orderId 가 필요합니다' });
+    }
+
+    const { getFedexAPI } = require('../../api/fedexAPI');
+    const fedex = getFedexAPI();
+    if (!fedex.isConfigured()) {
+      return res.status(503).json({
+        ok: false,
+        error: 'FedEx 자격증명이 설정되지 않았습니다 (config/.env 의 FEDEX_CLIENT_ID/SECRET/ACCOUNT_NUMBER 필요)',
+      });
+    }
+
+    const db = getClient();
+    const { data: order, error } = await db.from('orders')
+      .select(`
+        id, order_no, sku, quantity,
+        street, city, province, zip_code, country_code,
+        weight_kg, box_length, box_width, box_height,
+        payment_amount, currency
+      `)
+      .eq('id', orderId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!order) return res.status(404).json({ ok: false, error: `주문 ${orderId} 없음` });
+
+    if (!order.street || !order.zip_code || !order.country_code) {
+      return res.status(400).json({
+        ok: false,
+        error: '주소 불완전 — street/zip_code/country_code 필요',
+      });
+    }
+
+    // 무게/치수 — orders 우선, sku_master fallback
+    let weightKg = Number(order.weight_kg) || 0;
+    let dimL = Number(order.box_length) || 0;
+    let dimW = Number(order.box_width) || 0;
+    let dimH = Number(order.box_height) || 0;
+    if (weightKg <= 0 && order.sku) {
+      const { data: m } = await db.from('sku_master')
+        .select('weight_gram, length_cm, width_cm, height_cm')
+        .eq('internal_sku', String(order.sku).trim())
+        .maybeSingle();
+      if (m) {
+        if (m.weight_gram > 0) weightKg = Number(m.weight_gram) / 1000;
+        if (m.length_cm) dimL = Number(m.length_cm);
+        if (m.width_cm)  dimW = Number(m.width_cm);
+        if (m.height_cm) dimH = Number(m.height_cm);
+      }
+    }
+    if (weightKg <= 0) {
+      return res.status(400).json({ ok: false, error: '무게 미등록 — sku_master.weight_gram 입력 필요' });
+    }
+
+    // FedEx Rate API 호출
+    const qty = Number(order.quantity) || 1;
+    weightKg = weightKg * qty;
+    const dims = (dimL && dimW && dimH) ? { length: dimL, width: dimW, height: dimH } : null;
+    const customsValue = Number(order.payment_amount) || 1;
+    const currency = order.currency || 'USD';
+
+    let services = [];
+    try {
+      services = await fedex.getRates({
+        destination: {
+          street: order.street, city: order.city, state: order.province,
+          zip: order.zip_code, country: order.country_code,
+        },
+        packages: [{ weightKg, dimensions: dims }],
+        customsValue,
+        currency,
+      });
+    } catch (fedexErr) {
+      return res.status(502).json({
+        ok: false,
+        error: `FedEx 견적 실패: ${fedexErr.message}`,
+      });
+    }
+
+    if (!Array.isArray(services) || services.length === 0) {
+      return res.json({ ok: true, orderNo: order.order_no, weightKg, dims, services: [], cheapest: null });
+    }
+
+    services.sort((a, b) => a.cost - b.cost);
+    const cheapest = services[0];
+
+    res.json({
+      ok: true,
+      orderNo: order.order_no,
+      weightKg,
+      dims,
+      services,    // 가격순 정렬
+      cheapest,    // { serviceType, serviceName, cost, currency, etaDays }
+      customsValue,
+      currency,
+    });
+  } catch (e) {
+    console.error('[shipping/fedex-quote] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // WMS 기반 라우트 (Phase 4 of 배송비 계산/배송추천 리디자인)
 // ════════════════════════════════════════════════════════════════════════════
 // 기존 /api/shipping/recommendations 는 레거시 orders 테이블 기반으로 유지.
