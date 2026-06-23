@@ -557,6 +557,16 @@ class EbayAPI {
           const itemMatch = txn.match(/<Item>([\s\S]*?)<\/Item>/);
           const item = itemMatch ? itemMatch[1] : '';
 
+          // 사장님 보고 2026-06-23: OrderStatus=AwaitingShipment 만 필터링했으나
+          // 900건이 반환됨 (seller hub 는 35건). 원인 — eBay 의 OrderStatus 가
+          // AwaitingShipment 라도 ShippedTime / CancelStatus / CheckoutStatus 가
+          // '이미 처리됨' 상태일 수 있음. 추가 추출해서 진짜 awaiting 만 골라냄.
+          const shippedTime = this.extractValue(order, 'ShippedTime') || '';
+          const cancelStatus = this.extractValue(order, 'CancelStatus') || '';
+          const checkoutStatus = this.extractValue(order, 'eBayPaymentStatus')
+            || this.extractValue(order, 'CompleteStatus') || '';
+          const paidTime = this.extractValue(order, 'PaidTime') || '';
+
           allOrders.push({
             ebayOrderId: this.extractValue(order, 'OrderID'),
             createdDate: this.extractValue(order, 'CreatedTime'),
@@ -574,6 +584,11 @@ class EbayAPI {
             shippingZip: this.extractValue(addr, 'PostalCode'),
             shippingCountry: this.extractValue(addr, 'Country'),
             shippingPhone: this.extractValue(addr, 'Phone'),
+            // 정합성 판정용 raw 상태
+            _shippedTime: shippedTime,
+            _cancelStatus: cancelStatus,
+            _checkoutStatus: checkoutStatus,
+            _paidTime: paidTime,
           });
         }
 

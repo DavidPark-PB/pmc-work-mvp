@@ -315,10 +315,35 @@ class OrderSync {
 
     const seen = new Set();
     const result = [];
+    // 사장님 정책 (2026-06-23): "트래킹 없어도 shipped 처리된 건 가져오지 마,
+    //   awaiting shipment 만". eBay OrderStatus=AwaitingShipment 외에 다음 보강 필터:
+    //   - ShippedTime 있으면 (이미 발송 마킹) skip — '0001-01-01...' 같은 epoch 도 비어있는 것으로 간주
+    //   - CancelStatus 가 NotCancelled 이외면 skip (CancelClosed/Pending/Complete 등)
+    //   - 결제 미완 (PaidTime 비어있고 CompleteStatus != Complete) skip
+    this._lastEbaySkipCounts = { shipped: 0, cancelled: 0, unpaid: 0, total: awaitingOrders.length };
 
     for (const o of awaitingOrders) {
       if (!o.ebayOrderId || seen.has(o.ebayOrderId)) continue;
       seen.add(o.ebayOrderId);
+
+      // 1) 이미 shipped 처리됨 — ShippedTime 이 진짜 날짜
+      const st = (o._shippedTime || '').trim();
+      const hasShipped = st && !/^0001-01-01/.test(st) && st !== '1970-01-01T00:00:00.000Z';
+      if (hasShipped) { this._lastEbaySkipCounts.shipped++; continue; }
+
+      // 2) 취소 — CancelStatus 가 NotCancelled / 빈 값 아닌 경우
+      const cs = (o._cancelStatus || '').trim();
+      if (cs && cs !== 'NotCancelled' && cs !== 'CancelNotApplicable') {
+        this._lastEbaySkipCounts.cancelled++;
+        continue;
+      }
+
+      // 3) 결제 미완 — PaidTime 비어있고 CompleteStatus != Complete 면 결제 안 됨
+      const pt = (o._paidTime || '').trim();
+      const completeStatus = (o._checkoutStatus || '').trim();
+      const hasPaid = (pt && !/^0001-01-01/.test(pt)) || completeStatus === 'Complete';
+      if (!hasPaid) { this._lastEbaySkipCounts.unpaid++; continue; }
+
       result.push({
         orderDate: o.createdDate ? o.createdDate.split('T')[0] : '',
         platform: 'eBay',

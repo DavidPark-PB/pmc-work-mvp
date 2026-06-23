@@ -3229,7 +3229,8 @@ router.get('/orders/sync-debug', async (req, res) => {
         count: ebayResult.count,
         ok: ebayResult.ok,
         error: ebayResult.error,
-        note: 'eBay GetOrders OrderStatus=AwaitingShipment (ModTime 30일). 1주문=1record.',
+        skipBreakdown: sync._lastEbaySkipCounts || null,
+        note: 'eBay GetOrders OrderStatus=AwaitingShipment 후 ShippedTime/CancelStatus/PaidTime 보강 필터링. skipBreakdown 으로 어떤 사유로 제외됐는지 확인.',
       },
       shopify: {
         recordsAfterLineItemSplit: shopifyResult.count,
