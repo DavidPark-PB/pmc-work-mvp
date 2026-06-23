@@ -339,7 +339,7 @@ class CarrierSheets {
   async addToKPL(config, order, opts = {}) {
     const { spreadsheetId } = config;
 
-    const sheetTab = opts.sheetTab || await this.getOrCreateDateTab(spreadsheetId, null);
+    const sheetTab = opts.sheetTab || await this.getOrCreateKPLTab(spreadsheetId);
     const countryCode = (order.countryCode || order.country || '').toUpperCase();
     const countryName = COUNTRY_NAMES[countryCode] || countryCode;
     const orderNo = order.orderId || '';
@@ -513,6 +513,97 @@ class CarrierSheets {
     await this.sheets.duplicateSheet(spreadsheetId, template.sheetId, todayTab, 0);
 
     console.log(`   ✅ 탭 '${todayTab}' 템플릿 복사 완료 (맨 앞 위치, 발송인 자동 포함)`);
+    return todayTab;
+  }
+
+  /**
+   * KPL 전용: 템플릿 탭 복사 → 오늘 날짜 탭 생성
+   * '원본복사(26/01/08수정)' 탭을 복제하여 MM/DD 이름으로 맨 앞에 배치.
+   * (사장님 요청 2026-06-23 — 빈 탭 대신 양식 탭 복사로 변경)
+   */
+  async getOrCreateKPLTab(spreadsheetId) {
+    const today = new Date();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    const todayTab = `${mm}/${dd}`;
+    const TEMPLATE_NAME = '원본복사(26/01/08수정)';
+
+    console.log(`📅 getOrCreateKPLTab: 탭 '${todayTab}' 확인 중`);
+
+    const info = await this.sheets.getSpreadsheetInfo(spreadsheetId);
+    const sheetList = info.sheets.map(s => ({
+      title: s.properties.title,
+      sheetId: s.properties.sheetId,
+      index: s.properties.index,
+    }));
+    const sheetNames = sheetList.map(s => s.title);
+
+    // 이미 오늘 탭이 있으면 재사용 (상위 30개 이내)
+    if (sheetNames.includes(todayTab)) {
+      const tabIndex = sheetNames.indexOf(todayTab);
+      if (tabIndex < 30) {
+        console.log(`   ✅ 탭 '${todayTab}' 이미 존재 (위치 ${tabIndex})`);
+        return todayTab;
+      }
+      // 오래된 탭 → 이름 변경
+      const oldTab = sheetList[tabIndex];
+      await this.sheets.renameSheet(spreadsheetId, oldTab.sheetId, `${todayTab}(old)`);
+    }
+
+    // 템플릿 탭 찾기
+    const template = sheetList.find(s => s.title === TEMPLATE_NAME);
+
+    if (template) {
+      try {
+        console.log(`   📋 템플릿 '${template.title}' (ID: ${template.sheetId}) 복사 → '${todayTab}'`);
+        await this.sheets.duplicateSheet(spreadsheetId, template.sheetId, todayTab, 0);
+        console.log(`   ✅ 탭 '${todayTab}' 템플릿 복사 완료 (맨 앞 위치)`);
+        return todayTab;
+      } catch (dupErr) {
+        if (dupErr.message && dupErr.message.includes('10000000')) {
+          // 셀 한도 초과: 오래된 시트(맨 뒤부터) 삭제 후 재시도
+          console.warn(`   ⚠️ 셀 한도 초과 — 오래된 시트 삭제 중...`);
+          const protectedNames = new Set([TEMPLATE_NAME, todayTab]);
+          const deletable = sheetList.filter(s => !protectedNames.has(s.title)).reverse();
+          for (let i = 0; i < Math.min(3, deletable.length); i++) {
+            try {
+              console.log(`   🗑️ 오래된 시트 삭제: '${deletable[i].title}'`);
+              await this.sheets.deleteSheet(spreadsheetId, deletable[i].sheetId);
+            } catch (delErr) {
+              console.warn(`   ⚠️ 시트 삭제 실패: ${delErr.message}`);
+            }
+          }
+          // 재시도
+          try {
+            await this.sheets.duplicateSheet(spreadsheetId, template.sheetId, todayTab, 0);
+            console.log(`   ✅ 오래된 시트 삭제 후 탭 '${todayTab}' 생성 성공`);
+            return todayTab;
+          } catch (retryErr) {
+            console.warn(`   ⚠️ 재시도 실패 (${retryErr.message}) → fallback`);
+          }
+        } else {
+          console.warn(`   ⚠️ 템플릿 복사 실패 (${dupErr.message}) → 빈 탭 + 헤더 복사 fallback`);
+        }
+      }
+    } else {
+      console.warn(`   ⚠️ 템플릿 탭 '${TEMPLATE_NAME}' 없음 → 빈 탭 생성 fallback`);
+    }
+
+    // fallback: 빈 탭 생성 후 템플릿 헤더(1행) 복사
+    await this.sheets.createSheet(spreadsheetId, todayTab, 0);
+    if (template) {
+      try {
+        const headerRows = await this.sheets.readData(spreadsheetId, `'${TEMPLATE_NAME}'!1:1`);
+        if (headerRows && headerRows.length > 0) {
+          await this.sheets.writeData(spreadsheetId, `'${todayTab}'!A1`, headerRows);
+          console.log(`   ✅ 새 탭 '${todayTab}' 생성 + 템플릿 헤더 복사 완료`);
+          return todayTab;
+        }
+      } catch (hdrErr) {
+        console.warn(`   ⚠️ 헤더 복사 실패: ${hdrErr.message}`);
+      }
+    }
+    console.log(`   ✅ 빈 탭 '${todayTab}' 생성 완료 (헤더 없음)`);
     return todayTab;
   }
 
