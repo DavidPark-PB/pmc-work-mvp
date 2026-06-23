@@ -190,6 +190,174 @@ router.get('/', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// POST /api/shipping/recommendations/export — 추천 결과를 배송사 구글시트에 일괄 입력
+// ════════════════════════════════════════════════════════════════════════════
+//
+// 사장님 spec (2026-06):
+//   배송 추천 화면에서 "구글시트 자동입력" 버튼 → 같은 색(=같은 배송사) 묶음을
+//   해당 배송사 시트에 한 번에 추가. 직원이 carrierSheets 화면을 따로 열 필요 X.
+//
+// body:
+//   { orderIds: number[] }
+//     또는
+//   { orderIds: number[], carrierKey: 'shipter'|'kpl'|'yun' }
+//       carrierKey 가 있으면 그 배송사로 강제. 없으면 recommend() 결과 따름.
+//
+// 응답:
+//   { ok: number, fail: number, skipped: number, results: [...] }
+//
+// 매핑: recommender carrier_key → carrierSheets 한글 배송사명
+//   shipter → 쉽터, kpl → KPL, yun → 윤익스프레스
+//   koreapost / fedex / kpacket / review → 시트 미지원 (skipped)
+
+// recommender key → carrierSheets 한글명
+const CARRIER_KEY_TO_SHEET_NAME = {
+  shipter: '쉽터',
+  kpl: 'KPL',
+  yun: '윤익스프레스',
+};
+
+const SHEET_SUPPORTED_KEYS = new Set(Object.keys(CARRIER_KEY_TO_SHEET_NAME));
+
+router.post('/export', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const orderIds = Array.isArray(body.orderIds)
+      ? body.orderIds.map(n => parseInt(n, 10)).filter(Number.isFinite)
+      : [];
+    if (orderIds.length === 0) {
+      return res.status(400).json({ error: 'orderIds 가 필요합니다' });
+    }
+    const forcedCarrierKey = body.carrierKey ? String(body.carrierKey).toLowerCase() : null;
+    if (forcedCarrierKey && !SHEET_SUPPORTED_KEYS.has(forcedCarrierKey)) {
+      return res.status(400).json({
+        error: `carrierKey '${forcedCarrierKey}' 는 시트 미지원. 지원: ${[...SHEET_SUPPORTED_KEYS].join(', ')}`,
+      });
+    }
+
+    // 1) orders + sku_master 일괄 조회
+    const db = getClient();
+    const { data: orders, error: e1 } = await db.from('orders')
+      .select(`
+        id, order_no, platform, sku, title, quantity,
+        buyer_name, street, city, province, zip_code,
+        country, country_code, phone, email,
+        weight_kg, box_length, box_width, box_height,
+        payment_amount, currency
+      `)
+      .in('id', orderIds);
+    if (e1) throw e1;
+
+    const skuMap = await lookupSkuMasterMap((orders || []).map(o => o.sku));
+
+    // 2) CarrierSheets lazy init (실패 시 빠르게 응답)
+    const CarrierSheets = require('../../services/carrierSheets');
+    let cs;
+    try {
+      cs = new CarrierSheets();
+    } catch (initErr) {
+      return res.status(503).json({ error: `구글시트 연결 실패: ${initErr.message}` });
+    }
+
+    const results = [];
+    let ok = 0, fail = 0, skipped = 0;
+
+    for (const o of orders || []) {
+      const matched = skuMap.get(o.sku ? String(o.sku).trim() : '');
+      const matchInfo = recommender.buildMatchInfo(o.sku, matched);
+      const weightGramFromMaster = matched ? Number(matched.weight_gram) : null;
+      const countryCode = o.country_code || null;
+
+      let carrierKey = forcedCarrierKey;
+      let recReason = forcedCarrierKey ? `사용자 지정: ${forcedCarrierKey}` : null;
+      if (!carrierKey) {
+        const rec = recommender.recommend({
+          weightGram: weightGramFromMaster,
+          countryCode,
+          matchInfo,
+        });
+        carrierKey = rec.carrier?.key;
+        recReason = rec.reason;
+      }
+
+      if (!carrierKey || !SHEET_SUPPORTED_KEYS.has(carrierKey)) {
+        skipped++;
+        results.push({
+          order_id: o.id, order_no: o.order_no,
+          status: 'skipped',
+          reason: carrierKey === 'review'
+            ? `검토 필요: ${recReason || ''}`
+            : `${carrierKey || 'unknown'} 시트 자동입력 미지원`,
+        });
+        continue;
+      }
+
+      const sheetCarrierName = CARRIER_KEY_TO_SHEET_NAME[carrierKey];
+
+      // orders 무게 우선, 없으면 sku_master 무게 → kg 변환
+      const weightG = (Number(o.weight_kg) > 0)
+        ? Number(o.weight_kg) * 1000
+        : weightGramFromMaster;
+      const weightKg = weightG ? Math.round((weightG / 1000) * 1000) / 1000 : null;
+
+      const orderPayload = {
+        orderId: o.order_no,
+        buyerName: o.buyer_name || '',
+        countryCode: o.country_code || '',
+        country: o.country || '',
+        street: o.street || '',
+        city: o.city || '',
+        province: o.province || '',
+        zipCode: o.zip_code || '',
+        phone: o.phone || '',
+        email: o.email || '',
+        weightKg,
+        dimL: Number(o.box_length) || null,
+        dimW: Number(o.box_width) || null,
+        dimH: Number(o.box_height) || null,
+        sku: o.sku || '',
+        title: o.title || '',
+        quantity: Number(o.quantity) || 1,
+        paymentAmount: o.payment_amount ? Number(o.payment_amount) : null,
+        currency: o.currency || null,
+      };
+
+      try {
+        const sheetResult = await cs.addToCarrierSheet(sheetCarrierName, orderPayload, {});
+        ok++;
+        results.push({
+          order_id: o.id, order_no: o.order_no,
+          status: 'ok',
+          carrier: sheetCarrierName,
+          sheetTab: sheetResult.sheetTab,
+          reason: recReason,
+        });
+        // orders 테이블 — carrier + status='READY' 업데이트 (set-carrier 와 동일 정책)
+        try {
+          await db.from('orders').update({ carrier: sheetCarrierName, status: 'READY' }).eq('id', o.id);
+        } catch (uErr) {
+          console.warn(`[shipping/export] orders 업데이트 실패 (무시) order_id=${o.id}:`, uErr.message);
+        }
+      } catch (sheetErr) {
+        fail++;
+        results.push({
+          order_id: o.id, order_no: o.order_no,
+          status: 'fail',
+          carrier: sheetCarrierName,
+          error: sheetErr.message,
+        });
+        console.error(`[shipping/export] 시트 추가 실패 order_no=${o.order_no}:`, sheetErr.message);
+      }
+    }
+
+    res.json({ ok, fail, skipped, total: (orders || []).length, results });
+  } catch (e) {
+    console.error('[shipping/recommendations/export] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // WMS 기반 라우트 (Phase 4 of 배송비 계산/배송추천 리디자인)
 // ════════════════════════════════════════════════════════════════════════════
 // 기존 /api/shipping/recommendations 는 레거시 orders 테이블 기반으로 유지.

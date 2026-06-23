@@ -154,9 +154,13 @@
     host.innerHTML = visible.map(g => renderGroupCard(g)).join('');
   }
 
+  // 구글시트 자동입력 지원 배송사 (backend CARRIER_KEY_TO_SHEET_NAME 와 일치)
+  const SHEET_SUPPORTED_KEYS = new Set(['shipter', 'kpl', 'yun']);
+
   function renderGroupCard(g) {
     const isReview = g.carrier.key === 'review';
     const expanded = state.expanded.has(g.carrier.key);
+    const sheetSupported = SHEET_SUPPORTED_KEYS.has(g.carrier.key);
     return `
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-left:4px solid ${g.carrier.color};border-radius:10px;margin-bottom:10px;overflow:hidden;">
         <div onclick="pmcShippingRecs.toggle('${esc(g.carrier.key)}')"
@@ -167,7 +171,10 @@
             <span style="padding:2px 10px;background:${g.carrier.color};color:#fff;border-radius:12px;font-size:12px;font-weight:600;">${g.count}건</span>
             ${isReview ? '<span style="color:#ff8a80;font-size:11px;margin-left:6px;">⚠️ 사장님 검토 필요</span>' : ''}
           </div>
-          <div style="display:flex;gap:8px;align-items:center;">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            ${sheetSupported && g.count > 0 ? `<button type="button" onclick="event.stopPropagation();pmcShippingRecs.exportGroup('${esc(g.carrier.key)}')"
+              id="rec-export-btn-${esc(g.carrier.key)}"
+              style="padding:5px 12px;background:${g.carrier.color};border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">📊 구글시트 자동입력</button>` : ''}
             ${!isReview && g.count > 0 ? `<button type="button" onclick="event.stopPropagation();pmcShippingRecs.printGroup('${esc(g.carrier.key)}')"
               style="padding:5px 12px;background:#0f0f23;border:1px solid ${g.carrier.color};border-radius:4px;color:${g.carrier.color};cursor:pointer;font-size:11px;font-weight:600;">📋 묶음 출력</button>` : ''}
             <span style="color:#888;font-size:14px;">${expanded ? '▲' : '▼'}</span>
@@ -176,6 +183,41 @@
         ${expanded ? `<div style="border-top:1px solid #2a2a4a;background:#0d0d1f;">${g.items.map(it => renderItem(it, isReview)).join('')}</div>` : ''}
       </div>
     `;
+  }
+
+  // 구글시트 자동입력 — 그룹 단위 일괄 처리
+  async function exportGroup(carrierKey) {
+    const g = (state.groups || []).find(x => x.carrier.key === carrierKey);
+    if (!g || g.count === 0) return;
+    const orderIds = g.items.map(it => it.order_id).filter(id => id != null);
+    if (orderIds.length === 0) { alert('입력할 주문이 없습니다'); return; }
+
+    const ok = confirm(`${g.carrier.label} 배송사 시트에 ${orderIds.length}건 일괄 입력하시겠습니까?\n\n오늘 날짜 탭 (MM/DD) 에 추가됩니다.`);
+    if (!ok) return;
+
+    const btn = document.getElementById('rec-export-btn-' + carrierKey);
+    const origText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 입력 중...'; }
+
+    try {
+      const res = await fetch('/api/shipping/recommendations/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderIds, carrierKey }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '실패');
+
+      const msg = `✅ 입력 완료: ${j.ok}건${j.fail ? ` / ❌ 실패: ${j.fail}건` : ''}${j.skipped ? ` / ⏭️ 건너뜀: ${j.skipped}건` : ''}`;
+      alert(msg + (j.fail || j.skipped ? '\n\n' + (j.results || []).filter(r => r.status !== 'ok').slice(0, 10).map(r => `${r.order_no}: ${r.error || r.reason || r.status}`).join('\n') : ''));
+
+      // 성공 시 새로고침 — status='READY' 로 바뀌어 NEW 필터에서 빠짐
+      await refresh();
+    } catch (e) {
+      alert('구글시트 입력 실패: ' + e.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = origText; }
+    }
   }
 
   function renderItem(it, isReview) {
@@ -245,6 +287,6 @@
   }
 
   window.pmcShippingRecs = {
-    load, refresh, onStatusChange, onDaysChange, toggle, printGroup,
+    load, refresh, onStatusChange, onDaysChange, toggle, printGroup, exportGroup,
   };
 })();
