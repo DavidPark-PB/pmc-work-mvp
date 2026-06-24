@@ -37,6 +37,10 @@ class KoreaPostAPI {
     // 서비스별 계약승인번호 (K-Packet 과 EMS 가 다른 계약 → 다른 apprno)
     this.apprnoKpacket = process.env.KOREAPOST_APPRNO_KPACKET || process.env.KOREAPOST_APPRNO || '';
     this.apprnoEms     = process.env.KOREAPOST_APPRNO_EMS     || process.env.KOREAPOST_APPRNO || '';
+    // 국내 계약소포 (ship.epost.go.kr) — 사장님 PMC 계약 2026-06-24 확인 4013980899 (즉납, 동수원).
+    this.apprnoDomestic = process.env.KOREAPOST_APPRNO_DOMESTIC || '';
+    // 국내 공급지(발송지/회수도착지) 코드. InsertOffice.jparcel 로 사전 등록 후 받은 값.
+    this.domesticOfficeSer = process.env.KOREAPOST_OFFICE_SER || '';
     this.premiumcd = process.env.KOREAPOST_PREMIUMCD;     // 서비스 프리미엄 코드
     this.rateUrl = process.env.KOREAPOST_RATE_URL || DEFAULT_RATE_URL;
     this.trackUrl = process.env.KOREAPOST_TRACK_URL || DEFAULT_TRACK_URL;
@@ -51,7 +55,162 @@ class KoreaPostAPI {
 
   // 서비스 타입 → 해당 apprno 반환
   _apprnoFor(serviceType) {
-    return serviceType === 'EMS' ? this.apprnoEms : this.apprnoKpacket;
+    if (serviceType === 'EMS') return this.apprnoEms;
+    if (serviceType === 'DOMESTIC' || serviceType === 'PARCEL') return this.apprnoDomestic;
+    return this.apprnoKpacket;
+  }
+
+  // 우체국 API 공통 호출 helper (사장님 검증 2026-06-24).
+  //   - Host header 명시 X (매뉴얼은 'Host: biz.epost.go.kr' 라고 했지만 실제로 그 헤더 있으면
+  //     307 redirect → 에러 페이지. 그 헤더 빼고 HTTPS 사용 시 정상)
+  //   - User-Agent 는 매뉴얼 권장값
+  //   - 응답 = XML (text)
+  async _callXml(url, params, opts = {}) {
+    const axios = require('axios');
+    const res = await axios.get(url, {
+      params,
+      timeout: opts.timeout || 20000,
+      responseType: 'text',
+      headers: {
+        'User-Agent': 'Apache-HttpClient/4.5.1 (Java/1.8.0_91)',
+        'Connection': 'keep-alive',
+        'Accept': 'application/xml,text/xml,*/*',
+      },
+      // 우체국 https 인증서 이슈 회피 — 일단 verify 유지
+      validateStatus: () => true,
+    });
+    const xml = res.data;
+    const parsed = await this._xmlParser.parseStringPromise(xml);
+    const root = parsed && Object.values(parsed)[0];
+    return { root, xml, parsed, status: res.status };
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 국내 계약소포 API (ship.epost.go.kr) — 사장님 매뉴얼 기준
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 국내 계약승인번호 조회 (COMAPI-R01-02) — 사장님 PMC 계약 list 확인.
+   * 평문: 'custNo=고객번호'
+   * @returns {Promise<{contractInfo: Array<{apprNo,payTypeCd,payTypeNm,postNm}>, raw}>}
+   */
+  async listDomesticContracts() {
+    if (!this.isConfigured()) throw new Error('KOREAPOST_API_KEY 미설정');
+    if (!this.custno) throw new Error('KOREAPOST_CUSTNO 미설정');
+    const url = 'https://ship.epost.go.kr/api.GetApprNo.jparcel';
+    const regData = this._buildRegData({ custNo: this.custno });
+    const { root, status } = await this._callXml(url, { key: this.apiKey, regData });
+    if (status !== 200) throw new Error(`HTTP ${status}`);
+    if (root?.error) throw new Error(`우체국 ${root.error.error_code}: ${root.error.message}`);
+    const list = root?.contractInfo
+      ? (Array.isArray(root.contractInfo) ? root.contractInfo : [root.contractInfo])
+      : [];
+    return { contractInfo: list, raw: root };
+  }
+
+  /**
+   * 국내 공급지 정보 조회 (SHPAPI-R01-01) — 사전 등록된 공급지 list.
+   * 평문: 'custNo=고객번호&officeDivReqCd=(선택, 7=전체)'
+   */
+  async listDomesticOffices(officeDivReqCd = null) {
+    if (!this.custno) throw new Error('KOREAPOST_CUSTNO 미설정');
+    const url = 'https://ship.epost.go.kr/api.GetOfficeInfo.jparcel';
+    const plain = { custNo: this.custno };
+    if (officeDivReqCd) plain.officeDivReqCd = officeDivReqCd;
+    const regData = this._buildRegData(plain);
+    const { root } = await this._callXml(url, { key: this.apiKey, regData });
+    if (root?.error) throw new Error(`우체국 ${root.error.error_code}: ${root.error.message}`);
+    const list = root?.officeInfo
+      ? (Array.isArray(root.officeInfo) ? root.officeInfo : [root.officeInfo])
+      : [];
+    return { offices: list, raw: root };
+  }
+
+  /**
+   * 국내 공급지 등록 (SHPAPI-C01-01) — 발송지 정보 사전 등록.
+   * @param {Object} office  { officeSer, officeNm, officeZip, officeAddr1, officeAddr2, officeTelno, contactNm, ... }
+   */
+  async createDomesticOffice(office) {
+    if (!this.custno) throw new Error('KOREAPOST_CUSTNO 미설정');
+    const url = 'https://ship.epost.go.kr/api.InsertOffice.jparcel';
+    const regData = this._buildRegData({ custNo: this.custno, ...office });
+    const { root } = await this._callXml(url, { key: this.apiKey, regData });
+    if (root?.error) throw new Error(`우체국 ${root.error.error_code}: ${root.error.message}`);
+    return root;
+  }
+
+  /**
+   * 국내 소포신청 = 라벨 발급 (SHPAPI-C02-01).
+   * 매뉴얼: api.InsertOrder.jparcel + SEED128 + UTF-8.
+   *
+   * 필수 필드 (매뉴얼 기준):
+   *   custNo, apprNo, payType, reqType, officeSer, microYn, orderNo, ordCompNm,
+   *   recNm, recZip, recAddr1, recAddr2, recTel 또는 recMob, contCd, goodsNm
+   *
+   * @param {Object} order
+   *   - orderNo: 업체측 주문번호 (unique key)
+   *   - recipient: { name, zip, addr1, addr2, tel, mob }
+   *   - parcel: { weight(kg), volume(cm), contCd, goodsNm, qty }
+   *   - payType: '1' (즉납/후납) 기본 / '2' (수취인 부담)
+   *   - reqType: '1' (일반소포) 기본 / '2' (반품소포)
+   *   - testYn: 'Y' 면 테스트 모드 (실제 접수 X) — 검증 시 권장
+   * @returns {Promise<{regiNo, reqNo, resNo, price, ...}>}
+   */
+  async createDomesticOrder({ order, payType = '1', reqType = '1', testYn = 'N' }) {
+    if (!this.custno) throw new Error('KOREAPOST_CUSTNO 미설정');
+    if (!this.apprnoDomestic) throw new Error('KOREAPOST_APPRNO_DOMESTIC 미설정');
+    if (!this.domesticOfficeSer) {
+      throw new Error('KOREAPOST_OFFICE_SER 미설정 — 사전에 createDomesticOffice() 호출하여 공급지 등록 후 받은 officeSer 환경변수 입력 필요');
+    }
+    if (!order?.orderNo) throw new Error('order.orderNo 필수');
+    if (!order?.recipient?.name) throw new Error('recipient.name 필수');
+    if (!order?.recipient?.zip) throw new Error('recipient.zip 필수');
+    if (!order?.recipient?.addr1) throw new Error('recipient.addr1 필수');
+
+    const r = order.recipient;
+    const p = order.parcel || {};
+    const plain = {
+      custNo: this.custno,
+      apprNo: this.apprnoDomestic,
+      payType,
+      reqType,
+      officeSer: this.domesticOfficeSer,
+      weight: p.weight || 1,                  // kg (정수)
+      volume: p.volume || 60,                 // cm (가로+세로+높이)
+      microYn: p.microYn || 'N',              // 초소형 여부
+      orderNo: String(order.orderNo).slice(0, 50),
+      ordCompNm: order.ordCompNm || 'PMC Corporation',
+      // 수취인 정보
+      recNm:    r.name,
+      recZip:   r.zip,
+      recAddr1: r.addr1,
+      recAddr2: r.addr2 || '',
+      recTel:   r.tel || '',
+      recMob:   r.mob || '',
+      // 상품
+      contCd:   p.contCd || '021',            // 매뉴얼 코드 (일반 의류 등)
+      goodsNm:  (p.goodsNm || 'General Merchandise').slice(0, 400),
+      qty:      p.qty || 1,
+      // 옵션
+      testYn,
+      printYn: 'N',
+    };
+
+    const url = 'https://ship.epost.go.kr/api.InsertOrder.jparcel';
+    const regData = this._buildRegData(plain);
+    const { root, status, xml } = await this._callXml(url, { key: this.apiKey, regData });
+    if (status !== 200) throw new Error(`HTTP ${status}: ${xml.slice(0, 200)}`);
+    if (root?.error) throw new Error(`우체국 ${root.error.error_code}: ${root.error.message}`);
+    return {
+      regiNo: root?.regiNo,            // 운송장번호 (등기번호)
+      reqNo: root?.reqNo,              // 소포 주문번호
+      resNo: root?.resNo,              // 예약번호
+      price: root?.price,              // 예상 요금
+      regipoNm: root?.regipoNm,        // 접수 우체국명
+      vTelNo: root?.vTelNo,            // 가상 전화번호
+      refineAddr: root?.refineAddr,    // 정제 도로명주소
+      raw: root,
+    };
   }
 
   /**

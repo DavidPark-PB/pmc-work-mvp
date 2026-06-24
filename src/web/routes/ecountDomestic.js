@@ -107,6 +107,26 @@ router.get('/diag', async (req, res) => {
       seedTest = { ok: false, error: e.message };
     }
 
+    // 실제 우체국 API call 검증 — ?probeKorea=1 일 때만 (production 영향 X)
+    let liveProbe = null;
+    if (req.query.probeKorea === '1' && koreapostConfigured) {
+      liveProbe = {};
+      // 1) 국내 계약승인번호 조회 (ship.epost.go.kr) — Host header 빼야 정상
+      try {
+        const r = await kp.listDomesticContracts();
+        liveProbe.domesticContracts = { ok: true, contracts: r.contractInfo };
+      } catch (e) {
+        liveProbe.domesticContracts = { ok: false, error: e.message };
+      }
+      // 2) 국내 공급지 list 조회 — officeSer 환경변수 채우기 위해
+      try {
+        const r = await kp.listDomesticOffices();
+        liveProbe.domesticOffices = { ok: true, offices: r.offices };
+      } catch (e) {
+        liveProbe.domesticOffices = { ok: false, error: e.message };
+      }
+    }
+
     res.json({
       ecount: {
         configured: ecountConfigured,
@@ -119,6 +139,7 @@ router.get('/diag', async (req, res) => {
         env: koreapostEnv,
         missing: missingKoreapost,
         seedTest,
+        liveProbe,    // ?probeKorea=1 일 때만 — 실제 우체국 API 호출 결과
       },
       domesticOrders,
       hint: !ecountConfigured
