@@ -1,16 +1,23 @@
 require('../config');
 const axios = require('axios');
+const tokenStore = require('../services/tokenStore');
 
 /**
  * eBay API 연동 클래스 (Trading API 직접 호출)
+ *
+ * 토큰 관리 (사장님 보고 2026-06-24 근본 해결):
+ *   - constructor 는 env 만 시드 값으로 캐시.
+ *   - 실제 호출 직전 `_ensureToken()` 로 DB(platform_tokens) 우선 → env 폴백.
+ *   - refresh 성공 시 access_token + (있으면) 새 refresh_token 도 DB upsert.
+ *   - Railway restart 되어도 DB 의 최신 토큰을 다시 load 하므로 영구 유지.
  */
 class EbayAPI {
   constructor() {
     this.appId = process.env.EBAY_APP_ID;
     this.certId = process.env.EBAY_CERT_ID;
     this.devId = process.env.EBAY_DEV_ID;
-    this.userToken = process.env.EBAY_USER_TOKEN;
-    this.refreshToken = process.env.EBAY_REFRESH_TOKEN;
+    this.userToken = process.env.EBAY_USER_TOKEN;          // env seed — DB 가 우선
+    this.refreshToken = process.env.EBAY_REFRESH_TOKEN;    // env seed — DB 가 우선
     this.environment = process.env.EBAY_ENVIRONMENT || 'PRODUCTION';
 
     this.apiUrl = this.environment === 'PRODUCTION'
@@ -23,9 +30,28 @@ class EbayAPI {
 
     this.siteId = '0'; // US
     this.version = '1355';
-    this._tokenRefreshed = false;
-    this._appToken = null; // Shopping API용 application token
+    this._tokenLoaded = false;       // DB 로드 1회만
+    this._refreshInflight = null;    // 동시 호출 중 refresh 중복 방지 (Promise mutex)
+    this._appToken = null;           // Shopping API용 application token
     this._appTokenExpiry = 0;
+  }
+
+  /**
+   * DB(platform_tokens)에서 토큰 로드. 없으면 env 값 그대로 유지.
+   * 한 인스턴스당 1회만 — 이후엔 refreshAccessToken 이 갱신.
+   */
+  async _ensureToken() {
+    if (this._tokenLoaded) return;
+    this._tokenLoaded = true;
+    try {
+      const stored = await tokenStore.loadToken('ebay');
+      if (stored && stored.accessToken) {
+        this.userToken = stored.accessToken;
+        if (stored.refreshToken) this.refreshToken = stored.refreshToken;
+      }
+    } catch (e) {
+      console.warn('[eBay] DB 토큰 로드 실패 — env 폴백:', e.message);
+    }
   }
 
   /**
@@ -63,50 +89,80 @@ class EbayAPI {
   }
 
   /**
-   * OAuth 토큰 자동 갱신 (refresh_token 사용)
+   * OAuth 토큰 자동 갱신 (refresh_token 사용).
+   * 동시 호출 중복 방지: _refreshInflight Promise 로 single-flight.
+   * 성공 시 access + (rotation 된) refresh_token 모두 DB 에 upsert.
    */
   async refreshAccessToken() {
-    if (!this.refreshToken || !this.appId || !this.certId) {
-      throw new Error('Refresh token 또는 App credentials 없음');
-    }
+    if (this._refreshInflight) return this._refreshInflight;
+    this._refreshInflight = (async () => {
+      if (!this.refreshToken || !this.appId || !this.certId) {
+        throw new Error('Refresh token 또는 App credentials 없음');
+      }
 
-    const credentials = Buffer.from(`${this.appId}:${this.certId}`).toString('base64');
-    const scopes = [
-      'https://api.ebay.com/oauth/api_scope',
-      'https://api.ebay.com/oauth/api_scope/sell.marketing.readonly',
-      'https://api.ebay.com/oauth/api_scope/sell.inventory.readonly',
-      'https://api.ebay.com/oauth/api_scope/sell.inventory',
-      'https://api.ebay.com/oauth/api_scope/sell.account.readonly',
-      'https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly',
-      'https://api.ebay.com/oauth/api_scope/sell.fulfillment',
-    ].join(' ');
+      const credentials = Buffer.from(`${this.appId}:${this.certId}`).toString('base64');
+      const scopes = [
+        'https://api.ebay.com/oauth/api_scope',
+        'https://api.ebay.com/oauth/api_scope/sell.marketing.readonly',
+        'https://api.ebay.com/oauth/api_scope/sell.inventory.readonly',
+        'https://api.ebay.com/oauth/api_scope/sell.inventory',
+        'https://api.ebay.com/oauth/api_scope/sell.account.readonly',
+        'https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly',
+        'https://api.ebay.com/oauth/api_scope/sell.fulfillment',
+      ].join(' ');
+
+      try {
+        const response = await axios.post(this.oauthUrl,
+          `grant_type=refresh_token&refresh_token=${encodeURIComponent(this.refreshToken)}&scope=${encodeURIComponent(scopes)}`,
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Authorization': `Basic ${credentials}`,
+            },
+          }
+        );
+
+        const newAccess = response.data.access_token;
+        const newRefresh = response.data.refresh_token;  // eBay 가 rotation 하면 새 값 옴
+        const expiresIn = Number(response.data.expires_in || 7200);
+
+        this.userToken = newAccess;
+        if (newRefresh) this.refreshToken = newRefresh;
+        process.env.EBAY_USER_TOKEN = newAccess;  // 같은 프로세스의 다른 EbayAPI 인스턴스도 즉시 혜택
+        if (newRefresh) process.env.EBAY_REFRESH_TOKEN = newRefresh;
+
+        // DB 영속화 — Railway restart 되어도 다음 _ensureToken() 이 여기서 로드
+        await tokenStore.saveToken('ebay', {
+          accessToken: newAccess,
+          refreshToken: this.refreshToken,   // rotation 안 했어도 현재 값 저장
+          expiresAt: new Date(Date.now() + expiresIn * 1000),
+        });
+
+        console.log(`[eBay] OAuth 토큰 갱신 성공 (expires_in: ${expiresIn}s, refresh_rotated: ${!!newRefresh})`);
+        return newAccess;
+      } catch (error) {
+        const errData = error.response?.data;
+        console.error('[eBay] 토큰 갱신 실패:', errData?.error_description || error.message);
+        throw error;
+      }
+    })();
 
     try {
-      const response = await axios.post(this.oauthUrl,
-        `grant_type=refresh_token&refresh_token=${encodeURIComponent(this.refreshToken)}&scope=${encodeURIComponent(scopes)}`,
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${credentials}`,
-          },
-        }
-      );
-
-      this.userToken = response.data.access_token;
-      this._tokenRefreshed = true;
-      console.log('eBay OAuth 토큰 갱신 성공 (expires_in:', response.data.expires_in + 's)');
-      return this.userToken;
-    } catch (error) {
-      const errData = error.response?.data;
-      console.error('eBay 토큰 갱신 실패:', errData?.error_description || error.message);
-      throw error;
+      return await this._refreshInflight;
+    } finally {
+      this._refreshInflight = null;
     }
   }
 
   /**
-   * Trading API 호출 (OAuth 토큰 지원 + 자동 갱신)
+   * Trading API 호출 (OAuth 토큰 지원 + 자동 갱신).
+   * 진입 시 DB 우선 토큰 로드 (lazy, 인스턴스당 1회).
+   * 401 / 토큰 만료 감지 시 single-flight refresh → 1회 재시도.
+   * 재시도가 또 실패하면 그 호출 한정으로 throw (다음 호출은 다시 갱신 시도 가능).
    */
-  async callTradingAPI(callName, requestBody = {}) {
+  async callTradingAPI(callName, requestBody = {}, _retryCount = 0) {
+    await this._ensureToken();
+
     const headers = {
       'X-EBAY-API-COMPATIBILITY-LEVEL': this.version,
       'X-EBAY-API-DEV-NAME': this.devId,
@@ -158,17 +214,14 @@ class EbayAPI {
         (response.status >= 400 && response.status < 500 &&
           /token|auth|expired|unauthorized/i.test(dataStr));
 
-      if (!this._tokenRefreshed && isTokenInvalid && this.refreshToken) {
+      if (isTokenInvalid && this.refreshToken && _retryCount === 0) {
         console.log(`[eBay] 토큰 만료/무효 감지 (status=${response.status}) — 자동 갱신 시도`);
-        this._tokenRefreshed = true;
         try {
-          const newToken = await this.refreshAccessToken();
-          process.env.EBAY_USER_TOKEN = newToken;
-          this.userToken = newToken;
-          return this.callTradingAPI(callName, requestBody);  // 1회 재시도
+          await this.refreshAccessToken();   // single-flight + DB 저장 자동
+          return this.callTradingAPI(callName, requestBody, 1);  // 1회만 재시도
         } catch (refreshErr) {
           console.error('[eBay] 토큰 자동 갱신 실패:', refreshErr.message);
-          throw new Error('eBay 토큰 만료 + 자동 갱신 실패 — Railway 환경변수 EBAY_USER_TOKEN 수동 교체 필요');
+          throw new Error('eBay 토큰 만료 + 자동 갱신 실패 — Railway 환경변수 EBAY_REFRESH_TOKEN 수동 교체 필요 (Developer Portal 에서 새 refresh token 발급)');
         }
       }
 
@@ -179,7 +232,6 @@ class EbayAPI {
         throw new Error(`eBay API ${response.status}: ${shortMsg || longMsg || 'Bad request'}`);
       }
 
-      this._tokenRefreshed = false; // 다음 호출을 위해 리셋
       return data;
     } catch (error) {
       // 네트워크 / DNS / timeout 등 — 본문 검증 못한 경우

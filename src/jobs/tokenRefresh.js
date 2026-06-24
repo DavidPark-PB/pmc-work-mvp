@@ -9,7 +9,6 @@
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '../../config/.env') });
-const { saveToken } = require('../services/tokenStore');
 
 async function refreshShopeeTokens() {
   try {
@@ -26,19 +25,15 @@ async function refreshEbayToken() {
   try {
     const EbayAPI = require('../api/ebayAPI');
     const api = new EbayAPI();
+    // 최신 refresh_token 을 DB 에서 먼저 로드 (env 가 rotation 된 옛 값일 수도)
+    await api._ensureToken();
     if (!api.refreshToken) {
       console.warn('[TokenRefresh] eBay: no refresh token configured');
       return;
     }
-    const newToken = await api.refreshAccessToken();
-    // Save to DB instead of .env
-    await saveToken('ebay', {
-      accessToken: newToken,
-      refreshToken: process.env.EBAY_REFRESH_TOKEN,
-      expiresAt: new Date(Date.now() + 2 * 60 * 60 * 1000), // 2h from now
-    });
-    process.env.EBAY_USER_TOKEN = newToken;
-    console.log('[TokenRefresh] eBay token refreshed and saved to DB');
+    // refreshAccessToken 자체가 DB 저장 + process.env 갱신 + rotation 처리.
+    await api.refreshAccessToken();
+    console.log('[TokenRefresh] eBay token refreshed');
   } catch (e) {
     console.error('[TokenRefresh] eBay refresh failed:', e.message);
   }
