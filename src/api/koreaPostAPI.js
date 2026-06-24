@@ -269,20 +269,70 @@ class KoreaPostAPI {
   }
 
   /**
-   * regData hash 빌드 — 우체국 API 의 핵심 보안 토큰.
-   * ⚠️ 매뉴얼 다운로드의 "암호화 샘플코드 (JAVA, PHP)" 받은 후 정확한 알고리즘으로 교체 필요.
+   * regData 빌드 (사장님이 우체국 매뉴얼 + SEED128 샘플코드 제공 2026-06-24):
+   *   1. 평문 = key=value&key=value... (URL-encode 없이, 매뉴얼 예시와 일치)
+   *   2. SEED-128 ECB + zero padding + 보안키 (KOREAPOST_SEED_KEY, 16자) 로 암호화
+   *   3. 결과 bytes → hex string (lowercase)
    *
-   * 일반적 패턴 (추정 — 매뉴얼 확인 필수):
-   *   - 요청 데이터 (recipient, parcel 등) 를 정해진 순서로 concatenate
-   *   - 인증키와 함께 SHA256 또는 AES 암호화
-   *   - hex 또는 base64 로 인코딩
+   * 보안키 우체국 매뉴얼 정책: 30일 미사용 시 자동 만료 → 재발급 필요.
    *
-   * 현재 stub: 빈 string 반환 → API 호출 시 ERR-111 (필수입력값 누락) 에러 발생할 것.
-   * 사장님이 샘플 코드 공유해주시면 5분 안에 정확히 구현.
+   * @param {Object} params  평문 파라미터 객체 (예: { custno: '...', apprno: '...', ... })
+   * @returns {string} hex string
    */
-  _buildRegData(/* { recipient, parcel, sender, serviceType, apprno } */) {
-    // TODO: 매뉴얼 샘플 코드 받으면 여기에 정확한 hash/암호화 로직 구현
-    throw new Error('regData hash 알고리즘 미구현 — 우체국 매뉴얼의 암호화 샘플코드 (JAVA/PHP) 필요. 받으시면 5분 안에 채워드립니다.');
+  _buildRegData(params) {
+    const seedKey = process.env.KOREAPOST_SEED_KEY;
+    if (!seedKey) {
+      throw new Error('KOREAPOST_SEED_KEY 환경변수 미설정 (우체국 보안키 16 ASCII 문자)');
+    }
+    if (seedKey.length !== 16) {
+      throw new Error(`KOREAPOST_SEED_KEY 길이 ${seedKey.length} — SEED-128 은 정확히 16 ASCII 문자 필요`);
+    }
+    // 매뉴얼 평문 예시: 'custNo=0001234567&reqType=1&officeSer=01&weight=5'
+    const plain = Object.entries(params || {})
+      .filter(([, v]) => v !== undefined && v !== null && v !== '')
+      .map(([k, v]) => `${k}=${v}`)
+      .join('&');
+    const seed = require('../lib/seed128');
+    return seed.encrypt(seedKey, plain);
+  }
+
+  /**
+   * SEED128 self-test — 호환성 확인용. 사장님이 PHP/JAVA 샘플코드의 결과와 우리 JS
+   * 결과가 같은지 비교 가능. 진단 endpoint 에서 호출.
+   * @returns {{ ok: boolean, rfcVector3_passed: boolean, roundTripPassed: boolean, sample: object }}
+   */
+  testSeed() {
+    const seed = require('../lib/seed128');
+    const { seedRoundKey, seedEncrypt, bytesToHex } = seed._internal;
+
+    // KISA SEED-128 표준 vector 3 (RFC 4269 Appendix B.3 와 동일)
+    const v3 = {
+      key:    [0x47,0x06,0x48,0x08,0x51,0xE6,0x1B,0xE8,0x5D,0x74,0xBF,0xB3,0xFD,0x95,0x61,0x85],
+      plain:  [0x83,0xA2,0xF8,0xA2,0x88,0x64,0x1F,0xB9,0xA4,0xE9,0xA5,0xCC,0x2F,0x13,0x1C,0x7D],
+      cipher: 'ee54d13ebcae706d226bc3142cd40d4a',
+    };
+    const rk = seedRoundKey(new Uint8Array(v3.key));
+    const enc = seedEncrypt(new Uint8Array(v3.plain), rk);
+    const v3Pass = bytesToHex(enc) === v3.cipher;
+
+    // 사장님 보안키 round-trip (있을 때만)
+    let rtPass = null;
+    let sample = null;
+    const sk = process.env.KOREAPOST_SEED_KEY;
+    if (sk && sk.length === 16) {
+      const plain = 'custno=0001234567&apprno=40139J1076';
+      const encHex = seed.encrypt(sk, plain);
+      const dec = seed.decrypt(sk, encHex);
+      rtPass = dec === plain;
+      sample = { plain, encHex, dec };
+    }
+
+    return {
+      ok: v3Pass && rtPass !== false,
+      kisaVector3Passed: v3Pass,
+      roundTripPassed: rtPass,
+      sample,
+    };
   }
 }
 

@@ -99,6 +99,14 @@ router.get('/diag', async (req, res) => {
     const missingEcount = Object.entries(ecountEnv).filter(([k, v]) => !v && k !== 'ECOUNT_ZONE').map(([k]) => k);
     const missingKoreapost = Object.entries(koreapostEnv).filter(([k, v]) => !v && k !== 'KOREAPOST_DOMESTIC_LABEL_URL').map(([k]) => k);
 
+    // SEED-128 자가 진단 (KOREAPOST_SEED_KEY 있을 때)
+    let seedTest = null;
+    try {
+      seedTest = kp.testSeed();
+    } catch (e) {
+      seedTest = { ok: false, error: e.message };
+    }
+
     res.json({
       ecount: {
         configured: ecountConfigured,
@@ -110,6 +118,7 @@ router.get('/diag', async (req, res) => {
         configured: koreapostConfigured,
         env: koreapostEnv,
         missing: missingKoreapost,
+        seedTest,
       },
       domesticOrders,
       hint: !ecountConfigured
