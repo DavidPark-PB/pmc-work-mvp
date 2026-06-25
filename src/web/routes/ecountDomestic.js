@@ -155,6 +155,73 @@ router.get('/diag', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// POST /api/ecount-domestic/test-domestic-label
+//   국내 우체국 소포신청 테스트 라벨 발급 (testYn='Y' → 실제 접수 X, 검증만)
+//
+//   사장님이 sample 주문 정보로 호출 → 정상 응답 (regiNo) 받으면 라벨 발급 흐름
+//   전체 OK. 그 다음 Phase 2 (배송 관리 UI) 통합 진행.
+//
+//   body (전부 선택 — 안 보내면 sample 사용):
+//     orderNo, weight, volume, recipient: { name, zip, addr1, addr2, tel, mob },
+//     parcel: { contCd, goodsNm, qty }, testYn='Y' (default — 'N' 이면 실제 접수)
+// ════════════════════════════════════════════════════════════════════════════
+router.post('/test-domestic-label', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const testYn = (body.testYn === 'N') ? 'N' : 'Y';   // default Y (안전)
+
+    // sample 주문 정보 (사장님이 안 보내면 기본값 — 우체국 매뉴얼의 예시값 변형)
+    const orderNo = body.orderNo
+      || `TEST-${Date.now().toString().slice(-10)}`;     // 매뉴얼 50자 이내
+    const order = {
+      orderNo,
+      ordCompNm: body.ordCompNm || 'PMC Corporation',
+      recipient: {
+        name:  body.recipient?.name  || '홍길동',
+        zip:   body.recipient?.zip   || '04524',          // 서울 중구 우편번호
+        addr1: body.recipient?.addr1 || '서울 중구 세종대로 110',
+        addr2: body.recipient?.addr2 || '(을지로1가, 서울특별시청)',
+        tel:   body.recipient?.tel   || '',
+        mob:   body.recipient?.mob   || '01012345678',
+      },
+      parcel: {
+        weight: body.parcel?.weight || 1,                  // 1kg
+        volume: body.parcel?.volume || 60,                 // 60cm (가로+세로+높이 합)
+        contCd: body.parcel?.contCd || '021',              // 매뉴얼 코드
+        goodsNm: body.parcel?.goodsNm || 'PMC 테스트 발송',
+        qty:    body.parcel?.qty    || 1,
+        microYn: 'N',
+      },
+    };
+
+    const kp = getKoreaPostAPI();
+    if (!kp.isConfigured()) {
+      return res.status(503).json({ ok: false, error: 'KOREAPOST_API_KEY 미설정' });
+    }
+
+    const result = await kp.createDomesticOrder({
+      order,
+      payType: '1',     // 즉납 (사장님 PMC 계약)
+      reqType: '1',     // 일반소포
+      testYn,
+    });
+
+    res.json({
+      ok: true,
+      testYn,
+      orderNo,
+      result,           // regiNo, reqNo, resNo, price, refineAddr 등
+      hint: testYn === 'Y'
+        ? '✅ 테스트 모드 — 실제 접수 X. result.regiNo 받으면 라벨 발급 흐름 작동. 운영 시 testYn=\'N\' 으로 호출.'
+        : '⚠️ 실제 접수됨 — result.regiNo 가 진짜 운송장 번호. 사장님 PMC 계정에 청구됨.',
+    });
+  } catch (e) {
+    console.error('[ecount-domestic/test-domestic-label] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message, stack: e.stack?.split('\n').slice(0, 5) });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // GET /api/ecount-domestic/orders — Phase 2 화면용 list
 //   ecount naver + coupang 주문 정규화해서 한 배열로 반환
 // ════════════════════════════════════════════════════════════════════════════
