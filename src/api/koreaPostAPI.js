@@ -489,7 +489,11 @@ class KoreaPostAPI {
 
     const valueUSD = Number(parcel.valueUSD || parcel.value || 1);
     const currunitcd = (parcel.currency === 'EUR' ? 'EUR' : 'USD');
-    const hsCode = parcel.hsCode || '950430';   // 게임/장난감 default
+    // HS code default — 사장님 ERR-223 보고 2026-06-27:
+    //   950430 (비디오 게임) → 우체국 미등록.
+    //   950440 (Playing cards, 트레이딩 카드 포함) — PMC 주력 상품 (포켓몬 카드)
+    // sku_master 또는 orders 에 hs_code 컬럼 있으면 그 값 우선. 없으면 default.
+    const hsCode = parcel.hsCode || '950440';
 
     const plain = {
       custno: this.custno,
