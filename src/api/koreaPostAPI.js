@@ -489,11 +489,11 @@ class KoreaPostAPI {
 
     const valueUSD = Number(parcel.valueUSD || parcel.value || 1);
     const currunitcd = (parcel.currency === 'EUR' ? 'EUR' : 'USD');
-    // HS code default — 사장님 ERR-223 보고 2026-06-27:
-    //   950430 (비디오 게임) → 우체국 미등록.
-    //   950440 (Playing cards, 트레이딩 카드 포함) — PMC 주력 상품 (포켓몬 카드)
-    // sku_master 또는 orders 에 hs_code 컬럼 있으면 그 값 우선. 없으면 default.
-    const hsCode = parcel.hsCode || '950440';
+    // HS code 정정 — 사장님 우체국 사이트 화면 확인 2026-06-27:
+    //   매뉴얼 sample 은 6자리 (950430, 950440) 였으나 실제 우체국 시스템은 10자리 HSN.
+    //   9504400000 = Playing cards (트레이딩 카드 = PMC 주력: 포켓몬, NIKKE, 유희왕 등)
+    // sku_master 또는 orders 에 hs_code 컬럼 있으면 그 값 우선.
+    const hsCode = parcel.hsCode || '9504400000';
 
     const plain = {
       custno: this.custno,
@@ -523,9 +523,12 @@ class KoreaPostAPI {
       receiveaddr3:   String(recipient.addr3 || '').slice(0, 200),
       receivetelno:   String(recipient.tel || '').slice(0, 40),
 
-      // 세관/내용품
+      // 세관/내용품 — 사장님 우체국 사이트 spec 확인 2026-06-27.
+      // contents 는 우체국 등록 '카탈로그명' (간단한 표준 분류명) 필수.
+      // 긴 상품명 (예: 'Pokemon Card MEGA DREAM EX High Class Booster Box') 그대로
+      // 보내면 ERR. PMC 주력 = 트레이딩 카드 → 'Character card' default.
       EM_gubun: 'Merchandise',
-      contents: String(parcel.contents || 'Toys').slice(0, 70),
+      contents: String(parcel.contents || 'Character card').slice(0, 70),
       number:   String(parcel.qty || 1).slice(0, 7),
       weight:   String(Math.round(Number(parcel.weightG) || 1)).slice(0, 10),  // g
       value:    String(Math.round(valueUSD)).slice(0, 15),

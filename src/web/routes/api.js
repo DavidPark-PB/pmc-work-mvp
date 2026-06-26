@@ -3792,7 +3792,9 @@ router.post('/orders/:orderNo/koreapost-label', async (req, res) => {
       parcel: {
         weightG,
         dims,
-        contents: order.title || 'Toys',
+        // contents: order.title 그대로 X (우체국 등록 카탈로그명 사용). default 'Character card'.
+        // 향후 sku_master.koreapost_contents 추가 시 그것 우선.
+        contents: undefined,
         qty: Number(order.quantity) || 1,
         valueUSD: Number(order.payment_amount) || 1,
         currency: order.currency || 'USD',
