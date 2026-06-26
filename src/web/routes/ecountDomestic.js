@@ -165,6 +165,137 @@ router.get('/diag', async (req, res) => {
 //     orderNo, weight, volume, recipient: { name, zip, addr1, addr2, tel, mob },
 //     parcel: { contCd, goodsNm, qty }, testYn='Y' (default — 'N' 이면 실제 접수)
 // ════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// POST /api/ecount-domestic/koreapost-label-from-order
+//   기존 orders 테이블 (Supabase) 의 한국 주문 → 우체국 국내 라벨 발급.
+//
+//   사장님 결정 2026-06-27 (Phase A):
+//     - ecount sync (IP 차단) 우회. 기존 orders 사용.
+//     - 한국 주소 (country_code='KR' 또는 빈 값) 주문에 라벨 발급.
+//
+//   body:
+//     orderNo (필수)
+//     testYn: 'Y' (기본, 안전) | 'N' (실제 접수 + 청구)
+//     weightKg, dimensions: orders 의 값 override (없으면 orders 값 사용)
+//
+//   처리:
+//     1. orders 조회 + country/주소 검증
+//     2. createDomesticOrder() 호출
+//     3. orders 업데이트: carrier='우체국', tracking_no=regiNo, status='SHIPPED' (testYn='N' 만)
+// ════════════════════════════════════════════════════════════════════════════
+router.post('/koreapost-label-from-order', async (req, res) => {
+  try {
+    const { orderNo, testYn: testYnRaw } = req.body || {};
+    if (!orderNo) return res.status(400).json({ ok: false, error: 'orderNo 필수' });
+    const testYn = testYnRaw === 'N' ? 'N' : 'Y';   // default 안전
+
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data: order, error } = await db.from('orders')
+      .select(`
+        id, order_no, sku, title, quantity,
+        buyer_name, country, country_code,
+        street, city, province, zip_code, phone, email,
+        weight_kg, box_length, box_width, box_height,
+        payment_amount, currency, carrier, status, tracking_no
+      `)
+      .eq('order_no', orderNo)
+      .maybeSingle();
+    if (error) throw error;
+    if (!order) return res.status(404).json({ ok: false, error: `주문 ${orderNo} 없음` });
+
+    // 한국 주소 검증 — country_code 가 'KR' 또는 빈값 또는 'KOR' 또는 한국
+    const cc = String(order.country_code || '').trim().toUpperCase();
+    const ctyName = String(order.country || '').trim();
+    const isKorean = !cc || cc === 'KR' || cc === 'KOR' || /한국|korea/i.test(ctyName);
+    if (!isKorean) {
+      return res.status(400).json({
+        ok: false,
+        error: `한국 주소 아님 — country_code='${cc || '(빈값)'}' country='${ctyName}'. 우체국 국내 라벨은 한국 주소만 가능.`,
+      });
+    }
+    if (!order.buyer_name || !order.zip_code || !order.street) {
+      return res.status(400).json({
+        ok: false,
+        error: `주소 불완전 — buyer_name, zip_code, street 모두 필요`,
+      });
+    }
+    if (testYn === 'N' && order.tracking_no) {
+      return res.status(409).json({
+        ok: false,
+        error: `이미 운송장 발급된 주문 (tracking_no=${order.tracking_no}). 중복 발급 방지.`,
+      });
+    }
+
+    // 무게/치수
+    const weightKg = Number(order.weight_kg) || 1;     // 매뉴얼: 정수 kg 필요
+    const volume = (Number(order.box_length) || 20)
+                 + (Number(order.box_width)  || 20)
+                 + (Number(order.box_height) || 20);   // 가로+세로+높이 합
+
+    const kp = getKoreaPostAPI();
+    if (!kp.isConfigured()) {
+      return res.status(503).json({ ok: false, error: 'KOREAPOST_API_KEY 미설정' });
+    }
+
+    // 매뉴얼 line 716: weight 길이 2자, volume 3자. 정수 변환.
+    const result = await kp.createDomesticOrder({
+      order: {
+        orderNo: String(order.order_no).slice(0, 50),
+        ordCompNm: 'PMC Corporation',
+        recipient: {
+          name:  order.buyer_name,
+          zip:   String(order.zip_code).replace(/\D/g, '').slice(0, 5),  // 5자리 숫자만
+          addr1: order.street,
+          addr2: [order.city, order.province].filter(Boolean).join(' ').slice(0, 300) || '',
+          tel:   (order.phone || '').replace(/\D/g, '').slice(0, 12),
+          mob:   (order.phone || '').replace(/\D/g, '').slice(0, 12),
+        },
+        parcel: {
+          weight: Math.max(1, Math.round(weightKg)),
+          volume: Math.max(10, Math.round(volume)),
+          contCd: '021',                                  // 일반 상품
+          goodsNm: String(order.title || 'PMC 발송').slice(0, 400),
+          qty:    Number(order.quantity) || 1,
+          microYn: 'N',
+        },
+      },
+      payType: '1',
+      reqType: '1',
+      testYn,
+    });
+
+    // testYn='N' 만 orders 업데이트 (실제 발송)
+    let dbUpdate = null;
+    if (testYn === 'N' && result.regiNo) {
+      try {
+        await db.from('orders').update({
+          carrier: '우체국',
+          tracking_no: result.regiNo,
+          status: 'SHIPPED',
+        }).eq('order_no', orderNo);
+        dbUpdate = { ok: true, carrier: '우체국', tracking_no: result.regiNo };
+      } catch (e) {
+        dbUpdate = { ok: false, error: e.message };
+      }
+    }
+
+    res.json({
+      ok: true,
+      testYn,
+      orderNo: order.order_no,
+      result,
+      dbUpdate,
+      hint: testYn === 'Y'
+        ? '✅ 테스트 모드 — 실제 접수 X. result.regiNo 받으면 발급 흐름 정상. 실제 발송 시 testYn=N 재호출.'
+        : '⚠️ 실제 접수됨 — result.regiNo 가 진짜 운송장 번호. PMC 계정 청구 + orders 업데이트됨.',
+    });
+  } catch (e) {
+    console.error('[koreapost-label-from-order] error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 router.post('/test-domestic-label', async (req, res) => {
   try {
     const body = req.body || {};

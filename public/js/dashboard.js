@@ -6339,6 +6339,13 @@ function shippingRenderRow(order) {
   } else {
     html += `<div>`;
     html += `<button id="est-btn-${rowIdx}" onclick="shippingShowEstimate('${rowIdx}','${rowIdx}')" style="padding:2px 8px;border:1px solid #1565c0;border-radius:10px;background:#fff;color:#1565c0;font-size:9px;cursor:pointer;font-weight:600">배송사 추천 ▼</button>`;
+    // 사장님 결정 2026-06-27 Phase A: 한국 주소면 우체국 국내 라벨 발급 버튼 별도 노출.
+    // country/country_code 검사 — 'KR' / 'KOR' / 빈값 (해외 X) / '한국' / 'Korea'.
+    const ccUpper = String(country || '').trim().toUpperCase();
+    const isKorean = ccUpper === 'KR' || ccUpper === 'KOR' || /한국|KOREA/i.test(country || '');
+    if (isKorean) {
+      html += ` <button onclick="shippingKoreaPostDomestic('${esc(rowIdx)}')" style="padding:2px 8px;border:1px solid #b71c1c;border-radius:10px;background:#fff;color:#b71c1c;font-size:9px;cursor:pointer;font-weight:600;margin-left:4px" title="우체국 국내 소포 라벨 발급">🇰🇷 우체국</button>`;
+    }
     html += `<div id="est-panel-${rowIdx}" style="display:none;margin-top:4px"></div>`;
     html += `</div>`;
   }
@@ -6434,6 +6441,56 @@ async function shippingCancelCarrier(rowIndex) {
     }
   } catch (err) {
     alert('취소 에러: ' + err.message);
+  }
+}
+
+// 우체국 국내 라벨 발급 — 사장님 결정 2026-06-27 Phase A.
+// 한국 주소 주문에만 노출 (rowIdx === orderNo).
+// 1차 호출: testYn='Y' (검증). 정상 응답 받으면 confirm 후 testYn='N' 재호출.
+async function shippingKoreaPostDomestic(rowIdx) {
+  const orderNo = rowIdx;  // 본 화면은 rowIdx = orderNo
+  if (!confirm(`주문 ${orderNo} 를 우체국 국내 소포로 발송하시겠어요?\n\n1단계: 테스트 호출 (실제 접수 X) → 우체국 응답 확인\n2단계: 정상이면 진짜 발급 여부 다시 확인`)) return;
+
+  try {
+    // 1단계: testYn='Y'
+    const testRes = await fetch('/api/ecount-domestic/koreapost-label-from-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderNo, testYn: 'Y' }),
+    });
+    const testJson = await testRes.json();
+    if (!testJson.ok) {
+      alert('❌ 우체국 테스트 호출 실패:\n\n' + (testJson.error || '알 수 없는 오류'));
+      return;
+    }
+    const t = testJson.result || {};
+    const msg = `✅ 우체국 테스트 응답 정상\n\n` +
+      `예상 요금: ${Number(t.price || 0).toLocaleString()}원\n` +
+      `접수 우체국: ${t.regipoNm || '?'}\n` +
+      `배달 우체국: ${t.raw?.delivPoNm || '?'}\n` +
+      `\n실제 발급하시겠습니까?\n(testYn=N — 실제 접수 + PMC 청구 + DB 업데이트)`;
+    if (!confirm(msg)) return;
+
+    // 2단계: testYn='N' (실제 발급)
+    const realRes = await fetch('/api/ecount-domestic/koreapost-label-from-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderNo, testYn: 'N' }),
+    });
+    const realJson = await realRes.json();
+    if (!realJson.ok) {
+      alert('❌ 우체국 실제 발급 실패:\n\n' + (realJson.error || '알 수 없는 오류'));
+      return;
+    }
+    const r = realJson.result || {};
+    alert(`🎉 우체국 라벨 발급 완료\n\n` +
+      `운송장: ${r.regiNo || '?'}\n` +
+      `요금: ${Number(r.price || 0).toLocaleString()}원\n` +
+      `접수 우체국: ${r.regipoNm || '?'}\n` +
+      `\nDB 업데이트: ${realJson.dbUpdate?.ok ? '✅' : '❌'}\n` +
+      `\n주문번호 ${orderNo} 가 SHIPPED 로 전환됨. 화면 새로고침 권장.`);
+  } catch (err) {
+    alert('우체국 라벨 호출 에러: ' + err.message);
   }
 }
 
