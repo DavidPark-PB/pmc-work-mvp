@@ -169,25 +169,44 @@ router.post('/test-domestic-label', async (req, res) => {
   try {
     const body = req.body || {};
     const testYn = (body.testYn === 'N') ? 'N' : 'Y';   // default Y (안전)
+    const useAscii = body.ascii === true;                // ASCII only (한글 인코딩 문제 격리)
+    const debug = body.debug === true;                   // 평문 + regData 같이 반환
 
-    // sample 주문 정보 (사장님이 안 보내면 기본값 — 우체국 매뉴얼의 예시값 변형)
     const orderNo = body.orderNo
-      || `TEST-${Date.now().toString().slice(-10)}`;     // 매뉴얼 50자 이내
-    const order = {
+      || `TEST-${Date.now().toString().slice(-10)}`;
+
+    // sample 주문 정보 — ascii=true 면 한글 일체 없는 영문 sample
+    const order = useAscii ? {
+      orderNo,
+      ordCompNm: body.ordCompNm || 'PMC Corporation',
+      recipient: {
+        name:  'Hong Gildong',
+        zip:   '04524',
+        addr1: '110 Sejong-daero, Jung-gu',
+        addr2: 'Seoul City Hall',
+        tel:   '',
+        mob:   '01012345678',
+      },
+      parcel: {
+        weight: 1, volume: 60, contCd: '021',
+        goodsNm: 'PMC Test Item',
+        qty: 1, microYn: 'N',
+      },
+    } : {
       orderNo,
       ordCompNm: body.ordCompNm || 'PMC Corporation',
       recipient: {
         name:  body.recipient?.name  || '홍길동',
-        zip:   body.recipient?.zip   || '04524',          // 서울 중구 우편번호
+        zip:   body.recipient?.zip   || '04524',
         addr1: body.recipient?.addr1 || '서울 중구 세종대로 110',
         addr2: body.recipient?.addr2 || '(을지로1가, 서울특별시청)',
         tel:   body.recipient?.tel   || '',
         mob:   body.recipient?.mob   || '01012345678',
       },
       parcel: {
-        weight: body.parcel?.weight || 1,                  // 1kg
-        volume: body.parcel?.volume || 60,                 // 60cm (가로+세로+높이 합)
-        contCd: body.parcel?.contCd || '021',              // 매뉴얼 코드
+        weight: body.parcel?.weight || 1,
+        volume: body.parcel?.volume || 60,
+        contCd: body.parcel?.contCd || '021',
         goodsNm: body.parcel?.goodsNm || 'PMC 테스트 발송',
         qty:    body.parcel?.qty    || 1,
         microYn: 'N',
@@ -199,22 +218,60 @@ router.post('/test-domestic-label', async (req, res) => {
       return res.status(503).json({ ok: false, error: 'KOREAPOST_API_KEY 미설정' });
     }
 
-    const result = await kp.createDomesticOrder({
-      order,
-      payType: '1',     // 즉납 (사장님 PMC 계약)
-      reqType: '1',     // 일반소포
-      testYn,
-    });
+    // debug 모드: 평문 + regData 미리 계산해서 응답에 포함 (실제 호출 전)
+    let debugInfo = null;
+    if (debug) {
+      const r = order.recipient;
+      const p = order.parcel;
+      const plainParams = {
+        custNo: kp.custno,
+        apprNo: kp.apprnoDomestic,
+        payType: '1',
+        reqType: '1',
+        officeSer: kp.domesticOfficeSer,
+        weight: p.weight, volume: p.volume, microYn: p.microYn || 'N',
+        orderNo: order.orderNo,
+        ordCompNm: order.ordCompNm,
+        recNm: r.name, recZip: r.zip, recAddr1: r.addr1, recAddr2: r.addr2 || '',
+        recTel: r.tel || '', recMob: r.mob || '',
+        contCd: p.contCd, goodsNm: p.goodsNm, qty: p.qty,
+        testYn, printYn: 'N',
+      };
+      const plain = Object.entries(plainParams)
+        .filter(([, v]) => v !== undefined && v !== null && v !== '')
+        .map(([k, v]) => `${k}=${v}`).join('&');
+      const seed = require('../../lib/seed128');
+      const regData = seed.encrypt(process.env.KOREAPOST_SEED_KEY || '', plain);
+      const roundTrip = seed.decrypt(process.env.KOREAPOST_SEED_KEY || '', regData);
+      debugInfo = {
+        plainChars: plain.length,
+        plainBytes: new TextEncoder().encode(plain).length,
+        plain,
+        regDataLen: regData.length,
+        regData,
+        roundTripOk: roundTrip === plain,
+        roundTripValue: roundTrip,
+        envCheck: {
+          custno: !!kp.custno,
+          apprnoDomestic: !!kp.apprnoDomestic,
+          officeSer: !!kp.domesticOfficeSer,
+          seedKey: !!(process.env.KOREAPOST_SEED_KEY),
+        },
+      };
+    }
 
-    res.json({
-      ok: true,
-      testYn,
-      orderNo,
-      result,           // regiNo, reqNo, resNo, price, refineAddr 등
-      hint: testYn === 'Y'
-        ? '✅ 테스트 모드 — 실제 접수 X. result.regiNo 받으면 라벨 발급 흐름 작동. 운영 시 testYn=\'N\' 으로 호출.'
-        : '⚠️ 실제 접수됨 — result.regiNo 가 진짜 운송장 번호. 사장님 PMC 계정에 청구됨.',
-    });
+    try {
+      const result = await kp.createDomesticOrder({
+        order,
+        payType: '1',
+        reqType: '1',
+        testYn,
+      });
+      res.json({ ok: true, testYn, useAscii, orderNo, result, debugInfo });
+    } catch (e) {
+      // 에러 시에도 debugInfo 반환 — 어떤 평문/regData 가 보내졌는지 확인 가능
+      res.status(500).json({ ok: false, error: e.message, debugInfo });
+    }
   } catch (e) {
     console.error('[ecount-domestic/test-domestic-label] error:', e.message);
     res.status(500).json({ ok: false, error: e.message, stack: e.stack?.split('\n').slice(0, 5) });
