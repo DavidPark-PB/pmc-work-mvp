@@ -427,6 +427,135 @@ class KoreaPostAPI {
     }
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // EMS / K-Packet 접수신청 (eship.epost.go.kr) — 사장님 매뉴얼 line 100~200 기준
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 우체국 발송인 전화번호 → 4부분 분리 (sendertelno1~4 / sendermobile1~4).
+   * 매뉴얼: 국가코드 / 지역번호 / 국번 / 번호. 한국 휴대폰은 82 / 10 / 4105 / 4826 형식.
+   */
+  _splitKoreanTel(raw) {
+    const digits = String(raw || '').replace(/\D/g, '');
+    if (!digits) return ['', '', '', ''];
+    // 01041054826 또는 821041054826 처리
+    const noLeadingZero = digits.startsWith('0') ? digits.slice(1) : (digits.startsWith('82') ? digits.slice(2) : digits);
+    // 10/4105/4826 또는 10/4105/4826
+    if (noLeadingZero.length >= 9) {
+      const region = noLeadingZero.slice(0, 2);                    // 10
+      const mid = noLeadingZero.slice(2, noLeadingZero.length - 4);// 4105
+      const last = noLeadingZero.slice(-4);                         // 4826
+      return ['82', region, mid, last];
+    }
+    return ['82', '', '', noLeadingZero];
+  }
+
+  /**
+   * EMS / K-Packet 접수신청 = 라벨 발급 (EMSAPI-R01-01).
+   * 매뉴얼 endpoint: eship.epost.go.kr/api.EmsApplyInsertReceiveTempCmdNew.ems
+   *
+   * @param {Object} input
+   *   - order: { orderNo, paymentAmount, currency, sku }
+   *   - recipient: { name, zip, addr1, addr2, addr3, tel, countryCode }
+   *   - parcel: { weightG, dims:{l,w,h}, contents, qty, valueUSD, hsCode? }
+   *   - serviceType: 'KPACKET' (기본) | 'EMS' (em_ee 'em' 비서류)
+   *   - vatdscrnno: EU IOSS / GB EORI 등 (선택)
+   * @returns {Promise<{regino, reqno, cost, raw}>}
+   */
+  async createKPacketParcel({ order, recipient, parcel, serviceType = 'KPACKET', vatdscrnno = null }) {
+    if (!this.isConfigured()) throw new Error('KOREAPOST_API_KEY 미설정');
+    const apprno = this._apprnoFor(serviceType);
+    if (!apprno) throw new Error(`${serviceType} 계약승인번호 미설정 (KOREAPOST_APPRNO_${serviceType === 'EMS' ? 'EMS' : 'KPACKET'})`);
+    if (!this.custno) throw new Error('KOREAPOST_CUSTNO 미설정');
+
+    const s = this.shipper();
+    const sTel = this._splitKoreanTel(s.tel);
+
+    // 발송인 주소 — 한 줄을 3 줄로 분리 (매뉴얼 line 200 spec).
+    //   1: 상세 (호수, 도로명+번호)
+    //   2: 시/군/구
+    //   3: 도/시
+    const sAddrParts = String(s.addr || '').split(',').map(x => x.trim()).filter(Boolean);
+    const senderaddr1 = (sAddrParts.slice(0, sAddrParts.length - 2).join(', ') || s.addr || '').slice(0, 200);
+    const senderaddr2 = (sAddrParts[sAddrParts.length - 2] || '').slice(0, 50);
+    const senderaddr3 = (sAddrParts[sAddrParts.length - 1] || '').slice(0, 50);
+
+    // 우편물 구분 코드 (매뉴얼 line 230):
+    //   K-Packet → premiumcd=14, em_ee=rl
+    //   EMS 비서류 → premiumcd=31, em_ee=em
+    //   EMS 서류 → premiumcd=31, em_ee=ee
+    const premiumcd = serviceType === 'EMS' ? '31' : '14';
+    const em_ee = serviceType === 'EMS' ? 'em' : 'rl';
+
+    const valueUSD = Number(parcel.valueUSD || parcel.value || 1);
+    const currunitcd = (parcel.currency === 'EUR' ? 'EUR' : 'USD');
+    const hsCode = parcel.hsCode || '950430';   // 게임/장난감 default
+
+    const plain = {
+      custno: this.custno,
+      apprno,
+      premiumcd,
+      em_ee,
+      countrycd: String(recipient.countryCode || '').toUpperCase(),
+      totweight: Math.max(1, Math.round(Number(parcel.weightG) || 0)),
+      boyn: 'N',                              // 보험 미사용
+      nextdayreserveyn: 'N',                  // 익일 예약 X
+      orderno: String(order?.orderNo || '').slice(0, 50),
+
+      // 발송인
+      sender: s.name || 'PMC Corporation',
+      senderzipcode: String(s.zip || '').replace(/\D/g, '').slice(0, 6),
+      senderaddr1,
+      senderaddr2,
+      senderaddr3,
+      sendertelno1: sTel[0], sendertelno2: sTel[1], sendertelno3: sTel[2], sendertelno4: sTel[3],
+      sendermobile1: sTel[0], sendermobile2: sTel[1], sendermobile3: sTel[2], sendermobile4: sTel[3],
+
+      // 수취인
+      receivename:    String(recipient.name || '').slice(0, 35),
+      receivezipcode: String(recipient.zip || '').slice(0, 20),
+      receiveaddr1:   String(recipient.addr1 || '').slice(0, 50),
+      receiveaddr2:   String(recipient.addr2 || '').slice(0, 50),
+      receiveaddr3:   String(recipient.addr3 || '').slice(0, 200),
+      receivetelno:   String(recipient.tel || '').slice(0, 40),
+
+      // 세관/내용품
+      EM_gubun: 'Merchandise',
+      contents: String(parcel.contents || 'Toys').slice(0, 70),
+      number:   String(parcel.qty || 1).slice(0, 7),
+      weight:   String(Math.round(Number(parcel.weightG) || 1)).slice(0, 10),  // g
+      value:    String(Math.round(valueUSD)).slice(0, 15),
+      hs_code:  String(hsCode).slice(0, 10),
+      origin:   'KR',
+      currunitcd,
+
+      // 박스
+      boxlength: String(Math.round(Number(parcel.dims?.l) || 20)),
+      boxwidth:  String(Math.round(Number(parcel.dims?.w) || 20)),
+      boxheight: String(Math.round(Number(parcel.dims?.h) || 10)),
+    };
+    if (vatdscrnno) plain.vatdscrnno = vatdscrnno;
+
+    const regData = this._buildRegData(plain);
+    const url = process.env.KOREAPOST_LABEL_URL
+      || 'https://eship.epost.go.kr/api.EmsApplyInsertReceiveTempCmdNew.ems';
+
+    const { root, status, xml } = await this._callXml(url, {
+      key: this.apiKey, option: '001', regData,
+    });
+    if (status !== 200) throw new Error(`HTTP ${status}: ${xml.slice(0, 200)}`);
+    if (root?.error?.error_code) throw new Error(`우체국 ${root.error.error_code}: ${root.error.message}`);
+    if (root?.error_code) throw new Error(`우체국 ${root.error_code}: ${root.message}`);
+
+    return {
+      regino: root?.regino,         // 운송장 번호 (예: LI...KR)
+      reqno: root?.reqno,
+      cost: Number(root?.prerecevprc || root?.totCharge || root?.cost) || 0,
+      exchgPoCd: root?.exchgPoCd,
+      raw: root,
+    };
+  }
+
   /**
    * regData 빌드 (사장님이 우체국 매뉴얼 + SEED128 샘플코드 제공 2026-06-24):
    *   1. 평문 = key=value&key=value... (URL-encode 없이, 매뉴얼 예시와 일치)

@@ -6560,7 +6560,10 @@ function shippingRenderEstimatePanel(rowIdx, orderNo, data) {
       const star = e.isRecommended ? '⭐' : '　';
       const bg = e.isRecommended ? '#e3f2fd' : '#fff';
       const isFedexLive = e.carrier === 'FedEx' && e.live === true;
-      const isKPacketLive = e.carrier === 'KPacket' && e.live === true;
+      // 사장님 결정 2026-06-27: K-Packet 추천 시 우체국 자동 발급. carrier 매칭 확대.
+      // 새 견적 엔진 (shippingRateEngine) 의 carrierLabel='K-Packet' (하이픈) 도 포함.
+      // live 검사 제거 — 요율 비교만으로도 발급 흐름 작동 (PHP SEED wrapper 검증 완료).
+      const isKPacketLive = e.carrier === 'KPacket' || e.carrier === 'K-Packet';
       const liveBadge = (isFedexLive || isKPacketLive)
         ? '<span style="background:#2e7d32;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;margin-left:2px">LIVE</span>'
         : '';
