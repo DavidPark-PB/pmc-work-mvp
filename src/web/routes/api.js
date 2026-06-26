@@ -3761,15 +3761,31 @@ router.post('/orders/:orderNo/koreapost-label', async (req, res) => {
       h: Number(dimensions?.height) || Number(order.box_height) || 10,
     };
 
-    // 수취인 주소 분리: addr1 (주/도), addr2 (시/군), addr3 (상세) — 매뉴얼 line 158~162
+    // 수취인 주소 — 매뉴얼: addr1=주/도, addr2=시/군, addr3=상세 (모두 필수).
+    // 사장님 보고 2026-06-27: eBay 일부 주문에 province 빈값 → ERR-311. fallback 적용.
+    //   province 있으면 그대로. 없으면 city 를 addr1 으로 옮기고 street 를 addr2 으로.
+    //   모든 필드 빈값이면 사전 reject.
+    const province = String(order.province || '').trim();
+    const city     = String(order.city     || '').trim();
+    const street   = String(order.street   || '').trim();
+    if (!province && !city && !street) {
+      return res.status(400).json({ success: false, error: `수취인 주소 (province/city/street) 모두 빈값 — 주문 ${orderNo}` });
+    }
+    let addr1, addr2, addr3;
+    if (province) {
+      addr1 = province; addr2 = city || street || 'N/A'; addr3 = street || city || 'N/A';
+    } else if (city) {
+      addr1 = city; addr2 = street || 'N/A'; addr3 = street || 'N/A';
+    } else {
+      addr1 = street; addr2 = 'N/A'; addr3 = street;
+    }
+
     const result = await kp.createKPacketParcel({
       order: { orderNo: order.order_no },
       recipient: {
         name: order.buyer_name || 'Recipient',
         zip: order.zip_code || '',
-        addr1: order.province || '',
-        addr2: order.city || '',
-        addr3: order.street || '',
+        addr1, addr2, addr3,
         tel: order.phone || '',
         countryCode: order.country_code || '',
       },
