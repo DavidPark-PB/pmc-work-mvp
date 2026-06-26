@@ -338,11 +338,18 @@ function hexToBytes(hex) {
   return out;
 }
 
-// ASCII string → byte array (PHP getBytes())
+// String → UTF-8 byte array.
+// 사장님 보고 2026-06-26: 한글 평문 (홍길동, 서울 중구 등) 사용 시 reqType 누락
+// 에러. 원인 — 이전 코드가 charCodeAt & 0xff 로 단순 ASCII 처리 → 한글 multi-byte
+// 가 잘려서 SEED 암호화 시 깨진 입력. 우체국 매뉴얼 명시: 'UTF-8 Encoding 사용'.
+// 수정 — TextEncoder 사용 (UTF-8 표준). ASCII 만의 경우 결과 동일 (호환).
 function strToBytes(s) {
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
-  return out;
+  return new TextEncoder().encode(String(s));
+}
+
+// Bytes → UTF-8 string (decrypt 결과 변환용).
+function bytesToStr(bytes) {
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -382,12 +389,10 @@ function decrypt(key, hex) {
     const dec = seedDecrypt(blocks[i], roundKey);
     result.set(dec, i * 16);
   }
-  // null-byte trim (zero padding 의 trailing 0x00 제거)
+  // null-byte trim (zero padding 의 trailing 0x00 제거) → UTF-8 디코딩
   let end = result.length;
   while (end > 0 && result[end - 1] === 0x00) end--;
-  let s = '';
-  for (let i = 0; i < end; i++) s += String.fromCharCode(result[i]);
-  return s;
+  return bytesToStr(result.subarray(0, end));
 }
 
 module.exports = {
