@@ -134,20 +134,24 @@ async function sendMorningBriefing(briefing) {
  * @param {string} text - 메시지 본문 (Markdown)
  * @param {Array}  keyboard - [[{text, callback_data}], ...] 형식
  */
-async function sendWithButtons(text, keyboard = []) {
+async function sendWithButtons(text, keyboard = [], options = {}) {
   if (!isConfigured()) return null;
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    const body = {
+      chat_id: CHAT_ID,
+      text: text.substring(0, 4096),
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: keyboard },
+    };
+    // parseMode: null 이면 parse_mode 필드 아예 제외 (plain text)
+    const pm = options.parseMode !== undefined ? options.parseMode : 'Markdown';
+    if (pm) body.parse_mode = pm;
+
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: text.substring(0, 4096),
-        parse_mode: 'Markdown',
-        disable_web_page_preview: true,
-        reply_markup: { inline_keyboard: keyboard },
-      }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!data.ok) { console.error('[Telegram] sendWithButtons failed:', data.description); return null; }

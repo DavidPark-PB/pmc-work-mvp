@@ -343,33 +343,30 @@ async function sendTelegramReport({ monitorResult, proposals, repricerReport, dr
     const actionLabel = p.action === 'raise' ? '인상' : '인하';
     const itemId = p.itemId || 'null';
 
-    // callback_data 최대 64바이트 제한 — SKU를 앞 20자로 자름
     const skuShort = (p.sku || '').slice(0, 20);
     const priceStr = String(p.proposedPrice);
 
+    // Markdown 특수문자 없이 plain text로 구성 (parse_mode 없음)
     const text = [
-      `${icon} *${actionLabel} 제안*`,
-      `SKU: \`${p.sku}\``,
-      `현재: $${p.myPrice} → 제안: *$${p.proposedPrice}*`,
+      `${icon} ${actionLabel} 제안`,
+      `SKU: ${p.sku}`,
+      `현재: $${p.myPrice} → 제안: $${p.proposedPrice}`,
       `경쟁사: $${p.compPrice} (${p.seller || '-'})`,
-      `사유: ${p.reason.slice(0, 100)}`,
+      `사유: ${p.reason.slice(0, 120)}`,
     ].join('\n');
 
     const approveData = `reprice:approve:${skuShort}:${itemId}:${priceStr}`;
     const rejectData = `reprice:reject:${skuShort}`;
 
-    // callback_data 64바이트 초과 방지
     if (approveData.length <= 64) {
       await telegram.sendWithButtons(text, [[
         { text: '✅ 승인 (가격 변경)', callback_data: approveData },
         { text: '❌ 거부', callback_data: rejectData },
-      ]]);
+      ]], { parseMode: null });
     } else {
-      // SKU가 너무 길면 버튼 없이 텍스트만
-      await telegram.sendMessage(text + `\n\n_⚠️ SKU가 너무 길어 버튼 없음. 수동으로 처리하세요._`);
+      await telegram.sendMessage(text + '\n\n⚠️ SKU가 너무 길어 버튼 없음. 수동으로 처리하세요.');
     }
 
-    // 메시지 간 짧은 딜레이 (텔레그램 rate limit)
     await new Promise(r => setTimeout(r, 300));
   }
 
