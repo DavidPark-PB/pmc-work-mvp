@@ -231,6 +231,10 @@ class PlatformRepository {
 
   // ===== repricing_rules =====
 
+  /**
+   * SKU(또는 전체) 에 해당하는 활성 규칙 조회
+   * SKU별 규칙이 전체(global) 규칙보다 우선
+   */
   async getRepricingRules(sku) {
     const { data, error } = await this.db
       .from('repricing_rules').select('*')
@@ -240,6 +244,17 @@ class PlatformRepository {
     return data || [];
   }
 
+  /**
+   * SKU에 적용할 단일 규칙 반환 (SKU별 우선, 없으면 global)
+   * action_type='skip'이면 파이프라인에서 제외
+   */
+  async getEffectiveRule(sku, platform = 'ebay') {
+    const rules = await this.getRepricingRules(sku);
+    const filtered = rules.filter(r => !r.platform || r.platform === platform);
+    // SKU별 규칙 우선
+    return filtered.find(r => r.sku === sku) || filtered.find(r => !r.sku) || null;
+  }
+
   async getAllRepricingRules() {
     const { data, error } = await this.db
       .from('repricing_rules').select('*').order('created_at');
@@ -247,11 +262,64 @@ class PlatformRepository {
     return data || [];
   }
 
+  /**
+   * 규칙 생성
+   * action_type: 'reprice'|'hold'|'raise_only'|'drop_only'|'skip'
+   * price_premium: 경쟁사보다 N달러 비싸도 허용 (양수)
+   * competitor_blacklist: 무시할 셀러 배열
+   */
   async createRepricingRule(rule) {
+    const row = this._sanitizeRule(rule);
     const { data, error } = await this.db
-      .from('repricing_rules').insert(rule).select().single();
+      .from('repricing_rules').insert(row).select().single();
     if (error) throw error;
     return data;
+  }
+
+  async updateRepricingRule(id, updates) {
+    const row = this._sanitizeRule(updates);
+    row.updated_at = new Date().toISOString();
+    const { data, error } = await this.db
+      .from('repricing_rules').update(row).eq('id', id).select().single();
+    if (error) throw error;
+    return data;
+  }
+
+  async deleteRepricingRule(id) {
+    const { error } = await this.db
+      .from('repricing_rules').delete().eq('id', id);
+    if (error) throw error;
+  }
+
+  async toggleRepricingRule(id, isActive) {
+    const { data, error } = await this.db
+      .from('repricing_rules')
+      .update({ is_active: isActive, updated_at: new Date().toISOString() })
+      .eq('id', id).select().single();
+    if (error) throw error;
+    return data;
+  }
+
+  _sanitizeRule(rule) {
+    const VALID_ACTION = new Set(['reprice','hold','raise_only','drop_only','skip']);
+    const VALID_STRATEGY = new Set(['undercut','match','margin_floor']);
+    const row = {};
+    if (rule.sku !== undefined) row.sku = rule.sku || null;
+    if (rule.platform !== undefined) row.platform = rule.platform || 'ebay';
+    if (rule.strategy !== undefined) row.strategy = VALID_STRATEGY.has(rule.strategy) ? rule.strategy : 'undercut';
+    if (rule.action_type !== undefined) row.action_type = VALID_ACTION.has(rule.action_type) ? rule.action_type : 'reprice';
+    if (rule.undercut_amount !== undefined) row.undercut_amount = parseFloat(rule.undercut_amount) || 0.01;
+    if (rule.min_price !== undefined) row.min_price = rule.min_price != null ? parseFloat(rule.min_price) : null;
+    if (rule.max_price !== undefined) row.max_price = rule.max_price != null ? parseFloat(rule.max_price) : null;
+    if (rule.min_margin_pct !== undefined) row.min_margin_pct = parseFloat(rule.min_margin_pct) || 10;
+    if (rule.price_premium !== undefined) row.price_premium = parseFloat(rule.price_premium) || 0;
+    if (rule.max_drop_pct !== undefined) row.max_drop_pct = parseFloat(rule.max_drop_pct) || 20;
+    if (rule.max_raise_pct !== undefined) row.max_raise_pct = parseFloat(rule.max_raise_pct) || 30;
+    if (rule.notes !== undefined) row.notes = String(rule.notes || '').slice(0, 500);
+    if (rule.competitor_whitelist !== undefined) row.competitor_whitelist = Array.isArray(rule.competitor_whitelist) ? rule.competitor_whitelist : [];
+    if (rule.competitor_blacklist !== undefined) row.competitor_blacklist = Array.isArray(rule.competitor_blacklist) ? rule.competitor_blacklist : [];
+    if (rule.is_active !== undefined) row.is_active = Boolean(rule.is_active);
+    return row;
   }
 
   // ===== price_change_log =====

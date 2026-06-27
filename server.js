@@ -218,6 +218,9 @@ app.use('/api/cs', require('./src/web/routes/cs'));
 app.use('/api/resources', require('./src/web/routes/resources'));
 app.use('/api/accio', require('./src/web/routes/accio'));
 
+// Telegram webhook (인라인 버튼 클릭 처리 — auth 미들웨어 없음, 텔레그램 서버가 직접 호출)
+app.use('/api/telegram/webhook', require('./src/web/routes/telegramWebhook'));
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -228,6 +231,21 @@ app.listen(PORT, () => {
 
   // 업무관리 알림 스케줄러 (Phase 5 — 매일 오전 9시, 오후 5시)
   require('./src/services/scheduler').start();
+
+  // 텔레그램 webhook 등록 (Railway 공개 URL)
+  setTimeout(async () => {
+    try {
+      const telegram = require('./src/services/telegramBot');
+      const appUrl = process.env.APP_PUBLIC_URL;
+      if (telegram.isConfigured() && appUrl) {
+        const webhookUrl = `${appUrl}/api/telegram/webhook`;
+        await telegram.setWebhook(webhookUrl);
+        console.log(`[Telegram] Webhook 등록: ${webhookUrl}`);
+      }
+    } catch (e) {
+      console.error('[Telegram] Webhook 등록 실패:', e.message);
+    }
+  }, 3000); // 서버 완전 기동 후 3초 뒤
 
   // Load tokens from DB into process.env on startup
   const { loadToken } = require('./src/services/tokenStore');

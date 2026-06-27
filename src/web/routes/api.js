@@ -2574,6 +2574,34 @@ router.post('/repricer/run', async (req, res) => {
   }
 });
 
+// POST /api/repricer/pipeline — 4단계 파이프라인 수동 실행
+// body: { dryRun: true|false, silent: true|false }
+// dryRun=true (기본): 실제 가격 변경 없음, 분석 + 텔레그램 리포트만
+// dryRun=false: 실제 eBay 가격 변경 (충분히 검증 후 사용)
+router.post('/repricer/pipeline', async (req, res) => {
+  try {
+    const { runRepricingPipeline } = require('../../jobs/repricingPipelineJob');
+    const dryRun = req.body.dryRun !== false; // default true
+    const silent = req.body.silent === true;  // default false (텔레그램 전송)
+    const result = await runRepricingPipeline({ dryRun, silent });
+    battleCache = null;
+    battleCacheTime = 0;
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/repricer/pipeline/config — 현재 파이프라인 설정 조회
+router.get('/repricer/pipeline/config', (req, res) => {
+  try {
+    const { CONFIG } = require('../../jobs/repricingPipelineJob');
+    res.json({ success: true, config: CONFIG });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // GET /api/repricer/report — 최근 리프라이싱 로그
 router.get('/repricer/report', async (req, res) => {
   try {
@@ -5063,7 +5091,156 @@ router.post('/repricing/execute/:sku', async (req, res) => {
 });
 
 // ===========================
-// Translation API
+// Repricing Rules CRUD
+// GET    /api/repricing/rules          — 전체 규칙 목록
+// POST   /api/repricing/rules          — 규칙 생성
+// PATCH  /api/repricing/rules/:id      — 규칙 수정
+// DELETE /api/repricing/rules/:id      — 규칙 삭제
+// PATCH  /api/repricing/rules/:id/toggle — 활성/비활성 토글
+// GET    /api/repricing/rules/sku/:sku — SKU 유효 규칙 조회
+// ===========================
+
+router.get('/repricing/rules', async (req, res) => {
+  try {
+    const PlatformRepository = require('../../db/platformRepository');
+    const repo = new PlatformRepository();
+    const rules = await repo.getAllRepricingRules();
+    res.json({ success: true, rules });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+router.post('/repricing/rules', async (req, res) => {
+  try {
+    const PlatformRepository = require('../../db/platformRepository');
+    const repo = new PlatformRepository();
+    const rule = await repo.createRepricingRule(req.body);
+    res.json({ success: true, rule });
+  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
+
+router.patch('/repricing/rules/:id', async (req, res) => {
+  try {
+    const PlatformRepository = require('../../db/platformRepository');
+    const repo = new PlatformRepository();
+    const rule = await repo.updateRepricingRule(req.params.id, req.body);
+    res.json({ success: true, rule });
+  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
+
+router.delete('/repricing/rules/:id', async (req, res) => {
+  try {
+    const PlatformRepository = require('../../db/platformRepository');
+    const repo = new PlatformRepository();
+    await repo.deleteRepricingRule(req.params.id);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+router.patch('/repricing/rules/:id/toggle', async (req, res) => {
+  try {
+    const PlatformRepository = require('../../db/platformRepository');
+    const repo = new PlatformRepository();
+    const isActive = req.body.is_active !== false;
+    const rule = await repo.toggleRepricingRule(req.params.id, isActive);
+    res.json({ success: true, rule });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+router.get('/repricing/rules/sku/:sku', async (req, res) => {
+  try {
+    const PlatformRepository = require('../../db/platformRepository');
+    const repo = new PlatformRepository();
+    const rule = await repo.getEffectiveRule(req.params.sku, req.query.platform || 'ebay');
+    res.json({ success: true, rule });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+// ===========================
+// Alibaba Competitor Monitor API
+// ===========================
+
+router.get('/alibaba/competitors', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { data, error } = await db
+      .from('alibaba_competitor_products')
+      .select('*')
+      .order('updated_at', { ascending: false });
+    if (error && error.code === '42P01') return res.json({ success: true, data: [], hint: '마이그레이션 056 필요' });
+    if (error) throw error;
+    res.json({ success: true, data: data || [] });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+router.post('/alibaba/competitors', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { keyword, sku, category, notes, alert_threshold_pct } = req.body;
+    if (!keyword) return res.status(400).json({ success: false, error: 'keyword 필수' });
+    const { data, error } = await db.from('alibaba_competitor_products').insert({
+      keyword: String(keyword).trim().slice(0, 200),
+      sku: sku || null,
+      category: category || '',
+      notes: notes || '',
+      alert_threshold_pct: parseFloat(alert_threshold_pct) || 3,
+    }).select().single();
+    if (error) throw error;
+    res.json({ success: true, data });
+  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
+
+router.patch('/alibaba/competitors/:id', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const allowed = ['keyword','sku','category','notes','alert_threshold_pct','is_active'];
+    const updates = {};
+    allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
+    updates.updated_at = new Date().toISOString();
+    const { data, error } = await db.from('alibaba_competitor_products')
+      .update(updates).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json({ success: true, data });
+  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
+
+router.delete('/alibaba/competitors/:id', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { error } = await db.from('alibaba_competitor_products').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+router.post('/alibaba/monitor/run', async (req, res) => {
+  try {
+    const { runAlibabaMonitor } = require('../../services/alibabaMonitor');
+    const silent = req.body.silent === true;
+    const limit = parseInt(req.body.limit) || 20;
+    const result = await runAlibabaMonitor({ silent, limit });
+    res.json({ success: true, ...result });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
+router.get('/alibaba/alerts', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const limit = Math.min(200, parseInt(req.query.limit) || 50);
+    const { data, error } = await db.from('alibaba_competitor_alerts')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error && error.code === '42P01') return res.json({ success: true, data: [] });
+    if (error) throw error;
+    res.json({ success: true, data: data || [] });
+  } catch (e) { res.status(500).json({ success: false, error: e.message }); }
+});
+
 // ===========================
 
 // POST /api/translate/:productId — translate a product

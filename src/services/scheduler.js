@@ -170,6 +170,35 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // 경쟁사 가격 모니터 + 리프라이싱 파이프라인 — 6시간마다 (0시·6시·12시·18시 KST)
+  // DRY_RUN=true (기본): 실제 가격 변경 없음, 텔레그램 리포트만
+  // 변동 없으면 텔레그램 알림 안 보냄 (노이즈 방지)
+  cron.schedule('0 0,6,12,18 * * *', async () => {
+    try {
+      const { runRepricingPipeline } = require('../jobs/repricingPipelineJob');
+      const r = await runRepricingPipeline();
+      if (r.priceAlerts > 0) {
+        console.log(`[scheduler] RepricingPipeline: ${r.priceAlerts} price changes, ${r.proposals} proposals, ${r.changed} applied`);
+      }
+    } catch (e) {
+      console.error('[scheduler] RepricingPipeline error:', e.message);
+    }
+  }, { timezone: TZ });
+
+  // Alibaba 공급가 모니터 — 하루 2회 (오전 2시, 오후 2시 KST)
+  // 키워드 크롤링 → MOQ/단가 변동 감지 → 텔레그램 알림
+  cron.schedule('0 2,14 * * *', async () => {
+    try {
+      const { runAlibabaMonitor } = require('./alibabaMonitor');
+      const r = await runAlibabaMonitor({ limit: 20 });
+      if (r.alerts.length > 0) {
+        console.log(`[scheduler] AlibabaMonitor: ${r.alerts.length} alerts, ${r.checked} checked`);
+      }
+    } catch (e) {
+      console.error('[scheduler] AlibabaMonitor error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // 매일 10시·18시 KST — 네이버 detail 보강 (배치 200) · 하루 2회로 축소
   cron.schedule('0 10,18 * * *', async () => {
     try {
@@ -236,7 +265,7 @@ function start() {
   }, { timezone: TZ });
 
   scheduled = true;
-  console.log('[scheduler] 활성화 — 9시(digest)·17시(summary)·4시(platform sync)·매시(naver enrich)·3시(recurring)·3:30(uploads cleanup)');
+  console.log('[scheduler] 활성화 — 9시(digest)·17시(summary)·4시(platform sync)·10/22시(eBay sync)·0/6/12/18시(경쟁사 모니터+리프라이싱)·3시(recurring)·3:30(uploads cleanup)');
 }
 
 module.exports = { start, sendMorningDigest, sendEveningOwnerSummary };

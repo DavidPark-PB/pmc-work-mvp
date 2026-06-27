@@ -129,4 +129,104 @@ async function sendMorningBriefing(briefing) {
   return sendMessage(lines.join('\n'));
 }
 
-module.exports = { sendMessage, sendAlert, sendProfitReport, sendMorningBriefing, isConfigured };
+/**
+ * 인라인 버튼 포함 메시지 전송
+ * @param {string} text - 메시지 본문 (Markdown)
+ * @param {Array}  keyboard - [[{text, callback_data}], ...] 형식
+ */
+async function sendWithButtons(text, keyboard = []) {
+  if (!isConfigured()) return null;
+  try {
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: CHAT_ID,
+        text: text.substring(0, 4096),
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: { inline_keyboard: keyboard },
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) { console.error('[Telegram] sendWithButtons failed:', data.description); return null; }
+    return data.result;
+  } catch (e) {
+    console.error('[Telegram] sendWithButtons error:', e.message);
+    return null;
+  }
+}
+
+/**
+ * callback_query에 응답 (버튼 클릭 확인 처리 — 필수, 안 하면 버튼 계속 로딩)
+ */
+async function answerCallbackQuery(callbackQueryId, text = '') {
+  if (!isConfigured()) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text: text.slice(0, 200) }),
+    });
+  } catch (e) { console.error('[Telegram] answerCallbackQuery error:', e.message); }
+}
+
+/**
+ * 메시지 텍스트 수정 (버튼 클릭 후 "처리됨" 표시)
+ */
+async function editMessage(chatId, messageId, text, keyboard = null) {
+  if (!isConfigured()) return;
+  try {
+    const body = {
+      chat_id: chatId,
+      message_id: messageId,
+      text: text.substring(0, 4096),
+      parse_mode: 'Markdown',
+      disable_web_page_preview: true,
+    };
+    if (keyboard !== null) body.reply_markup = { inline_keyboard: keyboard };
+    await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/editMessageText`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (e) { console.error('[Telegram] editMessage error:', e.message); }
+}
+
+/**
+ * Webhook 등록 (서버 시작 시 1회 호출)
+ * @param {string} webhookUrl - 공개 URL (예: https://pmc-work-mvp.fly.dev/api/telegram/webhook)
+ */
+async function setWebhook(webhookUrl) {
+  if (!isConfigured()) return null;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: webhookUrl, allowed_updates: ['callback_query', 'message'] }),
+    });
+    const data = await res.json();
+    console.log('[Telegram] setWebhook:', data.ok ? 'OK' : data.description);
+    return data;
+  } catch (e) {
+    console.error('[Telegram] setWebhook error:', e.message);
+    return null;
+  }
+}
+
+/**
+ * 현재 webhook 상태 확인
+ */
+async function getWebhookInfo() {
+  if (!isConfigured()) return null;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo`);
+    return await res.json();
+  } catch (e) { return null; }
+}
+
+module.exports = {
+  sendMessage, sendAlert, sendProfitReport, sendMorningBriefing, isConfigured,
+  sendWithButtons, answerCallbackQuery, editMessage, setWebhook, getWebhookInfo,
+};
