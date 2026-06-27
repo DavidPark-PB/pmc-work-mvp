@@ -1214,6 +1214,76 @@ class EbayAPI {
   }
 
   /**
+   * Finding API로 셀러 전체 리스팅 수집 (rate limit 관대, 무료)
+   * findItemsBySeller — 페이지당 100개, 최대 100페이지 (총 10,000개)
+   */
+  async findSellerListingsByFindingAPI(sellerName, maxPages = 10) {
+    const allItems = [];
+    const seenIds = new Set();
+    const baseUrl = 'https://svcs.ebay.com/services/search/FindingService/v1';
+
+    for (let page = 1; page <= maxPages; page++) {
+      try {
+        const resp = await axios.get(baseUrl, {
+          params: {
+            'OPERATION-NAME': 'findItemsAdvanced',
+            'SERVICE-VERSION': '1.0.0',
+            'SECURITY-APPNAME': this.appId,
+            'RESPONSE-DATA-FORMAT': 'JSON',
+            'REST-PAYLOAD': '',
+            'itemFilter(0).name': 'Seller',
+            'itemFilter(0).value': sellerName,
+            'itemFilter(1).name': 'ListingType',
+            'itemFilter(1).value': 'FixedPrice',
+            'paginationInput.pageNumber': page,
+            'paginationInput.entriesPerPage': 100,
+            'outputSelector(0)': 'SellerInfo',
+            'outputSelector(1)': 'StoreInfo',
+          },
+          timeout: 15000,
+        });
+
+        const result = resp.data?.findItemsAdvancedResponse?.[0];
+        if (!result) break;
+
+        const ack = result.ack?.[0];
+        if (ack !== 'Success' && ack !== 'Warning') break;
+
+        const items = result.searchResult?.[0]?.item || [];
+        if (items.length === 0) break;
+
+        for (const item of items) {
+          const id = item.itemId?.[0] || '';
+          if (!id || seenIds.has(id)) continue;
+          seenIds.add(id);
+          allItems.push({
+            itemId: id,
+            title: item.title?.[0] || '',
+            price: parseFloat(item.sellingStatus?.[0]?.currentPrice?.[0]?.['__value__']) || 0,
+            shipping: parseFloat(item.shippingInfo?.[0]?.shippingServiceCost?.[0]?.['__value__']) || 0,
+            seller: sellerName,
+            imageUrl: item.galleryURL?.[0] || '',
+            viewItemURL: item.viewItemURL?.[0] || '',
+            categoryName: item.primaryCategory?.[0]?.categoryName?.[0] || '',
+          });
+        }
+
+        const totalPages = parseInt(result.paginationOutput?.[0]?.totalPages?.[0]) || 1;
+        if (page >= totalPages) break;
+
+        // rate limit 방지
+        await new Promise(r => setTimeout(r, 300));
+      } catch (err) {
+        console.warn(`[findSellerListingsByFindingAPI] page ${page} error:`, err.message);
+        break;
+      }
+    }
+
+    console.log(`[findSellerListingsByFindingAPI] ${sellerName}: ${allItems.length} items`);
+    return allItems;
+  }
+
+  /**
    * End (remove) an eBay listing
    * @param {string} itemId - eBay item ID
    * @param {string} reason - NotAvailable, Incorrect, LostOrBroken, OtherListingError, SellToHighBidder

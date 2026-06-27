@@ -63,15 +63,20 @@ async function crawlSeller(sellerRow) {
 
   console.log(`[Crawler] 셀러 수집 시작: ${sellerName} (id=${sellerId})`);
 
-  // ── 1. 리스팅 목록 수집 (최대 5페이지) ──────────────────────────────────
+  // ── 1. 리스팅 목록 수집 — Finding API 우선, 실패 시 Browse API fallback ──
   let listings = [];
   try {
-    listings = await ebay.findSellerListings(sellerName, 5);
+    listings = await ebay.findSellerListingsByFindingAPI(sellerName, 10);
   } catch (e) {
-    const msg = `findSellerListings 실패: ${e.message}`;
-    console.error(`[Crawler][${sellerName}] ${msg}`);
-    result.errors.push(msg);
-    return result;
+    console.warn(`[Crawler][${sellerName}] Finding API 실패, Browse API fallback:`, e.message);
+    try {
+      listings = await ebay.findSellerListings(sellerName, 5);
+    } catch (e2) {
+      const msg = `리스팅 수집 실패: ${e2.message}`;
+      console.error(`[Crawler][${sellerName}] ${msg}`);
+      result.errors.push(msg);
+      return result;
+    }
   }
 
   if (!listings || listings.length === 0) {
