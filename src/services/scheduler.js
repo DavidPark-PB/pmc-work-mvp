@@ -199,6 +199,28 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // 경쟁셀러 크롤러 — 매일 새벽 1시 (전체 리스팅 수집)
+  cron.schedule('0 1 * * *', async () => {
+    try {
+      const { runCrawler } = require('./competitorCrawler');
+      const r = await runCrawler();
+      console.log(`[scheduler] CompetitorCrawler: sellers=${r.sellers}, new=${r.newItems}, updated=${r.updatedItems}, priceChanges=${r.priceChanges}`);
+    } catch (e) {
+      console.error('[scheduler] CompetitorCrawler error:', e.message);
+    }
+  }, { timezone: TZ });
+
+  // AI 매처 — 매일 새벽 1시 30분 (크롤러 완료 후 매핑)
+  cron.schedule('30 1 * * *', async () => {
+    try {
+      const { runMatcher } = require('./aiMatcher');
+      const r = await runMatcher({ hours: 25 });
+      console.log(`[scheduler] AIMatcher: processed=${r.processed}, autoApproved=${r.autoApproved}, pending=${r.pending}`);
+    } catch (e) {
+      console.error('[scheduler] AIMatcher error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // 매일 10시·18시 KST — 네이버 detail 보강 (배치 200) · 하루 2회로 축소
   cron.schedule('0 10,18 * * *', async () => {
     try {

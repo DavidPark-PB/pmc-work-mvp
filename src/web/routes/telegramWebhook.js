@@ -58,7 +58,7 @@ async function handleCallbackQuery(query) {
   // reprice:reject:SKU
   if (data.startsWith('reprice:')) {
     const parts = data.split(':');
-    const action = parts[1]; // approve | reject
+    const action = parts[1];
     const sku = parts[2];
     const itemId = parts[3];
     const newPrice = parseFloat(parts[4]);
@@ -69,6 +69,27 @@ async function handleCallbackQuery(query) {
     } else if (action === 'reject') {
       await telegram.answerCallbackQuery(callbackId, '❌ 거부됨');
       await processReject({ sku, chatId, messageId, userName });
+    }
+    return;
+  }
+
+  // map:yes:myItemId:compItemId:seller  또는  map:no:myItemId:compItemId
+  if (data.startsWith('map:')) {
+    const parts = data.split(':');
+    const action = parts[1];  // yes | no
+    const myId   = parts[2];
+    const compId = parts[3];
+    const seller = parts[4] || '';
+
+    if (action === 'yes') {
+      await telegram.answerCallbackQuery(callbackId, '✅ 매핑 등록 중...');
+      await processMapYes({ myId, compId, seller, chatId, messageId, userName });
+    } else {
+      await telegram.answerCallbackQuery(callbackId, '❌ 건너뜀');
+      await telegram.editMessage(chatId, messageId,
+        `❌ 다른 상품으로 표시됨\n경쟁사 ${compId} — ${userName}`,
+        []
+      );
     }
     return;
   }
@@ -168,9 +189,66 @@ async function processApprove({ sku, itemId, newPrice, chatId, messageId, userNa
  */
 async function processReject({ sku, chatId, messageId, userName }) {
   await telegram.editMessage(chatId, messageId,
-    `🚫 *거부됨* — \`${sku}\`\n\n${userName}이(가) 가격 변경을 거부했습니다.`,
-    [] // 버튼 제거
+    `🚫 거부됨 — ${sku}\n\n${userName}이(가) 가격 변경을 거부했습니다.`,
+    []
   );
+}
+
+/**
+ * 매핑 승인 처리 (map:yes)
+ * myId / compId 는 UUID 앞 8자 shortId 또는 실제 ID
+ */
+async function processMapYes({ myId, compId, seller, chatId, messageId, userName }) {
+  const db = getClient();
+  try {
+    // product_matches에서 shortId로 찾기
+    const { data: match } = await db
+      .from('product_matches')
+      .select('id, our_sku, competitor_item_id, seller_id')
+      .or(`id.like.${myId}%,our_sku.eq.${myId}`)
+      .eq('status', 'pending')
+      .limit(1)
+      .single()
+      .catch(() => ({ data: null }));
+
+    if (match) {
+      // 기존 pending 매치 승인
+      await db.from('product_matches').update({
+        status: 'approved',
+        approved_by: userName,
+        approved_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).eq('id', match.id);
+
+      await telegram.editMessage(chatId, messageId,
+        `✅ 매핑 승인 완료\n\n내 SKU: ${match.our_sku}\n경쟁상품: ${match.competitor_item_id}\n승인: ${userName}`,
+        []
+      );
+    } else {
+      // 직접 product_matches에 insert (수동 매핑)
+      await db.from('product_matches').insert({
+        our_sku: myId,
+        competitor_item_id: compId,
+        seller_id: seller || '',
+        confidence: 1.0,
+        method: 'manual',
+        status: 'approved',
+        approved_by: userName,
+        approved_at: new Date().toISOString(),
+      }).onConflict('our_sku,competitor_item_id').merge();
+
+      await telegram.editMessage(chatId, messageId,
+        `✅ 매핑 수동 등록 완료\n\n내 SKU: ${myId}\n경쟁상품: ${compId}\n등록: ${userName}`,
+        []
+      );
+    }
+  } catch (e) {
+    console.error('[TgWebhook] processMapYes error:', e.message);
+    await telegram.editMessage(chatId, messageId,
+      `❌ 매핑 등록 실패\n${e.message}`,
+      []
+    ).catch(() => {});
+  }
 }
 
 /**

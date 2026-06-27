@@ -221,6 +221,9 @@ app.use('/api/accio', require('./src/web/routes/accio'));
 // Telegram webhook (인라인 버튼 클릭 처리 — auth 미들웨어 없음, 텔레그램 서버가 직접 호출)
 app.use('/api/telegram/webhook', require('./src/web/routes/telegramWebhook'));
 
+// 경쟁셀러 자동 수집 + AI 매핑 시스템
+app.use('/api/competitor-system', require('./src/web/routes/competitorSystem'));
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
