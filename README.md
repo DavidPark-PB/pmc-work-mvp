@@ -87,6 +87,44 @@ npm run dashboard
 - [빠른 시작](docs/QUICK_START.md)
 - [설정 가이드](docs/setup/)
 - [사용 가이드](docs/guides/)
+- [Hermes v1 Market Intelligence Runbook](docs/hermes-v1-market-intelligence-runbook.md)
+
+## Hermes v1 — eBay Market Intelligence
+
+Hermes v1은 자동 가격 변경 도구가 아니라 eBay Market Intelligence 리포트봇입니다.
+경쟁셀러 모니터링, 가격/배송/재고 변화 분석, Telegram 알림, Daily Report만 수행합니다.
+
+가격 변경/승인 버튼/자동 repricing은 v1에서 비활성화되어 있습니다.
+
+### 실행 절차
+
+1. Supabase에 `supabase/migrations/058_hermes_v1_market_intelligence.sql` 적용
+2. snapshot/mapping 동기화
+
+```bash
+npm run hermes:market -- sync
+```
+
+3. 최근 market alert 생성
+
+```bash
+npm run hermes:market -- alerts --hours=24
+```
+
+4. Daily Report 생성
+
+```bash
+npm run hermes:market -- daily --hours=24
+```
+
+5. Telegram 전송 테스트
+
+```bash
+npm run hermes:market -- daily --hours=24 --telegram
+```
+
+Migration 058 적용 전에도 Daily Report markdown 생성은 fallback으로 동작하지만,
+`market_alerts`/`daily_reports` 영구 저장은 migration 적용 후에만 정상 동작합니다.
 
 ## 라이선스
 

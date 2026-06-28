@@ -41,6 +41,40 @@ Hermes v1은 eBay Market Intelligence 리포트봇이다.
 - Daily Report 생성/전송
 - Telegram 버튼은 상세보기만
 
+## Migration 058 안정성/rollback
+
+Migration 058은 additive migration이다.
+
+- 신규 테이블만 생성: `my_listings`, `sku_mappings`, `price_snapshots`, `market_alerts`, `daily_reports`
+- 기존 운영 테이블 변경 없음
+- marketplace write/repricing 관련 컬럼 또는 트리거 없음
+- 057의 `product_matches`, `competitor_listings`를 읽어서 `sku_mappings`를 backfill만 함
+
+기존 migrations 001-057에서 위 5개 테이블명은 사용되지 않아 이름 충돌은 없다. 058은 057 이후 적용되어야 한다.
+
+수동 rollback이 필요하면 아래 순서로 SQL editor에서 실행한다.
+
+```sql
+DROP TABLE IF EXISTS daily_reports;
+DROP TABLE IF EXISTS market_alerts;
+DROP TABLE IF EXISTS price_snapshots;
+DROP TABLE IF EXISTS sku_mappings;
+DROP TABLE IF EXISTS my_listings;
+```
+
+이 rollback은 057의 `competitor_sellers`, `competitor_listings`, `product_matches`, `competitor_price_history` 및 실제 eBay/Shopify 리스팅 데이터에는 영향을 주지 않는다.
+
+## Daily Report fallback 동작
+
+Migration 058 적용 전에도 `daily` 명령은 report markdown을 생성할 수 있다.
+
+- `my_listings`/`sku_mappings` sync 실패: warning만 출력하고 계속 진행
+- `market_alerts` 조회 실패: alert count 0으로 처리
+- `daily_reports` 저장 실패: DB 저장만 생략하고 콘솔/Telegram report 생성은 계속 진행
+- 경쟁가 summary는 기존 `product_matches` + `competitor_listings` + `ebay_products` 기반 `competitorDashboard`를 fallback으로 사용
+
+따라서 058 적용 전에도 report shape 검증과 Telegram 전송 테스트가 가능하다. 단, alert/history/report 영구 저장은 058 적용 후에만 정상 동작한다.
+
 ## 수동 실행 명령
 
 ### 1. v1 snapshot/mapping sync

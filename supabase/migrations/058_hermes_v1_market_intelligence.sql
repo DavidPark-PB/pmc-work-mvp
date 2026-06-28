@@ -1,6 +1,8 @@
 -- Migration 058: Hermes v1 Market Intelligence data model
 -- Purpose: explicit v1 tables for monitoring, analysis, alerts, and daily reports.
 -- Safety: no marketplace write / repricing table is introduced here.
+-- Depends on migration 057 for product_matches and competitor_listings backfill.
+-- Existing table names checked in migrations 001-057: the five v1 tables below are new.
 
 -- 1) my_listings — snapshot of our eBay listings used for market comparisons
 CREATE TABLE IF NOT EXISTS my_listings (
@@ -157,3 +159,13 @@ COMMENT ON TABLE sku_mappings IS 'Hermes v1 SKU-to-competitor mapping; auto_chan
 COMMENT ON TABLE price_snapshots IS 'Hermes v1 historical price/status snapshots for our and competitor listings';
 COMMENT ON TABLE market_alerts IS 'Hermes v1 monitoring/analysis alerts; recommendation-only, no approval workflow';
 COMMENT ON TABLE daily_reports IS 'Hermes v1 generated market intelligence reports';
+
+-- Rollback note (manual, if this migration must be reverted before production use):
+--   DROP TABLE IF EXISTS daily_reports;
+--   DROP TABLE IF EXISTS market_alerts;
+--   DROP TABLE IF EXISTS price_snapshots;
+--   DROP TABLE IF EXISTS sku_mappings;
+--   DROP TABLE IF EXISTS my_listings;
+-- These tables are additive v1 reporting tables only. Dropping them does not touch
+-- existing 057 tables (competitor_sellers, competitor_listings, product_matches,
+-- competitor_price_history) or any marketplace listing data.
