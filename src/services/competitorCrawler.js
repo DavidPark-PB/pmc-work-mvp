@@ -63,19 +63,24 @@ async function crawlSeller(sellerRow) {
 
   console.log(`[Crawler] 셀러 수집 시작: ${sellerName} (id=${sellerId})`);
 
-  // ── 1. 리스팅 목록 수집 — Finding API 우선, 실패 시 Browse API fallback ──
+  // ── 1. 리스팅 목록 수집 — Playwright scraper 우선, 실패시 Finding API fallback ──
   let listings = [];
   try {
-    listings = await ebay.findSellerListingsByFindingAPI(sellerName, 10);
+    const { scrapeSellerListings } = require('./ebayScraper');
+    listings = await scrapeSellerListings(sellerName, 5);
   } catch (e) {
-    console.warn(`[Crawler][${sellerName}] Finding API 실패, Browse API fallback:`, e.message);
+    console.warn(`[Crawler][${sellerName}] Scraper 실패, Finding API fallback:`, e.message);
     try {
-      listings = await ebay.findSellerListings(sellerName, 5);
+      listings = await ebay.findSellerListingsByFindingAPI(sellerName, 10);
     } catch (e2) {
-      const msg = `리스팅 수집 실패: ${e2.message}`;
-      console.error(`[Crawler][${sellerName}] ${msg}`);
-      result.errors.push(msg);
-      return result;
+      try {
+        listings = await ebay.findSellerListings(sellerName, 5);
+      } catch (e3) {
+        const msg = `리스팅 수집 실패: ${e3.message}`;
+        console.error(`[Crawler][${sellerName}] ${msg}`);
+        result.errors.push(msg);
+        return result;
+      }
     }
   }
 
