@@ -14,6 +14,11 @@ const COMPETITOR_CRASH_THRESHOLD = 50; // Skip if competitor dropped >50%
  * @param {boolean} dryRun - true = simulate only, false = actually change prices
  */
 async function runAutoRepricer(dryRun = true) {
+  if (!dryRun) {
+    console.warn('[AutoRepricer] LIVE 요청 차단 — Hermes v1에서는 가격 쓰기가 비활성화되어 DRY_RUN으로 강제 전환합니다.');
+    dryRun = true;
+  }
+
   const db = getClient();
   const EbayAPI = require('../api/ebayAPI');
   const ebay = new EbayAPI();

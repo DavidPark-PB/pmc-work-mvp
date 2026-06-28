@@ -15,7 +15,6 @@
 const express = require('express');
 const router = express.Router();
 const telegram = require('../../services/telegramBot');
-const EbayAPI = require('../../api/ebayAPI');
 const { getClient } = require('../../db/supabaseClient');
 
 /**
@@ -103,9 +102,9 @@ async function handleCallbackQuery(query) {
       const { runRepricingPipeline } = require('../../jobs/repricingPipelineJob');
       await runRepricingPipeline({ dryRun: true });
     } else if (action === 'run_live') {
-      await telegram.answerCallbackQuery(callbackId, '⏳ 실적용 실행 중...');
+      await telegram.answerCallbackQuery(callbackId, '🔒 Hermes v1에서는 실적용이 비활성화되어 시뮬레이션으로 실행합니다.');
       const { runRepricingPipeline } = require('../../jobs/repricingPipelineJob');
-      await runRepricingPipeline({ dryRun: false });
+      await runRepricingPipeline({ dryRun: true });
     }
     return;
   }
@@ -117,71 +116,10 @@ async function handleCallbackQuery(query) {
  * 가격 변경 승인 처리
  */
 async function processApprove({ sku, itemId, newPrice, chatId, messageId, userName }) {
-  const db = getClient();
-
-  try {
-    // eBay API로 실제 가격 변경
-    const ebay = new EbayAPI();
-
-    // itemId가 없으면 DB에서 조회
-    let targetItemId = itemId && itemId !== 'null' ? itemId : null;
-    if (!targetItemId) {
-      const { data: ep } = await db
-        .from('ebay_products').select('item_id').eq('sku', sku).neq('status', 'ended').limit(1).single();
-      targetItemId = ep?.item_id;
-    }
-
-    if (!targetItemId) {
-      await telegram.editMessage(chatId, messageId,
-        `❌ *승인 실패* — \`${sku}\`\n\neBay item ID를 찾을 수 없습니다.`,
-        [] // 버튼 제거
-      );
-      return;
-    }
-
-    // 기존 가격 조회
-    const { data: ep } = await db
-      .from('ebay_products').select('price_usd').eq('item_id', targetItemId).single();
-    const oldPrice = ep?.price_usd || 0;
-
-    // eBay 가격 업데이트
-    const result = await ebay.updateItem(targetItemId, { price: newPrice });
-
-    if (result?.success) {
-      // DB도 업데이트
-      await db.from('ebay_products').update({
-        price_usd: newPrice,
-        updated_at: new Date().toISOString(),
-      }).eq('item_id', targetItemId);
-
-      // repricer_log 기록
-      await db.from('repricer_log').insert({
-        item_id: targetItemId,
-        sku,
-        old_price: oldPrice,
-        new_price: newPrice,
-        reason: `텔레그램 승인 (${userName})`,
-        status: 'applied',
-      }).catch(() => {});
-
-      // 메시지 버튼을 결과로 교체
-      await telegram.editMessage(chatId, messageId,
-        `✅ *가격 변경 완료*\n\n\`${sku}\`\n$${oldPrice} → *$${newPrice}*\n\n승인: ${userName}`,
-        [] // 버튼 제거
-      );
-    } else {
-      await telegram.editMessage(chatId, messageId,
-        `❌ *가격 변경 실패* — \`${sku}\`\n\n${result?.error || 'eBay API 오류'}\n\n수동으로 확인해주세요.`,
-        [] // 버튼 제거
-      );
-    }
-  } catch (e) {
-    console.error('[TgWebhook] approve error:', e.message);
-    await telegram.editMessage(chatId, messageId,
-      `❌ *오류 발생* — \`${sku}\`\n\n${e.message}`,
-      []
-    ).catch(() => {});
-  }
+  await telegram.editMessage(chatId, messageId,
+    `🔒 Hermes v1: 가격 변경은 비활성화되어 있습니다.\n\n${sku}\n추천가: $${newPrice}\n\n현재는 Market Intelligence 추천만 제공됩니다.`,
+    []
+  );
 }
 
 /**
@@ -283,10 +221,9 @@ async function handleMessage(message) {
 
   if (cmd === '/run') {
     await telegram.sendWithButtons(
-      `⚔️ *리프라이싱 파이프라인 실행*\n\n모드를 선택하세요:`,
+      `⚔️ *Hermes Market Intelligence 실행*\n\nHermes v1은 시뮬레이션/추천만 제공합니다.`,
       [[
         { text: '🔍 시뮬레이션', callback_data: 'pipeline:run_dry' },
-        { text: '🚀 실적용', callback_data: 'pipeline:run_live' },
       ]]
     );
   }

@@ -40,6 +40,10 @@ const CONFIG = {
 
   // 리포트에 표시할 최대 SKU 수
   REPORT_TOP_N: 10,
+
+  // Hermes v1 원칙: Market Intelligence만 제공하고 가격 쓰기는 기본 금지.
+  // 향후 승인 워크플로우/제한 자동화 단계에서만 별도 검토 후 활성화.
+  PRICE_WRITES_ENABLED: false,
 };
 
 /**
@@ -358,13 +362,13 @@ async function sendTelegramReport({ monitorResult, proposals, repricerReport, dr
     const approveData = `reprice:approve:${skuShort}:${itemId}:${priceStr}`;
     const rejectData = `reprice:reject:${skuShort}`;
 
-    if (approveData.length <= 64) {
+    if (CONFIG.PRICE_WRITES_ENABLED && approveData.length <= 64) {
       await telegram.sendWithButtons(text, [[
         { text: '✅ 승인 (가격 변경)', callback_data: approveData },
         { text: '❌ 거부', callback_data: rejectData },
       ]], { parseMode: null });
     } else {
-      await telegram.sendMessage(text + '\n\n⚠️ SKU가 너무 길어 버튼 없음. 수동으로 처리하세요.');
+      await telegram.sendMessage(text + '\n\nℹ️ Hermes v1: 가격 변경은 비활성화되어 있습니다. 추천만 제공됩니다.');
     }
 
     await new Promise(r => setTimeout(r, 300));
@@ -390,8 +394,13 @@ async function sendTelegramReport({ monitorResult, proposals, repricerReport, dr
  * @param {boolean} opts.silent - true=텔레그램 알림 없음 (테스트용)
  */
 async function runRepricingPipeline({ dryRun, autoApplyRaiseOnly, silent } = {}) {
-  const isDryRun = dryRun !== undefined ? dryRun : CONFIG.DRY_RUN;
+  let isDryRun = dryRun !== undefined ? dryRun : CONFIG.DRY_RUN;
   const raiseOnly = autoApplyRaiseOnly !== undefined ? autoApplyRaiseOnly : CONFIG.AUTO_APPLY_RAISE_ONLY;
+
+  if (!isDryRun && !CONFIG.PRICE_WRITES_ENABLED) {
+    console.warn('[RepricingPipeline] LIVE 요청 차단 — Hermes v1에서는 가격 쓰기가 비활성화되어 DRY_RUN으로 강제 전환합니다.');
+    isDryRun = true;
+  }
 
   console.log(`[RepricingPipeline] Start — mode: ${isDryRun ? 'DRY_RUN' : 'LIVE'}, raiseOnly: ${raiseOnly}`);
   const startAt = Date.now();

@@ -2564,7 +2564,7 @@ router.delete('/battle/target-sellers/:sellerName', async (req, res) => {
 router.post('/repricer/run', async (req, res) => {
   try {
     const { runAutoRepricer } = require('../../services/autoRepricer');
-    const dryRun = req.body.dryRun !== false; // default true (dry run)
+    const dryRun = true; // Hermes v1: Market Intelligence만 제공, 가격 쓰기 금지
     const report = await runAutoRepricer(dryRun);
     battleCache = null;
     battleCacheTime = 0;
@@ -2577,11 +2577,11 @@ router.post('/repricer/run', async (req, res) => {
 // POST /api/repricer/pipeline — 4단계 파이프라인 수동 실행
 // body: { dryRun: true|false, silent: true|false }
 // dryRun=true (기본): 실제 가격 변경 없음, 분석 + 텔레그램 리포트만
-// dryRun=false: 실제 eBay 가격 변경 (충분히 검증 후 사용)
+// Hermes v1: dryRun=false 요청도 시뮬레이션으로 강제한다.
 router.post('/repricer/pipeline', async (req, res) => {
   try {
     const { runRepricingPipeline } = require('../../jobs/repricingPipelineJob');
-    const dryRun = req.body.dryRun !== false; // default true
+    const dryRun = true;
     const silent = req.body.silent === true;  // default false (텔레그램 전송)
     const result = await runRepricingPipeline({ dryRun, silent });
     battleCache = null;
