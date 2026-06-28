@@ -13,6 +13,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../config/.
 
 const { getClient } = require('../db/supabaseClient');
 const EbayAPI = require('../api/ebayAPI');
+const marketIntel = require('./hermesMarketIntelligence');
 
 const ebay = new EbayAPI();
 
@@ -50,18 +51,22 @@ function chunk(arr, size) {
  */
 async function crawlSeller(sellerRow) {
   const db = getClient();
-  const { id: sellerId, seller_name: sellerName } = sellerRow;
+  const { seller_id: sellerId, seller_name: sellerNameRaw } = sellerRow;
+  // seller_id is the eBay username used in URLs/API. seller_name may be an internal memo/display label.
+  const sellerName = sellerId;
+  const displayName = sellerNameRaw || sellerId;
 
   const result = {
     sellerId,
-    sellerName,
+    sellerName: displayName,
     newItems: 0,
     updatedItems: 0,
     priceChanges: 0,
+    statusChanges: 0,
     errors: [],
   };
 
-  console.log(`[Crawler] 셀러 수집 시작: ${sellerName} (id=${sellerId})`);
+  console.log(`[Crawler] 셀러 수집 시작: ${displayName} (seller_id=${sellerId})`);
 
   // ── 1. 리스팅 목록 수집 — Playwright scraper 우선, 실패시 Finding API fallback ──
   let listings = [];
@@ -116,7 +121,7 @@ async function crawlSeller(sellerRow) {
   const itemIds = listings.map(l => l.itemId);
   const { data: existingRows } = await db
     .from('competitor_listings')
-    .select('id, ebay_item_id, price, shipping')
+    .select('id, ebay_item_id, title, price, shipping, quantity, status')
     .eq('seller_id', sellerId)
     .in('ebay_item_id', itemIds);
 
@@ -133,6 +138,7 @@ async function crawlSeller(sellerRow) {
 
     const newPrice    = parseFloat(detail.price    ?? item.price    ?? 0);
     const newShipping = parseFloat(detail.shippingCost ?? item.shipping ?? 0);
+    const newStatus   = detail.status ?? 'active';
 
     const upsertRow = {
       seller_id:       sellerId,
@@ -142,14 +148,15 @@ async function crawlSeller(sellerRow) {
       shipping:        newShipping,
       quantity:        detail.stock      ?? null,
       image_url:       detail.imageUrl   ?? null,
+      url:             detail.url        ?? item.url ?? '',
       item_specifics:  detail.itemSpecifics ?? null,
-      status:          detail.status     ?? 'active',
+      status:          newStatus,
       last_seen:       now,
     };
 
     // INSERT 전용 컬럼 (conflict 시 UPDATE 제외)
     if (!existing) {
-      upsertRow.created_at = now;
+      upsertRow.first_seen = now;
     }
 
     const { data: upserted, error: upsertErr } = await db
@@ -173,21 +180,74 @@ async function crawlSeller(sellerRow) {
 
       // 가격 변동 감지: 1% 이상 차이
       const oldPrice = parseFloat(existing.price ?? 0);
-      if (oldPrice > 0 && Math.abs(newPrice - oldPrice) / oldPrice > 0.01) {
-        const listingId = upserted?.id ?? existing.id;
+      const oldShipping = parseFloat(existing.shipping ?? 0);
+      const oldTotal = oldPrice + oldShipping;
+      const newTotal = newPrice + newShipping;
+      if (oldTotal > 0 && Math.abs(newTotal - oldTotal) / oldTotal > 0.01) {
         priceHistoryRows.push({
-          listing_id:  listingId,
-          seller_id:   sellerId,
-          ebay_item_id: item.itemId,
-          old_price:   oldPrice,
-          new_price:   newPrice,
-          changed_at:  now,
+          competitor_item_id: item.itemId,
+          seller_id:          sellerId,
+          old_price:          oldPrice,
+          new_price:          newPrice,
+          old_shipping:       oldShipping,
+          new_shipping:       newShipping,
+          old_total:          oldTotal,
+          new_total:          newTotal,
+          change_pct:         ((newTotal - oldTotal) / oldTotal * 100),
+          changed_at:         now,
         });
         result.priceChanges++;
       }
+
+      const oldStatus = existing.status || 'active';
+      if (oldStatus !== newStatus) {
+        result.statusChanges++;
+        const alertType = newStatus === 'out_of_stock'
+          ? 'out_of_stock'
+          : (oldStatus === 'out_of_stock' && newStatus === 'active' ? 'restocked' : 'status_change');
+        await marketIntel.recordMarketAlert({
+          eventKey: `${alertType}:${item.itemId}:${oldStatus}:${newStatus}:${now}`,
+          alertType,
+          severity: alertType === 'out_of_stock' ? 'watch' : 'info',
+          competitorSellerId: sellerId,
+          competitorItemId: item.itemId,
+          title: detail.title ?? item.title ?? existing.title ?? '',
+          oldStatus,
+          newStatus,
+          message: `${sellerId} ${item.itemId} 상태 변경: ${oldStatus} → ${newStatus}`,
+          recommendation: alertType === 'out_of_stock' ? '경쟁사 품절 — 가격 유지/인상 후보 확인' : '재입고 또는 상태 변경 확인',
+          createdAt: now,
+        }, { sendTelegram: true });
+      }
     } else {
       result.newItems++;
+      await marketIntel.recordMarketAlert({
+        eventKey: `new_listing:${item.itemId}:${now}`,
+        alertType: 'new_listing',
+        severity: 'info',
+        competitorSellerId: sellerId,
+        competitorItemId: item.itemId,
+        title: detail.title ?? item.title ?? '',
+        newPrice,
+        newShipping,
+        message: `${sellerId} 신규 경쟁상품: ${detail.title ?? item.title ?? item.itemId}`,
+        recommendation: 'SKU 매핑 후보 검토',
+        createdAt: now,
+        data: { url: detail.url ?? item.url ?? '' },
+      }, { sendTelegram: true });
     }
+
+    await marketIntel.recordPriceSnapshot({
+      snapshotType: 'competitor',
+      sellerId,
+      itemId: item.itemId,
+      title: detail.title ?? item.title ?? '',
+      price: newPrice,
+      shipping: newShipping,
+      quantity: detail.stock ?? null,
+      status: newStatus,
+      rawData: detail,
+    });
   }
 
   // 가격 이력 일괄 insert
@@ -207,16 +267,36 @@ async function crawlSeller(sellerRow) {
       last_crawled_at: now,
       listing_count:   listings.length,
     })
-    .eq('id', sellerId);
+    .eq('seller_id', sellerId);
 
   if (sellerUpdErr) {
     console.warn(`[Crawler][${sellerName}] seller 메타 업데이트 실패:`, sellerUpdErr.message);
   }
 
+  // 가격 변동 즉시 alert 생성/전송 (중복은 market_alerts.event_key 로 방지)
+  for (const h of priceHistoryRows) {
+    const isDrop = parseFloat(h.new_total) < parseFloat(h.old_total);
+    await marketIntel.recordMarketAlert({
+      eventKey: `${isDrop ? 'price_drop' : 'price_rise'}:${h.competitor_item_id}:${h.changed_at}:${h.old_total}:${h.new_total}`,
+      alertType: isDrop ? 'price_drop' : 'price_rise',
+      severity: isDrop ? 'warning' : 'watch',
+      competitorSellerId: sellerId,
+      competitorItemId: h.competitor_item_id,
+      oldPrice: h.old_price,
+      newPrice: h.new_price,
+      oldShipping: h.old_shipping,
+      newShipping: h.new_shipping,
+      message: `${sellerId} ${isDrop ? '가격 하락' : '가격 상승'}: $${h.old_total.toFixed(2)} → $${h.new_total.toFixed(2)}`,
+      recommendation: isDrop ? '자동 인하 금지 — 마진과 복수 경쟁사 움직임 확인' : '경쟁사 인상 — 가격 유지/인상 후보 확인',
+      createdAt: h.changed_at,
+      data: { changePct: h.change_pct },
+    }, { sendTelegram: true });
+  }
+
   console.log(
     `[Crawler][${sellerName}] 완료 — ` +
     `신규: ${result.newItems}, 업데이트: ${result.updatedItems}, ` +
-    `가격변동: ${result.priceChanges}, 오류: ${result.errors.length}`
+    `가격변동: ${result.priceChanges}, 상태변동: ${result.statusChanges}, 오류: ${result.errors.length}`
   );
 
   return result;
@@ -240,12 +320,12 @@ async function runCrawler({ sellerIds, silent = false } = {}) {
   // 1. active 셀러 로드
   let query = db
     .from('competitor_sellers')
-    .select('id, seller_name, platform, last_crawled_at, listing_count')
+    .select('id, seller_id, seller_name, platform, last_crawled_at, listing_count')
     .eq('active', true)
     .order('last_crawled_at', { ascending: true, nullsFirst: true });
 
   if (sellerIds && sellerIds.length > 0) {
-    query = query.in('id', sellerIds);
+    query = query.in('seller_id', sellerIds);
   }
 
   const { data: sellers, error: sellerErr } = await query;
@@ -277,8 +357,8 @@ async function runCrawler({ sellerIds, silent = false } = {}) {
     } catch (e) {
       console.error(`[Crawler] 셀러 처리 중 예외 (${seller.seller_name}):`, e.message);
       res = {
-        sellerId: seller.id,
-        sellerName: seller.seller_name,
+        sellerId: seller.seller_id,
+        sellerName: seller.seller_name || seller.seller_id,
         newItems: 0,
         updatedItems: 0,
         priceChanges: 0,

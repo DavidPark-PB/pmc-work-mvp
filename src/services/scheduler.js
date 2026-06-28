@@ -210,6 +210,18 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // Hermes v1 Daily Market Report — 매일 오전 8시 KST, Telegram 리포트 전송
+  // 읽기/분석/리포트 전용. eBay 가격 변경 API 호출 없음.
+  cron.schedule('0 8 * * *', async () => {
+    try {
+      const { runDailyReport } = require('./hermesMarketIntelligence');
+      const r = await runDailyReport({ hours: 24, sendTelegram: true });
+      console.log(`[scheduler] HermesDailyReport: ${r.report?.summary || 'generated'}`);
+    } catch (e) {
+      console.error('[scheduler] HermesDailyReport error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // AI 매처 — 매일 새벽 1시 30분 (크롤러 완료 후 매핑)
   cron.schedule('30 1 * * *', async () => {
     try {

@@ -61,9 +61,9 @@ async function getDashboard({ limit = 100, onlyCompeted = true } = {}) {
     const chunk = itemIdList.slice(i, i + CHUNK);
     const { data: rows, error: listErr } = await db
       .from('competitor_listings')
-      .select('ebay_item_id, seller_id, price, shipping, status, last_seen_at')
+      .select('ebay_item_id, seller_id, price, shipping, status, last_seen')
       .in('ebay_item_id', chunk)
-      .order('last_seen_at', { ascending: false });
+      .order('last_seen', { ascending: false });
 
     if (listErr) throw new Error(`competitor_listings 조회 실패: ${listErr.message}`);
     if (rows) allListings = allListings.concat(rows);

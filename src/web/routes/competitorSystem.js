@@ -38,6 +38,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../../confi
 const express = require('express');
 const { getClient } = require('../../db/supabaseClient');
 const { getDashboard, getPriceHistory } = require('../../services/competitorDashboard');
+const marketIntel = require('../../services/hermesMarketIntelligence');
 
 const router = express.Router();
 
@@ -260,8 +261,7 @@ router.get('/matches', async (req, res) => {
 router.patch('/matches/:id/approve', async (req, res) => {
   try {
     const db = getClient();
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: '유효하지 않은 ID입니다.' });
+    const id = req.params.id;
 
     const { data, error } = await db
       .from('product_matches')
@@ -286,8 +286,7 @@ router.patch('/matches/:id/approve', async (req, res) => {
 router.patch('/matches/:id/reject', async (req, res) => {
   try {
     const db = getClient();
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: '유효하지 않은 ID입니다.' });
+    const id = req.params.id;
 
     const { data, error } = await db
       .from('product_matches')
@@ -308,8 +307,7 @@ router.patch('/matches/:id/reject', async (req, res) => {
 router.patch('/matches/:id/ignore', async (req, res) => {
   try {
     const db = getClient();
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: '유효하지 않은 ID입니다.' });
+    const id = req.params.id;
 
     const { data, error } = await db
       .from('product_matches')
@@ -338,6 +336,69 @@ router.get('/dashboard', async (req, res) => {
 
     const result = await getDashboard({ limit, onlyCompeted });
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+// Hermes v1 Market Intelligence (read/report only)
+// ─────────────────────────────────────────────────────────────
+
+/** POST /market/alerts/generate — 최근 변동으로 market_alerts 생성 */
+router.post('/market/alerts/generate', async (req, res) => {
+  try {
+    const hours = Math.min(168, Math.max(1, parseInt(req.body?.hours, 10) || 24));
+    const sendTelegram = req.body?.sendTelegram === true;
+    const result = await marketIntel.generateMarketAlerts({ hours, sendTelegram });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** GET /market/alerts — 최근 market_alerts 조회 */
+router.get('/market/alerts', async (req, res) => {
+  try {
+    const db = getClient();
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 100));
+    const { data, error } = await db
+      .from('market_alerts')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) return dbError(res, error);
+    res.json({ data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** POST /market/daily-report/run — Daily Report 생성/전송 */
+router.post('/market/daily-report/run', async (req, res) => {
+  try {
+    const hours = Math.min(168, Math.max(1, parseInt(req.body?.hours, 10) || 24));
+    const sendTelegram = req.body?.sendTelegram === true;
+    const result = await marketIntel.runDailyReport({ hours, sendTelegram });
+    res.json({ ok: true, reportId: result.report.id || null, summary: result.report.summary, alertResult: result.alertResult });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** GET /market/daily-report/latest — 최근 Daily Report */
+router.get('/market/daily-report/latest', async (req, res) => {
+  try {
+    const db = getClient();
+    const { data, error } = await db
+      .from('daily_reports')
+      .select('*')
+      .eq('report_type', 'ebay_market_intelligence')
+      .order('report_date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) return dbError(res, error);
+    res.json({ data });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -187,7 +187,7 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false } = {}) {
     .gte('last_seen', since)
     // product_matches에 already 처리된 건 제외
     .not('ebay_item_id', 'in', `(
-      SELECT comp_item_id FROM product_matches WHERE our_sku IS NOT NULL
+      SELECT competitor_item_id FROM product_matches WHERE our_sku IS NOT NULL
     )`);
 
   // 위 서브쿼리가 지원 안 되면 아래 fallback 사용
@@ -207,10 +207,10 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false } = {}) {
 
     const { data: matchedRows } = await db
       .from('product_matches')
-      .select('comp_item_id')
+      .select('competitor_item_id')
       .not('our_sku', 'is', null);
 
-    const matchedSet = new Set((matchedRows || []).map(r => r.comp_item_id));
+    const matchedSet = new Set((matchedRows || []).map(r => r.competitor_item_id));
     unmatched = (allListings || []).filter(l => !matchedSet.has(l.ebay_item_id));
   }
 
@@ -275,11 +275,11 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false } = {}) {
     const status = confidence >= AUTO_APPROVE_THRESHOLD ? 'approved' : 'pending';
     const matchRow = {
       our_sku:      sku,
-      comp_item_id: listing.ebay_item_id,
+      competitor_item_id: listing.ebay_item_id,
       seller_id:    listing.seller_id,
       confidence:   +confidence.toFixed(4),
-      reason:       reason ?? '',
-      match_method: method ?? 'ai',
+      ai_reason:    reason ?? '',
+      method:       method ?? 'ai',
       status,
       created_at:   new Date().toISOString(),
     };

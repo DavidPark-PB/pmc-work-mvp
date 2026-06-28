@@ -4,11 +4,11 @@
  * Telegram Webhook Route — /api/telegram/webhook
  *
  * 텔레그램 인라인 버튼 클릭을 처리한다.
- * callback_data 포맷: "reprice:approve:SKU:itemId:newPrice"
- *                  또는 "reprice:reject:SKU"
+ * legacy callback_data 포맷: "reprice:approve:SKU:itemId:newPrice"
+ *                         또는 "reprice:reject:SKU"
  *
  * 동작:
- *   approve → eBay 가격 실제 변경 → 결과 메시지로 버튼 교체
+ *   Hermes v1: approve → 가격 변경 비활성화 안내만 표시
  *   reject  → "거부됨" 메시지로 버튼 교체
  */
 
@@ -53,8 +53,7 @@ async function handleCallbackQuery(query) {
 
   if (!data) return;
 
-  // reprice:approve:SKU:itemId:newPrice
-  // reprice:reject:SKU
+  // legacy reprice callbacks — Hermes v1에서는 가격 변경 없이 비활성화 안내만 표시
   if (data.startsWith('reprice:')) {
     const parts = data.split(':');
     const action = parts[1];
@@ -106,6 +105,30 @@ async function handleCallbackQuery(query) {
       const { runRepricingPipeline } = require('../../jobs/repricingPipelineJob');
       await runRepricingPipeline({ dryRun: true });
     }
+    return;
+  }
+
+  // market:detail:SHORT_ID — Hermes v1 alert 상세보기 (읽기 전용)
+  if (data.startsWith('market:detail:')) {
+    await telegram.answerCallbackQuery(callbackId, '상세 조회 중...');
+    const shortId = data.split(':')[2];
+    const { getMarketAlertDetail } = require('../../services/hermesMarketIntelligence');
+    const alert = await getMarketAlertDetail(shortId);
+    if (!alert) {
+      await telegram.editMessage(chatId, messageId, '상세 정보를 찾을 수 없습니다.', []);
+      return;
+    }
+    await telegram.editMessage(chatId, messageId, [
+      '🔎 Hermes Market Alert 상세',
+      alert.sku ? `SKU: ${alert.sku}` : '',
+      alert.competitor_seller_id ? `Seller: ${alert.competitor_seller_id}` : '',
+      alert.competitor_item_id ? `Item: ${alert.competitor_item_id}` : '',
+      `Type: ${alert.alert_type}`,
+      alert.message,
+      alert.recommendation ? `추천: ${alert.recommendation}` : '',
+      '',
+      'Hermes v1: 가격 변경 버튼 없음 / 리포트 전용',
+    ].filter(Boolean).join('\n'), []);
     return;
   }
 
