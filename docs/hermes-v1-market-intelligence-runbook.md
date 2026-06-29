@@ -131,7 +131,19 @@ Telegram 전송 포함:
 node scripts/hermes-market-intelligence.js listing --days=30 --telegram
 ```
 
-### 6. API 수동 실행
+### 6. Phase 4 Listing Data Enrichment 실행
+
+Migration 059 적용 후 실행한다.
+
+```bash
+node scripts/hermes-market-intelligence.js enrich-listings --limit=50
+node scripts/hermes-market-intelligence.js enrich-listings --sku=<SKU>
+node scripts/hermes-market-intelligence.js enrich-listings --missing-only
+```
+
+수집 대상은 내 eBay listing detail이며 Trading API `GetItem` read-only 호출만 사용한다.
+
+### 7. API 수동 실행
 
 ```bash
 # market_alerts 생성
@@ -204,6 +216,7 @@ v1은 read-only 중심이다.
 - Browse API item read
 - Browse API search/read
 - Sell/Trading API active listing read 또는 기존 token 기반 active listing 조회
+- Trading API GetItem read-only listing detail 조회
 
 불필요/금지:
 

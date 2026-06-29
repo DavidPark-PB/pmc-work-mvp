@@ -153,6 +153,26 @@ npm run hermes:market -- listing --days=30 --telegram
 
 상세 계획: [Phase 3 Listing Intelligence Plan](docs/phase-3-listing-intelligence-plan.md)
 
+### Phase 4: Listing Data Enrichment
+
+내 eBay listing detail을 read-only로 수집해 Listing Intelligence의 `needs_data`를 줄입니다.
+Trading API `GetItem`을 사용하며, 내부 enrichment cache에만 저장합니다. 가격/수량/리스팅 수정 API는 호출하지 않습니다.
+
+Migration 059 적용 후 실행:
+
+```bash
+# 최근 listing 50개 detail 보강
+npm run hermes:market -- enrich-listings --limit=50
+
+# 특정 SKU만 보강
+npm run hermes:market -- enrich-listings --sku=<SKU>
+
+# 아직 enrichment cache가 없는 listing만 보강
+npm run hermes:market -- enrich-listings --missing-only
+```
+
+상세 계획: [Phase 4 Data Enrichment Plan](docs/phase-4-data-enrichment-plan.md)
+
 Migration 058 적용 전에도 Daily Report markdown 생성은 fallback으로 동작하지만,
 `market_alerts`/`daily_reports` 영구 저장은 migration 적용 후에만 정상 동작합니다.
 

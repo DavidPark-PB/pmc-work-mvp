@@ -9,6 +9,7 @@
  *   node scripts/hermes-market-intelligence.js daily --hours=24 --telegram
  *   node scripts/hermes-market-intelligence.js product --days=30 --telegram
  *   node scripts/hermes-market-intelligence.js listing --days=30 --telegram
+ *   node scripts/hermes-market-intelligence.js enrich-listings --limit=50 --missing-only
  *   node scripts/hermes-market-intelligence.js sync
  */
 
@@ -17,6 +18,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../config/.env
 const market = require('../src/services/hermesMarketIntelligence');
 const productIntel = require('../src/services/hermesProductIntelligence');
 const listingIntel = require('../src/services/hermesListingIntelligence');
+const listingEnrichment = require('../src/services/hermesListingEnrichment');
 
 function arg(name, fallback = null) {
   const prefix = `--${name}=`;
@@ -29,6 +31,8 @@ async function main() {
   const cmd = process.argv[2] || 'daily';
   const hours = parseInt(arg('hours', '24'), 10) || 24;
   const days = parseInt(arg('days', '30'), 10) || 30;
+  const limit = parseInt(arg('limit', '50'), 10) || 50;
+  const sku = arg('sku', null);
   const sendTelegram = has('telegram');
 
   if (cmd === 'sync') {
@@ -59,6 +63,16 @@ async function main() {
   if (cmd === 'listing') {
     const result = await listingIntel.runListingIntelligence({ days, sendTelegram });
     console.log(result.report.markdown);
+    return;
+  }
+
+  if (cmd === 'enrich-listings') {
+    const result = await listingEnrichment.enrichListings({
+      limit,
+      sku,
+      missingOnly: has('missing-only'),
+    });
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
 
