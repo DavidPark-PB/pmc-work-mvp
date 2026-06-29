@@ -11,6 +11,7 @@
     "detect": "node src/utils/detect-anomalies.js",
     "hermes:market": "node scripts/hermes-market-intelligence.js",
     "hermes:sync": "node scripts/hermes-sync.js",
+    "hermes:context": "node scripts/hermes-context.js",
     "ebay-test": "node src/api/ebayAPI.js",
     "crawl:search": "node scripts/test-crawler.js search",
     "crawl:detail": "node scripts/test-crawler.js detail",
