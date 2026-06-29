@@ -39,6 +39,7 @@ const express = require('express');
 const { getClient } = require('../../db/supabaseClient');
 const { getDashboard, getPriceHistory } = require('../../services/competitorDashboard');
 const marketIntel = require('../../services/hermesMarketIntelligence');
+const productIntel = require('../../services/hermesProductIntelligence');
 
 const router = express.Router();
 
@@ -399,6 +400,56 @@ router.get('/market/daily-report/latest', async (req, res) => {
       .maybeSingle();
     if (error) return dbError(res, error);
     res.json({ data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** POST /product-intelligence/run — SKU 포트폴리오 분석 report 생성/전송 */
+router.post('/product-intelligence/run', async (req, res) => {
+  try {
+    const days = Math.min(365, Math.max(1, parseInt(req.body?.days, 10) || 30));
+    const sendTelegram = req.body?.sendTelegram === true;
+    const result = await productIntel.runProductIntelligence({ days, sendTelegram });
+    res.json({
+      ok: true,
+      reportId: result.report.id || null,
+      summary: result.report.summary,
+      data: result.report.data,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** GET /product-intelligence/latest — 최근 Product Intelligence report */
+router.get('/product-intelligence/latest', async (req, res) => {
+  try {
+    const db = getClient();
+    const { data, error } = await db
+      .from('daily_reports')
+      .select('*')
+      .eq('report_type', 'product_intelligence')
+      .order('report_date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) return dbError(res, error);
+    res.json({ data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** GET /product-intelligence/preview — 저장 없이 Product Intelligence preview */
+router.get('/product-intelligence/preview', async (req, res) => {
+  try {
+    const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 30));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 30));
+    const result = await productIntel.buildProductIntelligenceReport({ days, save: false });
+    res.json({
+      report: result.report,
+      rows: result.rows.slice(0, limit),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -222,6 +222,18 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // Hermes v1 Product Intelligence — 매일 오전 8시 10분 KST, SKU 포트폴리오 리포트 전송
+  // 읽기/분석/리포트 전용. marketplace write API 호출 없음.
+  cron.schedule('10 8 * * *', async () => {
+    try {
+      const { runProductIntelligence } = require('./hermesProductIntelligence');
+      const r = await runProductIntelligence({ days: 30, sendTelegram: true });
+      console.log(`[scheduler] HermesProductIntel: ${r.report?.summary || 'generated'}`);
+    } catch (e) {
+      console.error('[scheduler] HermesProductIntel error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // AI 매처 — 매일 새벽 1시 30분 (크롤러 완료 후 매핑)
   cron.schedule('30 1 * * *', async () => {
     try {

@@ -123,6 +123,21 @@ npm run hermes:market -- daily --hours=24
 npm run hermes:market -- daily --hours=24 --telegram
 ```
 
+### Phase 2: Product Intelligence
+
+SKU 포트폴리오를 최근 판매, eBay 리스팅, 경쟁가 상태 기준으로 분석합니다.
+역시 read-only 리포트이며 가격 변경 API를 호출하지 않습니다.
+
+```bash
+# 최근 30일 기준 Product Intelligence report
+npm run hermes:market -- product --days=30
+
+# Telegram 전송 포함
+npm run hermes:market -- product --days=30 --telegram
+```
+
+상세 계획: [Phase 2 Product Intelligence Plan](docs/phase-2-product-intelligence-plan.md)
+
 Migration 058 적용 전에도 Daily Report markdown 생성은 fallback으로 동작하지만,
 `market_alerts`/`daily_reports` 영구 저장은 migration 적용 후에만 정상 동작합니다.
 
