@@ -10,6 +10,7 @@
     "sync": "node scripts/auto-sync-scheduler.js",
     "detect": "node src/utils/detect-anomalies.js",
     "hermes:market": "node scripts/hermes-market-intelligence.js",
+    "hermes:sync": "node scripts/hermes-sync.js",
     "ebay-test": "node src/api/ebayAPI.js",
     "crawl:search": "node scripts/test-crawler.js search",
     "crawl:detail": "node scripts/test-crawler.js detail",
