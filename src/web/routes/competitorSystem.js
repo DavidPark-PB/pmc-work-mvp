@@ -40,6 +40,7 @@ const { getClient } = require('../../db/supabaseClient');
 const { getDashboard, getPriceHistory } = require('../../services/competitorDashboard');
 const marketIntel = require('../../services/hermesMarketIntelligence');
 const productIntel = require('../../services/hermesProductIntelligence');
+const listingIntel = require('../../services/hermesListingIntelligence');
 
 const router = express.Router();
 
@@ -446,6 +447,56 @@ router.get('/product-intelligence/preview', async (req, res) => {
     const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 30));
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 30));
     const result = await productIntel.buildProductIntelligenceReport({ days, save: false });
+    res.json({
+      report: result.report,
+      rows: result.rows.slice(0, limit),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** POST /listing-intelligence/run — eBay 리스팅 품질 분석 report 생성/전송 */
+router.post('/listing-intelligence/run', async (req, res) => {
+  try {
+    const days = Math.min(365, Math.max(1, parseInt(req.body?.days, 10) || 30));
+    const sendTelegram = req.body?.sendTelegram === true;
+    const result = await listingIntel.runListingIntelligence({ days, sendTelegram });
+    res.json({
+      ok: true,
+      reportId: result.report.id || null,
+      summary: result.report.summary,
+      data: result.report.data,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** GET /listing-intelligence/latest — 최근 Listing Intelligence report */
+router.get('/listing-intelligence/latest', async (req, res) => {
+  try {
+    const db = getClient();
+    const { data, error } = await db
+      .from('daily_reports')
+      .select('*')
+      .eq('report_type', 'listing_intelligence')
+      .order('report_date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) return dbError(res, error);
+    res.json({ data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/** GET /listing-intelligence/preview — 저장 없이 Listing Intelligence preview */
+router.get('/listing-intelligence/preview', async (req, res) => {
+  try {
+    const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 30));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 30));
+    const result = await listingIntel.buildListingIntelligenceReport({ days, save: false });
     res.json({
       report: result.report,
       rows: result.rows.slice(0, limit),

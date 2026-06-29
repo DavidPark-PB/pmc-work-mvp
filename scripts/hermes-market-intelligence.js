@@ -8,6 +8,7 @@
  *   node scripts/hermes-market-intelligence.js alerts --hours=24 --telegram
  *   node scripts/hermes-market-intelligence.js daily --hours=24 --telegram
  *   node scripts/hermes-market-intelligence.js product --days=30 --telegram
+ *   node scripts/hermes-market-intelligence.js listing --days=30 --telegram
  *   node scripts/hermes-market-intelligence.js sync
  */
 
@@ -15,6 +16,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../config/.env
 
 const market = require('../src/services/hermesMarketIntelligence');
 const productIntel = require('../src/services/hermesProductIntelligence');
+const listingIntel = require('../src/services/hermesListingIntelligence');
 
 function arg(name, fallback = null) {
   const prefix = `--${name}=`;
@@ -50,6 +52,12 @@ async function main() {
 
   if (cmd === 'product') {
     const result = await productIntel.runProductIntelligence({ days, sendTelegram });
+    console.log(result.report.markdown);
+    return;
+  }
+
+  if (cmd === 'listing') {
+    const result = await listingIntel.runListingIntelligence({ days, sendTelegram });
     console.log(result.report.markdown);
     return;
   }

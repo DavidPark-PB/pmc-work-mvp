@@ -138,6 +138,21 @@ npm run hermes:market -- product --days=30 --telegram
 
 상세 계획: [Phase 2 Product Intelligence Plan](docs/phase-2-product-intelligence-plan.md)
 
+### Phase 3: Listing Intelligence
+
+Product Intelligence 후보를 기반으로 eBay 리스팅 품질을 점수화하고 개선 우선순위를 리포트합니다.
+역시 read-only 리포트이며 가격 변경/승인 버튼은 없습니다.
+
+```bash
+# 최근 30일 기준 Listing Intelligence report
+npm run hermes:market -- listing --days=30
+
+# Telegram 전송 포함
+npm run hermes:market -- listing --days=30 --telegram
+```
+
+상세 계획: [Phase 3 Listing Intelligence Plan](docs/phase-3-listing-intelligence-plan.md)
+
 Migration 058 적용 전에도 Daily Report markdown 생성은 fallback으로 동작하지만,
 `market_alerts`/`daily_reports` 영구 저장은 migration 적용 후에만 정상 동작합니다.
 

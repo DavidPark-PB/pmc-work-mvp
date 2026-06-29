@@ -234,6 +234,18 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // Hermes v1 Listing Intelligence — 매일 오전 8시 20분 KST, 리스팅 개선 리포트 전송
+  // 읽기/분석/리포트 전용. 가격 변경/승인 버튼 없음.
+  cron.schedule('20 8 * * *', async () => {
+    try {
+      const { runListingIntelligence } = require('./hermesListingIntelligence');
+      const r = await runListingIntelligence({ days: 30, sendTelegram: true });
+      console.log(`[scheduler] HermesListingIntel: ${r.report?.summary || 'generated'}`);
+    } catch (e) {
+      console.error('[scheduler] HermesListingIntel error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // AI 매처 — 매일 새벽 1시 30분 (크롤러 완료 후 매핑)
   cron.schedule('30 1 * * *', async () => {
     try {

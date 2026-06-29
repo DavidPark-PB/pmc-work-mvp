@@ -119,7 +119,19 @@ Telegram 전송 포함:
 node scripts/hermes-market-intelligence.js product --days=30 --telegram
 ```
 
-### 5. API 수동 실행
+### 5. Phase 3 Listing Intelligence 생성
+
+```bash
+node scripts/hermes-market-intelligence.js listing --days=30
+```
+
+Telegram 전송 포함:
+
+```bash
+node scripts/hermes-market-intelligence.js listing --days=30 --telegram
+```
+
+### 6. API 수동 실행
 
 ```bash
 # market_alerts 생성
@@ -143,6 +155,14 @@ body: { "days": 30, "sendTelegram": true }
 # Product Intelligence preview/latest
 GET /api/competitor-system/product-intelligence/preview?days=30&limit=30
 GET /api/competitor-system/product-intelligence/latest
+
+# Listing Intelligence report 생성
+POST /api/competitor-system/listing-intelligence/run
+body: { "days": 30, "sendTelegram": true }
+
+# Listing Intelligence preview/latest
+GET /api/competitor-system/listing-intelligence/preview?days=30&limit=30
+GET /api/competitor-system/listing-intelligence/latest
 ```
 
 ## 스케줄
@@ -155,6 +175,7 @@ server.js에서 `src/services/scheduler.js`의 `start()`가 실행된다.
 - 매일 01:30 KST: aiMatcher 실행
 - 매일 08:00 KST: Hermes v1 Daily Market Report 생성 및 Telegram 전송
 - 매일 08:10 KST: Hermes v1 Product Intelligence Report 생성 및 Telegram 전송
+- 매일 08:20 KST: Hermes v1 Listing Intelligence Report 생성 및 Telegram 전송
 - 기존 repricing pipeline은 v1 safety lock으로 dry-run/report only
 
 ## 환경변수
