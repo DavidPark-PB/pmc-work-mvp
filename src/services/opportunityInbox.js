@@ -73,6 +73,15 @@ const PRIORITIES = new Set(['low', 'normal', 'high', 'urgent']);
 
 const DEMAND_LEVELS = new Set(['low', 'medium', 'high', 'unknown']);
 const HERMES_REVIEW_ACTIONS = new Set(['reviewing', 'approved', 'rejected', 'archived']);
+const HERMES_ACTION_PLAN_TYPES = {
+  cost_data_completion: 'collect_cost_data',
+  dead_stock_review: 'review_dead_stock_options',
+  price_or_margin_review: 'prepare_price_review',
+  listing_quality_review: 'prepare_listing_quality_review',
+  competition_watch: 'verify_competitor_match',
+  urgent_price_attack_review: 'urgent_competition_review',
+  inventory_restock_review: 'prepare_restock_review',
+};
 const TABLE = 'opportunity_inbox';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -417,6 +426,148 @@ async function reviewHermesOpportunity({ id, action, reason = null, reviewed_by 
   });
 }
 
+function actionPlanTemplate({ type, sku, title, signals, recommendations, marketAnalysis }) {
+  const commonForbidden = [
+    'no_database_writes',
+    'no_marketplace_api_calls',
+    'no_price_changes',
+    'no_inventory_changes',
+    'no_listing_changes',
+    'no_automatic_execution',
+    'no_ai_calls',
+  ];
+  const base = {
+    type: HERMES_ACTION_PLAN_TYPES[type],
+    title: title || `Action plan for ${type} (${sku})`,
+    steps: [],
+    required_checks: [
+      'confirm_opportunity_is_still_relevant',
+      'confirm_sku_matches_current_catalog_record',
+      'record_human_decision_before_any_follow_up_action',
+    ],
+    forbidden_actions: commonForbidden,
+    requires_human_approval: true,
+    source: 'rule_based',
+  };
+
+  const signalText = signals.length ? `Review source signals: ${signals.join(', ')}` : 'Review source signals and context.';
+  const recommendationText = recommendations.length ? `Review source recommendations: ${recommendations.join(', ')}` : 'Review source recommendations and context.';
+
+  const templates = {
+    cost_data_completion: {
+      steps: [
+        `Collect missing cost data for SKU ${sku}.`,
+        'Verify purchase cost, shipping cost, duties, platform fees, and handling cost.',
+        'Update the business source of truth only after human confirmation in the appropriate workflow.',
+      ],
+      required_checks: ['confirm_cost_source_reliability', 'confirm_currency_and_tax_assumptions'],
+    },
+    dead_stock_review: {
+      steps: [
+        `Review inventory age and sales history for SKU ${sku}.`,
+        'Evaluate hold, bundle, promotion, liquidation, or delist options.',
+        'Prepare a human decision memo with expected margin and operational impact.',
+      ],
+      required_checks: ['confirm_current_stock_level', 'confirm_recent_sales_window', 'confirm_listing_is_active'],
+    },
+    price_or_margin_review: {
+      steps: [
+        `Prepare price and margin review for SKU ${sku}.`,
+        'Compare current price, cost basis, marketplace fees, competitor pressure, and target margin.',
+        'Draft a price recommendation for human approval only.',
+      ],
+      required_checks: ['confirm_cost_data_exists', 'confirm_current_market_price', 'confirm_minimum_margin_policy'],
+    },
+    listing_quality_review: {
+      steps: [
+        `Review listing quality for SKU ${sku}.`,
+        'Check title, images, attributes, description completeness, category fit, and buyer-facing clarity.',
+        'Prepare listing improvement notes for human approval.',
+      ],
+      required_checks: ['confirm_listing_content_gap', 'confirm_platform_policy_compliance'],
+    },
+    competition_watch: {
+      steps: [
+        `Verify competitor match for SKU ${sku}.`,
+        'Confirm competitor product equivalence, condition, shipping, seller reliability, and total landed price.',
+        'Prepare a competition watch note without changing price automatically.',
+      ],
+      required_checks: ['confirm_competitor_match_quality', 'confirm_total_price_comparison'],
+    },
+    urgent_price_attack_review: {
+      steps: [
+        `Urgently review competitive pressure for SKU ${sku}.`,
+        'Validate whether the price attack is real, comparable, and sustained.',
+        'Escalate recommended response to a human owner before any marketplace action.',
+      ],
+      required_checks: ['confirm_urgent_price_gap', 'confirm_competitor_stock_status', 'confirm_response_risk'],
+    },
+    inventory_restock_review: {
+      steps: [
+        `Prepare restock review for SKU ${sku}.`,
+        'Check sales velocity, supplier availability, lead time, current stock, and cash impact.',
+        'Draft purchase/restock recommendation for human approval.',
+      ],
+      required_checks: ['confirm_current_stock_level', 'confirm_sales_velocity', 'confirm_supplier_availability'],
+    },
+  };
+
+  const selected = templates[type] || {
+    steps: [`Review approved Hermes opportunity for SKU ${sku}.`, signalText, recommendationText],
+    required_checks: [],
+  };
+
+  return {
+    ...base,
+    steps: selected.steps,
+    required_checks: [...base.required_checks, ...selected.required_checks, signalText, recommendationText],
+  };
+}
+
+async function buildHermesOpportunityActionPlan({ id } = {}) {
+  const targetId = intOrNull(id);
+  if (targetId == null) throw new ValidationError('id 필수');
+
+  const supabase = getClient();
+  const { data: row, error } = await supabase
+    .from(TABLE)
+    .select('id, opportunity_type, title, status, metadata')
+    .eq('id', targetId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!row) throw new NotFoundError(`opportunity id=${targetId} not found`);
+  if (row?.metadata?.hermes_generated !== true) {
+    throw new ValidationError('target opportunity is not Hermes-generated');
+  }
+  if (row.status !== 'approved') {
+    throw new ValidationError('target opportunity must be approved');
+  }
+
+  const opportunityType = trimOrNull(row.opportunity_type, 50);
+  const planType = HERMES_ACTION_PLAN_TYPES[opportunityType];
+  if (!planType) throw new ValidationError(`unsupported Hermes opportunity type: ${opportunityType || '(missing)'}`);
+
+  const metadata = row.metadata || {};
+  const sku = trimOrNull(metadata.sku, 100) || '';
+  const signals = Array.isArray(metadata.source_signals) ? metadata.source_signals : [];
+  const recommendations = Array.isArray(metadata.source_recommendations) ? metadata.source_recommendations : [];
+
+  return {
+    opportunity_id: row.id,
+    sku,
+    opportunity_type: opportunityType,
+    status: row.status,
+    action_plan: actionPlanTemplate({
+      type: opportunityType,
+      sku,
+      title: row.title,
+      signals,
+      recommendations,
+      marketAnalysis: metadata.market_analysis || {},
+    }),
+  };
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // CRUD
 // ──────────────────────────────────────────────────────────────────────────
@@ -739,7 +890,7 @@ module.exports = {
   createOpportunity, listOpportunities, getOpportunity, updateOpportunity,
   approveOpportunity, rejectOpportunity,
   writeOpportunityCandidates, candidateDuplicateKey, listHermesOpportunities,
-  reviewHermesOpportunity,
+  reviewHermesOpportunity, buildHermesOpportunityActionPlan,
   // errors
   ValidationError, NotFoundError, ForbiddenError,
 };

@@ -38,6 +38,7 @@ function printUsage() {
     '  npm run hermes:agent -- opportunity-list [--sku=<SKU>] [--status=new] [--opportunity_type=<TYPE>] [--limit=20]',
     '  npm run hermes:agent -- opportunity-review --id=<ID> --action=reviewing [--dry-run|--write]',
     '  npm run hermes:agent -- opportunity-review --id=<ID> --action=rejected --reason="..." [--dry-run|--write]',
+    '  npm run hermes:agent -- opportunity-plan --id=<APPROVED_ID>',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
     'Phase 2E Opportunity Review: default dry-run; updates only opportunity_inbox.status and review metadata with --write.',
@@ -115,6 +116,18 @@ async function main() {
       reviewed_by: arg('reviewed_by', null),
       dryRun,
     });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'opportunity-plan') {
+    const id = intArg('id', null);
+    if (id == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const { buildHermesOpportunityActionPlan } = require('../src/services/opportunityInbox');
+    const result = await buildHermesOpportunityActionPlan({ id });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
