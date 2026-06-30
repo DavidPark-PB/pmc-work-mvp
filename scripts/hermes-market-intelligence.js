@@ -9,6 +9,8 @@
  *   node scripts/hermes-market-intelligence.js daily --hours=24 --telegram
  *   node scripts/hermes-market-intelligence.js product --days=30 --telegram
  *   node scripts/hermes-market-intelligence.js listing --days=30 --telegram
+ *   node scripts/hermes-market-intelligence.js listing-evidence --sku=202551129453
+ *   node scripts/hermes-market-intelligence.js listing-evidence --opportunity-id=123
  *   node scripts/hermes-market-intelligence.js enrich-listings --limit=50 --missing-only
  *   node scripts/hermes-market-intelligence.js sync
  */
@@ -63,6 +65,17 @@ async function main() {
   if (cmd === 'listing') {
     const result = await listingIntel.runListingIntelligence({ days, sendTelegram });
     console.log(result.report.markdown);
+    return;
+  }
+
+  if (cmd === 'listing-evidence') {
+    const opportunityId = arg('opportunity-id', arg('opportunity_id', null));
+    if (!sku && !opportunityId) {
+      console.error('listing-evidence requires --sku=<SKU> or --opportunity-id=<ID>');
+      process.exit(1);
+    }
+    const result = await listingIntel.buildListingQualityEvidence({ sku, opportunityId, days });
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
 

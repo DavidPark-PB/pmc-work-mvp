@@ -11,6 +11,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../config/.
 const { getClient } = require('../db/supabaseClient');
 const telegram = require('./telegramBot');
 const productIntel = require('./hermesProductIntelligence');
+const { buildSkuContext } = require('./skuContextBuilder');
 
 const TZ = 'Asia/Seoul';
 
@@ -344,6 +345,128 @@ function formatListing(row) {
   return `- ${row.sku}: ${escapeMd(truncate(row.title, 70))} — score ${scoreLabel(row)}, ${reasons}`;
 }
 
+function scoreBreakdown(quality) {
+  const scores = quality?.scores || {};
+  return {
+    normalized: quality?.normalized ?? null,
+    total: quality?.total ?? 0,
+    max: quality?.max ?? 0,
+    needs_data: quality?.needsData ?? 0,
+    scores,
+  };
+}
+
+function listingFromContext(context) {
+  const ebay = context?.platforms?.ebay || {};
+  return {
+    sku: context?.sku || '',
+    item_id: ebay.listing_id || '',
+    title: ebay.title || '',
+    price_usd: ebay.price || 0,
+    shipping_usd: 0,
+    sales_count: ebay.sold_quantity || 0,
+    stock: ebay.available_quantity ?? context?.inventory?.total_available ?? 0,
+    status: ebay.status || '',
+    image_url: '',
+  };
+}
+
+function rowFromSkuContext(context, listing = {}) {
+  const ebay = context?.platforms?.ebay || {};
+  const price = num(listing.price_usd ?? ebay.price ?? context?.pricing?.current_price, 0);
+  const shipping = num(listing.shipping_usd, 0);
+  return {
+    sku: context?.sku || listing.sku || '',
+    itemId: listing.item_id || ebay.listing_id || '',
+    title: listing.title || ebay.title || '',
+    price,
+    shipping,
+    priceTotal: price + shipping,
+    stock: int(listing.stock ?? ebay.available_quantity ?? context?.inventory?.total_available, 0),
+    status: listing.status || ebay.status || '',
+    sales30d: int(context?.sales?.units_30d, 0),
+    revenue30d: num(context?.sales?.revenue_30d, 0),
+    orderCount30d: int(context?.sales?.orders_30d, 0),
+    priceStatus: 'unknown',
+    ourTotal: price + shipping,
+    lowestTotal: null,
+    priceDiff: null,
+    competitorCount: Array.isArray(context?.competitors) ? context.competitors.length : null,
+    score: null,
+    signal: { type: 'listing_quality_low', priority: 'normal', reasons: [], recommendation: '리스팅 품질 증거 검토' },
+  };
+}
+
+async function loadHermesListingQualityOpportunity(opportunityId) {
+  const id = int(opportunityId, null);
+  if (id == null) throw new Error('opportunity-id is required');
+  const db = getClient();
+  const { data, error } = await db
+    .from('opportunity_inbox')
+    .select('id, opportunity_type, title, status, metadata, created_at')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error(`opportunity id=${id} not found`);
+  if (data?.metadata?.hermes_generated !== true) throw new Error('target opportunity is not Hermes-generated');
+  if (data.opportunity_type !== 'listing_quality_review') throw new Error('target opportunity is not listing_quality_review');
+  const sku = String(data?.metadata?.sku || '').trim();
+  if (!sku) throw new Error('target opportunity metadata.sku is missing');
+  return { opportunity: data, sku };
+}
+
+async function buildListingQualityEvidence({ sku = null, opportunityId = null, days = 30 } = {}) {
+  let sourceOpportunity = null;
+  let targetSku = String(sku || '').trim();
+  if (opportunityId != null) {
+    const loaded = await loadHermesListingQualityOpportunity(opportunityId);
+    sourceOpportunity = loaded.opportunity;
+    targetSku = loaded.sku;
+  }
+  if (!targetSku) throw new Error('sku or opportunity-id is required');
+
+  const [context, listingBySku, enrichmentByItemId] = await Promise.all([
+    buildSkuContext({ sku: targetSku, readOnly: true }),
+    loadEbayListings(),
+    loadListingEnrichment(),
+  ]);
+
+  const listingSignal = (context.signals || []).find(signal => signal?.type === 'listing_quality_low') || null;
+  const fallbackListing = listingFromContext(context);
+  const listing = listingBySku[targetSku] || listingBySku[fallbackListing.item_id] || fallbackListing;
+  const itemId = listing.item_id || fallbackListing.item_id;
+  const enrichment = enrichmentByItemId[itemId] || { detail: null, images: [], specifics: {}, policy: null };
+  const row = rowFromSkuContext(context, listing);
+  const quality = buildScores(row, listing, enrichment, days);
+  const listingSignalClassification = classifyListing(row, quality);
+  const signalReasons = Array.isArray(listingSignal?.value?.reasons) ? listingSignal.value.reasons : [];
+  const reasons = [...new Set([...signalReasons, ...listingSignalClassification.reasons])];
+
+  return {
+    sku: targetSku,
+    opportunity: sourceOpportunity ? {
+      id: sourceOpportunity.id,
+      type: sourceOpportunity.opportunity_type,
+      status: sourceOpportunity.status,
+      title: sourceOpportunity.title,
+    } : null,
+    listing_quality_signal: listingSignal,
+    score_breakdown: scoreBreakdown(quality),
+    reasons,
+    recommendation: listingSignal
+      ? listingSignalClassification.recommendation
+      : 'No listing_quality_low signal was detected; keep listing under observation.',
+    source: 'signal_engine',
+    read_only: true,
+    raw_refs: {
+      context_source: context.raw_refs?.source || '',
+      connector_skipped: context.raw_refs?.connector_skipped || null,
+      listing_id: itemId || '',
+      enrichment_available: Boolean(enrichment?.detail),
+    },
+  };
+}
+
 async function saveReport(report) {
   const db = getClient();
   try {
@@ -454,6 +577,7 @@ async function runListingIntelligence({ days = 30, sendTelegram = false } = {}) 
 
 module.exports = {
   buildListingIntelligenceReport,
+  buildListingQualityEvidence,
   runListingIntelligence,
   sendListingIntelligenceToTelegram,
 };
