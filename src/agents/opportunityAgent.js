@@ -114,6 +114,22 @@ function sortCandidates(candidates) {
   });
 }
 
+function normalizeOpportunityType(type) {
+  const value = String(type || '').trim();
+  if (!value) return null;
+  const allowed = new Set(Object.values(RECOMMENDATION_TO_OPPORTUNITY));
+  if (!allowed.has(value)) {
+    throw new Error(`unsupported opportunity type filter: ${value}`);
+  }
+  return value;
+}
+
+function filterCandidatesByType(candidates, type = null) {
+  const targetType = normalizeOpportunityType(type);
+  if (!targetType) return candidates;
+  return (candidates || []).filter(candidate => candidate?.type === targetType);
+}
+
 function generateOpportunityCandidates({ context, marketOutput = {}, marketAnalysis = null } = {}, options = {}) {
   const sku = String(context?.sku || '').trim();
   if (!sku) throw new Error('context.sku is required');
@@ -184,13 +200,14 @@ async function runOpportunityAgent({ sku, marketOutput = null } = {}, options = 
     sku: targetSku,
     market_analysis: toMarketAnalysis({}, context),
   };
-  const candidates = generateOpportunityCandidates({
+  const candidates = filterCandidatesByType(generateOpportunityCandidates({
     context,
     marketOutput: resolvedMarketOutput,
-  }, options);
+  }, options), options.type || options.opportunityType);
 
   return {
     sku: targetSku,
+    type_filter: normalizeOpportunityType(options.type || options.opportunityType),
     count: candidates.length,
     candidates,
     context_summary: {
@@ -211,12 +228,14 @@ async function runOpportunityWriteAgent({ sku, dryRun = true } = {}, options = {
     candidates: opportunityResult.candidates,
     dryRun,
   });
+  writeResult.type_filter = opportunityResult.type_filter;
 
   return writeResult;
 }
 
 module.exports = {
   RECOMMENDATION_TO_OPPORTUNITY,
+  filterCandidatesByType,
   generateOpportunityCandidates,
   runOpportunityAgent,
   runOpportunityWriteAgent,

@@ -32,9 +32,9 @@ function printUsage() {
   console.error([
     'Usage:',
     '  npm run hermes:agent -- market --sku=<SKU>',
-    '  npm run hermes:agent -- opportunity --sku=<SKU>',
-    '  npm run hermes:agent -- opportunity-write --sku=<SKU> --dry-run',
-    '  npm run hermes:agent -- opportunity-write --sku=<SKU> --write',
+    '  npm run hermes:agent -- opportunity --sku=<SKU> [--type=<TYPE>]',
+    '  npm run hermes:agent -- opportunity-write --sku=<SKU> [--type=<TYPE>] --dry-run',
+    '  npm run hermes:agent -- opportunity-write --sku=<SKU> [--type=<TYPE>] --write',
     '  npm run hermes:agent -- opportunity-list [--sku=<SKU>] [--status=new] [--opportunity_type=<TYPE>] [--limit=20]',
     '  npm run hermes:agent -- opportunity-review --id=<ID> --action=reviewing [--dry-run|--write]',
     '  npm run hermes:agent -- opportunity-review --id=<ID> --action=rejected --reason="..." [--dry-run|--write]',
@@ -69,7 +69,9 @@ async function main() {
     }
 
     const { runOpportunityAgent } = require('../src/agents/opportunityAgent');
-    const result = await runOpportunityAgent({ sku });
+    const result = await runOpportunityAgent({ sku }, {
+      type: arg('type', arg('opportunity_type', null)),
+    });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
@@ -83,7 +85,9 @@ async function main() {
     const dryRun = hasFlag('dry-run') || !hasFlag('write');
 
     const { runOpportunityWriteAgent } = require('../src/agents/opportunityAgent');
-    const result = await runOpportunityWriteAgent({ sku, dryRun });
+    const result = await runOpportunityWriteAgent({ sku, dryRun }, {
+      type: arg('type', arg('opportunity_type', null)),
+    });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
