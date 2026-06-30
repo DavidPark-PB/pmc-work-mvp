@@ -289,9 +289,9 @@ async function enrichOneListing(listing) {
   };
 }
 
-async function enrichListings({ limit = 50, sku = null, missingOnly = false, delayMs = 400 } = {}) {
+async function enrichListings({ limit = 50, sku = null, missingOnly = false, delayMs = 400, stopOnFailure = false } = {}) {
   const candidates = await getCandidateListings({ limit, sku, missingOnly });
-  const result = { requested: candidates.length, enriched: 0, failed: 0, items: [], errors: [] };
+  const result = { requested: candidates.length, enriched: 0, failed: 0, items: [], errors: [], stopped: false, stop_reason: null };
 
   for (const listing of candidates) {
     try {
@@ -304,6 +304,11 @@ async function enrichListings({ limit = 50, sku = null, missingOnly = false, del
       result.errors.push({ sku: listing.sku, itemId: listing.item_id, error: e.message });
       console.warn(`[ListingEnrichment] FAIL ${listing.sku || '-'} / ${listing.item_id}: ${e.message}`);
       await logFailure(listing, e);
+      if (stopOnFailure) {
+        result.stopped = true;
+        result.stop_reason = e.message;
+        break;
+      }
     }
     if (delayMs > 0) await sleep(delayMs);
   }
@@ -315,5 +320,6 @@ module.exports = {
   enrichListings,
   enrichOneListing,
   fetchListingDetail,
+  getCandidateListings,
   parseGetItemResponse,
 };
