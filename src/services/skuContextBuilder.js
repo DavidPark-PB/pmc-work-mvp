@@ -268,18 +268,24 @@ async function loadDbFallbackForSku(sku) {
   return { products, orders, inventory, competitors, errors };
 }
 
-async function buildSkuContext({ sku }) {
+async function buildSkuContext({ sku, readOnly = false, skipConnector = false } = {}) {
   const targetSku = normalizeSku(sku);
   if (!targetSku) throw new Error('sku is required');
+  const useConnector = !(readOnly || skipConnector);
 
   // First try a small read-only canonical sync snapshot. This keeps Phase 1B wired
   // to the connector contract without requiring full 9k+ listing scans for one SKU.
   let canonical = { products: [], orders: [], inventory: [] };
   let connectorError = null;
-  try {
-    canonical = await ebayConnector.syncAll({ days: 30, limit: 200 });
-  } catch (e) {
-    connectorError = e.message;
+  let connectorSkipped = null;
+  if (useConnector) {
+    try {
+      canonical = await ebayConnector.syncAll({ days: 30, limit: 200 });
+    } catch (e) {
+      connectorError = e.message;
+    }
+  } else {
+    connectorSkipped = readOnly ? 'read_only' : 'skip_connector';
   }
 
   let context = buildSkuContextFromCanonical({
@@ -306,6 +312,7 @@ async function buildSkuContext({ sku }) {
   });
   context.raw_refs.source = 'db_fallback';
   if (connectorError) context.raw_refs.connector_error = connectorError;
+  if (connectorSkipped) context.raw_refs.connector_skipped = connectorSkipped;
   if (fallback.errors.length > 0) context.raw_refs.db_errors = fallback.errors;
   return context;
 }

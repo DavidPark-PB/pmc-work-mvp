@@ -178,7 +178,7 @@ async function runOpportunityAgent({ sku, marketOutput = null } = {}, options = 
   const targetSku = String(sku || '').trim();
   if (!targetSku) throw new Error('sku is required');
 
-  const context = await buildSkuContext({ sku: targetSku });
+  const context = await buildSkuContext({ sku: targetSku, readOnly: true });
   const resolvedMarketOutput = marketOutput || {
     sku: targetSku,
     market_analysis: toMarketAnalysis({}, context),
