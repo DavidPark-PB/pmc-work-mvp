@@ -39,9 +39,12 @@ function printUsage() {
     '  npm run hermes:agent -- opportunity-review --id=<ID> --action=reviewing [--dry-run|--write]',
     '  npm run hermes:agent -- opportunity-review --id=<ID> --action=rejected --reason="..." [--dry-run|--write]',
     '  npm run hermes:agent -- opportunity-plan --id=<APPROVED_ID>',
+    '  npm run hermes:agent -- execution-request --opportunity-id=<APPROVED_ID> [--dry-run|--write]',
+    '  npm run hermes:agent -- execution-list [--status=pending_approval] [--sku=<SKU>] [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
     'Phase 2E Opportunity Review: default dry-run; updates only opportunity_inbox.status and review metadata with --write.',
+    'Phase 5A Execution Request: default dry-run; --write creates only an internal request row, never external execution.',
   ].join('\n'));
 }
 
@@ -132,6 +135,30 @@ async function main() {
     }
     const { buildHermesOpportunityActionPlan } = require('../src/services/opportunityInbox');
     const result = await buildHermesOpportunityActionPlan({ id });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'execution-request') {
+    const opportunityId = intArg('opportunity-id', intArg('id', null));
+    if (opportunityId == null) {
+      printUsage();
+      throw new Error('opportunity-id is required');
+    }
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
+    const { createExecutionRequest } = require('../src/services/hermesExecutionApproval');
+    const result = await createExecutionRequest({ opportunityId, dryRun });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'execution-list') {
+    const { listExecutionRequests } = require('../src/services/hermesExecutionApproval');
+    const result = await listExecutionRequests({
+      status: arg('status', null),
+      sku: arg('sku', null),
+      limit: intArg('limit', 20),
+    });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
