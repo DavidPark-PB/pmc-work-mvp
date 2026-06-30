@@ -12,6 +12,7 @@
     "hermes:market": "node scripts/hermes-market-intelligence.js",
     "hermes:sync": "node scripts/hermes-sync.js",
     "hermes:context": "node scripts/hermes-context.js",
+    "hermes:signals": "node scripts/hermes-signals.js",
     "ebay-test": "node src/api/ebayAPI.js",
     "crawl:search": "node scripts/test-crawler.js search",
     "crawl:detail": "node scripts/test-crawler.js detail",

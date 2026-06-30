@@ -13,6 +13,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../config/.
 
 const { getClient } = require('../db/supabaseClient');
 const ebayConnector = require('../connectors/ebay');
+const { generateSignals } = require('../engines/signalEngine');
 
 function toNumber(value, fallback = 0) {
   const n = Number.parseFloat(value);
@@ -75,36 +76,6 @@ function uniqueBy(list, keyFn) {
     out.push(item);
   }
   return out;
-}
-
-function buildSignals(context) {
-  const signals = [];
-  const ebay = context.platforms.ebay;
-
-  if (!ebay) {
-    signals.push({ type: 'missing_listing', severity: 'warning', message: 'No eBay listing context found for SKU.' });
-  }
-  if (context.inventory.total_available <= 0) {
-    signals.push({ type: 'stock_risk', severity: 'warning', message: 'Available quantity is zero or unknown.' });
-  }
-  if (context.sales.orders_30d === 0) {
-    signals.push({ type: 'no_recent_sales', severity: 'info', message: 'No orders found in the last 30 days.' });
-  }
-  if (context.pricing.needs_cost_data) {
-    signals.push({ type: 'needs_cost_data', severity: 'info', message: 'Cost data is not connected yet; margin cannot be estimated.' });
-  }
-
-  const currentTotal = toNumber(ebay?.price);
-  const cheaperCompetitors = (context.competitors || []).filter(c => toNumber(c.total_price) > 0 && toNumber(c.total_price) < currentTotal);
-  if (currentTotal > 0 && cheaperCompetitors.length > 0) {
-    signals.push({
-      type: 'competitor_lower_price',
-      severity: 'watch',
-      message: `${cheaperCompetitors.length} mapped competitor listing(s) are below current eBay price.`,
-    });
-  }
-
-  return signals;
 }
 
 function buildSkuContextFromCanonical({ sku, products = [], orders = [], inventory = [], competitors = [] }) {
@@ -174,7 +145,7 @@ function buildSkuContextFromCanonical({ sku, products = [], orders = [], invento
     competitor_listing_ids: context.competitors.map(c => c.listing_id).filter(Boolean),
   };
 
-  context.signals = buildSignals(context);
+  context.signals = generateSignals(context);
   return context;
 }
 
