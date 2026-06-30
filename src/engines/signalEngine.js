@@ -24,7 +24,7 @@ function roundMoney(value) {
 
 function roundPct(value) {
   const n = toNumber(value, 0);
-  return Math.round(n * 10000) / 100;
+  return Math.round(n * 100) / 100;
 }
 
 function makeSignal(type, severity, value, detectedAt) {
