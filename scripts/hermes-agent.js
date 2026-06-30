@@ -21,6 +21,13 @@ function hasFlag(name) {
   return process.argv.includes(`--${name}`);
 }
 
+function intArg(name, fallback = null) {
+  const value = arg(name, null);
+  if (value == null) return fallback;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function printUsage() {
   console.error([
     'Usage:',
@@ -28,6 +35,7 @@ function printUsage() {
     '  npm run hermes:agent -- opportunity --sku=<SKU>',
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> --dry-run',
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> --write',
+    '  npm run hermes:agent -- opportunity-list [--sku=<SKU>] [--status=new] [--opportunity_type=<TYPE>] [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
     'Phase 2C Opportunity Writer: default dry-run; writes only with --write; no marketplace writes, price changes, or AI calls.',
@@ -73,6 +81,18 @@ async function main() {
 
     const { runOpportunityWriteAgent } = require('../src/agents/opportunityAgent');
     const result = await runOpportunityWriteAgent({ sku, dryRun });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'opportunity-list') {
+    const { listHermesOpportunities } = require('../src/services/opportunityInbox');
+    const result = await listHermesOpportunities({
+      sku: arg('sku', null),
+      status: arg('status', null),
+      opportunity_type: arg('opportunity_type', arg('type', null)),
+      limit: intArg('limit', 50),
+    });
     console.log(JSON.stringify(result, null, 2));
     return;
   }

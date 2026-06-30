@@ -277,6 +277,53 @@ async function writeOpportunityCandidates({ sku, candidates = [], dryRun = true 
   return result;
 }
 
+function shapeHermesOpportunity(row) {
+  const metadata = row?.metadata || {};
+  return {
+    id: row?.id || 0,
+    sku: metadata.sku || '',
+    type: row?.opportunity_type || metadata.candidate_type || '',
+    title: row?.title || '',
+    priority: row?.priority || '',
+    status: row?.status || '',
+    source_signals: Array.isArray(metadata.source_signals) ? metadata.source_signals : [],
+    source_recommendations: Array.isArray(metadata.source_recommendations) ? metadata.source_recommendations : [],
+    market_analysis: metadata.market_analysis || {},
+    created_at: row?.created_at || '',
+  };
+}
+
+async function listHermesOpportunities({ sku = null, status = null, opportunity_type = null, limit = 50 } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, intOrNull(limit) || 50));
+  const supabase = getClient();
+  let q = supabase
+    .from(TABLE)
+    .select('id, opportunity_type, title, priority, status, metadata, created_at')
+    .eq('metadata->>hermes_generated', 'true')
+    .order('id', { ascending: false })
+    .limit(safeLimit);
+
+  const targetSku = trimOrNull(sku, 100);
+  if (targetSku) q = q.eq('metadata->>sku', targetSku);
+
+  const targetStatus = trimOrNull(status, 30);
+  if (targetStatus) {
+    if (!STATUSES.has(targetStatus)) throw new ValidationError(`status 부적합: ${targetStatus}`);
+    q = q.eq('status', targetStatus);
+  }
+
+  const targetType = trimOrNull(opportunity_type, 50);
+  if (targetType) {
+    if (!OPPORTUNITY_TYPES.has(targetType)) throw new ValidationError(`opportunity_type 부적합: ${targetType}`);
+    q = q.eq('opportunity_type', targetType);
+  }
+
+  const { data, error } = await q;
+  if (error) throw error;
+  const rows = (data || []).map(shapeHermesOpportunity);
+  return { count: rows.length, data: rows };
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // CRUD
 // ──────────────────────────────────────────────────────────────────────────
@@ -598,7 +645,7 @@ module.exports = {
   // CRUD
   createOpportunity, listOpportunities, getOpportunity, updateOpportunity,
   approveOpportunity, rejectOpportunity,
-  writeOpportunityCandidates, candidateDuplicateKey,
+  writeOpportunityCandidates, candidateDuplicateKey, listHermesOpportunities,
   // errors
   ValidationError, NotFoundError, ForbiddenError,
 };
