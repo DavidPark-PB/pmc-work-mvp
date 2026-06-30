@@ -69,10 +69,16 @@ async function tableCount(table) {
   return { ok: true, count };
 }
 
-async function getStatus() {
+async function getStatus({ scanLimit = 5000 } = {}) {
   const db = getClient();
   const counts = {};
   for (const table of CACHE_TABLES) counts[table] = await tableCount(table);
+
+  const missingEstimate = await listingEnrichment.discoverCandidateListings({
+    limit: 100,
+    missingOnly: true,
+    scanLimit,
+  });
 
   const newest = await db
     .from('listing_details')
@@ -99,6 +105,10 @@ async function getStatus() {
     read_only: true,
     generated_at: new Date().toISOString(),
     counts,
+    missing_enrichment_candidate_estimate: {
+      ...missingEstimate.metadata,
+      note: 'Read-only bounded estimate from ebay_products using --scan-limit; values are not an unbounded total.',
+    },
     newest_last_enriched_at: newest.error ? { error: newest.error.message } : (newest.data?.[0] || null),
     oldest_last_enriched_at: oldest.error ? { error: oldest.error.message } : (oldest.data?.[0] || null),
     recent_errors: errors.error ? { error: errors.error.message } : (errors.data || []),
@@ -114,6 +124,7 @@ async function getStatus() {
 
 async function runDaily() {
   const limit = intArg('limit', 100);
+  const scanLimit = intArg('scan-limit', 5000);
   const execute = has('execute');
   const dryRun = !execute || has('dry-run');
   const missingOnly = has('all') ? false : true;
@@ -130,14 +141,14 @@ async function runDaily() {
   }
 
   if (dryRun) {
-    const candidates = await listingEnrichment.getCandidateListings({ limit, sku, missingOnly });
+    const discovery = await listingEnrichment.discoverCandidateListings({ limit, sku, missingOnly, scanLimit });
+    const candidates = discovery.candidates;
     return {
       mode: 'daily',
       dry_run: true,
       executed: false,
       requested_limit: limit,
-      missing_only: missingOnly,
-      candidate_count: candidates.length,
+      ...discovery.metadata,
       sample: candidates.slice(0, 10).map(r => ({ sku: r.sku, item_id: r.item_id, title: r.title })),
       note: 'Dry-run only: no GetItem calls and no DB writes were performed.',
       safety: {
@@ -155,15 +166,17 @@ async function runDaily() {
     limit,
     sku,
     missingOnly,
+    scanLimit,
     stopOnFailure: true,
   });
   const failureTypes = [...new Set((result.errors || []).map(e => classifyFailure(e.error)))];
+  const candidateMetadata = result.candidate_metadata || {};
   return {
     mode: 'daily',
     dry_run: false,
     executed: true,
     requested_limit: limit,
-    missing_only: missingOnly,
+    ...candidateMetadata,
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     requested: result.requested,
@@ -215,7 +228,7 @@ async function validate() {
 
 async function main() {
   const command = process.argv[2] || 'status';
-  if (command === 'status') return printJson(await getStatus());
+  if (command === 'status') return printJson(await getStatus({ scanLimit: intArg('scan-limit', 5000) }));
   if (command === 'daily') return printJson(await runDaily());
   if (command === 'validate') return printJson(await validate());
   console.error(`Unknown command: ${command}`);

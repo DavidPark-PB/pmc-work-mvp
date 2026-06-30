@@ -131,38 +131,131 @@ function parseGetItemResponse(xml, fallback = {}) {
   };
 }
 
-async function getCandidateListings({ limit = 50, sku = null, missingOnly = false } = {}) {
-  const db = getClient();
-  let q = db
-    .from('ebay_products')
-    .select('sku,item_id,title,updated_at')
-    .not('item_id', 'is', null)
-    .neq('item_id', '')
-    .order('updated_at', { ascending: false })
-    .limit(Math.min(5000, Math.max(1, limit * 5)));
-  if (sku) q = q.eq('sku', sku);
-  const { data, error } = await q;
-  if (error) throw error;
-  let rows = data || [];
+function normalizeLimit(v, fallback, max = 5000) {
+  const n = int(v, fallback);
+  return Math.max(1, Math.min(max, n || fallback));
+}
 
-  if (missingOnly && rows.length > 0) {
+function candidateMetadata({ scannedCount, candidateCount, returnedCount, scanLimit, exhaustedScan, missingOnly }) {
+  return {
+    scanned_count: scannedCount,
+    candidate_count: candidateCount,
+    returned_count: returnedCount,
+    scan_limit: scanLimit,
+    exhausted_scan: exhaustedScan,
+    missing_only: Boolean(missingOnly),
+  };
+}
+
+async function loadEnrichedItemIds(itemIds) {
+  if (!itemIds || itemIds.length === 0) return new Set();
+  const db = getClient();
+  const { data, error } = await db
+    .from('listing_details')
+    .select('item_id,last_enriched_at')
+    .eq('platform', 'ebay')
+    .eq('listing_type', 'our')
+    .in('item_id', itemIds);
+  if (error) throw error;
+  return new Set((data || []).map(d => d.item_id));
+}
+
+async function discoverCandidateListings({ limit = 50, sku = null, missingOnly = false, scanLimit = 5000 } = {}) {
+  const db = getClient();
+  const requestedLimit = normalizeLimit(limit, 50);
+  const effectiveScanLimit = normalizeLimit(scanLimit, 5000, 10000);
+
+  if (!missingOnly) {
+    let q = db
+      .from('ebay_products')
+      .select('sku,item_id,title,updated_at')
+      .not('item_id', 'is', null)
+      .neq('item_id', '')
+      .order('updated_at', { ascending: false })
+      .limit(requestedLimit);
+    if (sku) q = q.eq('sku', sku);
+    const { data, error } = await q;
+    if (error) throw error;
+    const candidates = data || [];
+    return {
+      candidates,
+      metadata: candidateMetadata({
+        scannedCount: candidates.length,
+        candidateCount: candidates.length,
+        returnedCount: candidates.length,
+        scanLimit: requestedLimit,
+        exhaustedScan: candidates.length < requestedLimit,
+        missingOnly,
+      }),
+    };
+  }
+
+  const candidates = [];
+  let scannedCount = 0;
+  let exhaustedScan = false;
+  const batchSize = Math.min(1000, Math.max(100, requestedLimit * 5));
+
+  while (scannedCount < effectiveScanLimit && candidates.length < requestedLimit) {
+    const remainingScan = effectiveScanLimit - scannedCount;
+    const size = Math.min(batchSize, remainingScan);
+    let q = db
+      .from('ebay_products')
+      .select('sku,item_id,title,updated_at')
+      .not('item_id', 'is', null)
+      .neq('item_id', '')
+      .order('updated_at', { ascending: false })
+      .range(scannedCount, scannedCount + size - 1);
+    if (sku) q = q.eq('sku', sku);
+
+    const { data, error } = await q;
+    if (error) throw error;
+    const rows = data || [];
+    scannedCount += rows.length;
+
+    if (rows.length === 0) {
+      exhaustedScan = true;
+      break;
+    }
+
     try {
       const itemIds = rows.map(r => r.item_id).filter(Boolean);
-      const { data: details, error: detailErr } = await db
-        .from('listing_details')
-        .select('item_id,last_enriched_at')
-        .eq('platform', 'ebay')
-        .eq('listing_type', 'our')
-        .in('item_id', itemIds);
-      if (detailErr) throw detailErr;
-      const seen = new Set((details || []).map(d => d.item_id));
-      rows = rows.filter(r => !seen.has(r.item_id));
+      const seen = await loadEnrichedItemIds(itemIds);
+      for (const row of rows) {
+        if (!seen.has(row.item_id)) candidates.push(row);
+        if (candidates.length >= requestedLimit) break;
+      }
     } catch (e) {
-      console.warn('[ListingEnrichment] missing-only 필터 실패 — 전체 후보에서 진행:', e.message);
+      console.warn('[ListingEnrichment] missing-only 필터 실패 — 현재 배치 후보에서 진행:', e.message);
+      for (const row of rows) {
+        candidates.push(row);
+        if (candidates.length >= requestedLimit) break;
+      }
+    }
+
+    if (rows.length < size) {
+      exhaustedScan = true;
+      break;
     }
   }
 
-  return rows.slice(0, Math.max(1, limit));
+  if (scannedCount >= effectiveScanLimit && candidates.length < requestedLimit) exhaustedScan = true;
+
+  return {
+    candidates: candidates.slice(0, requestedLimit),
+    metadata: candidateMetadata({
+      scannedCount,
+      candidateCount: candidates.length,
+      returnedCount: Math.min(candidates.length, requestedLimit),
+      scanLimit: effectiveScanLimit,
+      exhaustedScan,
+      missingOnly,
+    }),
+  };
+}
+
+async function getCandidateListings(options = {}) {
+  const { candidates } = await discoverCandidateListings(options);
+  return candidates;
 }
 
 async function fetchListingDetail(itemId, listing = {}) {
@@ -289,9 +382,19 @@ async function enrichOneListing(listing) {
   };
 }
 
-async function enrichListings({ limit = 50, sku = null, missingOnly = false, delayMs = 400, stopOnFailure = false } = {}) {
-  const candidates = await getCandidateListings({ limit, sku, missingOnly });
-  const result = { requested: candidates.length, enriched: 0, failed: 0, items: [], errors: [], stopped: false, stop_reason: null };
+async function enrichListings({ limit = 50, sku = null, missingOnly = false, scanLimit = 5000, delayMs = 400, stopOnFailure = false } = {}) {
+  const discovery = await discoverCandidateListings({ limit, sku, missingOnly, scanLimit });
+  const candidates = discovery.candidates;
+  const result = {
+    requested: candidates.length,
+    enriched: 0,
+    failed: 0,
+    items: [],
+    errors: [],
+    stopped: false,
+    stop_reason: null,
+    candidate_metadata: discovery.metadata,
+  };
 
   for (const listing of candidates) {
     try {
@@ -320,6 +423,7 @@ module.exports = {
   enrichListings,
   enrichOneListing,
   fetchListingDetail,
+  discoverCandidateListings,
   getCandidateListings,
   parseGetItemResponse,
 };
