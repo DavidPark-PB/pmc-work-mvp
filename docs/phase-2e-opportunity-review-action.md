@@ -88,6 +88,8 @@ Explicit dry-run:
 npm run hermes:agent -- opportunity-review --id=<ID> --action=reviewing --dry-run
 ```
 
+If both `--write` and `--dry-run` are passed, `--dry-run` wins and no DB update is performed.
+
 Write reviewing:
 
 ```bash

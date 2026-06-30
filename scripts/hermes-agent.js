@@ -79,7 +79,7 @@ async function main() {
       printUsage();
       throw new Error('SKU is required');
     }
-    const dryRun = !hasFlag('write');
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
 
     const { runOpportunityWriteAgent } = require('../src/agents/opportunityAgent');
     const result = await runOpportunityWriteAgent({ sku, dryRun });
@@ -106,7 +106,7 @@ async function main() {
       printUsage();
       throw new Error('id and action are required');
     }
-    const dryRun = !hasFlag('write');
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
     const { reviewHermesOpportunity } = require('../src/services/opportunityInbox');
     const result = await reviewHermesOpportunity({
       id,
