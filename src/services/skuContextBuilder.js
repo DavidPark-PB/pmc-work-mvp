@@ -14,6 +14,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../config/.
 const { getClient } = require('../db/supabaseClient');
 const ebayConnector = require('../connectors/ebay');
 const { generateSignals } = require('../engines/signalEngine');
+const { generateRecommendations } = require('../engines/recommendationEngine');
 
 function toNumber(value, fallback = 0) {
   const n = Number.parseFloat(value);
@@ -55,6 +56,7 @@ function emptyContext(sku) {
     },
     competitors: [],
     signals: [],
+    recommendations: [],
     raw_refs: {},
   };
 }
@@ -146,6 +148,7 @@ function buildSkuContextFromCanonical({ sku, products = [], orders = [], invento
   };
 
   context.signals = generateSignals(context);
+  context.recommendations = generateRecommendations(context);
   return context;
 }
 
