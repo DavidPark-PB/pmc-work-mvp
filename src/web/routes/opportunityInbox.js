@@ -22,6 +22,7 @@
 const express = require('express');
 const { requireAuth } = require('../../middleware/auth');
 const opp = require('../../services/opportunityInbox');
+const { buildListingQualityEvidence } = require('../../services/hermesListingIntelligence');
 
 const router = express.Router();
 
@@ -78,6 +79,19 @@ router.get('/hermes', async (req, res) => {
     res.json(data);
   } catch (e) {
     logErr('hermes-list', req, e);
+    res.status(statusForError(e)).json({ error: e.message, code: e.code || 'unknown' });
+  }
+});
+
+// GET /api/opportunity-inbox/hermes/:id/listing-evidence — read-only listing_quality_review evidence
+router.get('/hermes/:id/listing-evidence', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const data = await buildListingQualityEvidence({ opportunityId: id });
+    res.json({ data });
+  } catch (e) {
+    logErr('hermes-listing-evidence', req, e);
     res.status(statusForError(e)).json({ error: e.message, code: e.code || 'unknown' });
   }
 });

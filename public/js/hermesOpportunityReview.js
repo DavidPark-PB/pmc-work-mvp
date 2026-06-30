@@ -8,6 +8,7 @@
   let user = null;
   let cache = [];
   let selectedId = null;
+  const evidenceCache = new Map();
 
   const STATUSES = ['new', 'reviewing', 'approved', 'rejected', 'archived'];
   const TYPES = [
@@ -52,6 +53,61 @@
 
   function prettyJson(value) {
     return esc(JSON.stringify(value || {}, null, 2));
+  }
+
+  function scoreRows(evidence) {
+    const scores = evidence?.score_breakdown?.scores || {};
+    const names = Object.keys(scores);
+    if (names.length === 0) return '<div style="color:#666;font-size:11px;">score breakdown 없음</div>';
+    return `
+      <div style="overflow:auto;max-height:260px;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;color:#cfd8dc;">
+          <thead><tr style="color:#90a4ae;text-align:left;"><th style="padding:4px;border-bottom:1px solid #263238;">score</th><th style="padding:4px;border-bottom:1px solid #263238;">points</th><th style="padding:4px;border-bottom:1px solid #263238;">status</th><th style="padding:4px;border-bottom:1px solid #263238;">reason</th></tr></thead>
+          <tbody>${names.map(name => {
+            const s = scores[name] || {};
+            const points = s.points == null ? '-' : `${s.points}/${s.max}`;
+            return `<tr><td style="padding:4px;border-bottom:1px solid #1f2933;font-family:monospace;color:#bbdefb;">${esc(name)}</td><td style="padding:4px;border-bottom:1px solid #1f2933;">${esc(points)}</td><td style="padding:4px;border-bottom:1px solid #1f2933;">${esc(s.status || '-')}</td><td style="padding:4px;border-bottom:1px solid #1f2933;">${esc(s.reason || '')}</td></tr>`;
+          }).join('')}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderListingEvidence(evidence) {
+    const signal = evidence?.listing_quality_signal || null;
+    const reasons = Array.isArray(evidence?.reasons) ? evidence.reasons : [];
+    return `
+      <div style="margin-top:10px;background:#101b22;border:1px solid #24505f;border-radius:8px;padding:10px;">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px;">
+          <div style="color:#80deea;font-size:12px;font-weight:700;">Listing Quality Evidence</div>
+          <span style="color:#90a4ae;font-size:10px;font-family:monospace;">source: ${esc(evidence?.source || 'signal_engine')}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <div style="background:#0f0f23;border-radius:6px;padding:8px;"><div style="color:#90a4ae;font-size:10px;margin-bottom:4px;">normalized score</div><div style="color:#fff;font-weight:700;">${esc(evidence?.score_breakdown?.normalized ?? 'needs_data')}</div></div>
+          <div style="background:#0f0f23;border-radius:6px;padding:8px;"><div style="color:#90a4ae;font-size:10px;margin-bottom:4px;">signal</div><div style="color:${signal ? '#ffcc80' : '#78909c'};font-weight:700;">${esc(signal?.type || 'none')}</div></div>
+        </div>
+        <div style="background:#0f0f23;border-radius:6px;padding:8px;margin-bottom:8px;">
+          <div style="color:#90a4ae;font-size:10px;margin-bottom:4px;font-weight:700;">listing_quality_signal</div>
+          <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:0;max-height:180px;overflow:auto;">${prettyJson(signal)}</pre>
+        </div>
+        <div style="background:#0f0f23;border-radius:6px;padding:8px;margin-bottom:8px;">
+          <div style="color:#90a4ae;font-size:10px;margin-bottom:4px;font-weight:700;">score breakdown</div>
+          ${scoreRows(evidence)}
+        </div>
+        <div style="background:#0f0f23;border-radius:6px;padding:8px;margin-bottom:8px;">
+          <div style="color:#90a4ae;font-size:10px;margin-bottom:4px;font-weight:700;">reasons</div>
+          ${chips(reasons)}
+        </div>
+        <div style="background:#0f0f23;border-radius:6px;padding:8px;margin-bottom:8px;">
+          <div style="color:#90a4ae;font-size:10px;margin-bottom:4px;font-weight:700;">recommendation</div>
+          <div style="color:#e0f2f1;font-size:12px;line-height:1.45;">${esc(evidence?.recommendation || '-')}</div>
+        </div>
+        <div style="background:#0f0f23;border-radius:6px;padding:8px;">
+          <div style="color:#90a4ae;font-size:10px;margin-bottom:4px;font-weight:700;">raw_refs</div>
+          <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:0;max-height:160px;overflow:auto;">${prettyJson(evidence?.raw_refs)}</pre>
+        </div>
+      </div>
+    `;
   }
 
   async function init() {
@@ -187,6 +243,8 @@
     const detail = document.getElementById('hor-detail');
     if (!detail) return;
     const review = r.hermes_review || null;
+    const hasListingEvidence = r.type === 'listing_quality_review';
+    const cachedEvidence = evidenceCache.get(r.id);
     detail.innerHTML = `
       <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;flex-wrap:wrap;margin-bottom:12px;">
         <div>
@@ -213,6 +271,18 @@
         <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.4;margin:0;max-height:220px;overflow:auto;">${prettyJson(r.market_analysis)}</pre>
       </div>
       ${review ? `<div style="background:#13251a;border:1px solid #1b5e20;border-radius:6px;padding:10px;margin-bottom:10px;"><div style="color:#69f0ae;font-size:11px;font-weight:700;margin-bottom:5px;">last Hermes review</div><pre style="white-space:pre-wrap;color:#c8e6c9;font-size:11px;margin:0;">${prettyJson(review)}</pre></div>` : ''}
+      ${hasListingEvidence ? `
+        <div style="background:#0f0f23;border:1px solid #24505f;border-radius:6px;padding:10px;margin-bottom:10px;">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
+            <div>
+              <div style="color:#80deea;font-size:11px;font-weight:700;margin-bottom:4px;">Listing Evidence</div>
+              <div style="color:#90a4ae;font-size:11px;">Read-only evidence for listing_quality_review. Does not create action plans or modify listing data.</div>
+            </div>
+            <button id="hor-load-listing-evidence" type="button" style="padding:7px 12px;background:#006064;border:none;border-radius:5px;color:#fff;font-size:12px;font-weight:700;cursor:pointer;">${cachedEvidence ? 'Reload evidence' : 'Load evidence'}</button>
+          </div>
+          <div id="hor-listing-evidence-output">${cachedEvidence ? renderListingEvidence(cachedEvidence) : ''}</div>
+        </div>
+      ` : ''}
 
       <div style="background:#261f12;border:1px solid #5d3a00;border-radius:6px;padding:10px;color:#ffcc80;font-size:12px;line-height:1.5;margin-bottom:12px;">
         Safety: Approved = Opportunity Inbox human review only. This UI never executes marketplace writes or price/inventory/listing changes.
@@ -226,6 +296,23 @@
     detail.querySelectorAll('[data-hor-action]').forEach(btn => {
       btn.addEventListener('click', () => reviewAction(r.id, btn.dataset.horAction));
     });
+    const evidenceBtn = document.getElementById('hor-load-listing-evidence');
+    if (evidenceBtn) evidenceBtn.addEventListener('click', () => loadListingEvidence(r.id));
+  }
+
+  async function loadListingEvidence(id) {
+    const output = document.getElementById('hor-listing-evidence-output');
+    if (output) output.innerHTML = '<div style="color:#aaa;font-size:12px;margin-top:10px;">Loading read-only listing evidence...</div>';
+    try {
+      const res = await fetch(`/api/opportunity-inbox/hermes/${id}/listing-evidence`, { credentials: 'include' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || `listing evidence failed (${res.status})`);
+      const evidence = json.data || json;
+      evidenceCache.set(id, evidence);
+      if (output) output.innerHTML = renderListingEvidence(evidence);
+    } catch (e) {
+      if (output) output.innerHTML = `<div style="color:#ef9a9a;font-size:12px;margin-top:10px;">Listing evidence load failed: ${esc(e.message)}</div>`;
+    }
   }
 
   async function reviewAction(id, action) {
