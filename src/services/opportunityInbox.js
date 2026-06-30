@@ -21,6 +21,7 @@
  */
 'use strict';
 
+const crypto = require('crypto');
 const { getClient } = require('../db/supabaseClient');
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -37,6 +38,14 @@ const OPPORTUNITY_TYPES = new Set([
   'alibaba_candidate',
   'proxy_shipping_issue',
   'price_attack_candidate',
+  // Hermes AI Business OS generated opportunity candidate types.
+  'inventory_restock_review',
+  'dead_stock_review',
+  'listing_quality_review',
+  'price_or_margin_review',
+  'cost_data_completion',
+  'competition_watch',
+  'urgent_price_attack_review',
 ]);
 
 const SOURCE_TYPES = new Set([
@@ -139,6 +148,133 @@ async function ensureLinkedExists(supabase, table, id, label) {
 // row 를 일관 형태로 반환
 function shape(row) {
   return row;
+}
+
+function normalizeCandidateSourceList(values) {
+  return [...new Set((values || []).map(v => String(v || '').trim()).filter(Boolean))].sort();
+}
+
+function candidateDuplicateKey(candidate) {
+  const payload = {
+    sku: String(candidate?.sku || '').trim(),
+    type: String(candidate?.type || '').trim(),
+    source_signals: normalizeCandidateSourceList(candidate?.source_signals),
+    source_recommendations: normalizeCandidateSourceList(candidate?.source_recommendations),
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+function mapCandidatePriority(priority) {
+  const p = String(priority || '').toLowerCase();
+  if (p === 'critical') return 'urgent';
+  if (p === 'high') return 'high';
+  if (p === 'low') return 'low';
+  return 'normal';
+}
+
+function candidateToOpportunityRow(candidate, duplicateKey) {
+  const sku = trimOrNull(candidate?.sku, 100);
+  const opportunity_type = trimOrNull(candidate?.type, 50);
+  if (!sku) throw new ValidationError('candidate.sku 필수');
+  if (!opportunity_type) throw new ValidationError('candidate.type 필수');
+  if (!OPPORTUNITY_TYPES.has(opportunity_type)) {
+    throw new ValidationError(`candidate.type 부적합: ${opportunity_type}`);
+  }
+
+  const sourceSignals = normalizeCandidateSourceList(candidate?.source_signals);
+  const sourceRecommendations = normalizeCandidateSourceList(candidate?.source_recommendations);
+
+  return {
+    opportunity_type,
+    source_type: 'competitor',
+    input_channel: 'api',
+    title: trimOrNull(candidate?.title, 255) || `${opportunity_type} for SKU ${sku}`,
+    priority: mapCandidatePriority(candidate?.priority),
+    status: 'new',
+    submitted_by: null,
+    notes: trimOrNull(candidate?.reason),
+    metadata: validateMetadata({
+      hermes_generated: true,
+      hermes_phase: '2C',
+      hermes_candidate_key: duplicateKey,
+      sku,
+      candidate_type: opportunity_type,
+      source_signals: sourceSignals,
+      source_recommendations: sourceRecommendations,
+      market_analysis: candidate?.market_analysis || {},
+      requires_human_review: true,
+      candidate_created_at: candidate?.created_at || null,
+    }),
+  };
+}
+
+async function findOpportunityDuplicate(supabase, duplicateKey) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('id, opportunity_type, title, priority, status, metadata, created_at')
+    .eq('metadata->>hermes_candidate_key', duplicateKey)
+    .limit(1);
+  if (error) throw error;
+  return Array.isArray(data) && data.length > 0 ? shape(data[0]) : null;
+}
+
+async function writeOpportunityCandidates({ sku, candidates = [], dryRun = true } = {}) {
+  const targetSku = trimOrNull(sku, 100);
+  if (!targetSku) throw new ValidationError('sku 필수');
+
+  const result = {
+    sku: targetSku,
+    dry_run: dryRun !== false,
+    created: [],
+    skipped_duplicates: [],
+    errors: [],
+  };
+
+  const supabase = getClient();
+  for (const candidate of candidates || []) {
+    try {
+      if (String(candidate?.sku || '').trim() !== targetSku) {
+        throw new ValidationError(`candidate SKU mismatch: ${candidate?.sku || '(missing)'}`);
+      }
+      const duplicateKey = candidateDuplicateKey(candidate);
+      const duplicate = await findOpportunityDuplicate(supabase, duplicateKey);
+      if (duplicate) {
+        result.skipped_duplicates.push({
+          candidate,
+          existing: duplicate,
+          duplicate_key: duplicateKey,
+        });
+        continue;
+      }
+
+      const row = candidateToOpportunityRow(candidate, duplicateKey);
+      if (result.dry_run) {
+        result.created.push({
+          dry_run: true,
+          candidate,
+          row,
+          duplicate_key: duplicateKey,
+        });
+        continue;
+      }
+
+      const { data, error } = await supabase.from(TABLE).insert(row).select().single();
+      if (error) throw error;
+      result.created.push({
+        candidate,
+        row: shape(data),
+        duplicate_key: duplicateKey,
+      });
+    } catch (e) {
+      result.errors.push({
+        candidate,
+        error: e.message || String(e),
+        code: e.code || 'unknown',
+      });
+    }
+  }
+
+  return result;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -462,6 +598,7 @@ module.exports = {
   // CRUD
   createOpportunity, listOpportunities, getOpportunity, updateOpportunity,
   approveOpportunity, rejectOpportunity,
+  writeOpportunityCandidates, candidateDuplicateKey,
   // errors
   ValidationError, NotFoundError, ForbiddenError,
 };

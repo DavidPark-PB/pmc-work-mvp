@@ -11,6 +11,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '../../config/.env') });
 
 const { buildSkuContext } = require('../services/skuContextBuilder');
+const { writeOpportunityCandidates } = require('../services/opportunityInbox');
 const { extractMarketFacts } = require('./marketAgent');
 
 const PRIORITY_ORDER = {
@@ -200,9 +201,24 @@ async function runOpportunityAgent({ sku, marketOutput = null } = {}, options = 
   };
 }
 
+async function runOpportunityWriteAgent({ sku, dryRun = true } = {}, options = {}) {
+  const targetSku = String(sku || '').trim();
+  if (!targetSku) throw new Error('sku is required');
+
+  const opportunityResult = await runOpportunityAgent({ sku: targetSku }, options);
+  const writeResult = await writeOpportunityCandidates({
+    sku: targetSku,
+    candidates: opportunityResult.candidates,
+    dryRun,
+  });
+
+  return writeResult;
+}
+
 module.exports = {
   RECOMMENDATION_TO_OPPORTUNITY,
   generateOpportunityCandidates,
   runOpportunityAgent,
+  runOpportunityWriteAgent,
   toMarketAnalysis,
 };

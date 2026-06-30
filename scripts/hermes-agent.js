@@ -17,14 +17,20 @@ function arg(name, fallback = null) {
   return found ? found.slice(prefix.length) : fallback;
 }
 
+function hasFlag(name) {
+  return process.argv.includes(`--${name}`);
+}
+
 function printUsage() {
   console.error([
     'Usage:',
     '  npm run hermes:agent -- market --sku=<SKU>',
     '  npm run hermes:agent -- opportunity --sku=<SKU>',
+    '  npm run hermes:agent -- opportunity-write --sku=<SKU> --dry-run',
+    '  npm run hermes:agent -- opportunity-write --sku=<SKU> --write',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
-    'Phase 2B Opportunity Agent: no DB writes, no marketplace writes, no price changes, and no AI calls.',
+    'Phase 2C Opportunity Writer: default dry-run; writes only with --write; no marketplace writes, price changes, or AI calls.',
   ].join('\n'));
 }
 
@@ -53,6 +59,20 @@ async function main() {
 
     const { runOpportunityAgent } = require('../src/agents/opportunityAgent');
     const result = await runOpportunityAgent({ sku });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'opportunity-write') {
+    const sku = arg('sku', null);
+    if (!sku) {
+      printUsage();
+      throw new Error('SKU is required');
+    }
+    const dryRun = !hasFlag('write');
+
+    const { runOpportunityWriteAgent } = require('../src/agents/opportunityAgent');
+    const result = await runOpportunityWriteAgent({ sku, dryRun });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
