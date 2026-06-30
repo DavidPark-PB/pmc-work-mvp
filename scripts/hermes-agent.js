@@ -36,9 +36,11 @@ function printUsage() {
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> --dry-run',
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> --write',
     '  npm run hermes:agent -- opportunity-list [--sku=<SKU>] [--status=new] [--opportunity_type=<TYPE>] [--limit=20]',
+    '  npm run hermes:agent -- opportunity-review --id=<ID> --action=reviewing [--dry-run|--write]',
+    '  npm run hermes:agent -- opportunity-review --id=<ID> --action=rejected --reason="..." [--dry-run|--write]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
-    'Phase 2C Opportunity Writer: default dry-run; writes only with --write; no marketplace writes, price changes, or AI calls.',
+    'Phase 2E Opportunity Review: default dry-run; updates only opportunity_inbox.status and review metadata with --write.',
   ].join('\n'));
 }
 
@@ -92,6 +94,26 @@ async function main() {
       status: arg('status', null),
       opportunity_type: arg('opportunity_type', arg('type', null)),
       limit: intArg('limit', 50),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'opportunity-review') {
+    const id = intArg('id', null);
+    const action = arg('action', null);
+    if (id == null || !action) {
+      printUsage();
+      throw new Error('id and action are required');
+    }
+    const dryRun = !hasFlag('write');
+    const { reviewHermesOpportunity } = require('../src/services/opportunityInbox');
+    const result = await reviewHermesOpportunity({
+      id,
+      action,
+      reason: arg('reason', null),
+      reviewed_by: arg('reviewed_by', null),
+      dryRun,
     });
     console.log(JSON.stringify(result, null, 2));
     return;

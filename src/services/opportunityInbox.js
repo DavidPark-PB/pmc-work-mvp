@@ -72,7 +72,7 @@ const STATUSES = new Set([
 const PRIORITIES = new Set(['low', 'normal', 'high', 'urgent']);
 
 const DEMAND_LEVELS = new Set(['low', 'medium', 'high', 'unknown']);
-
+const HERMES_REVIEW_ACTIONS = new Set(['reviewing', 'approved', 'rejected', 'archived']);
 const TABLE = 'opportunity_inbox';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -322,6 +322,98 @@ async function listHermesOpportunities({ sku = null, status = null, opportunity_
   if (error) throw error;
   const rows = (data || []).map(shapeHermesOpportunity);
   return { count: rows.length, data: rows };
+}
+
+function reviewOutput({ dryRun, id, action, before, after, error = null }) {
+  return {
+    dry_run: dryRun !== false,
+    id,
+    action,
+    before: before || {},
+    after: after || {},
+    error,
+  };
+}
+
+function makeHermesReviewMetadata(existingMetadata, { action, reason, reviewed_by, reviewed_at }) {
+  return validateMetadata({
+    ...(existingMetadata || {}),
+    hermes_review: {
+      action,
+      reason: reason || null,
+      reviewed_by: reviewed_by || null,
+      reviewed_at,
+    },
+  });
+}
+
+async function reviewHermesOpportunity({ id, action, reason = null, reviewed_by = null, dryRun = true } = {}) {
+  const targetId = intOrNull(id);
+  if (targetId == null) throw new ValidationError('id 필수');
+
+  const nextAction = trimOrNull(action, 30);
+  if (!nextAction || !HERMES_REVIEW_ACTIONS.has(nextAction)) {
+    throw new ValidationError(`action 부적합: ${nextAction || '(missing)'}`);
+  }
+
+  const reviewReason = trimOrNull(reason, 1000);
+  if (nextAction === 'rejected' && !reviewReason) {
+    throw new ValidationError('rejected action requires reason');
+  }
+
+  const supabase = getClient();
+  const { data: existing, error: selectError } = await supabase
+    .from(TABLE)
+    .select('id, opportunity_type, title, priority, status, metadata, created_at, updated_at')
+    .eq('id', targetId)
+    .maybeSingle();
+  if (selectError) throw selectError;
+  if (!existing) throw new NotFoundError(`opportunity id=${targetId} not found`);
+  if (existing?.metadata?.hermes_generated !== true) {
+    throw new ValidationError('target opportunity is not Hermes-generated');
+  }
+
+  const reviewedAt = new Date().toISOString();
+  const nextMetadata = makeHermesReviewMetadata(existing.metadata, {
+    action: nextAction,
+    reason: reviewReason,
+    reviewed_by,
+    reviewed_at: reviewedAt,
+  });
+  const afterPreview = {
+    ...existing,
+    status: nextAction,
+    metadata: nextMetadata,
+  };
+
+  if (dryRun !== false) {
+    return reviewOutput({
+      dryRun: true,
+      id: targetId,
+      action: nextAction,
+      before: shape(existing),
+      after: afterPreview,
+    });
+  }
+
+  const { data: updated, error: updateError } = await supabase
+    .from(TABLE)
+    .update({
+      status: nextAction,
+      metadata: nextMetadata,
+    })
+    .eq('id', targetId)
+    .select('id, opportunity_type, title, priority, status, metadata, created_at, updated_at')
+    .single();
+  if (updateError) throw updateError;
+
+  return reviewOutput({
+    dryRun: false,
+    id: targetId,
+    action: nextAction,
+    before: shape(existing),
+    after: shape(updated),
+  });
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -646,6 +738,7 @@ module.exports = {
   createOpportunity, listOpportunities, getOpportunity, updateOpportunity,
   approveOpportunity, rejectOpportunity,
   writeOpportunityCandidates, candidateDuplicateKey, listHermesOpportunities,
+  reviewHermesOpportunity,
   // errors
   ValidationError, NotFoundError, ForbiddenError,
 };
