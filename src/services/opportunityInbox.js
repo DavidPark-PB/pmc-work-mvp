@@ -289,6 +289,7 @@ function shapeHermesOpportunity(row) {
     source_signals: Array.isArray(metadata.source_signals) ? metadata.source_signals : [],
     source_recommendations: Array.isArray(metadata.source_recommendations) ? metadata.source_recommendations : [],
     market_analysis: metadata.market_analysis || {},
+    hermes_review: metadata.hermes_review || null,
     created_at: row?.created_at || '',
   };
 }
@@ -341,7 +342,7 @@ function makeHermesReviewMetadata(existingMetadata, { action, reason, reviewed_b
     hermes_review: {
       action,
       reason: reason || null,
-      reviewed_by: reviewed_by || null,
+      reviewed_by: reviewed_by == null ? null : String(reviewed_by),
       reviewed_at,
     },
   });

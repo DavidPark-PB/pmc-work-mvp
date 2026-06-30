@@ -119,6 +119,10 @@ function navigateTo(page) {
     case 'opportunity-inbox':
       if (window.pmcOpportunityInbox) pmcOpportunityInbox.init();
       break;
+    // ── Hermes Phase 2F — Opportunity Review UI ──
+    case 'hermes-opportunity-review':
+      if (window.pmcHermesOpportunityReview) pmcHermesOpportunityReview.init();
+      break;
   }
 }
 

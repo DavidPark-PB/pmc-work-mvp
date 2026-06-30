@@ -66,6 +66,41 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/opportunity-inbox/hermes — Hermes-generated review rows only
+router.get('/hermes', async (req, res) => {
+  try {
+    const data = await opp.listHermesOpportunities({
+      sku: req.query?.sku,
+      status: req.query?.status,
+      opportunity_type: req.query?.opportunity_type || req.query?.type,
+      limit: req.query?.limit || 100,
+    });
+    res.json(data);
+  } catch (e) {
+    logErr('hermes-list', req, e);
+    res.status(statusForError(e)).json({ error: e.message, code: e.code || 'unknown' });
+  }
+});
+
+// POST /api/opportunity-inbox/hermes/:id/review — review-only Hermes status action
+router.post('/hermes/:id/review', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const data = await opp.reviewHermesOpportunity({
+      id,
+      action: req.body?.action,
+      reason: req.body?.reason,
+      reviewed_by: req.user?.id,
+      dryRun: req.body?.dry_run === true,
+    });
+    res.json(data);
+  } catch (e) {
+    logErr('hermes-review', req, e);
+    res.status(statusForError(e)).json({ error: e.message, code: e.code || 'unknown' });
+  }
+});
+
 // GET /api/opportunity-inbox/:id
 router.get('/:id', async (req, res) => {
   try {
