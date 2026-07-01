@@ -48,6 +48,7 @@ function printUsage() {
     '  npm run hermes:agent -- execution-summary [--limit=50]',
     '  npm run hermes:agent -- execution-dry-run --id=<REQUEST_ID> --actor=<USER> [--dry-run|--write]',
     '  npm run hermes:agent -- execution-readiness --id=<REQUEST_ID>',
+    '  npm run hermes:agent -- execution-final-checklist --id=<REQUEST_ID>',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -57,6 +58,7 @@ function printUsage() {
     'Phase 5E Execution Visibility: detail/summary commands are read-only and never approve, reject, cancel, or execute.',
     'Phase 5H Execution Dry-Run: default dry-run; --write stores only internal dry_run_result/status/event and never executes externally.',
     'Phase 5I Execution Readiness: read-only; final approval readiness is not execution approval and never executes externally.',
+    'Phase 5J Final Approval Checklist: read-only; final approval writes and execution remain unimplemented.',
   ].join('\n'));
 }
 
@@ -241,6 +243,18 @@ async function main() {
     }
     const { buildExecutionReadiness } = require('../src/services/hermesExecutionApproval');
     const result = await buildExecutionReadiness({ requestId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'execution-final-checklist') {
+    const requestId = intArg('id', intArg('request-id', null));
+    if (requestId == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const { buildFinalApprovalChecklist } = require('../src/services/hermesExecutionApproval');
+    const result = await buildFinalApprovalChecklist({ requestId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }

@@ -771,6 +771,93 @@ async function buildExecutionReadiness({ requestId } = {}) {
   return readinessFromRequest(request);
 }
 
+function finalApprovalChecklistFromRequest(request) {
+  const metadata = request?.metadata || {};
+  const dryRun = request?.dry_run_result || null;
+  const readiness = readinessFromRequest(request);
+  const requestedAction = request?.requested_action || {};
+  const actionPlan = requestedAction.action_plan || {};
+  const blockingConditions = [];
+  const riskNotes = [];
+
+  if (!dryRun) blockingConditions.push('missing dry_run_result');
+  if (request?.status !== 'dry_run_ready') blockingConditions.push('status not dry_run_ready');
+  if (request?.executed_at != null) blockingConditions.push('executed_at not null');
+  if (request?.execution_result != null) blockingConditions.push('execution_result not null');
+  if (metadata.external_action_executed === true) blockingConditions.push('external_action_executed true');
+  if (metadata.marketplace_execution_approved === true) blockingConditions.push('marketplace_execution_approved true');
+  if (readiness.ready_for_final_approval !== true) blockingConditions.push('readiness not eligible for future final approval review');
+
+  if (readiness.ready_for_final_approval === true) {
+    riskNotes.push('request is eligible for future final approval review, but final approval mutation is not implemented');
+  }
+  riskNotes.push(`risk level is ${request?.risk_level || 'unknown'}`);
+  riskNotes.push(`execution type is ${request?.execution_type || 'unknown'}`);
+  riskNotes.push('final approval checklist is informational only in Phase 5J');
+  riskNotes.push('marketplace execution remains disabled');
+
+  const plannedSteps = Array.isArray(dryRun?.planned_steps) ? dryRun.planned_steps : [];
+  const requiredChecks = Array.isArray(actionPlan.required_checks) ? actionPlan.required_checks : [];
+  const forbiddenActions = [
+    ...new Set([
+      ...(Array.isArray(requestedAction.forbidden_actions) ? requestedAction.forbidden_actions : []),
+      ...(Array.isArray(actionPlan.forbidden_actions) ? actionPlan.forbidden_actions : []),
+      ...(Array.isArray(dryRun?.blocked_operations) ? dryRun.blocked_operations : []),
+    ]),
+  ];
+
+  return {
+    request_id: request?.id || null,
+    sku: request?.sku || null,
+    status: request?.status || null,
+    execution_type: request?.execution_type || null,
+    risk_level: request?.risk_level || null,
+    final_approval_available: false,
+    execution_available: false,
+    policy_version: 'phase-5j-read-only',
+    operator_checklist: [
+      'review readiness summary and blockers',
+      'review dry-run planned steps',
+      'review requested action and source opportunity context',
+      'confirm no marketplace/API action has already occurred',
+      'confirm final approval write flow is not implemented in this phase',
+      'confirm execution remains disabled',
+      ...plannedSteps.map(step => `review planned step: ${step}`),
+    ],
+    required_confirmations: [
+      ...readiness.required_confirmations,
+      'confirm final approval checklist is not final approval',
+      'confirm final approval mutation is not implemented',
+      'confirm execution is unavailable in Phase 5J',
+      ...requiredChecks,
+    ],
+    blocking_conditions: blockingConditions,
+    risk_notes: riskNotes,
+    requested_action_summary: {
+      source: requestedAction.source || null,
+      action_plan_type: actionPlan.type || null,
+      title: actionPlan.title || null,
+      planned_step_count: plannedSteps.length,
+      required_check_count: requiredChecks.length,
+      forbidden_actions: forbiddenActions,
+    },
+    readiness_summary: readiness,
+    safety: {
+      read_only: true,
+      final_approval_write_implemented: false,
+      execution_implemented: false,
+      external_action_executed: metadata.external_action_executed === true,
+      marketplace_execution_approved: metadata.marketplace_execution_approved === true,
+    },
+    source: 'rule_based',
+  };
+}
+
+async function buildFinalApprovalChecklist({ requestId } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  return finalApprovalChecklistFromRequest(request);
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -815,6 +902,7 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     events,
     safety_summary: requestSafetySummary(request),
     readiness_summary: readinessFromRequest(request),
+    final_approval_checklist: finalApprovalChecklistFromRequest(request),
     read_only: true,
     execution_performed: false,
   };
@@ -916,6 +1004,7 @@ module.exports = {
   summarizeExecutionRequests,
   generateExecutionDryRun,
   buildExecutionReadiness,
+  buildFinalApprovalChecklist,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,
