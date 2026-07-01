@@ -181,6 +181,8 @@ app.use('/api/safety-runs', require('./src/web/routes/safetyRuns'));
 app.use('/api/ops-briefing', require('./src/web/routes/operationsBriefing'));
 // PR R0 — Opportunity Inbox (직원/admin 후보 등록 + 사장님 검토)
 app.use('/api/opportunity-inbox', require('./src/web/routes/opportunityInbox'));
+// Hermes Phase 5F — Execution request read-only visibility API
+app.use('/api/hermes-execution', require('./src/web/routes/hermesExecutionRequests'));
 // PR R1 — AI Draft Generator (opportunity → AI 가 platform 별 title/description 생성)
 app.use('/api/opportunity-drafts', require('./src/web/routes/opportunityDrafts'));
 
