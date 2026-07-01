@@ -702,6 +702,75 @@ function requestSafetySummary(request) {
   };
 }
 
+function readinessFromRequest(request) {
+  const metadata = request?.metadata || {};
+  const dryRun = request?.dry_run_result || null;
+  const blockers = [];
+  const warnings = [
+    'ready_for_execution is always false in Phase 5I',
+    'final approval flow is not implemented in this phase',
+    'marketplace execution remains disabled',
+  ];
+
+  if (!request) blockers.push('request_missing');
+  if (request?.status !== 'dry_run_ready') blockers.push('status_not_dry_run_ready');
+  if (!dryRun) blockers.push('dry_run_result_missing');
+  if (dryRun?.execution_performed !== false) blockers.push('dry_run_execution_performed_not_false');
+  if (dryRun?.marketplace_api_calls !== false) blockers.push('dry_run_marketplace_api_calls_not_false');
+  if (request?.executed_at != null) blockers.push('executed_at_present');
+  if (request?.execution_result != null) blockers.push('execution_result_present');
+  if (metadata.external_action_executed === true) blockers.push('external_action_executed_true');
+  if (metadata.marketplace_execution_approved === true) blockers.push('marketplace_execution_approved_true');
+  if (request?.requires_approval !== true) blockers.push('requires_approval_not_true');
+
+  const readyForFinalApproval = blockers.length === 0;
+  const plannedSteps = Array.isArray(dryRun?.planned_steps) ? dryRun.planned_steps : [];
+  const blockedOperations = Array.isArray(dryRun?.blocked_operations) ? dryRun.blocked_operations : [];
+
+  return {
+    request_id: request?.id || null,
+    sku: request?.sku || null,
+    status: request?.status || null,
+    execution_type: request?.execution_type || null,
+    risk_level: request?.risk_level || null,
+    ready_for_final_approval: readyForFinalApproval,
+    ready_for_execution: false,
+    blockers,
+    warnings,
+    required_confirmations: [
+      'confirm dry-run result is current',
+      'confirm requested action still matches operator intent',
+      'confirm no external marketplace action has been executed',
+      'confirm marketplace execution is still disabled in Phase 5I',
+      'confirm a future separate final approval flow is required before any execution',
+    ],
+    dry_run_summary: {
+      present: !!dryRun,
+      generated_at: dryRun?.generated_at || null,
+      execution_performed: dryRun?.execution_performed === true,
+      marketplace_api_calls: dryRun?.marketplace_api_calls === true,
+      external_action_executed: dryRun?.external_action_executed === true,
+      marketplace_execution_approved: dryRun?.marketplace_execution_approved === true,
+      planned_step_count: plannedSteps.length,
+      blocked_operation_count: blockedOperations.length,
+      required_final_approval: dryRun?.required_final_approval === true,
+    },
+    safety: {
+      execution_performed: false,
+      external_action_executed: metadata.external_action_executed === true,
+      marketplace_execution_approved: metadata.marketplace_execution_approved === true,
+      executed_at: request?.executed_at || null,
+      execution_result: request?.execution_result || null,
+    },
+    source: 'rule_based',
+  };
+}
+
+async function buildExecutionReadiness({ requestId } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  return readinessFromRequest(request);
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -745,6 +814,7 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     opportunity_snapshot: opportunity,
     events,
     safety_summary: requestSafetySummary(request),
+    readiness_summary: readinessFromRequest(request),
     read_only: true,
     execution_performed: false,
   };
@@ -845,6 +915,7 @@ module.exports = {
   getExecutionRequestDetail,
   summarizeExecutionRequests,
   generateExecutionDryRun,
+  buildExecutionReadiness,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,

@@ -139,7 +139,8 @@
 
       <div style="background:#261f12;border:1px solid #5d3a00;border-radius:12px;padding:14px;color:#ffcc80;font-size:13px;line-height:1.55;margin-bottom:14px;">
         <strong>Safety boundary:</strong>
-        Approved execution request is not marketplace execution. No external action has been executed. Execution is disabled in this phase.
+        Approved execution request is not marketplace execution. No external action has been executed. Execution is disabled in this phase.<br>
+        Readiness is not execution approval. Ready for final approval is not marketplace execution.
       </div>
 
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
@@ -295,6 +296,38 @@
     `;
   }
 
+  function renderReadiness(readiness) {
+    if (!readiness) {
+      return '<div style="color:#666;font-size:12px;padding:12px;text-align:center;">readiness 없음</div>';
+    }
+    const list = (title, rows, color) => `
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;margin-top:8px;">
+        <div style="color:${color || '#90a4ae'};font-size:10px;margin-bottom:4px;font-weight:700;">${esc(title)}</div>
+        ${Array.isArray(rows) && rows.length ? `<ul style="margin:0;padding-left:18px;color:#cfd8dc;font-size:12px;line-height:1.45;">${rows.map(row => `<li>${esc(row)}</li>`).join('')}</ul>` : '<div style="color:#666;font-size:12px;">none</div>'}
+      </div>
+    `;
+    return `
+      <div style="background:#261f12;border:1px solid #5d3a00;border-radius:6px;padding:10px;color:#ffcc80;font-size:12px;line-height:1.5;margin-bottom:8px;">
+        Readiness is not execution approval.<br>
+        Ready for final approval is not marketplace execution.<br>
+        Execution remains disabled in this phase.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;">
+        <div>ready_for_final_approval<br>${boolPill(readiness.ready_for_final_approval === true)}</div>
+        <div>ready_for_execution<br>${boolPill(readiness.ready_for_execution === true)}</div>
+        <div>source<br><code style="color:#fff;">${esc(readiness.source || '-')}</code></div>
+        <div>status<br><code style="color:#fff;">${esc(readiness.status || '-')}</code></div>
+      </div>
+      ${list('blockers', readiness.blockers || [], '#ef9a9a')}
+      ${list('warnings', readiness.warnings || [], '#ffcc80')}
+      ${list('required confirmations', readiness.required_confirmations || [], '#90caf9')}
+      <details style="margin-top:8px;">
+        <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Raw readiness JSON</summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(readiness)}</pre>
+      </details>
+    `;
+  }
+
   function renderDetail() {
     const el = document.getElementById('her-detail');
     if (!el || !selectedDetail) return;
@@ -314,12 +347,19 @@
       <div style="background:#261f12;border:1px solid #5d3a00;border-radius:6px;padding:10px;color:#ffcc80;font-size:12px;line-height:1.5;margin-bottom:10px;">
         Approved execution request is not marketplace execution.<br>
         No external action has been executed.<br>
-        Execution is disabled in this phase.
+        Readiness is not execution approval.<br>
+        Ready for final approval is not marketplace execution.<br>
+        Execution remains disabled in this phase.
       </div>
 
       <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Safety summary</div>
         ${safetyRows(safety)}
+      </div>
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Readiness summary</div>
+        ${renderReadiness(selectedDetail.readiness_summary)}
       </div>
 
       ${opp ? `
