@@ -505,6 +505,43 @@
     `).join('');
   }
 
+
+  function renderEbayListingQualityDryRun(dryRun) {
+    if (!dryRun) {
+      return '<div style="color:#666;font-size:12px;padding:12px;text-align:center;">eBay listing quality dry-run 없음</div>';
+    }
+    const list = (title, rows, color) => `
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;margin-top:8px;">
+        <div style="color:${color || '#90a4ae'};font-size:10px;margin-bottom:4px;font-weight:700;">${esc(title)}</div>
+        ${Array.isArray(rows) && rows.length ? `<ul style="margin:0;padding-left:18px;color:#cfd8dc;font-size:12px;line-height:1.45;">${rows.map(row => `<li>${esc(row)}</li>`).join('')}</ul>` : '<div style="color:#666;font-size:12px;">none</div>'}
+      </div>
+    `;
+    return `
+      <div style="background:#261f12;border:1px solid #5d3a00;border-radius:6px;padding:10px;color:#ffcc80;font-size:12px;line-height:1.5;margin-bottom:8px;">
+        eBay listing quality dry-run is not listing revision.<br>
+        No eBay API call is made.<br>
+        Price and inventory fields are blocked.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;">
+        <div>marketplace<br><code style="color:#fff;">${esc(dryRun.marketplace || '-')}</code></div>
+        <div>operation<br><code style="color:#fff;">${esc(dryRun.operation || '-')}</code></div>
+        <div>dry_run<br>${boolPill(dryRun.dry_run === true)}</div>
+        <div>allowed<br>${boolPill(dryRun.allowed === true)}</div>
+        <div>marketplace_api_calls<br>${boolPill(dryRun.marketplace_api_calls === true)}</div>
+        <div>execution_performed<br>${boolPill(dryRun.execution_performed === true)}</div>
+        <div>target sku<br><code style="color:#fff;">${esc(dryRun.target?.sku || 'null')}</code></div>
+        <div>target item_id<br><code style="color:#fff;">${esc(dryRun.target?.item_id || 'null')}</code></div>
+      </div>
+      ${list('blockers', dryRun.blockers || [], '#ef9a9a')}
+      ${list('warnings', dryRun.warnings || [], '#ffcc80')}
+      ${list('blocked fields', dryRun.blocked_fields || [], '#ef9a9a')}
+      <details style="margin-top:8px;">
+        <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Raw eBay listing quality dry-run JSON</summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(dryRun)}</pre>
+      </details>
+    `;
+  }
+
   function renderDetail() {
     const el = document.getElementById('her-detail');
     if (!el || !selectedDetail) return;
@@ -569,6 +606,12 @@
       <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Marketplace preflight records</div>
         ${renderMarketplacePreflightRecords(selectedDetail.marketplace_preflight_records)}
+      </div>
+
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">eBay listing quality dry-run</div>
+        ${renderEbayListingQualityDryRun(selectedDetail.ebay_listing_quality_dry_run)}
       </div>
 
       ${opp ? `

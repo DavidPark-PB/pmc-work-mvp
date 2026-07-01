@@ -1678,6 +1678,120 @@ async function recordMarketplacePreflight({ requestId, marketplace = 'ebay', ope
   };
 }
 
+
+function buildListingQualityPlannedMutation() {
+  return {
+    title: null,
+    description: null,
+    item_specifics: {},
+  };
+}
+
+function hasUnsafeListingQualityDryRunFields(plannedMutation) {
+  return objectHasForbiddenMarketplaceMutationFields(plannedMutation);
+}
+
+async function buildEbayListingQualityDryRun({ requestId } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const [marketplacePreflight, preflightRecords, internalRecords, events, opportunity] = await Promise.all([
+    buildMarketplacePreflight({ requestId: request.id, marketplace: 'ebay', operation: 'listing_quality_update' }),
+    listMarketplacePreflightRecords({ requestId: request.id, limit: 50 }),
+    listInternalExecutionRecords({ requestId: request.id, limit: 50 }),
+    listExecutionEvents({ requestId: request.id, limit: 200 }),
+    getOpportunitySnapshot(request.opportunity_id),
+  ]);
+
+  const metadata = request.metadata || {};
+  const blockers = [];
+  const warnings = [
+    'eBay listing quality dry-run is not listing revision',
+    'No eBay API call is made',
+    'Price and inventory fields are blocked',
+    'cached/internal data only',
+  ];
+  const passedPreflightRecords = (preflightRecords.data || []).filter(row => (
+    row.marketplace === 'ebay' &&
+    row.operation === 'listing_quality_update' &&
+    row.status === 'preflight_passed'
+  ));
+  const internalTaskRecorded = (internalRecords.data || []).some(r => r.status === 'internal_task_recorded');
+  const marketplaceExecutionEvents = (events.data || []).filter(ev => [
+    'request_executed',
+    'execution_started',
+    'execution_completed',
+    'execution_failed',
+    'marketplace_execution_started',
+    'marketplace_execution_completed',
+    'marketplace_execution_failed',
+  ].includes(ev.event_type));
+
+  if (!passedPreflightRecords.length) blockers.push('marketplace_preflight_passed_missing');
+  if (marketplacePreflight.marketplace !== 'ebay') blockers.push('marketplace_not_ebay');
+  if (marketplacePreflight.operation !== 'listing_quality_update') blockers.push('operation_not_listing_quality_update');
+  if (request.execution_type !== 'manual_review_task' && request.execution_type !== 'listing_quality_update') blockers.push('execution_type_not_safe_for_listing_quality_dry_run');
+  if (request.final_approval_status !== 'approved') blockers.push('final_approval_status_not_approved');
+  if (!internalTaskRecorded) blockers.push('internal_task_recorded_missing');
+  if (request.executed_at != null) blockers.push('executed_at_present');
+  if (request.execution_result != null) blockers.push('execution_result_present');
+  if (metadata.external_action_executed === true) blockers.push('external_action_executed_true');
+  if (metadata.marketplace_execution_approved === true) blockers.push('marketplace_execution_approved_true');
+  if (marketplaceExecutionEvents.length) blockers.push('previous_marketplace_execution_lifecycle_event_exists');
+  if (marketplacePreflight.allowed !== true) blockers.push('marketplace_preflight_not_currently_allowed');
+
+  const beforeSnapshot = {
+    ...(marketplacePreflight.listing_snapshot || {}),
+    opportunity_snapshot: opportunity || null,
+    source: 'cached_internal_data_only',
+    live_marketplace_state_fetched: false,
+    ebay_api_call_made: false,
+  };
+  const plannedMutation = buildListingQualityPlannedMutation({ request, marketplacePreflight });
+  const blockedFields = hasUnsafeListingQualityDryRunFields(plannedMutation);
+  if (blockedFields.length) blockers.push('blocked_fields_present_in_planned_mutation');
+
+  const hashes = {
+    dry_run_result_hash: request.dry_run_result ? sha256Json(request.dry_run_result) : null,
+    final_approval_dry_run_hash: request.final_approval_dry_run_hash || null,
+    preflight_record_hash: passedPreflightRecords[0] ? sha256Json(passedPreflightRecords[0]) : null,
+    before_snapshot_hash: sha256Json(beforeSnapshot),
+    planned_mutation_hash: sha256Json(plannedMutation),
+    policy_version: 'phase-9-ebay-listing-quality-dry-run-v1',
+  };
+
+  return {
+    request_id: request.id,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    dry_run: true,
+    allowed: blockers.length === 0,
+    marketplace_api_calls: false,
+    execution_performed: false,
+    target: {
+      sku: request.sku || beforeSnapshot.sku || null,
+      item_id: beforeSnapshot.listing_id || null,
+    },
+    before_snapshot: beforeSnapshot,
+    planned_mutation: plannedMutation,
+    blocked_fields: blockedFields,
+    blockers,
+    warnings,
+    hashes,
+    safety: {
+      marketplace_api_calls: false,
+      execution_performed: false,
+      ebay_api_calls: false,
+      external_api_calls: false,
+      price_changes: false,
+      inventory_changes: false,
+      listing_revisions: false,
+      listing_end_create_relist: false,
+      external_action_executed: metadata.external_action_executed === true,
+      marketplace_execution_approved: metadata.marketplace_execution_approved === true,
+    },
+    source: 'rule_based_cached_data',
+  };
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -1711,13 +1825,14 @@ async function getOpportunitySnapshot(opportunityId) {
 
 async function getExecutionRequestDetail({ requestId } = {}) {
   const request = await getExecutionRequest({ requestId });
-  const [opportunity, events, executorPreflight, internalExecutionRecords, marketplacePreflight, marketplacePreflightRecords] = await Promise.all([
+  const [opportunity, events, executorPreflight, internalExecutionRecords, marketplacePreflight, marketplacePreflightRecords, ebayListingQualityDryRun] = await Promise.all([
     getOpportunitySnapshot(request.opportunity_id),
     listExecutionEvents({ requestId: request.id, limit: 100 }),
     buildExecutorPreflight({ requestId: request.id }),
     listInternalExecutionRecords({ requestId: request.id, limit: 50 }),
     buildMarketplacePreflight({ requestId: request.id, marketplace: 'ebay', operation: 'listing_quality_update' }),
     listMarketplacePreflightRecords({ requestId: request.id, limit: 50 }),
+    buildEbayListingQualityDryRun({ requestId: request.id }),
   ]);
 
   return {
@@ -1732,6 +1847,7 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     internal_execution_records: internalExecutionRecords,
     marketplace_preflight: marketplacePreflight,
     marketplace_preflight_records: marketplacePreflightRecords,
+    ebay_listing_quality_dry_run: ebayListingQualityDryRun,
     read_only: true,
     execution_performed: false,
   };
@@ -1879,6 +1995,7 @@ module.exports = {
   buildMarketplacePreflight,
   listMarketplacePreflightRecords,
   recordMarketplacePreflight,
+  buildEbayListingQualityDryRun,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,
