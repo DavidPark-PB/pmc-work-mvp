@@ -52,6 +52,8 @@ function printUsage() {
     '  npm run hermes:agent -- execution-final-approve --id=<REQUEST_ID> --actor=<USER> --reason="..." [--dry-run|--write]',
     '  npm run hermes:agent -- execution-preflight --id=<REQUEST_ID>',
     '  npm run hermes:agent -- execution-record-internal-task --id=<REQUEST_ID> --actor=<USER> --reason="..." [--dry-run|--write]',
+    '  npm run hermes:agent -- marketplace-preflight --id=<REQUEST_ID> --marketplace=ebay --operation=listing_quality_update',
+    '  npm run hermes:agent -- marketplace-preflight-record --id=<REQUEST_ID> --marketplace=ebay --operation=listing_quality_update --actor=<USER> --reason="..." [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -64,6 +66,7 @@ function printUsage() {
     'Phase 5J Final Approval Checklist: read-only; final approval writes and execution remain unimplemented.',
     'Phase 6 Final Approval: default dry-run; --write records only internal final approval fields/events, never execution.',
     'Phase 7 Limited Executor: default dry-run; --write records only an internal manual_review_task result/event, never marketplace execution.',
+    'Phase 8 Marketplace Preflight: default dry-run; --write records only internal preflight audit, never marketplace execution.',
   ].join('\n'));
 }
 
@@ -305,6 +308,43 @@ async function main() {
     const { recordInternalManualReviewTask } = require('../src/services/hermesExecutionApproval');
     const result = await recordInternalManualReviewTask({
       requestId,
+      actor: arg('actor', null),
+      reason: arg('reason', null),
+      dryRun,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'marketplace-preflight') {
+    const requestId = intArg('id', intArg('request-id', null));
+    if (requestId == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const { buildMarketplacePreflight } = require('../src/services/hermesExecutionApproval');
+    const result = await buildMarketplacePreflight({
+      requestId,
+      marketplace: arg('marketplace', 'ebay'),
+      operation: arg('operation', 'listing_quality_update'),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'marketplace-preflight-record') {
+    const requestId = intArg('id', intArg('request-id', null));
+    if (requestId == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
+    const { recordMarketplacePreflight } = require('../src/services/hermesExecutionApproval');
+    const result = await recordMarketplacePreflight({
+      requestId,
+      marketplace: arg('marketplace', 'ebay'),
+      operation: arg('operation', 'listing_quality_update'),
       actor: arg('actor', null),
       reason: arg('reason', null),
       dryRun,

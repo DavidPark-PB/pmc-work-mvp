@@ -143,7 +143,8 @@
         Approved execution request is not marketplace execution. No external action has been executed. Execution is disabled in this phase.<br>
         Readiness is not execution approval. Ready for final approval is not marketplace execution.<br>
         Final approval checklist is not final approval. Internal final approval is not marketplace execution. Execution remains disabled.<br>
-        Internal task record is not marketplace execution. Execution remains disabled for marketplace actions. Only manual_review_task can be internally recorded.
+        Internal task record is not marketplace execution. Execution remains disabled for marketplace actions. Only manual_review_task can be internally recorded.<br>
+        Marketplace preflight is not marketplace execution. No marketplace API call is made in this phase. Listing changes remain disabled.
       </div>
 
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
@@ -199,6 +200,9 @@
             <div>marketplace execution approved: <strong style="color:#69f0ae;">${esc(safety.marketplace_execution_approved_count || 0)}</strong></div>
             <div>executed requests: <strong style="color:#69f0ae;">${esc(safety.executed_request_count || 0)}</strong></div>
             <div>internal task records: <strong style="color:#69f0ae;">${esc(summary?.internal_task_recorded_count || safety.internal_task_recorded_count || 0)}</strong></div>
+            <div>marketplace preflight passed: <strong style="color:#69f0ae;">${esc(summary?.marketplace_preflight_passed_count || safety.marketplace_preflight_passed_count || 0)}</strong></div>
+            <div>marketplace preflight failed: <strong style="color:#69f0ae;">${esc(summary?.marketplace_preflight_failed_count || safety.marketplace_preflight_failed_count || 0)}</strong></div>
+            <div>marketplace preflight migration required: <strong style="color:#69f0ae;">${esc(summary?.marketplace_preflight_migration_required === true ? 'true' : 'false')}</strong></div>
             <div>execution events count: <strong style="color:#69f0ae;">${esc(summary?.execution_events_count || 0)}</strong></div>
           </div>
         </div>
@@ -317,7 +321,8 @@
         Ready for final approval is not marketplace execution.<br>
         Final approval checklist is not final approval.<br>
         Internal final approval is not marketplace execution.<br>
-        Execution remains disabled.
+        Execution remains disabled.<br>
+        Marketplace preflight is not marketplace execution. No marketplace API call is made in this phase. Listing changes remain disabled.
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;">
         <div>ready_for_final_approval<br>${boolPill(readiness.ready_for_final_approval === true)}</div>
@@ -444,6 +449,62 @@
     `).join('');
   }
 
+
+  function renderMarketplacePreflight(preflight) {
+    if (!preflight) {
+      return '<div style="color:#666;font-size:12px;padding:12px;text-align:center;">marketplace preflight 없음</div>';
+    }
+    const list = (title, rows, color) => `
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;margin-top:8px;">
+        <div style="color:${color || '#90a4ae'};font-size:10px;margin-bottom:4px;font-weight:700;">${esc(title)}</div>
+        ${Array.isArray(rows) && rows.length ? `<ul style="margin:0;padding-left:18px;color:#cfd8dc;font-size:12px;line-height:1.45;">${rows.map(row => `<li>${esc(row)}</li>`).join('')}</ul>` : '<div style="color:#666;font-size:12px;">none</div>'}
+      </div>
+    `;
+    return `
+      <div style="background:#261f12;border:1px solid #5d3a00;border-radius:6px;padding:10px;color:#ffcc80;font-size:12px;line-height:1.5;margin-bottom:8px;">
+        Marketplace preflight is not marketplace execution.<br>
+        No marketplace API call is made in this phase.<br>
+        Listing changes remain disabled.<br>
+        Cached/internal data only.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;">
+        <div>marketplace<br><code style="color:#fff;">${esc(preflight.marketplace || '-')}</code></div>
+        <div>operation<br><code style="color:#fff;">${esc(preflight.operation || '-')}</code></div>
+        <div>allowed<br>${boolPill(preflight.allowed === true)}</div>
+        <div>marketplace_execution_available<br>${boolPill(preflight.marketplace_execution_available === true)}</div>
+        <div>preflight_record_available<br>${boolPill(preflight.preflight_record_available === true)}</div>
+        <div>source<br><code style="color:#fff;">${esc(preflight.source || '-')}</code></div>
+        <div style="grid-column:1 / -1;">cached listing snapshot hash<br><code style="color:#fff;word-break:break-all;">${esc(preflight.hashes?.cached_listing_snapshot_hash || 'null')}</code></div>
+        <div style="grid-column:1 / -1;">planned mutation hash<br><code style="color:#fff;word-break:break-all;">${esc(preflight.hashes?.planned_mutation_hash || 'null')}</code></div>
+      </div>
+      ${list('blockers', preflight.blockers || [], '#ef9a9a')}
+      ${list('warnings', preflight.warnings || [], '#ffcc80')}
+      <details style="margin-top:8px;">
+        <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Raw marketplace preflight JSON</summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(preflight)}</pre>
+      </details>
+    `;
+  }
+
+  function renderMarketplacePreflightRecords(records) {
+    const rows = Array.isArray(records?.data) ? records.data : [];
+    if (!rows.length) {
+      return '<div style="color:#666;font-size:12px;padding:12px;text-align:center;">marketplace preflight record 없음</div>';
+    }
+    return rows.map(row => `
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px;">
+          <span style="color:#80deea;font-size:11px;font-family:monospace;font-weight:700;">${esc(row.status)}</span>
+          <span style="color:#aaa;font-size:11px;">${esc(row.marketplace || '-')} / ${esc(row.operation || '-')}</span>
+          <span style="color:#aaa;font-size:11px;">actor ${esc(row.actor || '-')}</span>
+          <span style="margin-left:auto;color:#666;font-size:10px;">#${esc(row.id)} · ${fmtDate(row.created_at)}</span>
+        </div>
+        <div style="color:#cfd8dc;font-size:12px;margin-bottom:6px;">reason ${esc(row.reason || '-')}</div>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:0;max-height:180px;overflow:auto;">${pretty(row.preflight_result || {})}</pre>
+      </div>
+    `).join('');
+  }
+
   function renderDetail() {
     const el = document.getElementById('her-detail');
     if (!el || !selectedDetail) return;
@@ -498,6 +559,16 @@
       <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Internal execution records</div>
         ${renderInternalExecutionRecords(selectedDetail.internal_execution_records)}
+      </div>
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Marketplace preflight</div>
+        ${renderMarketplacePreflight(selectedDetail.marketplace_preflight)}
+      </div>
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Marketplace preflight records</div>
+        ${renderMarketplacePreflightRecords(selectedDetail.marketplace_preflight_records)}
       </div>
 
       ${opp ? `

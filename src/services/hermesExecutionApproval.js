@@ -16,6 +16,7 @@ const REQUEST_TABLE = 'hermes_execution_requests';
 const EVENT_TABLE = 'hermes_execution_events';
 const OPPORTUNITY_TABLE = 'opportunity_inbox';
 const INTERNAL_EXECUTION_RECORD_TABLE = 'hermes_internal_execution_records';
+const MARKETPLACE_PREFLIGHT_RECORD_TABLE = 'hermes_marketplace_preflight_records';
 
 const STATUSES = new Set([
   'draft',
@@ -1371,6 +1372,312 @@ async function recordInternalManualReviewTask({ requestId, actor = null, reason 
   };
 }
 
+
+async function listMarketplacePreflightRecords({ requestId = null, limit = 50 } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, intOrNull(limit) || 50));
+  const db = getClient();
+  let q = db.from(MARKETPLACE_PREFLIGHT_RECORD_TABLE).select('*').order('id', { ascending: false }).limit(safeLimit);
+  const id = intOrNull(requestId);
+  if (id != null) q = q.eq('request_id', id);
+  const { data, error } = await q;
+  if (error) {
+    if (isMissingTableError(error)) {
+      return {
+        count: 0,
+        data: [],
+        migration_required: true,
+        migration: 'supabase/migrations/064_hermes_marketplace_preflight.sql',
+        error: error.message,
+      };
+    }
+    throw error;
+  }
+  return { count: (data || []).length, data: data || [], migration_required: false };
+}
+
+function marketplaceSafetyFlags(request = {}) {
+  return {
+    marketplace_api_calls: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_revisions: false,
+    external_action_executed: request?.metadata?.external_action_executed === true,
+    marketplace_execution_approved: request?.metadata?.marketplace_execution_approved === true,
+    execution_performed: false,
+  };
+}
+
+function objectHasForbiddenMarketplaceMutationFields(value) {
+  const forbidden = [
+    /price/i,
+    /quantity/i,
+    /qty/i,
+    /inventory/i,
+    /stock/i,
+    /end(ing)?_?listing/i,
+    /listing_?end/i,
+    /create_?listing/i,
+    /listing_?create/i,
+    /relist/i,
+  ];
+  const hits = [];
+  function walk(v, path = '') {
+    if (Array.isArray(v)) return v.forEach((item, idx) => walk(item, `${path}[${idx}]`));
+    if (!v || typeof v !== 'object') return;
+    for (const [key, child] of Object.entries(v)) {
+      const next = path ? `${path}.${key}` : key;
+      if (forbidden.some(rx => rx.test(key))) hits.push(next);
+      walk(child, next);
+    }
+  }
+  walk(value || {});
+  return [...new Set(hits)];
+}
+
+function buildCachedListingSnapshot({ request, opportunity }) {
+  const requestedAction = request?.requested_action || {};
+  const dryRun = request?.dry_run_result || {};
+  const metadata = opportunity?.metadata || {};
+  return {
+    source: 'cached_internal_data_only',
+    marketplace: 'ebay',
+    sku: request?.sku || opportunity?.sku || metadata.sku || null,
+    listing_id: metadata.item_id || metadata.listing_id || metadata.ebay_item_id || request?.requested_action?.listing_id || null,
+    opportunity_id: request?.opportunity_id || null,
+    opportunity_type: opportunity?.type || request?.requested_action?.opportunity_type || null,
+    opportunity_title: opportunity?.title || null,
+    source_signals: opportunity?.source_signals || [],
+    source_recommendations: opportunity?.source_recommendations || [],
+    dry_run_generated_at: dryRun.generated_at || null,
+    requested_action_type: requestedAction.action_plan?.type || null,
+    cached_data_note: 'Phase 8 marketplace preflight uses only Hermes cached/internal data and does not call eBay or other marketplace APIs.',
+  };
+}
+
+function buildPlannedMarketplaceMutationPreview({ request, marketplace, operation }) {
+  const actionPlan = request?.requested_action?.action_plan || {};
+  return {
+    source: 'rule_based_cached_data',
+    marketplace,
+    operation,
+    request_id: request?.id || null,
+    sku: request?.sku || null,
+    allowed_fields: ['title', 'description', 'item_specifics'],
+    mutation_fields: [],
+    proposed_changes: {},
+    forbidden_fields_present: [],
+    price_fields_present: false,
+    quantity_fields_present: false,
+    listing_end_create_relist_present: false,
+    planned_steps: Array.isArray(actionPlan.steps) ? actionPlan.steps : [],
+    note: 'Preflight preview only. No marketplace write payload is executed in Phase 8.',
+  };
+}
+
+async function buildMarketplacePreflight({ requestId, marketplace = 'ebay', operation = 'listing_quality_update' } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const normalizedMarketplace = trimOrNull(marketplace, 50) || 'ebay';
+  const normalizedOperation = trimOrNull(operation, 80) || 'listing_quality_update';
+  const [internalRecords, marketplaceRecords, events, opportunity] = await Promise.all([
+    listInternalExecutionRecords({ requestId: request.id, limit: 50 }),
+    listMarketplacePreflightRecords({ requestId: request.id, limit: 50 }),
+    listExecutionEvents({ requestId: request.id, limit: 200 }),
+    getOpportunitySnapshot(request.opportunity_id),
+  ]);
+
+  const blockers = [];
+  const warnings = [
+    'marketplace preflight is not marketplace execution',
+    'no marketplace API call is made in this phase',
+    'listing changes remain disabled',
+    'cached/internal data only',
+  ];
+  const metadata = request.metadata || {};
+  const dryRunHash = request.dry_run_result ? sha256Json(request.dry_run_result) : null;
+  const internalTaskRecorded = (internalRecords.data || []).some(r => r.status === 'internal_task_recorded');
+  const marketplaceExecutionEvents = (events.data || []).filter(ev => [
+    'request_executed',
+    'execution_started',
+    'execution_completed',
+    'execution_failed',
+    'marketplace_execution_started',
+    'marketplace_execution_completed',
+    'marketplace_execution_failed',
+  ].includes(ev.event_type));
+  const listingSnapshot = buildCachedListingSnapshot({ request, opportunity });
+  const plannedMutation = buildPlannedMarketplaceMutationPreview({ request, marketplace: normalizedMarketplace, operation: normalizedOperation });
+  const forbiddenFieldHits = objectHasForbiddenMarketplaceMutationFields({
+    mutation_fields: plannedMutation.mutation_fields,
+    proposed_changes: plannedMutation.proposed_changes,
+  });
+  const expiresAt = request.final_approval_expires_at ? new Date(request.final_approval_expires_at) : null;
+  const expiresInvalid = expiresAt && Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() <= Date.now();
+
+  if (marketplaceRecords.migration_required) blockers.push('migration_064_required');
+  if (normalizedMarketplace !== 'ebay') blockers.push('marketplace_not_allowlisted');
+  if (normalizedOperation !== 'listing_quality_update') blockers.push('operation_not_allowlisted');
+  if (request.status !== 'dry_run_ready') blockers.push('status_not_dry_run_ready');
+  if (request.final_approval_status !== 'approved') blockers.push('final_approval_status_not_approved');
+  if (!internalTaskRecorded) blockers.push('internal_task_recorded_missing');
+  if (!request.dry_run_result) blockers.push('dry_run_result_missing');
+  if (!request.final_approval_dry_run_hash) blockers.push('final_approval_dry_run_hash_missing');
+  if (request.final_approval_dry_run_hash && dryRunHash && request.final_approval_dry_run_hash !== dryRunHash) blockers.push('final_approval_dry_run_hash_mismatch');
+  if (marketplaceExecutionEvents.length) blockers.push('previous_marketplace_execution_lifecycle_event_exists');
+  if (request.executed_at != null) blockers.push('executed_at_present');
+  if (request.execution_result != null) blockers.push('execution_result_present');
+  if (metadata.external_action_executed === true) blockers.push('external_action_executed_true');
+  if (metadata.marketplace_execution_approved === true) blockers.push('marketplace_execution_approved_true');
+  if (forbiddenFieldHits.length) blockers.push('forbidden_mutation_fields_present');
+  if (expiresInvalid) blockers.push('final_approval_expired');
+
+  const allowed = blockers.length === 0;
+  return {
+    request_id: request.id,
+    sku: request.sku || null,
+    marketplace: normalizedMarketplace,
+    operation: normalizedOperation,
+    allowed,
+    marketplace_execution_available: false,
+    preflight_record_available: allowed,
+    blockers,
+    warnings,
+    hashes: {
+      current_dry_run_hash: dryRunHash,
+      final_approval_dry_run_hash: request.final_approval_dry_run_hash || null,
+      dry_run_hash_match: !!dryRunHash && request.final_approval_dry_run_hash === dryRunHash,
+      cached_listing_snapshot_hash: sha256Json(listingSnapshot),
+      planned_mutation_hash: sha256Json(plannedMutation),
+    },
+    listing_snapshot: listingSnapshot,
+    planned_mutation: plannedMutation,
+    internal_task_recorded: internalTaskRecorded,
+    marketplace_preflight_records: marketplaceRecords,
+    previous_marketplace_execution_lifecycle_event_count: marketplaceExecutionEvents.length,
+    migration_required: marketplaceRecords.migration_required === true,
+    safety: marketplaceSafetyFlags(request),
+    source: 'rule_based_cached_data',
+  };
+}
+
+async function recordMarketplacePreflight({ requestId, marketplace = 'ebay', operation = 'listing_quality_update', actor = null, reason = null, dryRun = true } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const preflight = await buildMarketplacePreflight({ requestId: request.id, marketplace, operation });
+  const preflightActor = trimOrNull(actor, 100);
+  const preflightReason = trimOrNull(reason, 1000);
+  const blockers = [...(preflight.blockers || [])];
+  if (!preflightActor) blockers.push('actor_required');
+  if (!preflightReason) blockers.push('reason_required');
+  if (preflight.preflight_record_available !== true) blockers.push('preflight_record_not_available');
+  const status = blockers.length ? 'preflight_failed' : 'preflight_passed';
+  const safetyFlags = marketplaceSafetyFlags(request);
+  const record = {
+    request_id: request.id,
+    marketplace: preflight.marketplace,
+    operation: preflight.operation,
+    status,
+    actor: preflightActor,
+    reason: preflightReason,
+    preflight_result: { ...preflight, blockers },
+    listing_snapshot: preflight.listing_snapshot || {},
+    planned_mutation: preflight.planned_mutation || {},
+    safety_flags: safetyFlags,
+  };
+  const eventType = status === 'preflight_passed' ? 'marketplace_preflight_passed' : 'marketplace_preflight_failed';
+  const eventPayload = {
+    request_id: request.id,
+    sku: request.sku || null,
+    marketplace: preflight.marketplace,
+    operation: preflight.operation,
+    status,
+    blockers,
+    actor: preflightActor,
+    reason: preflightReason,
+    source: 'rule_based_cached_data',
+    marketplace_execution_available: false,
+    marketplace_api_calls: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_revisions: false,
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+    execution_performed: false,
+  };
+
+  if (dryRun !== false) {
+    return {
+      dry_run: true,
+      created: false,
+      blocked: false,
+      request_id: request.id,
+      preflight: { ...preflight, blockers, allowed: blockers.length === 0, preflight_record_available: blockers.length === 0 },
+      record_preview: record,
+      event_preview: {
+        request_id: request.id,
+        event_type: eventType,
+        actor: preflightActor,
+        payload: eventPayload,
+      },
+      safety: safetyFlags,
+    };
+  }
+
+  if (!preflightActor || !preflightReason) {
+    return {
+      dry_run: false,
+      created: false,
+      blocked: true,
+      request_id: request.id,
+      blockers,
+      preflight: { ...preflight, blockers, allowed: false, preflight_record_available: false },
+      record_preview: record,
+      event_preview: null,
+      safety: safetyFlags,
+    };
+  }
+
+  const db = getClient();
+  const { data: inserted, error } = await db
+    .from(MARKETPLACE_PREFLIGHT_RECORD_TABLE)
+    .insert(record)
+    .select('*')
+    .single();
+  if (error) {
+    if (isMissingTableError(error)) {
+      return {
+        dry_run: false,
+        created: false,
+        blocked: true,
+        migration_required: true,
+        migration: 'supabase/migrations/064_hermes_marketplace_preflight.sql',
+        error: error.message,
+        request_id: request.id,
+        preflight,
+        record_preview: record,
+        safety: safetyFlags,
+      };
+    }
+    throw error;
+  }
+
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType,
+    actor: preflightActor,
+    payload: eventPayload,
+  });
+
+  return {
+    dry_run: false,
+    created: true,
+    blocked: false,
+    request_id: request.id,
+    preflight,
+    record: inserted,
+    event,
+    safety: safetyFlags,
+  };
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -1404,11 +1711,13 @@ async function getOpportunitySnapshot(opportunityId) {
 
 async function getExecutionRequestDetail({ requestId } = {}) {
   const request = await getExecutionRequest({ requestId });
-  const [opportunity, events, executorPreflight, internalExecutionRecords] = await Promise.all([
+  const [opportunity, events, executorPreflight, internalExecutionRecords, marketplacePreflight, marketplacePreflightRecords] = await Promise.all([
     getOpportunitySnapshot(request.opportunity_id),
     listExecutionEvents({ requestId: request.id, limit: 100 }),
     buildExecutorPreflight({ requestId: request.id }),
     listInternalExecutionRecords({ requestId: request.id, limit: 50 }),
+    buildMarketplacePreflight({ requestId: request.id, marketplace: 'ebay', operation: 'listing_quality_update' }),
+    listMarketplacePreflightRecords({ requestId: request.id, limit: 50 }),
   ]);
 
   return {
@@ -1421,6 +1730,8 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     final_approval_summary: finalApprovalSummary(request),
     executor_preflight: executorPreflight,
     internal_execution_records: internalExecutionRecords,
+    marketplace_preflight: marketplacePreflight,
+    marketplace_preflight_records: marketplacePreflightRecords,
     read_only: true,
     execution_performed: false,
   };
@@ -1501,6 +1812,15 @@ async function summarizeExecutionRequests({ limit = 50 } = {}) {
   const internalTaskRecordsMissing = isMissingTableError(internalTaskRecordsError);
   if (internalTaskRecordsError && !internalTaskRecordsMissing) throw internalTaskRecordsError;
 
+  const { data: marketplacePreflightRecords, error: marketplacePreflightRecordsError } = await db
+    .from(MARKETPLACE_PREFLIGHT_RECORD_TABLE)
+    .select('*')
+    .order('id', { ascending: false })
+    .limit(Math.min(20, safeLimit));
+  const marketplacePreflightRecordsMissing = isMissingTableError(marketplacePreflightRecordsError);
+  if (marketplacePreflightRecordsError && !marketplacePreflightRecordsMissing) throw marketplacePreflightRecordsError;
+  const marketplacePreflightRows = marketplacePreflightRecordsMissing ? [] : (marketplacePreflightRecords || []);
+
   return {
     read_only: true,
     limit: safeLimit,
@@ -1518,12 +1838,18 @@ async function summarizeExecutionRequests({ limit = 50 } = {}) {
     internal_task_recorded_count: internalTaskRecordsMissing ? 0 : (internalTaskRecordedCount || 0),
     internal_execution_records_migration_required: internalTaskRecordsMissing,
     recent_internal_task_records: internalTaskRecordsMissing ? [] : (internalTaskRecords || []),
+    marketplace_preflight_passed_count: marketplacePreflightRows.filter(r => r.status === 'preflight_passed').length,
+    marketplace_preflight_failed_count: marketplacePreflightRows.filter(r => r.status === 'preflight_failed').length,
+    marketplace_preflight_migration_required: marketplacePreflightRecordsMissing,
+    recent_marketplace_preflight_records: marketplacePreflightRows,
     latest_events_sample: latestEvents || [],
     safety_summary: {
       external_actions_detected: rows.filter(r => r.metadata?.external_action_executed === true).length,
       marketplace_execution_approved_count: rows.filter(r => r.metadata?.marketplace_execution_approved === true).length,
       final_approval_approved_count: rows.filter(r => r.final_approval_status === 'approved').length,
       internal_task_recorded_count: internalTaskRecordsMissing ? 0 : (internalTaskRecordedCount || 0),
+      marketplace_preflight_passed_count: marketplacePreflightRows.filter(r => r.status === 'preflight_passed').length,
+      marketplace_preflight_failed_count: marketplacePreflightRows.filter(r => r.status === 'preflight_failed').length,
       executed_request_count: rows.filter(r => r.executed_at || r.execution_result).length,
     },
   };
@@ -1550,6 +1876,9 @@ module.exports = {
   buildExecutorPreflight,
   listInternalExecutionRecords,
   recordInternalManualReviewTask,
+  buildMarketplacePreflight,
+  listMarketplacePreflightRecords,
+  recordMarketplacePreflight,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,
