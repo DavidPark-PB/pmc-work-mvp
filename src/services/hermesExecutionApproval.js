@@ -35,6 +35,17 @@ const EXECUTION_TYPES = new Set([
 ]);
 
 const RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical']);
+const REVIEW_ACTIONS = new Set(['approve', 'reject', 'cancel']);
+const REVIEW_EVENT_TYPES = {
+  approve: 'request_approved',
+  reject: 'request_rejected',
+  cancel: 'request_cancelled',
+};
+const REVIEW_STATUS_BY_ACTION = {
+  approve: 'approved',
+  reject: 'rejected',
+  cancel: 'cancelled',
+};
 
 const PHASE5_FORBIDDEN_ACTIONS = [
   'no_marketplace_api_calls',
@@ -310,6 +321,207 @@ async function listExecutionRequests({ status = null, sku = null, limit = 20 } =
   return { count: (data || []).length, data: data || [] };
 }
 
+function actorReviewValue(actor) {
+  const trimmed = trimOrNull(actor, 100);
+  if (!trimmed) return null;
+  const n = parseInt(trimmed, 10);
+  return Number.isFinite(n) && String(n) === trimmed ? n : 0;
+}
+
+function reviewPreview({ request, action, actor, reason = null, reviewedAt }) {
+  const nextStatus = REVIEW_STATUS_BY_ACTION[action];
+  const reviewActorValue = actorReviewValue(actor);
+  const nextMetadata = {
+    ...(request.metadata || {}),
+    hermes_execution_review: {
+      action,
+      status: nextStatus,
+      actor: trimOrNull(actor, 100),
+      actor_column_value: reviewActorValue,
+      reason: trimOrNull(reason, 1000),
+      reviewed_at: reviewedAt,
+      external_action_executed: false,
+    },
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+  };
+
+  const updates = {
+    status: nextStatus,
+    metadata: nextMetadata,
+  };
+
+  if (action === 'approve') {
+    updates.approved_by = reviewActorValue;
+    updates.approved_at = reviewedAt;
+    updates.rejected_by = null;
+    updates.rejected_at = null;
+    updates.rejection_reason = null;
+  } else if (action === 'reject') {
+    updates.rejected_by = reviewActorValue;
+    updates.rejected_at = reviewedAt;
+    updates.rejection_reason = trimOrNull(reason, 1000);
+  } else if (action === 'cancel') {
+    updates.rejected_by = reviewActorValue;
+    updates.rejected_at = reviewedAt;
+    updates.rejection_reason = trimOrNull(reason, 1000);
+  }
+
+  return {
+    ...request,
+    ...updates,
+    executed_by: request.executed_by || null,
+    executed_at: request.executed_at || null,
+    execution_result: request.execution_result || null,
+  };
+}
+
+async function getExecutionRequest({ requestId } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('requestId is required');
+  const db = getClient();
+  const { data, error } = await db.from(REQUEST_TABLE).select('*').eq('id', id).maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error(`execution request id=${id} not found`);
+  return data;
+}
+
+function validateReviewTransition({ request, action, actor, reason, dryRun }) {
+  const reviewAction = trimOrNull(action, 30);
+  if (!reviewAction || !REVIEW_ACTIONS.has(reviewAction)) {
+    throw new Error(`invalid action: ${reviewAction || '(missing)'}`);
+  }
+
+  const reviewReason = trimOrNull(reason, 1000);
+  if ((reviewAction === 'reject' || reviewAction === 'cancel') && !reviewReason) {
+    throw new Error(`${reviewAction} requires reason`);
+  }
+
+  if (dryRun === false && !trimOrNull(actor, 100)) {
+    throw new Error('actor is required for write mode');
+  }
+
+  if (reviewAction === 'approve' && request.status !== 'pending_approval') {
+    throw new Error('approve allowed only from pending_approval');
+  }
+  if (reviewAction === 'reject' && request.status !== 'pending_approval') {
+    throw new Error('reject allowed only from pending_approval');
+  }
+  if (reviewAction === 'cancel' && !['pending_approval', 'approved'].includes(request.status)) {
+    throw new Error('cancel allowed only from pending_approval or approved');
+  }
+
+  return { action: reviewAction, reason: reviewReason };
+}
+
+async function reviewExecutionRequest({ requestId, action, actor = null, reason = null, dryRun = true } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const validated = validateReviewTransition({ request, action, actor, reason, dryRun });
+  const reviewedAt = new Date().toISOString();
+  const after = reviewPreview({
+    request,
+    action: validated.action,
+    actor,
+    reason: validated.reason,
+    reviewedAt,
+  });
+
+  const eventType = REVIEW_EVENT_TYPES[validated.action];
+  const eventPayload = {
+    action: validated.action,
+    from_status: request.status,
+    to_status: REVIEW_STATUS_BY_ACTION[validated.action],
+    actor: trimOrNull(actor, 100),
+    reason: validated.reason,
+    external_action_executed: false,
+    execution_performed: false,
+  };
+
+  if (dryRun !== false) {
+    return {
+      dry_run: true,
+      updated: false,
+      request_id: request.id,
+      action: validated.action,
+      before: request,
+      after,
+      event_preview: {
+        request_id: request.id,
+        event_type: eventType,
+        actor: trimOrNull(actor, 100),
+        payload: eventPayload,
+      },
+      safety: {
+        marketplace_api_calls: false,
+        price_changes: false,
+        inventory_changes: false,
+        listing_changes: false,
+        ai_calls: false,
+        execution_performed: false,
+      },
+    };
+  }
+
+  const updates = {
+    status: after.status,
+    approved_by: after.approved_by,
+    approved_at: after.approved_at,
+    rejected_by: after.rejected_by,
+    rejected_at: after.rejected_at,
+    rejection_reason: after.rejection_reason,
+    metadata: after.metadata,
+  };
+
+  const db = getClient();
+  const { data: updated, error } = await db
+    .from(REQUEST_TABLE)
+    .update(updates)
+    .eq('id', request.id)
+    .select('*')
+    .single();
+  if (error) throw error;
+
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType,
+    actor: trimOrNull(actor, 100),
+    payload: eventPayload,
+  });
+
+  return {
+    dry_run: false,
+    updated: true,
+    request_id: request.id,
+    action: validated.action,
+    before: request,
+    after: updated,
+    event,
+    safety: {
+      marketplace_api_calls: false,
+      price_changes: false,
+      inventory_changes: false,
+      listing_changes: false,
+      ai_calls: false,
+      execution_performed: false,
+    },
+  };
+}
+
+async function listExecutionEvents({ requestId, limit = 20 } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('requestId is required');
+  const safeLimit = Math.min(200, Math.max(1, intOrNull(limit) || 20));
+  const db = getClient();
+  const { data, error } = await db
+    .from(EVENT_TABLE)
+    .select('*')
+    .eq('request_id', id)
+    .order('id', { ascending: true })
+    .limit(safeLimit);
+  if (error) throw error;
+  return { count: (data || []).length, data: data || [] };
+}
+
 module.exports = {
   STATUSES,
   EXECUTION_TYPES,
@@ -319,5 +531,8 @@ module.exports = {
   validateExecutionRequest,
   createExecutionRequest,
   listExecutionRequests,
+  getExecutionRequest,
+  reviewExecutionRequest,
+  listExecutionEvents,
   recordExecutionEvent,
 };
