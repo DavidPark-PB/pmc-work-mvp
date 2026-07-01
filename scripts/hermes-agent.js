@@ -46,6 +46,7 @@ function printUsage() {
     '  npm run hermes:agent -- execution-review --id=<REQUEST_ID> --action=cancel --actor=<USER> --reason="..." [--dry-run|--write]',
     '  npm run hermes:agent -- execution-detail --id=<REQUEST_ID>',
     '  npm run hermes:agent -- execution-summary [--limit=50]',
+    '  npm run hermes:agent -- execution-dry-run --id=<REQUEST_ID> --actor=<USER> [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -53,6 +54,7 @@ function printUsage() {
     'Phase 5A Execution Request: default dry-run; --write creates only an internal request row, never external execution.',
     'Phase 5C Execution Review: default dry-run; --write updates only internal request status/review fields and audit events.',
     'Phase 5E Execution Visibility: detail/summary commands are read-only and never approve, reject, cancel, or execute.',
+    'Phase 5H Execution Dry-Run: default dry-run; --write stores only internal dry_run_result/status/event and never executes externally.',
   ].join('\n'));
 }
 
@@ -207,6 +209,23 @@ async function main() {
     const { summarizeExecutionRequests } = require('../src/services/hermesExecutionApproval');
     const result = await summarizeExecutionRequests({
       limit: intArg('limit', 50),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'execution-dry-run') {
+    const requestId = intArg('id', intArg('request-id', null));
+    if (requestId == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
+    const { generateExecutionDryRun } = require('../src/services/hermesExecutionApproval');
+    const result = await generateExecutionDryRun({
+      requestId,
+      actor: arg('actor', null),
+      dryRun,
     });
     console.log(JSON.stringify(result, null, 2));
     return;

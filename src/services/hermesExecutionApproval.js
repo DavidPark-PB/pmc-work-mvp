@@ -543,6 +543,141 @@ async function listExecutionEvents({ requestId, limit = 20 } = {}) {
   return { count: (data || []).length, data: data || [] };
 }
 
+function buildExecutionDryRunResult({ request, generatedAt }) {
+  const actionPlan = request?.requested_action?.action_plan || {};
+  const plannedSteps = Array.isArray(actionPlan.steps) ? actionPlan.steps : [];
+  const blockedOperations = [
+    ...new Set([
+      ...PHASE5_FORBIDDEN_ACTIONS,
+      ...(Array.isArray(request?.requested_action?.forbidden_actions) ? request.requested_action.forbidden_actions : []),
+      ...(Array.isArray(actionPlan.forbidden_actions) ? actionPlan.forbidden_actions : []),
+    ]),
+  ];
+
+  return {
+    dry_run: true,
+    execution_performed: false,
+    external_action_executed: false,
+    marketplace_api_calls: false,
+    marketplace_execution_approved: false,
+    request_id: request.id,
+    sku: request.sku || null,
+    execution_type: request.execution_type || null,
+    risk_level: request.risk_level || null,
+    planned_steps: plannedSteps,
+    blocked_operations: blockedOperations,
+    required_final_approval: true,
+    generated_at: generatedAt,
+  };
+}
+
+async function generateExecutionDryRun({ requestId, actor = null, dryRun = true } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const dryRunActor = trimOrNull(actor, 100);
+  if (dryRun === false && !dryRunActor) throw new Error('actor is required for write mode');
+  if (request.status !== 'approved') throw new Error('execution dry-run allowed only for approved requests');
+
+  const generatedAt = new Date().toISOString();
+  const dryRunResult = buildExecutionDryRunResult({ request, generatedAt });
+  const nextMetadata = {
+    ...(request.metadata || {}),
+    hermes_execution_dry_run: {
+      actor: dryRunActor,
+      generated_at: generatedAt,
+      external_action_executed: false,
+      marketplace_execution_approved: false,
+    },
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+  };
+  const after = {
+    ...request,
+    status: 'dry_run_ready',
+    dry_run_result: dryRunResult,
+    metadata: nextMetadata,
+    executed_at: request.executed_at || null,
+    execution_result: request.execution_result || null,
+  };
+  const eventPayload = {
+    request_id: request.id,
+    sku: request.sku || null,
+    execution_type: request.execution_type || null,
+    risk_level: request.risk_level || null,
+    from_status: request.status,
+    to_status: 'dry_run_ready',
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+    execution_performed: false,
+    dry_run_result: dryRunResult,
+  };
+
+  if (dryRun !== false) {
+    return {
+      dry_run: true,
+      updated: false,
+      request_id: request.id,
+      before: request,
+      after,
+      dry_run_result: dryRunResult,
+      event_preview: {
+        request_id: request.id,
+        event_type: 'dry_run_generated',
+        actor: dryRunActor,
+        payload: eventPayload,
+      },
+      safety: {
+        marketplace_api_calls: false,
+        price_changes: false,
+        inventory_changes: false,
+        listing_changes: false,
+        ai_calls: false,
+        execution_performed: false,
+        external_action_executed: false,
+      },
+    };
+  }
+
+  const updates = {
+    status: 'dry_run_ready',
+    dry_run_result: dryRunResult,
+    metadata: nextMetadata,
+  };
+  const db = getClient();
+  const { data: updated, error } = await db
+    .from(REQUEST_TABLE)
+    .update(updates)
+    .eq('id', request.id)
+    .select('*')
+    .single();
+  if (error) throw error;
+
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType: 'dry_run_generated',
+    actor: dryRunActor,
+    payload: eventPayload,
+  });
+
+  return {
+    dry_run: false,
+    updated: true,
+    request_id: request.id,
+    before: request,
+    after: updated,
+    dry_run_result: dryRunResult,
+    event,
+    safety: {
+      marketplace_api_calls: false,
+      price_changes: false,
+      inventory_changes: false,
+      listing_changes: false,
+      ai_calls: false,
+      execution_performed: false,
+      external_action_executed: false,
+    },
+  };
+}
+
 function countBy(rows, key) {
   return (rows || []).reduce((acc, row) => {
     const value = row?.[key] || '(missing)';
@@ -657,6 +792,7 @@ async function summarizeExecutionRequests({ limit = 50 } = {}) {
   const rows = requests || [];
   const recentPending = rows.filter(r => r.status === 'pending_approval').slice(0, safeLimit);
   const recentApproved = rows.filter(r => r.status === 'approved').slice(0, safeLimit);
+  const recentDryRunReady = rows.filter(r => r.status === 'dry_run_ready').slice(0, safeLimit);
   const recentRejectedCancelled = rows.filter(r => ['rejected', 'cancelled'].includes(r.status)).slice(0, safeLimit);
 
   const executionEventTypes = ['request_executed', 'execution_started', 'execution_completed', 'execution_failed'];
@@ -683,6 +819,7 @@ async function summarizeExecutionRequests({ limit = 50 } = {}) {
     counts_by_risk_level: countBy(rows, 'risk_level'),
     recent_pending_requests: summarizeRecent(recentPending),
     recent_approved_requests: summarizeRecent(recentApproved),
+    recent_dry_run_ready_requests: summarizeRecent(recentDryRunReady),
     recent_rejected_cancelled_requests: summarizeRecent(recentRejectedCancelled),
     execution_events_count: executionEventsCount || 0,
     no_execution_events: (executionEventsCount || 0) === 0 && (executionEvents || []).length === 0,
@@ -707,6 +844,7 @@ module.exports = {
   getExecutionRequest,
   getExecutionRequestDetail,
   summarizeExecutionRequests,
+  generateExecutionDryRun,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,

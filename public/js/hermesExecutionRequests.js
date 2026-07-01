@@ -31,6 +31,7 @@
     const colors = {
       pending_approval: ['#5d3a00', '#ffb74d'],
       approved: ['#1b5e20', '#69f0ae'],
+      dry_run_ready: ['#0d47a1', '#90caf9'],
       rejected: ['#4a1a1a', '#ef9a9a'],
       cancelled: ['#37474f', '#bdbdbd'],
       executed: ['#4a1a1a', '#ff8a80'],
@@ -203,9 +204,11 @@
     const el = document.getElementById('her-lists');
     if (!el) return;
     const pending = summary?.recent_pending_requests || [];
+    const dryRunReady = summary?.recent_dry_run_ready_requests || [];
     const rejectedCancelled = summary?.recent_rejected_cancelled_requests || [];
     el.innerHTML = `
       ${sectionRows('recent approved requests', approvedList, 'approved request 없음')}
+      ${sectionRows('dry-run ready requests', dryRunReady, 'dry-run ready request 없음')}
       ${sectionRows('recent pending requests', pending, 'pending request 없음')}
       ${sectionRows('rejected / cancelled requests', rejectedCancelled, 'rejected/cancelled request 없음')}
     `;
@@ -262,6 +265,36 @@
     `).join('');
   }
 
+  function renderDryRunResult(result) {
+    if (!result) {
+      return '<div style="color:#666;font-size:12px;padding:12px;text-align:center;">dry_run_result 없음</div>';
+    }
+    const steps = Array.isArray(result.planned_steps) ? result.planned_steps : [];
+    const blocked = Array.isArray(result.blocked_operations) ? result.blocked_operations : [];
+    return `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;margin-bottom:8px;">
+        <div>dry_run<br>${boolPill(result.dry_run === true)}</div>
+        <div>execution_performed<br>${boolPill(result.execution_performed === true)}</div>
+        <div>external_action_executed<br>${boolPill(result.external_action_executed === true)}</div>
+        <div>marketplace_api_calls<br>${boolPill(result.marketplace_api_calls === true)}</div>
+        <div>marketplace_execution_approved<br>${boolPill(result.marketplace_execution_approved === true)}</div>
+        <div>required_final_approval<br>${boolPill(result.required_final_approval === true)}</div>
+      </div>
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div style="color:#90a4ae;font-size:10px;margin-bottom:4px;font-weight:700;">planned_steps</div>
+        ${steps.length ? `<ol style="margin:0;padding-left:18px;color:#cfd8dc;font-size:12px;line-height:1.45;">${steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>` : '<div style="color:#666;font-size:12px;">-</div>'}
+      </div>
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;">
+        <div style="color:#90a4ae;font-size:10px;margin-bottom:4px;font-weight:700;">blocked_operations</div>
+        ${blocked.length ? blocked.map(b => `<span style="display:inline-block;background:#4a1a1a;color:#ef9a9a;padding:2px 6px;border-radius:4px;font-size:10px;margin:1px 3px 1px 0;font-family:monospace;">${esc(b)}</span>`).join('') : '<div style="color:#666;font-size:12px;">-</div>'}
+      </div>
+      <details style="margin-top:8px;">
+        <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Raw dry_run_result JSON</summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(result)}</pre>
+      </details>
+    `;
+  }
+
   function renderDetail() {
     const el = document.getElementById('her-detail');
     if (!el || !selectedDetail) return;
@@ -299,6 +332,11 @@
           </div>
         </div>
       ` : ''}
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:6px;font-weight:700;">Dry-run result</div>
+        ${renderDryRunResult(req.dry_run_result)}
+      </div>
 
       <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:6px;font-weight:700;">Event history</div>
