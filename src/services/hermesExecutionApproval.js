@@ -321,23 +321,29 @@ async function listExecutionRequests({ status = null, sku = null, limit = 20 } =
   return { count: (data || []).length, data: data || [] };
 }
 
-function actorReviewValue(actor) {
+function actorAuditValues(actor) {
   const trimmed = trimOrNull(actor, 100);
-  if (!trimmed) return null;
+  if (!trimmed) return { actor: null, actorId: null, actorText: null };
   const n = parseInt(trimmed, 10);
-  return Number.isFinite(n) && String(n) === trimmed ? n : 0;
+  const isNumericActor = Number.isFinite(n) && String(n) === trimmed;
+  return {
+    actor: trimmed,
+    actorId: isNumericActor ? n : null,
+    actorText: isNumericActor ? null : trimmed,
+  };
 }
 
 function reviewPreview({ request, action, actor, reason = null, reviewedAt }) {
   const nextStatus = REVIEW_STATUS_BY_ACTION[action];
-  const reviewActorValue = actorReviewValue(actor);
+  const actorAudit = actorAuditValues(actor);
   const nextMetadata = {
     ...(request.metadata || {}),
     hermes_execution_review: {
       action,
       status: nextStatus,
-      actor: trimOrNull(actor, 100),
-      actor_column_value: reviewActorValue,
+      actor: actorAudit.actor,
+      actor_id: actorAudit.actorId,
+      actor_text: actorAudit.actorText,
       reason: trimOrNull(reason, 1000),
       reviewed_at: reviewedAt,
       external_action_executed: false,
@@ -352,19 +358,27 @@ function reviewPreview({ request, action, actor, reason = null, reviewedAt }) {
   };
 
   if (action === 'approve') {
-    updates.approved_by = reviewActorValue;
+    updates.approved_by = actorAudit.actorId;
+    updates.approved_actor = actorAudit.actorText;
     updates.approved_at = reviewedAt;
     updates.rejected_by = null;
+    updates.rejected_actor = null;
     updates.rejected_at = null;
     updates.rejection_reason = null;
+    updates.cancelled_by = null;
+    updates.cancelled_actor = null;
+    updates.cancelled_at = null;
+    updates.cancellation_reason = null;
   } else if (action === 'reject') {
-    updates.rejected_by = reviewActorValue;
+    updates.rejected_by = actorAudit.actorId;
+    updates.rejected_actor = actorAudit.actorText;
     updates.rejected_at = reviewedAt;
     updates.rejection_reason = trimOrNull(reason, 1000);
   } else if (action === 'cancel') {
-    updates.rejected_by = reviewActorValue;
-    updates.rejected_at = reviewedAt;
-    updates.rejection_reason = trimOrNull(reason, 1000);
+    updates.cancelled_by = actorAudit.actorId;
+    updates.cancelled_actor = actorAudit.actorText;
+    updates.cancelled_at = reviewedAt;
+    updates.cancellation_reason = trimOrNull(reason, 1000);
   }
 
   return {
@@ -465,10 +479,16 @@ async function reviewExecutionRequest({ requestId, action, actor = null, reason 
   const updates = {
     status: after.status,
     approved_by: after.approved_by,
+    approved_actor: after.approved_actor,
     approved_at: after.approved_at,
     rejected_by: after.rejected_by,
+    rejected_actor: after.rejected_actor,
     rejected_at: after.rejected_at,
     rejection_reason: after.rejection_reason,
+    cancelled_by: after.cancelled_by,
+    cancelled_actor: after.cancelled_actor,
+    cancelled_at: after.cancelled_at,
+    cancellation_reason: after.cancellation_reason,
     metadata: after.metadata,
   };
 
