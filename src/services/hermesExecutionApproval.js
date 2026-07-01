@@ -12,6 +12,7 @@ const { buildHermesOpportunityActionPlan } = require('./opportunityInbox');
 
 const REQUEST_TABLE = 'hermes_execution_requests';
 const EVENT_TABLE = 'hermes_execution_events';
+const OPPORTUNITY_TABLE = 'opportunity_inbox';
 
 const STATUSES = new Set([
   'draft',
@@ -542,6 +543,158 @@ async function listExecutionEvents({ requestId, limit = 20 } = {}) {
   return { count: (data || []).length, data: data || [] };
 }
 
+function countBy(rows, key) {
+  return (rows || []).reduce((acc, row) => {
+    const value = row?.[key] || '(missing)';
+    acc[value] = (acc[value] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function requestSafetySummary(request) {
+  const metadata = request?.metadata || {};
+  return {
+    external_action_executed: metadata.external_action_executed === true,
+    marketplace_execution_approved: metadata.marketplace_execution_approved === true,
+    executed_at: request?.executed_at || null,
+    execution_result: request?.execution_result || null,
+    requires_approval: request?.requires_approval === true,
+    status: request?.status || null,
+    risk_level: request?.risk_level || null,
+    approved_actor: request?.approved_actor || null,
+    rejected_actor: request?.rejected_actor || null,
+    cancelled_actor: request?.cancelled_actor || null,
+  };
+}
+
+async function getOpportunitySnapshot(opportunityId) {
+  const id = intOrNull(opportunityId);
+  if (id == null) return null;
+  const db = getClient();
+  const { data, error } = await db
+    .from(OPPORTUNITY_TABLE)
+    .select('id, opportunity_type, title, priority, status, metadata, created_at, updated_at')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) {
+    if (isMissingTableError(error)) return null;
+    throw error;
+  }
+  if (!data) return null;
+  const metadata = data.metadata || {};
+  return {
+    id: data.id,
+    sku: metadata.sku || null,
+    type: data.opportunity_type || metadata.candidate_type || null,
+    title: data.title || null,
+    priority: data.priority || null,
+    status: data.status || null,
+    source_signals: Array.isArray(metadata.source_signals) ? metadata.source_signals : [],
+    source_recommendations: Array.isArray(metadata.source_recommendations) ? metadata.source_recommendations : [],
+    market_analysis: metadata.market_analysis || {},
+    metadata,
+    created_at: data.created_at || null,
+    updated_at: data.updated_at || null,
+  };
+}
+
+async function getExecutionRequestDetail({ requestId } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const [opportunity, events] = await Promise.all([
+    getOpportunitySnapshot(request.opportunity_id),
+    listExecutionEvents({ requestId: request.id, limit: 100 }),
+  ]);
+
+  return {
+    request,
+    opportunity_snapshot: opportunity,
+    events,
+    safety_summary: requestSafetySummary(request),
+    read_only: true,
+    execution_performed: false,
+  };
+}
+
+function summarizeRecent(rows) {
+  return (rows || []).map(row => ({
+    id: row.id,
+    opportunity_id: row.opportunity_id,
+    sku: row.sku,
+    execution_type: row.execution_type,
+    status: row.status,
+    risk_level: row.risk_level,
+    requires_approval: row.requires_approval,
+    approved_by: row.approved_by || null,
+    approved_actor: row.approved_actor || null,
+    approved_at: row.approved_at || null,
+    rejected_by: row.rejected_by || null,
+    rejected_actor: row.rejected_actor || null,
+    rejected_at: row.rejected_at || null,
+    cancelled_by: row.cancelled_by || null,
+    cancelled_actor: row.cancelled_actor || null,
+    cancelled_at: row.cancelled_at || null,
+    executed_at: row.executed_at || null,
+    execution_result: row.execution_result || null,
+    external_action_executed: row.metadata?.external_action_executed === true,
+    marketplace_execution_approved: row.metadata?.marketplace_execution_approved === true,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }));
+}
+
+async function summarizeExecutionRequests({ limit = 50 } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, intOrNull(limit) || 50));
+  const scanLimit = Math.max(safeLimit, 200);
+  const db = getClient();
+
+  const { data: requests, error } = await db
+    .from(REQUEST_TABLE)
+    .select('*')
+    .order('id', { ascending: false })
+    .limit(scanLimit);
+  if (error) throw error;
+
+  const rows = requests || [];
+  const recentPending = rows.filter(r => r.status === 'pending_approval').slice(0, safeLimit);
+  const recentApproved = rows.filter(r => r.status === 'approved').slice(0, safeLimit);
+  const recentRejectedCancelled = rows.filter(r => ['rejected', 'cancelled'].includes(r.status)).slice(0, safeLimit);
+
+  const executionEventTypes = ['request_executed', 'execution_started', 'execution_completed', 'execution_failed'];
+  const { data: executionEvents, count: executionEventsCount, error: executionEventsError } = await db
+    .from(EVENT_TABLE)
+    .select('*', { count: 'exact' })
+    .in('event_type', executionEventTypes)
+    .limit(1);
+  if (executionEventsError) throw executionEventsError;
+
+  const { data: latestEvents, error: latestEventsError } = await db
+    .from(EVENT_TABLE)
+    .select('*')
+    .order('id', { ascending: false })
+    .limit(Math.min(20, safeLimit));
+  if (latestEventsError) throw latestEventsError;
+
+  return {
+    read_only: true,
+    limit: safeLimit,
+    scanned_request_count: rows.length,
+    counts_by_status: countBy(rows, 'status'),
+    counts_by_execution_type: countBy(rows, 'execution_type'),
+    counts_by_risk_level: countBy(rows, 'risk_level'),
+    recent_pending_requests: summarizeRecent(recentPending),
+    recent_approved_requests: summarizeRecent(recentApproved),
+    recent_rejected_cancelled_requests: summarizeRecent(recentRejectedCancelled),
+    execution_events_count: executionEventsCount || 0,
+    no_execution_events: (executionEventsCount || 0) === 0 && (executionEvents || []).length === 0,
+    latest_events_sample: latestEvents || [],
+    safety_summary: {
+      external_actions_detected: rows.filter(r => r.metadata?.external_action_executed === true).length,
+      marketplace_execution_approved_count: rows.filter(r => r.metadata?.marketplace_execution_approved === true).length,
+      executed_request_count: rows.filter(r => r.executed_at || r.execution_result).length,
+    },
+  };
+}
+
 module.exports = {
   STATUSES,
   EXECUTION_TYPES,
@@ -552,6 +705,8 @@ module.exports = {
   createExecutionRequest,
   listExecutionRequests,
   getExecutionRequest,
+  getExecutionRequestDetail,
+  summarizeExecutionRequests,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,

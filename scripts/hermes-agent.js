@@ -44,12 +44,15 @@ function printUsage() {
     '  npm run hermes:agent -- execution-review --id=<REQUEST_ID> --action=approve --actor=<USER> [--dry-run|--write]',
     '  npm run hermes:agent -- execution-review --id=<REQUEST_ID> --action=reject --actor=<USER> --reason="..." [--dry-run|--write]',
     '  npm run hermes:agent -- execution-review --id=<REQUEST_ID> --action=cancel --actor=<USER> --reason="..." [--dry-run|--write]',
+    '  npm run hermes:agent -- execution-detail --id=<REQUEST_ID>',
+    '  npm run hermes:agent -- execution-summary [--limit=50]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
     'Phase 2E Opportunity Review: default dry-run; updates only opportunity_inbox.status and review metadata with --write.',
     'Phase 5A Execution Request: default dry-run; --write creates only an internal request row, never external execution.',
     'Phase 5C Execution Review: default dry-run; --write updates only internal request status/review fields and audit events.',
+    'Phase 5E Execution Visibility: detail/summary commands are read-only and never approve, reject, cancel, or execute.',
   ].join('\n'));
 }
 
@@ -183,6 +186,27 @@ async function main() {
       actor: arg('actor', null),
       reason: arg('reason', null),
       dryRun,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'execution-detail') {
+    const requestId = intArg('id', intArg('request-id', null));
+    if (requestId == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const { getExecutionRequestDetail } = require('../src/services/hermesExecutionApproval');
+    const result = await getExecutionRequestDetail({ requestId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'execution-summary') {
+    const { summarizeExecutionRequests } = require('../src/services/hermesExecutionApproval');
+    const result = await summarizeExecutionRequests({
+      limit: intArg('limit', 50),
     });
     console.log(JSON.stringify(result, null, 2));
     return;
