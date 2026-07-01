@@ -7,6 +7,8 @@
  * change price, change inventory, change listing content, execute actions, or call AI.
  */
 
+const crypto = require('crypto');
+
 const { getClient } = require('../db/supabaseClient');
 const { buildHermesOpportunityActionPlan } = require('./opportunityInbox');
 
@@ -47,6 +49,8 @@ const REVIEW_STATUS_BY_ACTION = {
   reject: 'rejected',
   cancel: 'cancelled',
 };
+const FINAL_APPROVAL_POLICY_VERSION = 'phase-6-internal-final-approval-v1';
+const FINAL_APPROVAL_STATUSES = new Set(['not_requested', 'approved', 'rejected', 'expired']);
 
 const PHASE5_FORBIDDEN_ACTIONS = [
   'no_marketplace_api_calls',
@@ -69,6 +73,18 @@ function trimOrNull(v, max = null) {
   const s = String(v).trim();
   if (!s) return null;
   return max ? s.slice(0, max) : s;
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256Json(value) {
+  return `sha256:${crypto.createHash('sha256').update(stableStringify(value)).digest('hex')}`;
 }
 
 function isMissingTableError(error) {
@@ -699,6 +715,10 @@ function requestSafetySummary(request) {
     approved_actor: request?.approved_actor || null,
     rejected_actor: request?.rejected_actor || null,
     cancelled_actor: request?.cancelled_actor || null,
+    final_approval_status: request?.final_approval_status || 'not_requested',
+    final_approval_actor: request?.final_approval_actor || null,
+    final_approved_at: request?.final_approved_at || null,
+    final_approval_policy_version: request?.final_approval_policy_version || null,
   };
 }
 
@@ -786,14 +806,15 @@ function finalApprovalChecklistFromRequest(request) {
   if (request?.execution_result != null) blockingConditions.push('execution_result not null');
   if (metadata.external_action_executed === true) blockingConditions.push('external_action_executed true');
   if (metadata.marketplace_execution_approved === true) blockingConditions.push('marketplace_execution_approved true');
+  if (request?.final_approval_status === 'approved') blockingConditions.push('final approval is already recorded');
   if (readiness.ready_for_final_approval !== true) blockingConditions.push('readiness not eligible for future final approval review');
 
   if (readiness.ready_for_final_approval === true) {
-    riskNotes.push('request is eligible for future final approval review, but final approval mutation is not implemented');
+    riskNotes.push('request is eligible for internal final approval review; final approval is not marketplace execution');
   }
   riskNotes.push(`risk level is ${request?.risk_level || 'unknown'}`);
   riskNotes.push(`execution type is ${request?.execution_type || 'unknown'}`);
-  riskNotes.push('final approval checklist is informational only in Phase 5J');
+  riskNotes.push('final approval is internal-only and does not execute marketplace actions');
   riskNotes.push('marketplace execution remains disabled');
 
   const plannedSteps = Array.isArray(dryRun?.planned_steps) ? dryRun.planned_steps : [];
@@ -812,23 +833,23 @@ function finalApprovalChecklistFromRequest(request) {
     status: request?.status || null,
     execution_type: request?.execution_type || null,
     risk_level: request?.risk_level || null,
-    final_approval_available: false,
+    final_approval_available: readiness.ready_for_final_approval === true && blockingConditions.length === 0,
     execution_available: false,
-    policy_version: 'phase-5j-read-only',
+    policy_version: FINAL_APPROVAL_POLICY_VERSION,
     operator_checklist: [
       'review readiness summary and blockers',
       'review dry-run planned steps',
       'review requested action and source opportunity context',
       'confirm no marketplace/API action has already occurred',
-      'confirm final approval write flow is not implemented in this phase',
+      'confirm final approval write flow records internal approval only',
       'confirm execution remains disabled',
       ...plannedSteps.map(step => `review planned step: ${step}`),
     ],
     required_confirmations: [
       ...readiness.required_confirmations,
       'confirm final approval checklist is not final approval',
-      'confirm final approval mutation is not implemented',
-      'confirm execution is unavailable in Phase 5J',
+      'confirm final approval records an internal authorization checkpoint only',
+      'confirm execution is unavailable until a later executor phase',
       ...requiredChecks,
     ],
     blocking_conditions: blockingConditions,
@@ -844,7 +865,7 @@ function finalApprovalChecklistFromRequest(request) {
     readiness_summary: readiness,
     safety: {
       read_only: true,
-      final_approval_write_implemented: false,
+      final_approval_write_implemented: true,
       execution_implemented: false,
       external_action_executed: metadata.external_action_executed === true,
       marketplace_execution_approved: metadata.marketplace_execution_approved === true,
@@ -856,6 +877,253 @@ function finalApprovalChecklistFromRequest(request) {
 async function buildFinalApprovalChecklist({ requestId } = {}) {
   const request = await getExecutionRequest({ requestId });
   return finalApprovalChecklistFromRequest(request);
+}
+
+function finalApprovalSummary(request) {
+  return {
+    status: request?.final_approval_status || 'not_requested',
+    actor: request?.final_approval_actor || null,
+    reason: request?.final_approval_reason || null,
+    approved_at: request?.final_approved_at || null,
+    policy_version: request?.final_approval_policy_version || null,
+    dry_run_hash: request?.final_approval_dry_run_hash || null,
+    snapshot: request?.final_approval_snapshot || null,
+    rejected_actor: request?.final_approval_rejected_actor || null,
+    rejected_at: request?.final_approval_rejected_at || null,
+    rejection_reason: request?.final_approval_rejection_reason || null,
+    expires_at: request?.final_approval_expires_at || null,
+    execution_available: false,
+    marketplace_execution_approved: request?.metadata?.marketplace_execution_approved === true,
+    external_action_executed: request?.metadata?.external_action_executed === true,
+  };
+}
+
+function buildFinalApprovalSnapshot({ request, actor, reason, confirmations, confirmedAt, dryRunHash, readiness, checklist }) {
+  const confirmationList = Array.isArray(confirmations)
+    ? confirmations.map(v => trimOrNull(v, 500)).filter(Boolean)
+    : trimOrNull(confirmations, 2000)
+      ? [trimOrNull(confirmations, 2000)]
+      : [];
+
+  return {
+    approved_by_actor: actor,
+    approval_reason: reason,
+    confirmed_dry_run_result_hash: dryRunHash,
+    confirmed_policy_version: FINAL_APPROVAL_POLICY_VERSION,
+    confirmed_at: confirmedAt,
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+    request_id: request.id,
+    sku: request.sku || null,
+    execution_type: request.execution_type || null,
+    risk_level: request.risk_level || null,
+    request_status: request.status,
+    confirmations: confirmationList,
+    readiness_summary: readiness,
+    final_approval_checklist: checklist,
+    safety: {
+      final_approval_is_marketplace_execution: false,
+      execution_performed: false,
+      marketplace_api_calls: false,
+      price_changes: false,
+      inventory_changes: false,
+      listing_changes: false,
+    },
+  };
+}
+
+function buildFinalApprovalPreview({ request, actor, reason, confirmations, approvedAt }) {
+  const readiness = readinessFromRequest(request);
+  const checklist = finalApprovalChecklistFromRequest(request);
+  const blockers = [];
+  const metadata = request?.metadata || {};
+
+  if (request?.status !== 'dry_run_ready') blockers.push('status_not_dry_run_ready');
+  if (!request?.dry_run_result) blockers.push('dry_run_result_missing');
+  if (readiness.ready_for_final_approval !== true) blockers.push('readiness_not_ready_for_final_approval');
+  if ((checklist.blocking_conditions || []).length > 0) blockers.push('final_approval_checklist_has_blocking_conditions');
+  if (request?.executed_at != null) blockers.push('executed_at_present');
+  if (request?.execution_result != null) blockers.push('execution_result_present');
+  if (metadata.external_action_executed === true) blockers.push('external_action_executed_true');
+  if (metadata.marketplace_execution_approved === true) blockers.push('marketplace_execution_approved_true');
+  if (!actor) blockers.push('actor_required');
+  if (!reason) blockers.push('reason_required');
+  if (request?.final_approval_status === 'approved') blockers.push('final_approval_already_approved');
+
+  const dryRunHash = request?.dry_run_result ? sha256Json(request.dry_run_result) : null;
+  const snapshot = buildFinalApprovalSnapshot({
+    request,
+    actor,
+    reason,
+    confirmations,
+    confirmedAt: approvedAt,
+    dryRunHash,
+    readiness,
+    checklist,
+  });
+  const nextMetadata = {
+    ...(metadata || {}),
+    hermes_final_approval: {
+      actor,
+      reason,
+      policy_version: FINAL_APPROVAL_POLICY_VERSION,
+      dry_run_hash: dryRunHash,
+      approved_at: approvedAt,
+      external_action_executed: false,
+      marketplace_execution_approved: false,
+    },
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+  };
+
+  const after = {
+    ...request,
+    final_approval_status: 'approved',
+    final_approval_actor: actor,
+    final_approval_reason: reason,
+    final_approved_at: approvedAt,
+    final_approval_policy_version: FINAL_APPROVAL_POLICY_VERSION,
+    final_approval_dry_run_hash: dryRunHash,
+    final_approval_snapshot: snapshot,
+    metadata: nextMetadata,
+    executed_at: null,
+    execution_result: null,
+  };
+
+  return { readiness, checklist, blockers, dryRunHash, snapshot, nextMetadata, after };
+}
+
+async function recordFinalApproval({ requestId, actor = null, reason = null, confirmations = [], dryRun = true } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const approvalActor = trimOrNull(actor, 100);
+  const approvalReason = trimOrNull(reason, 1000);
+  const approvedAt = new Date().toISOString();
+  const preview = buildFinalApprovalPreview({
+    request,
+    actor: approvalActor,
+    reason: approvalReason,
+    confirmations,
+    approvedAt,
+  });
+
+  if (preview.blockers.length) {
+    if (dryRun === false) throw new Error(`final approval blocked: ${preview.blockers.join(', ')}`);
+    return {
+      dry_run: true,
+      updated: false,
+      blocked: true,
+      blockers: preview.blockers,
+      request_id: request.id,
+      before: request,
+      after: preview.after,
+      readiness_summary: preview.readiness,
+      final_approval_checklist: preview.checklist,
+      final_approval_snapshot: preview.snapshot,
+      safety: {
+        final_approval_is_marketplace_execution: false,
+        execution_performed: false,
+        external_action_executed: false,
+        marketplace_execution_approved: false,
+      },
+    };
+  }
+
+  const eventPayload = {
+    request_id: request.id,
+    sku: request.sku || null,
+    actor: approvalActor,
+    reason: approvalReason,
+    from_final_approval_status: request.final_approval_status || 'not_requested',
+    to_final_approval_status: 'approved',
+    policy_version: FINAL_APPROVAL_POLICY_VERSION,
+    dry_run_hash: preview.dryRunHash,
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+    execution_performed: false,
+    final_approval_snapshot: preview.snapshot,
+  };
+
+  if (dryRun !== false) {
+    return {
+      dry_run: true,
+      updated: false,
+      blocked: false,
+      request_id: request.id,
+      before: request,
+      after: preview.after,
+      readiness_summary: preview.readiness,
+      final_approval_checklist: preview.checklist,
+      final_approval_snapshot: preview.snapshot,
+      event_preview: {
+        request_id: request.id,
+        event_type: 'final_approval_recorded',
+        actor: approvalActor,
+        payload: eventPayload,
+      },
+      safety: {
+        final_approval_is_marketplace_execution: false,
+        marketplace_api_calls: false,
+        price_changes: false,
+        inventory_changes: false,
+        listing_changes: false,
+        ai_calls: false,
+        execution_performed: false,
+        external_action_executed: false,
+      },
+    };
+  }
+
+  const updates = {
+    final_approval_status: 'approved',
+    final_approval_actor: approvalActor,
+    final_approval_reason: approvalReason,
+    final_approved_at: approvedAt,
+    final_approval_policy_version: FINAL_APPROVAL_POLICY_VERSION,
+    final_approval_dry_run_hash: preview.dryRunHash,
+    final_approval_snapshot: preview.snapshot,
+    metadata: preview.nextMetadata,
+    executed_at: null,
+    execution_result: null,
+  };
+
+  const db = getClient();
+  const { data: updated, error } = await db
+    .from(REQUEST_TABLE)
+    .update(updates)
+    .eq('id', request.id)
+    .select('*')
+    .single();
+  if (error) throw error;
+
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType: 'final_approval_recorded',
+    actor: approvalActor,
+    payload: eventPayload,
+  });
+
+  return {
+    dry_run: false,
+    updated: true,
+    blocked: false,
+    request_id: request.id,
+    before: request,
+    after: updated,
+    readiness_summary: preview.readiness,
+    final_approval_checklist: preview.checklist,
+    final_approval_snapshot: preview.snapshot,
+    event,
+    safety: {
+      final_approval_is_marketplace_execution: false,
+      marketplace_api_calls: false,
+      price_changes: false,
+      inventory_changes: false,
+      listing_changes: false,
+      ai_calls: false,
+      execution_performed: false,
+      external_action_executed: false,
+    },
+  };
 }
 
 async function getOpportunitySnapshot(opportunityId) {
@@ -903,6 +1171,7 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     safety_summary: requestSafetySummary(request),
     readiness_summary: readinessFromRequest(request),
     final_approval_checklist: finalApprovalChecklistFromRequest(request),
+    final_approval_summary: finalApprovalSummary(request),
     read_only: true,
     execution_performed: false,
   };
@@ -926,6 +1195,13 @@ function summarizeRecent(rows) {
     cancelled_by: row.cancelled_by || null,
     cancelled_actor: row.cancelled_actor || null,
     cancelled_at: row.cancelled_at || null,
+    final_approval_status: row.final_approval_status || 'not_requested',
+    final_approval_actor: row.final_approval_actor || null,
+    final_approval_reason: row.final_approval_reason || null,
+    final_approved_at: row.final_approved_at || null,
+    final_approval_policy_version: row.final_approval_policy_version || null,
+    final_approval_dry_run_hash: row.final_approval_dry_run_hash || null,
+    final_approval_expires_at: row.final_approval_expires_at || null,
     executed_at: row.executed_at || null,
     execution_result: row.execution_result || null,
     external_action_executed: row.metadata?.external_action_executed === true,
@@ -973,6 +1249,7 @@ async function summarizeExecutionRequests({ limit = 50 } = {}) {
     limit: safeLimit,
     scanned_request_count: rows.length,
     counts_by_status: countBy(rows, 'status'),
+    counts_by_final_approval_status: countBy(rows.map(r => ({ ...r, final_approval_status: r.final_approval_status || 'not_requested' })), 'final_approval_status'),
     counts_by_execution_type: countBy(rows, 'execution_type'),
     counts_by_risk_level: countBy(rows, 'risk_level'),
     recent_pending_requests: summarizeRecent(recentPending),
@@ -985,6 +1262,7 @@ async function summarizeExecutionRequests({ limit = 50 } = {}) {
     safety_summary: {
       external_actions_detected: rows.filter(r => r.metadata?.external_action_executed === true).length,
       marketplace_execution_approved_count: rows.filter(r => r.metadata?.marketplace_execution_approved === true).length,
+      final_approval_approved_count: rows.filter(r => r.final_approval_status === 'approved').length,
       executed_request_count: rows.filter(r => r.executed_at || r.execution_result).length,
     },
   };
@@ -994,6 +1272,8 @@ module.exports = {
   STATUSES,
   EXECUTION_TYPES,
   RISK_LEVELS,
+  FINAL_APPROVAL_POLICY_VERSION,
+  FINAL_APPROVAL_STATUSES,
   PHASE5_FORBIDDEN_ACTIONS,
   buildExecutionRequestFromOpportunity,
   validateExecutionRequest,
@@ -1005,6 +1285,7 @@ module.exports = {
   generateExecutionDryRun,
   buildExecutionReadiness,
   buildFinalApprovalChecklist,
+  recordFinalApproval,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,

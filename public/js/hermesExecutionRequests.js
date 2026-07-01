@@ -81,7 +81,8 @@
         </div>
         <div style="color:#fff;font-size:13px;line-height:1.35;margin-bottom:5px;">SKU ${esc(row.sku || '-')} · opportunity #${esc(row.opportunity_id || '-')}</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;color:#90a4ae;font-size:11px;">
-          <span>actor: ${esc(row.approved_actor || row.rejected_actor || row.cancelled_actor || '-')}</span>
+          <span>actor: ${esc(row.final_approval_actor || row.approved_actor || row.rejected_actor || row.cancelled_actor || '-')}</span>
+          <span>final approval: ${esc(row.final_approval_status || 'not_requested')}</span>
           <span>executed_at: ${esc(row.executed_at || 'null')}</span>
           <span>external: ${external ? 'true' : 'false'}</span>
           <span>marketplace approved: ${marketplaceApproved ? 'true' : 'false'}</span>
@@ -141,7 +142,7 @@
         <strong>Safety boundary:</strong>
         Approved execution request is not marketplace execution. No external action has been executed. Execution is disabled in this phase.<br>
         Readiness is not execution approval. Ready for final approval is not marketplace execution.<br>
-        Final approval checklist is not final approval. Final approval is not implemented in this phase. Execution remains disabled.
+        Final approval checklist is not final approval. Internal final approval is not marketplace execution. Execution remains disabled.
       </div>
 
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
@@ -187,6 +188,7 @@
     el.innerHTML = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
         ${countCards('counts by status', summary?.counts_by_status)}
+        ${countCards('counts by final approval', summary?.counts_by_final_approval_status)}
         ${countCards('counts by execution_type', summary?.counts_by_execution_type)}
         ${countCards('counts by risk_level', summary?.counts_by_risk_level)}
         <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:12px;">
@@ -312,7 +314,7 @@
         Readiness is not execution approval.<br>
         Ready for final approval is not marketplace execution.<br>
         Final approval checklist is not final approval.<br>
-        Final approval is not implemented in this phase.<br>
+        Internal final approval is not marketplace execution.<br>
         Execution remains disabled.
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;">
@@ -344,7 +346,7 @@
     return `
       <div style="background:#261f12;border:1px solid #5d3a00;border-radius:6px;padding:10px;color:#ffcc80;font-size:12px;line-height:1.5;margin-bottom:8px;">
         Final approval checklist is not final approval.<br>
-        Final approval is not implemented in this phase.<br>
+        Internal final approval is not marketplace execution.<br>
         Execution remains disabled.
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;">
@@ -360,6 +362,31 @@
       <details style="margin-top:8px;">
         <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Raw final approval checklist JSON</summary>
         <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(checklist)}</pre>
+      </details>
+    `;
+  }
+
+  function renderFinalApprovalSummary(finalApproval) {
+    const fa = finalApproval || {};
+    return `
+      <div style="background:#261f12;border:1px solid #5d3a00;border-radius:6px;padding:10px;color:#ffcc80;font-size:12px;line-height:1.5;margin-bottom:8px;">
+        Internal final approval is not marketplace execution.<br>
+        Final approval does not call marketplace APIs.<br>
+        Execution remains disabled.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;">
+        <div>final_approval_status<br><code style="color:#fff;">${esc(fa.status || 'not_requested')}</code></div>
+        <div>actor<br><code style="color:#fff;">${esc(fa.actor || 'null')}</code></div>
+        <div>approved_at<br><code style="color:#fff;">${esc(fa.approved_at || 'null')}</code></div>
+        <div>policy_version<br><code style="color:#fff;">${esc(fa.policy_version || 'null')}</code></div>
+        <div style="grid-column:1 / -1;">dry_run_hash<br><code style="color:#fff;word-break:break-all;">${esc(fa.dry_run_hash || 'null')}</code></div>
+        <div style="grid-column:1 / -1;">reason<br><code style="color:#fff;white-space:pre-wrap;">${esc(fa.reason || 'null')}</code></div>
+        <div>external_action_executed<br>${boolPill(fa.external_action_executed === true)}</div>
+        <div>marketplace_execution_approved<br>${boolPill(fa.marketplace_execution_approved === true)}</div>
+      </div>
+      <details style="margin-top:8px;">
+        <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Raw final approval snapshot JSON</summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(fa.snapshot || null)}</pre>
       </details>
     `;
   }
@@ -386,7 +413,7 @@
         Readiness is not execution approval.<br>
         Ready for final approval is not marketplace execution.<br>
         Final approval checklist is not final approval.<br>
-        Final approval is not implemented in this phase.<br>
+        Internal final approval is not marketplace execution.<br>
         Execution remains disabled.
       </div>
 
@@ -398,6 +425,11 @@
       <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Readiness summary</div>
         ${renderReadiness(selectedDetail.readiness_summary)}
+      </div>
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Final approval status</div>
+        ${renderFinalApprovalSummary(selectedDetail.final_approval_summary)}
       </div>
 
       <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
