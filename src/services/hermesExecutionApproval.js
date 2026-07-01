@@ -15,6 +15,7 @@ const { buildHermesOpportunityActionPlan } = require('./opportunityInbox');
 const REQUEST_TABLE = 'hermes_execution_requests';
 const EVENT_TABLE = 'hermes_execution_events';
 const OPPORTUNITY_TABLE = 'opportunity_inbox';
+const INTERNAL_EXECUTION_RECORD_TABLE = 'hermes_internal_execution_records';
 
 const STATUSES = new Set([
   'draft',
@@ -1126,6 +1127,250 @@ async function recordFinalApproval({ requestId, actor = null, reason = null, con
   };
 }
 
+async function listInternalExecutionRecords({ requestId = null, limit = 50 } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, intOrNull(limit) || 50));
+  const db = getClient();
+  let q = db.from(INTERNAL_EXECUTION_RECORD_TABLE).select('*').order('id', { ascending: false }).limit(safeLimit);
+  const id = intOrNull(requestId);
+  if (id != null) q = q.eq('request_id', id);
+  const { data, error } = await q;
+  if (error) {
+    if (isMissingTableError(error)) {
+      return {
+        count: 0,
+        data: [],
+        migration_required: true,
+        migration: 'supabase/migrations/063_hermes_internal_executor_records.sql',
+        error: error.message,
+      };
+    }
+    throw error;
+  }
+  return { count: (data || []).length, data: data || [], migration_required: false };
+}
+
+function executorSafetyFlags(request = {}) {
+  return {
+    marketplace_api_calls: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_changes: false,
+    external_action_executed: request?.metadata?.external_action_executed === true,
+    marketplace_execution_approved: request?.metadata?.marketplace_execution_approved === true,
+    execution_performed: false,
+  };
+}
+
+async function buildExecutorPreflight({ requestId } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const records = await listInternalExecutionRecords({ requestId: request.id, limit: 50 });
+  const blockers = [];
+  const warnings = [
+    'internal task record is not marketplace execution',
+    'execution_available remains false for marketplace actions',
+    'only manual_review_task can be internally recorded',
+  ];
+  const metadata = request.metadata || {};
+  const dryRunHash = request.dry_run_result ? sha256Json(request.dry_run_result) : null;
+  const existingInternalTaskRecorded = (records.data || []).some(r => r.status === 'internal_task_recorded');
+  const expiresAt = request.final_approval_expires_at ? new Date(request.final_approval_expires_at) : null;
+  const expiresInvalid = expiresAt && Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() <= Date.now();
+
+  if (records.migration_required) blockers.push('migration_063_required');
+  if (request.status !== 'dry_run_ready') blockers.push('status_not_dry_run_ready');
+  if (request.final_approval_status !== 'approved') blockers.push('final_approval_status_not_approved');
+  if (!trimOrNull(request.final_approval_actor, 100)) blockers.push('final_approval_actor_missing');
+  if (!request.dry_run_result) blockers.push('dry_run_result_missing');
+  if (!request.final_approval_dry_run_hash) blockers.push('final_approval_dry_run_hash_missing');
+  if (request.final_approval_dry_run_hash && dryRunHash && request.final_approval_dry_run_hash !== dryRunHash) blockers.push('final_approval_dry_run_hash_mismatch');
+  if (request.executed_at != null) blockers.push('executed_at_present');
+  if (request.execution_result != null) blockers.push('execution_result_present');
+  if (metadata.external_action_executed === true) blockers.push('external_action_executed_true');
+  if (metadata.marketplace_execution_approved === true) blockers.push('marketplace_execution_approved_true');
+  if (request.execution_type !== 'manual_review_task') blockers.push('execution_type_not_manual_review_task');
+  if (request.risk_level !== 'low') blockers.push('risk_level_not_low');
+  if (expiresInvalid) blockers.push('final_approval_expired');
+  if (existingInternalTaskRecorded) blockers.push('internal_task_already_recorded');
+
+  const allowed = blockers.length === 0;
+  return {
+    request_id: request.id,
+    sku: request.sku || null,
+    status: request.status || null,
+    execution_type: request.execution_type || null,
+    risk_level: request.risk_level || null,
+    allowed,
+    execution_available: false,
+    internal_record_available: allowed && request.execution_type === 'manual_review_task',
+    blockers,
+    warnings,
+    hashes: {
+      current_dry_run_hash: dryRunHash,
+      final_approval_dry_run_hash: request.final_approval_dry_run_hash || null,
+      match: !!dryRunHash && request.final_approval_dry_run_hash === dryRunHash,
+    },
+    final_approval: {
+      status: request.final_approval_status || 'not_requested',
+      actor: request.final_approval_actor || null,
+      approved_at: request.final_approved_at || null,
+      expires_at: request.final_approval_expires_at || null,
+      expired: expiresInvalid === true,
+    },
+    existing_internal_task_recorded: existingInternalTaskRecorded,
+    internal_execution_records: records,
+    migration_required: records.migration_required === true,
+    safety: executorSafetyFlags(request),
+    source: 'rule_based',
+  };
+}
+
+function buildInternalManualReviewTaskResult({ request, actor, reason, preflight, recordedAt }) {
+  return {
+    request_id: request.id,
+    sku: request.sku || null,
+    execution_type: request.execution_type || null,
+    risk_level: request.risk_level || null,
+    actor,
+    reason,
+    result_type: 'internal_task_recorded',
+    recorded_at: recordedAt,
+    dry_run_hash: preflight.hashes?.current_dry_run_hash || null,
+    final_approval_dry_run_hash: preflight.hashes?.final_approval_dry_run_hash || null,
+    execution_performed: false,
+    marketplace_api_calls: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_changes: false,
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+    note: 'Internal manual_review_task record only. This is not marketplace execution.',
+  };
+}
+
+async function recordInternalManualReviewTask({ requestId, actor = null, reason = null, dryRun = true } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const taskActor = trimOrNull(actor, 100);
+  const taskReason = trimOrNull(reason, 1000);
+  const preflight = await buildExecutorPreflight({ requestId: request.id });
+  const blockers = [...(preflight.blockers || [])];
+  if (!taskActor) blockers.push('actor_required');
+  if (!taskReason) blockers.push('reason_required');
+  if (preflight.internal_record_available !== true) blockers.push('internal_record_not_available');
+  const recordedAt = new Date().toISOString();
+  const internalTaskResult = buildInternalManualReviewTaskResult({
+    request,
+    actor: taskActor,
+    reason: taskReason,
+    preflight,
+    recordedAt,
+  });
+  const safetyFlags = executorSafetyFlags(request);
+  const record = {
+    request_id: request.id,
+    execution_type: request.execution_type,
+    status: blockers.length ? 'preflight_failed' : 'internal_task_recorded',
+    actor: taskActor,
+    reason: taskReason,
+    preflight_result: preflight,
+    internal_task_result: blockers.length ? {} : internalTaskResult,
+    safety_flags: safetyFlags,
+  };
+
+  if (blockers.length) {
+    if (dryRun === false) throw new Error(`internal task record blocked: ${blockers.join(', ')}`);
+    return {
+      dry_run: true,
+      created: false,
+      blocked: true,
+      blockers,
+      request_id: request.id,
+      preflight,
+      record_preview: record,
+      event_preview: null,
+      safety: safetyFlags,
+    };
+  }
+
+  const eventPayload = {
+    request_id: request.id,
+    sku: request.sku || null,
+    actor: taskActor,
+    reason: taskReason,
+    execution_type: request.execution_type,
+    result_type: 'internal_task_recorded',
+    preflight_passed: true,
+    dry_run_hash: preflight.hashes?.current_dry_run_hash || null,
+    final_approval_dry_run_hash: preflight.hashes?.final_approval_dry_run_hash || null,
+    execution_performed: false,
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+    marketplace_api_calls: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_changes: false,
+  };
+
+  if (dryRun !== false) {
+    return {
+      dry_run: true,
+      created: false,
+      blocked: false,
+      request_id: request.id,
+      preflight,
+      record_preview: record,
+      event_preview: {
+        request_id: request.id,
+        event_type: 'internal_task_recorded',
+        actor: taskActor,
+        payload: eventPayload,
+      },
+      safety: safetyFlags,
+    };
+  }
+
+  const db = getClient();
+  const { data: inserted, error } = await db
+    .from(INTERNAL_EXECUTION_RECORD_TABLE)
+    .insert(record)
+    .select('*')
+    .single();
+  if (error) {
+    if (isMissingTableError(error)) {
+      return {
+        dry_run: false,
+        created: false,
+        blocked: true,
+        migration_required: true,
+        migration: 'supabase/migrations/063_hermes_internal_executor_records.sql',
+        error: error.message,
+        request_id: request.id,
+        preflight,
+        record_preview: record,
+        safety: safetyFlags,
+      };
+    }
+    throw error;
+  }
+
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType: 'internal_task_recorded',
+    actor: taskActor,
+    payload: eventPayload,
+  });
+
+  return {
+    dry_run: false,
+    created: true,
+    blocked: false,
+    request_id: request.id,
+    preflight,
+    record: inserted,
+    event,
+    safety: safetyFlags,
+  };
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -1159,9 +1404,11 @@ async function getOpportunitySnapshot(opportunityId) {
 
 async function getExecutionRequestDetail({ requestId } = {}) {
   const request = await getExecutionRequest({ requestId });
-  const [opportunity, events] = await Promise.all([
+  const [opportunity, events, executorPreflight, internalExecutionRecords] = await Promise.all([
     getOpportunitySnapshot(request.opportunity_id),
     listExecutionEvents({ requestId: request.id, limit: 100 }),
+    buildExecutorPreflight({ requestId: request.id }),
+    listInternalExecutionRecords({ requestId: request.id, limit: 50 }),
   ]);
 
   return {
@@ -1172,6 +1419,8 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     readiness_summary: readinessFromRequest(request),
     final_approval_checklist: finalApprovalChecklistFromRequest(request),
     final_approval_summary: finalApprovalSummary(request),
+    executor_preflight: executorPreflight,
+    internal_execution_records: internalExecutionRecords,
     read_only: true,
     execution_performed: false,
   };
@@ -1244,6 +1493,14 @@ async function summarizeExecutionRequests({ limit = 50 } = {}) {
     .limit(Math.min(20, safeLimit));
   if (latestEventsError) throw latestEventsError;
 
+  const { data: internalTaskRecords, count: internalTaskRecordedCount, error: internalTaskRecordsError } = await db
+    .from(INTERNAL_EXECUTION_RECORD_TABLE)
+    .select('*', { count: 'exact' })
+    .eq('status', 'internal_task_recorded')
+    .limit(Math.min(20, safeLimit));
+  const internalTaskRecordsMissing = isMissingTableError(internalTaskRecordsError);
+  if (internalTaskRecordsError && !internalTaskRecordsMissing) throw internalTaskRecordsError;
+
   return {
     read_only: true,
     limit: safeLimit,
@@ -1258,11 +1515,15 @@ async function summarizeExecutionRequests({ limit = 50 } = {}) {
     recent_rejected_cancelled_requests: summarizeRecent(recentRejectedCancelled),
     execution_events_count: executionEventsCount || 0,
     no_execution_events: (executionEventsCount || 0) === 0 && (executionEvents || []).length === 0,
+    internal_task_recorded_count: internalTaskRecordsMissing ? 0 : (internalTaskRecordedCount || 0),
+    internal_execution_records_migration_required: internalTaskRecordsMissing,
+    recent_internal_task_records: internalTaskRecordsMissing ? [] : (internalTaskRecords || []),
     latest_events_sample: latestEvents || [],
     safety_summary: {
       external_actions_detected: rows.filter(r => r.metadata?.external_action_executed === true).length,
       marketplace_execution_approved_count: rows.filter(r => r.metadata?.marketplace_execution_approved === true).length,
       final_approval_approved_count: rows.filter(r => r.final_approval_status === 'approved').length,
+      internal_task_recorded_count: internalTaskRecordsMissing ? 0 : (internalTaskRecordedCount || 0),
       executed_request_count: rows.filter(r => r.executed_at || r.execution_result).length,
     },
   };
@@ -1286,6 +1547,9 @@ module.exports = {
   buildExecutionReadiness,
   buildFinalApprovalChecklist,
   recordFinalApproval,
+  buildExecutorPreflight,
+  listInternalExecutionRecords,
+  recordInternalManualReviewTask,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,

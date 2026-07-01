@@ -50,6 +50,8 @@ function printUsage() {
     '  npm run hermes:agent -- execution-readiness --id=<REQUEST_ID>',
     '  npm run hermes:agent -- execution-final-checklist --id=<REQUEST_ID>',
     '  npm run hermes:agent -- execution-final-approve --id=<REQUEST_ID> --actor=<USER> --reason="..." [--dry-run|--write]',
+    '  npm run hermes:agent -- execution-preflight --id=<REQUEST_ID>',
+    '  npm run hermes:agent -- execution-record-internal-task --id=<REQUEST_ID> --actor=<USER> --reason="..." [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -61,6 +63,7 @@ function printUsage() {
     'Phase 5I Execution Readiness: read-only; final approval readiness is not execution approval and never executes externally.',
     'Phase 5J Final Approval Checklist: read-only; final approval writes and execution remain unimplemented.',
     'Phase 6 Final Approval: default dry-run; --write records only internal final approval fields/events, never execution.',
+    'Phase 7 Limited Executor: default dry-run; --write records only an internal manual_review_task result/event, never marketplace execution.',
   ].join('\n'));
 }
 
@@ -274,6 +277,36 @@ async function main() {
       actor: arg('actor', null),
       reason: arg('reason', null),
       confirmations: arg('confirmations', null),
+      dryRun,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'execution-preflight') {
+    const requestId = intArg('id', intArg('request-id', null));
+    if (requestId == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const { buildExecutorPreflight } = require('../src/services/hermesExecutionApproval');
+    const result = await buildExecutorPreflight({ requestId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'execution-record-internal-task') {
+    const requestId = intArg('id', intArg('request-id', null));
+    if (requestId == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
+    const { recordInternalManualReviewTask } = require('../src/services/hermesExecutionApproval');
+    const result = await recordInternalManualReviewTask({
+      requestId,
+      actor: arg('actor', null),
+      reason: arg('reason', null),
       dryRun,
     });
     console.log(JSON.stringify(result, null, 2));

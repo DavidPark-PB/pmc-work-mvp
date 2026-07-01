@@ -142,7 +142,8 @@
         <strong>Safety boundary:</strong>
         Approved execution request is not marketplace execution. No external action has been executed. Execution is disabled in this phase.<br>
         Readiness is not execution approval. Ready for final approval is not marketplace execution.<br>
-        Final approval checklist is not final approval. Internal final approval is not marketplace execution. Execution remains disabled.
+        Final approval checklist is not final approval. Internal final approval is not marketplace execution. Execution remains disabled.<br>
+        Internal task record is not marketplace execution. Execution remains disabled for marketplace actions. Only manual_review_task can be internally recorded.
       </div>
 
       <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
@@ -197,6 +198,7 @@
             <div>external actions detected: <strong style="color:#69f0ae;">${esc(safety.external_actions_detected || 0)}</strong></div>
             <div>marketplace execution approved: <strong style="color:#69f0ae;">${esc(safety.marketplace_execution_approved_count || 0)}</strong></div>
             <div>executed requests: <strong style="color:#69f0ae;">${esc(safety.executed_request_count || 0)}</strong></div>
+            <div>internal task records: <strong style="color:#69f0ae;">${esc(summary?.internal_task_recorded_count || safety.internal_task_recorded_count || 0)}</strong></div>
             <div>execution events count: <strong style="color:#69f0ae;">${esc(summary?.execution_events_count || 0)}</strong></div>
           </div>
         </div>
@@ -391,6 +393,57 @@
     `;
   }
 
+  function renderExecutorPreflight(preflight) {
+    if (!preflight) {
+      return '<div style="color:#666;font-size:12px;padding:12px;text-align:center;">executor preflight 없음</div>';
+    }
+    const list = (title, rows, color) => `
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;margin-top:8px;">
+        <div style="color:${color || '#90a4ae'};font-size:10px;margin-bottom:4px;font-weight:700;">${esc(title)}</div>
+        ${Array.isArray(rows) && rows.length ? `<ul style="margin:0;padding-left:18px;color:#cfd8dc;font-size:12px;line-height:1.45;">${rows.map(row => `<li>${esc(row)}</li>`).join('')}</ul>` : '<div style="color:#666;font-size:12px;">none</div>'}
+      </div>
+    `;
+    return `
+      <div style="background:#261f12;border:1px solid #5d3a00;border-radius:6px;padding:10px;color:#ffcc80;font-size:12px;line-height:1.5;margin-bottom:8px;">
+        Internal task record is not marketplace execution.<br>
+        Execution remains disabled for marketplace actions.<br>
+        Only manual_review_task can be internally recorded.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;">
+        <div>allowed<br>${boolPill(preflight.allowed === true)}</div>
+        <div>execution_available<br>${boolPill(preflight.execution_available === true)}</div>
+        <div>internal_record_available<br>${boolPill(preflight.internal_record_available === true)}</div>
+        <div>source<br><code style="color:#fff;">${esc(preflight.source || '-')}</code></div>
+        <div style="grid-column:1 / -1;">current dry-run hash<br><code style="color:#fff;word-break:break-all;">${esc(preflight.hashes?.current_dry_run_hash || 'null')}</code></div>
+        <div style="grid-column:1 / -1;">final approval hash<br><code style="color:#fff;word-break:break-all;">${esc(preflight.hashes?.final_approval_dry_run_hash || 'null')}</code></div>
+      </div>
+      ${list('blockers', preflight.blockers || [], '#ef9a9a')}
+      ${list('warnings', preflight.warnings || [], '#ffcc80')}
+      <details style="margin-top:8px;">
+        <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Raw executor preflight JSON</summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(preflight)}</pre>
+      </details>
+    `;
+  }
+
+  function renderInternalExecutionRecords(records) {
+    const rows = Array.isArray(records?.data) ? records.data : [];
+    if (!rows.length) {
+      return '<div style="color:#666;font-size:12px;padding:12px;text-align:center;">internal execution record 없음</div>';
+    }
+    return rows.map(row => `
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px;">
+          <span style="color:#80deea;font-size:11px;font-family:monospace;font-weight:700;">${esc(row.status)}</span>
+          <span style="color:#aaa;font-size:11px;">actor ${esc(row.actor || '-')}</span>
+          <span style="margin-left:auto;color:#666;font-size:10px;">#${esc(row.id)} · ${fmtDate(row.created_at)}</span>
+        </div>
+        <div style="color:#cfd8dc;font-size:12px;margin-bottom:6px;">type <code style="color:#ce93d8;">${esc(row.execution_type || '-')}</code> · reason ${esc(row.reason || '-')}</div>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:0;max-height:180px;overflow:auto;">${pretty(row.internal_task_result || {})}</pre>
+      </div>
+    `).join('');
+  }
+
   function renderDetail() {
     const el = document.getElementById('her-detail');
     if (!el || !selectedDetail) return;
@@ -435,6 +488,16 @@
       <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Final approval checklist</div>
         ${renderFinalApprovalChecklist(selectedDetail.final_approval_checklist)}
+      </div>
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Executor preflight</div>
+        ${renderExecutorPreflight(selectedDetail.executor_preflight)}
+      </div>
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">Internal execution records</div>
+        ${renderInternalExecutionRecords(selectedDetail.internal_execution_records)}
       </div>
 
       ${opp ? `
