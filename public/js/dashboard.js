@@ -123,6 +123,10 @@ function navigateTo(page) {
     case 'hermes-opportunity-review':
       if (window.pmcHermesOpportunityReview) pmcHermesOpportunityReview.init();
       break;
+    // ── Hermes Phase 5G — Execution Request Read-Only UI ──
+    case 'hermes-execution-requests':
+      if (window.pmcHermesExecutionRequests) pmcHermesExecutionRequests.init();
+      break;
   }
 }
 
