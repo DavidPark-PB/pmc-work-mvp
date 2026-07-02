@@ -69,6 +69,8 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-live-transport --packet-id=<PACKET_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-live-runbook --packet-id=<PACKET_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-next-candidate [--limit=10]',
+    '  npm run hermes:agent -- ebay-listing-quality-candidate-source-audit [--limit=50]',
+    '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -97,6 +99,7 @@ function printUsage() {
     'Phase 12G eBay Live Transport Wiring: existing eBay API module wired, but live calls remain disabled unless all gates pass.',
     'Phase 12H eBay Live Runbook: read-only operator checklist; does not execute live marketplace changes.',
     'Phase 13A eBay Next Candidate: read-only selector; no packet, approval, DB, or marketplace writes.',
+    'Phase 13B Candidate Source Audit/Rescan: read-only by default; no opportunity, packet, approval, DB, or marketplace writes.',
   ].join('\n'));
 }
 
@@ -611,6 +614,26 @@ async function main() {
     const { selectNextEbayListingQualityCandidate } = require('../src/services/hermesExecutionApproval');
     const result = await selectNextEbayListingQualityCandidate({
       limit: intArg('limit', 10),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-candidate-source-audit') {
+    const { auditEbayListingQualityCandidateSources } = require('../src/services/hermesExecutionApproval');
+    const result = await auditEbayListingQualityCandidateSources({
+      limit: intArg('limit', 50),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-candidate-rescan') {
+    const { rescanEbayListingQualityCandidates } = require('../src/services/hermesExecutionApproval');
+    const result = await rescanEbayListingQualityCandidates({
+      limit: intArg('limit', 20),
+      dryRun: true,
     });
     console.log(JSON.stringify(result, null, 2));
     return;

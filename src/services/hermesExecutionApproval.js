@@ -3248,6 +3248,260 @@ async function selectNextEbayListingQualityCandidate({ limit = 10 } = {}) {
   };
 }
 
+
+
+function phase13AuditBucket(candidate) {
+  const blockers = [...(candidate.exclusion_blockers || []), ...(candidate.candidate_blockers || [])];
+  const proposedFields = candidate.proposed_mutation_fields || [];
+  const titleOnly = proposedFields.length === 1 && proposedFields[0] === 'title';
+  return {
+    active_opportunity: ['new', 'reviewing', 'approved'].includes(candidate.opportunity_status),
+    listing_quality_low: candidate.signal_summary?.has_listing_quality_low === true,
+    archived: candidate.opportunity_status === 'archived',
+    missing_item_id: !candidate.item_id || blockers.includes('valid_ebay_item_id_missing'),
+    missing_title_evidence: candidate.evidence_summary?.title_present !== true || blockers.includes('title_evidence_missing'),
+    excluded_already_executed: blockers.some(name => /executed|marketplace_execution_completed|202551129453|request_id_1|phase_12_source/.test(String(name))),
+    mutation_not_title_only: proposedFields.length > 0 && !titleOnly,
+    price_inventory_present: candidate.forbidden_field_check?.price_changes === true
+      || candidate.forbidden_field_check?.inventory_changes === true
+      || candidate.forbidden_field_check?.quantity_changes === true
+      || blockers.some(name => /price_pressure|inventory_or_stock/.test(String(name))),
+  };
+}
+
+async function buildPhase13CandidateSources({ limit = 200 } = {}) {
+  const safeLimit = Math.min(500, Math.max(1, intOrNull(limit) || 200));
+  const db = getClient();
+  const [requestsResult, opportunitiesResult, eventsResult] = await Promise.all([
+    db.from(REQUEST_TABLE).select('*').order('id', { ascending: false }).limit(safeLimit),
+    db.from(OPPORTUNITY_TABLE).select('*').order('id', { ascending: false }).limit(safeLimit),
+    db.from(EVENT_TABLE).select('id,request_id,event_type,payload,created_at').in('event_type', MARKETPLACE_EXECUTION_EVENT_TYPES).order('id', { ascending: false }).limit(500),
+  ]);
+  if (requestsResult.error) throw requestsResult.error;
+  if (opportunitiesResult.error) throw opportunitiesResult.error;
+  if (eventsResult.error) throw eventsResult.error;
+
+  const requests = requestsResult.data || [];
+  const opportunities = opportunitiesResult.data || [];
+  const events = eventsResult.data || [];
+  const marketplaceEventsByRequest = new Map();
+  for (const event of events) {
+    const id = intOrNull(event.request_id);
+    if (id == null) continue;
+    if (!marketplaceEventsByRequest.has(id)) marketplaceEventsByRequest.set(id, []);
+    marketplaceEventsByRequest.get(id).push(event);
+  }
+  const marketplaceExecutedItemIds = candidateEventItemIds(events.filter(event => event.event_type === 'marketplace_execution_completed'));
+  const opportunityById = new Map(opportunities.map(row => [row.id, row]));
+  const requestOpportunityIds = new Set(requests.map(row => row.opportunity_id).filter(v => v != null));
+  const sources = [];
+
+  for (const request of requests) {
+    sources.push({ sourceType: 'request', request, opportunity: opportunityById.get(request.opportunity_id) || null });
+  }
+  for (const opportunity of opportunities) {
+    const metadata = opportunity.metadata || {};
+    if (requestOpportunityIds.has(opportunity.id)) continue;
+    if (metadata.hermes_generated !== true) continue;
+    if (opportunity.opportunity_type !== 'listing_quality_review' && metadata.candidate_type !== 'listing_quality_review') continue;
+    sources.push({ sourceType: 'opportunity', request: null, opportunity });
+  }
+
+  const candidates = [];
+  for (const source of sources) {
+    candidates.push(await buildPhase13CandidateFromSource({
+      ...source,
+      marketplaceEventsByRequest,
+      marketplaceExecutedItemIds,
+    }));
+  }
+
+  return { requests, opportunities, events, sources, candidates, marketplaceExecutedItemIds };
+}
+
+async function auditEbayListingQualityCandidateSources({ limit = 50 } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, intOrNull(limit) || 50));
+  const { requests, opportunities, events, candidates, marketplaceExecutedItemIds } = await buildPhase13CandidateSources({ limit: safeLimit });
+  const activeStatuses = new Set(['new', 'reviewing', 'approved']);
+  const activeOpportunities = opportunities.filter(row => activeStatuses.has(row.status));
+  const listingQualityOpportunities = opportunities.filter(row => {
+    const metadata = row.metadata || {};
+    const signals = normalizeSignalTypes(metadata.source_signals || []);
+    const recommendations = normalizeSignalTypes(metadata.source_recommendations || []);
+    return row.opportunity_type === 'listing_quality_review'
+      || metadata.candidate_type === 'listing_quality_review'
+      || signals.includes('listing_quality_low')
+      || recommendations.includes('listing_quality_review');
+  });
+
+  const buckets = candidates.map(candidate => ({ candidate, bucket: phase13AuditBucket(candidate) }));
+  const countWhere = fn => buckets.filter(({ bucket, candidate }) => fn(bucket, candidate)).length;
+  const needsRefresh = buckets
+    .filter(({ bucket, candidate }) => bucket.missing_item_id || bucket.missing_title_evidence || (candidate.evidence_summary?.limitations || []).length)
+    .map(({ candidate }) => ({
+      sku: candidate.sku,
+      opportunity_id: candidate.opportunity_id,
+      request_id: candidate.request_id,
+      item_id: candidate.item_id,
+      limitations: candidate.evidence_summary?.limitations || [],
+      recommended_refresh: candidate.item_id
+        ? 'refresh cached listing_details/item_specifics/images/policies for this item before packet work'
+        : 'resolve cached eBay item_id/listing_id before packet work',
+    }))
+    .slice(0, safeLimit);
+
+  return {
+    read_only: true,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    limit: safeLimit,
+    totals: {
+      total_active_opportunities: activeOpportunities.length,
+      listing_quality_low_opportunities: listingQualityOpportunities.length,
+      archived_opportunities: opportunities.filter(row => row.status === 'archived').length,
+      opportunities_missing_item_id: countWhere(bucket => bucket.missing_item_id),
+      opportunities_missing_title_evidence: countWhere(bucket => bucket.missing_title_evidence),
+      opportunities_excluded_already_executed: countWhere(bucket => bucket.excluded_already_executed),
+      opportunities_excluded_mutation_not_title_only: countWhere(bucket => bucket.mutation_not_title_only),
+      opportunities_excluded_price_inventory_present: countWhere(bucket => bucket.price_inventory_present),
+    },
+    scanned: {
+      request_count: requests.length,
+      opportunity_count: opportunities.length,
+      candidate_source_count: candidates.length,
+      marketplace_execution_event_count: events.length,
+      completed_marketplace_item_ids: [...marketplaceExecutedItemIds].sort(),
+    },
+    candidate_source_rows: candidates.slice(0, safeLimit).map(candidate => ({
+      source_type: candidate.source_type,
+      request_id: candidate.request_id,
+      opportunity_id: candidate.opportunity_id,
+      sku: candidate.sku,
+      item_id: candidate.item_id,
+      opportunity_status: candidate.opportunity_status,
+      request_status: candidate.request_status,
+      signals: candidate.signal_summary?.signals || [],
+      proposed_mutation_fields: candidate.proposed_mutation_fields || [],
+      forbidden_field_check: candidate.forbidden_field_check,
+      evidence_summary: candidate.evidence_summary,
+      risk_level: candidate.risk_level,
+      selectable: candidate.selectable,
+      blockers: [...(candidate.exclusion_blockers || []), ...(candidate.candidate_blockers || [])],
+    })),
+    skus_listings_that_may_need_listing_evidence_refresh: needsRefresh,
+    recommended_safe_replenishment_action: listingQualityOpportunities.some(row => ['new', 'reviewing', 'approved'].includes(row.status))
+      ? 'Refresh or complete cached listing evidence for active listing_quality_low opportunities; keep packet/approval creation disabled until selector returns a low-risk candidate.'
+      : 'Run read-only SKU/listing context rescan to identify listing_quality_low previews, then consider a later explicit internal-only opportunity replenishment phase; do not create packets or approvals in Phase 13B.',
+    safety: {
+      read_only: true,
+      actual_ebay_call: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      packet_created: false,
+      approval_created: false,
+      opportunity_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+    },
+    source: 'phase_13b_candidate_source_audit_v1',
+  };
+}
+
+async function rescanEbayListingQualityCandidates({ limit = 20, dryRun = true } = {}) {
+  const safeLimit = Math.min(100, Math.max(1, intOrNull(limit) || 20));
+  const db = getClient();
+  const { runOpportunityAgent } = require('../agents/opportunityAgent');
+  const productRows = await safeSelectRows(
+    'ebay_products',
+    'sku,item_id,title,price_usd,stock,status,updated_at',
+    q => q.not('sku', 'is', null).neq('sku', '').order('updated_at', { ascending: false }).limit(safeLimit * 3)
+  );
+  const uniqueSkus = [];
+  const seen = new Set();
+  for (const row of productRows) {
+    const sku = trimOrNull(row.sku, 100);
+    if (!sku || seen.has(sku)) continue;
+    seen.add(sku);
+    uniqueSkus.push(sku);
+    if (uniqueSkus.length >= safeLimit) break;
+  }
+
+  const previews = [];
+  for (const sku of uniqueSkus) {
+    let opportunityResult = null;
+    let error = null;
+    try {
+      opportunityResult = await runOpportunityAgent({ sku }, { type: 'listing_quality_review' });
+    } catch (e) {
+      error = e.message;
+    }
+    const evidence = await loadCachedEbayListingEvidence({ sku });
+    const listingQualityCandidates = opportunityResult?.candidates || [];
+    previews.push({
+      sku,
+      item_id: evidence.item_id || null,
+      listing_id: evidence.item_id || null,
+      title_present: Boolean(evidence.title),
+      source_tables: evidence.source_tables || [],
+      limitations: evidence.limitations || [],
+      signal_count: opportunityResult?.context_summary?.signal_count || 0,
+      recommendation_count: opportunityResult?.context_summary?.recommendation_count || 0,
+      listing_quality_preview_count: listingQualityCandidates.length,
+      candidate_previews: listingQualityCandidates.map(candidate => ({
+        type: candidate.type,
+        priority: candidate.priority,
+        title: candidate.title,
+        source_signals: candidate.source_signals || [],
+        source_recommendations: candidate.source_recommendations || [],
+        proposed_mutation_fields: ['title'],
+        forbidden_field_check: {
+          forbidden_fields_present: false,
+          forbidden_fields: [],
+          price_changes: false,
+          inventory_changes: false,
+          quantity_changes: false,
+          listing_end_create_relist: false,
+          sku_remapping: false,
+        },
+      })),
+      error,
+      recommended_next_action: listingQualityCandidates.length
+        ? 'Candidate preview only: operator should review evidence; do not create opportunity, packet, approval, or marketplace write in Phase 13B.'
+        : 'No listing_quality_low preview from current cached context; consider cached listing evidence refresh or leave unselected.',
+    });
+  }
+
+  return {
+    read_only: true,
+    dry_run: dryRun !== false,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    limit: safeLimit,
+    scanned_sku_count: uniqueSkus.length,
+    preview_count: previews.reduce((sum, row) => sum + row.listing_quality_preview_count, 0),
+    previews,
+    recommended_safe_replenishment_action: 'Use these previews only to decide whether a later explicit internal-only opportunity write phase is warranted. Phase 13B does not write opportunities, packets, approvals, execution state, or marketplace listings.',
+    safety: {
+      read_only: true,
+      actual_ebay_call: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+    },
+    source: 'phase_13b_candidate_rescan_preview_v1',
+  };
+}
+
 async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -3993,6 +4247,8 @@ module.exports = {
   buildEbayListingQualityLiveReadiness,
   buildEbayListingQualityLiveRunbook,
   selectNextEbayListingQualityCandidate,
+  auditEbayListingQualityCandidateSources,
+  rescanEbayListingQualityCandidates,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
