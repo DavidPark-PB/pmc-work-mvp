@@ -1792,6 +1792,163 @@ async function buildEbayListingQualityDryRun({ requestId } = {}) {
   };
 }
 
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const trimmed = trimOrNull(value, 200);
+    if (trimmed) return trimmed;
+  }
+  return null;
+}
+
+function resolveCachedEbayTarget({ dryRun, request, preflightRecords = [] } = {}) {
+  const snapshots = [
+    dryRun?.before_snapshot || {},
+    ...preflightRecords.map(row => row?.listing_snapshot || {}),
+    request?.requested_action || {},
+    request?.metadata || {},
+  ];
+  const itemId = firstNonEmpty(...snapshots.flatMap(snapshot => [
+    snapshot.item_id,
+    snapshot.listing_id,
+    snapshot.ebay_item_id,
+    snapshot.ebay_listing_id,
+    snapshot.target_item_id,
+  ]));
+  return {
+    sku: firstNonEmpty(dryRun?.target?.sku, request?.sku, ...snapshots.map(snapshot => snapshot.sku)),
+    item_id: itemId,
+    source: 'cached_internal',
+    evidence: itemId ? 'cached_internal_listing_identifier' : null,
+  };
+}
+
+function snapshotHasListingPayload(snapshot = {}) {
+  if (!snapshot || typeof snapshot !== 'object') return false;
+  return ['title', 'description', 'item_specifics'].some(key => Object.prototype.hasOwnProperty.call(snapshot, key));
+}
+
+function buildRollbackSnapshot({ target, beforeSnapshot, plannedMutation, blockers }) {
+  const hasBeforePayload = snapshotHasListingPayload(beforeSnapshot);
+  const available = !!target?.item_id && hasBeforePayload && blockers.length === 0;
+  const restorePayload = available ? {
+    title: Object.prototype.hasOwnProperty.call(beforeSnapshot, 'title') ? beforeSnapshot.title : null,
+    description: Object.prototype.hasOwnProperty.call(beforeSnapshot, 'description') ? beforeSnapshot.description : null,
+    item_specifics: beforeSnapshot.item_specifics && typeof beforeSnapshot.item_specifics === 'object' ? beforeSnapshot.item_specifics : {},
+  } : {};
+
+  const limitations = [];
+  if (!target?.item_id) limitations.push('target_item_id_missing_from_cached_internal_data');
+  if (!hasBeforePayload) limitations.push('cached_before_listing_payload_missing');
+  if ((blockers || []).length) limitations.push('operator_review_blocked');
+
+  return {
+    available,
+    manual_rollback_required: true,
+    restore_payload: restorePayload,
+    before_payload_hash: hasBeforePayload ? sha256Json({
+      title: beforeSnapshot.title ?? null,
+      description: beforeSnapshot.description ?? null,
+      item_specifics: beforeSnapshot.item_specifics || {},
+    }) : null,
+    planned_payload_hash: sha256Json(plannedMutation || {}),
+    marketplace_response: null,
+    rollback_feasibility: available ? 'manual_required' : 'not_available_without_cached_target_and_before_payload',
+    manual_procedure: available ? [
+      'Open the verified eBay listing manually using the cached item_id.',
+      'Compare current listing quality fields with the stored before snapshot.',
+      'Restore title, description, and item specifics from restore_payload if a future approved write changes them.',
+      'Record operator rollback completion in a later explicitly approved phase.',
+    ] : [],
+    limitations,
+  };
+}
+
+async function buildEbayListingQualityTargetReview({ requestId } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const [dryRun, preflightRecords] = await Promise.all([
+    buildEbayListingQualityDryRun({ requestId: request.id }),
+    listMarketplacePreflightRecords({ requestId: request.id, limit: 50 }),
+  ]);
+
+  const passedPreflightRecords = (preflightRecords.data || []).filter(row => (
+    row.marketplace === 'ebay' &&
+    row.operation === 'listing_quality_update' &&
+    row.status === 'preflight_passed'
+  ));
+  const target = resolveCachedEbayTarget({ dryRun, request, preflightRecords: passedPreflightRecords });
+  const plannedMutation = dryRun.planned_mutation || {};
+  const beforeSnapshot = dryRun.before_snapshot || {};
+  const blockedFields = objectHasForbiddenMarketplaceMutationFields(plannedMutation);
+  const blockers = [...(dryRun.blockers || [])];
+
+  if (!target.item_id) blockers.push('target_item_id_missing_from_cached_internal_data');
+  if (!Object.keys(beforeSnapshot).length) blockers.push('before_snapshot_missing');
+  if (blockedFields.length) blockers.push('blocked_fields_present_in_planned_mutation');
+  if (dryRun.dry_run !== true) blockers.push('phase_9_dry_run_not_true');
+  if (dryRun.marketplace_api_calls !== false) blockers.push('marketplace_api_calls_not_false');
+  if (dryRun.execution_performed !== false) blockers.push('execution_performed_not_false');
+
+  const rollbackSnapshot = buildRollbackSnapshot({ target, beforeSnapshot, plannedMutation, blockers });
+  if (rollbackSnapshot.available !== true) blockers.push('rollback_snapshot_not_available');
+  const uniqueBlockers = [...new Set(blockers)];
+  const warnings = [
+    'Target review is not listing revision',
+    'Rollback snapshot is internal-only',
+    'No eBay API call is made',
+    'cached/internal data only',
+    ...((dryRun.warnings || []).filter(w => !/price|inventory|quantity/i.test(String(w)))),
+  ];
+
+  return {
+    request_id: request.id,
+    dry_run: true,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    target_resolved: !!target.item_id,
+    target: {
+      sku: target.sku || null,
+      item_id: target.item_id || null,
+      source: 'cached_internal',
+    },
+    before_snapshot: beforeSnapshot,
+    planned_mutation: plannedMutation,
+    rollback_snapshot: rollbackSnapshot,
+    operator_review: {
+      ready: uniqueBlockers.length === 0 && !!target.item_id && rollbackSnapshot.available === true,
+      blockers: uniqueBlockers,
+      warnings: [...new Set(warnings)],
+      required_confirmations: [
+        'confirm target item_id was resolved from cached/internal data only',
+        'confirm target review is not listing revision',
+        'confirm rollback snapshot is internal-only',
+        'confirm no eBay API call is made',
+        'confirm no price, inventory, quantity, end, create, or relist operation is present',
+      ],
+    },
+    blocked_fields: blockedFields,
+    hashes: {
+      phase_9_planned_mutation_hash: dryRun.hashes?.planned_mutation_hash || sha256Json(plannedMutation),
+      target_review_before_snapshot_hash: sha256Json(beforeSnapshot),
+      target_review_rollback_snapshot_hash: sha256Json(rollbackSnapshot),
+      policy_version: 'phase-10-ebay-listing-quality-target-review-v1',
+    },
+    safety: {
+      marketplace_api_calls: false,
+      execution_performed: false,
+      ebay_api_calls: false,
+      external_api_calls: false,
+      price_changes: false,
+      inventory_changes: false,
+      listing_revisions: false,
+      listing_end_create_relist: false,
+      external_action_executed: request.metadata?.external_action_executed === true,
+      marketplace_execution_approved: request.metadata?.marketplace_execution_approved === true,
+    },
+    source: 'rule_based_cached_data',
+  };
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -1825,7 +1982,7 @@ async function getOpportunitySnapshot(opportunityId) {
 
 async function getExecutionRequestDetail({ requestId } = {}) {
   const request = await getExecutionRequest({ requestId });
-  const [opportunity, events, executorPreflight, internalExecutionRecords, marketplacePreflight, marketplacePreflightRecords, ebayListingQualityDryRun] = await Promise.all([
+  const [opportunity, events, executorPreflight, internalExecutionRecords, marketplacePreflight, marketplacePreflightRecords, ebayListingQualityDryRun, ebayListingQualityTargetReview] = await Promise.all([
     getOpportunitySnapshot(request.opportunity_id),
     listExecutionEvents({ requestId: request.id, limit: 100 }),
     buildExecutorPreflight({ requestId: request.id }),
@@ -1833,6 +1990,7 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     buildMarketplacePreflight({ requestId: request.id, marketplace: 'ebay', operation: 'listing_quality_update' }),
     listMarketplacePreflightRecords({ requestId: request.id, limit: 50 }),
     buildEbayListingQualityDryRun({ requestId: request.id }),
+    buildEbayListingQualityTargetReview({ requestId: request.id }),
   ]);
 
   return {
@@ -1848,6 +2006,7 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     marketplace_preflight: marketplacePreflight,
     marketplace_preflight_records: marketplacePreflightRecords,
     ebay_listing_quality_dry_run: ebayListingQualityDryRun,
+    ebay_listing_quality_target_review: ebayListingQualityTargetReview,
     read_only: true,
     execution_performed: false,
   };
@@ -1996,6 +2155,7 @@ module.exports = {
   listMarketplacePreflightRecords,
   recordMarketplacePreflight,
   buildEbayListingQualityDryRun,
+  buildEbayListingQualityTargetReview,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,
