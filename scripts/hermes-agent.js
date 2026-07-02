@@ -66,6 +66,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-call-boundary --packet-id=<PACKET_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-mock-call --packet-id=<PACKET_ID> --scenario=success|warning|failure [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-live-readiness --packet-id=<PACKET_ID>',
+    '  npm run hermes:agent -- ebay-listing-quality-live-transport --packet-id=<PACKET_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -91,6 +92,7 @@ function printUsage() {
     'Phase 12D eBay Live Call Boundary: default dry-run; --write remains blocked unless live env is explicitly enabled.',
     'Phase 12E eBay Mock Transport: mock response parser only; no eBay call and no DB write by default.',
     'Phase 12F eBay Live Readiness: read-only preflight; checks env presence only and prints no secret values.',
+    'Phase 12G eBay Live Transport Wiring: existing eBay API module wired, but live calls remain disabled unless all gates pass.',
   ].join('\n'));
 }
 
@@ -563,6 +565,26 @@ async function main() {
     }
     const { buildEbayListingQualityLiveReadiness } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayListingQualityLiveReadiness({ packetId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-live-transport') {
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (packetId == null) {
+      printUsage();
+      throw new Error('packet-id is required');
+    }
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
+    const liveEnabled = String(process.env.HERMES_EBAY_LIVE_EXECUTION_ENABLED || '').toLowerCase() === 'true';
+    const { callEbayListingQualityLiveTransportBoundary } = require('../src/services/hermesExecutionApproval');
+    const result = await callEbayListingQualityLiveTransportBoundary({
+      packetId,
+      dryRun,
+      writeRequested: hasFlag('write'),
+      liveEnabled,
+    });
     console.log(JSON.stringify(result, null, 2));
     return;
   }

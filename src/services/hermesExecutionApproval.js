@@ -16,6 +16,7 @@ const {
   buildEbayListingQualityResultRecord,
   buildEbayListingQualityRevisePayload,
   callEbayListingQualityRevise,
+  callEbayListingQualityLiveTransport,
   parseEbayReviseFixedPriceItemResponse,
   prepareEbayListingQualityRollbackSnapshot,
   mockCallEbayListingQualityRevise,
@@ -2813,6 +2814,40 @@ async function buildEbayListingQualityPayload({ packetId } = {}) {
 
 
 
+
+
+function resolveExistingEbayApiModulePath() {
+  try {
+    return require.resolve('../api/ebayAPI');
+  } catch (e) {
+    return null;
+  }
+}
+
+async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
+  const packet = await getEbayListingQualityPacket({ packetId });
+  const request = await getExecutionRequest({ requestId: packet.request_id });
+  const intent = buildEbayListingQualityExecutionIntent({ packet, request, dryRun: true });
+  const payload = buildEbayListingQualityRevisePayload({ packet, request, intent });
+  const ebayApiModulePath = resolveExistingEbayApiModulePath();
+  const result = await callEbayListingQualityLiveTransport({
+    packet,
+    request,
+    payload,
+    dryRun: dryRun !== false,
+    writeRequested: writeRequested === true,
+    liveEnabled: liveEnabled === true,
+    ebayApiModulePath,
+  });
+  return {
+    ...result,
+    existing_ebay_api_module_path: ebayApiModulePath ? 'src/api/ebayAPI.js' : null,
+    existing_ebay_api_module_export_detected: Boolean(ebayApiModulePath),
+    existing_ebay_api_auth_logic_reused: Boolean(ebayApiModulePath),
+    new_auth_logic_created: false,
+  };
+}
+
 async function buildEbayListingQualityLiveReadiness({ packetId } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -3343,6 +3378,7 @@ module.exports = {
   confirmEbayListingQualityPacket,
   buildEbayListingQualityPayload,
   buildEbayListingQualityLiveReadiness,
+  callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
   executeEbayListingQualityPacket,
