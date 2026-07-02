@@ -150,6 +150,62 @@ function buildEbayListingQualityExecutionIntent({ packet, request, dryRun = true
   };
 }
 
+
+
+function prepareEbayListingQualityRollbackSnapshot({ packet } = {}) {
+  const before = isPlainObject(packet?.before_snapshot) ? packet.before_snapshot : {};
+  const rollback = isPlainObject(packet?.rollback_snapshot) ? packet.rollback_snapshot : {};
+  const confirmation = isPlainObject(packet?.confirmation_snapshot) ? packet.confirmation_snapshot : null;
+
+  return {
+    title: before.title ?? rollback.title ?? rollback.before?.title ?? null,
+    description: before.description ?? rollback.description ?? rollback.before?.description ?? null,
+    item_specifics: before.item_specifics || rollback.item_specifics || rollback.before?.item_specifics || {},
+    source_fields: {
+      before_snapshot_keys: Object.keys(before),
+      rollback_snapshot_keys: Object.keys(rollback),
+      packet_table_fields: ['before_snapshot', 'rollback_snapshot', 'planned_mutation', 'packet_hash', 'confirmation_snapshot'],
+    },
+    packet_hash: packet?.packet_hash || null,
+    confirmation_snapshot_reference: confirmation ? {
+      packet_id: confirmation.packet_id || packet?.id || null,
+      request_id: confirmation.request_id || packet?.request_id || null,
+      confirmed_at: confirmation.confirmed_at || packet?.confirmed_at || null,
+      planned_mutation_hash: confirmation.planned_mutation_hash || null,
+      rollback_snapshot_hash: confirmation.rollback_snapshot_hash || null,
+      policy_version: confirmation.policy_version || null,
+    } : null,
+    available: true,
+    source: 'packet_internal_snapshots',
+  };
+}
+
+function buildEbayListingQualityResultRecord({ packet, request, intent, executionMode = 'dry_run', executionStatus = 'ready_to_execute', marketplaceResponse = null, error = null, recordedAt = null } = {}) {
+  const timestamp = recordedAt || new Date().toISOString();
+  const preExecutionSnapshot = prepareEbayListingQualityRollbackSnapshot({ packet });
+
+  return {
+    packet_id: packet?.id || intent?.packet_id || null,
+    request_id: request?.id || packet?.request_id || intent?.request_id || null,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    target_item_id: packet?.item_id || intent?.target?.item_id || null,
+    planned_mutation: intent?.planned_mutation || normalizeListingQualityMutation(packet?.planned_mutation || {}),
+    pre_execution_snapshot: preExecutionSnapshot,
+    execution_mode: executionMode,
+    execution_status: executionStatus,
+    marketplace_response: marketplaceResponse,
+    error,
+    recorded_at: timestamp,
+    actual_ebay_call: false,
+    marketplace_write_performed: false,
+    listing_changed: false,
+    price_changes: false,
+    inventory_changes: false,
+    false_success_marking: false,
+  };
+}
+
 async function executeEbayListingQualityRevision(intent, { dryRun = true } = {}) {
   if (dryRun !== false) {
     return {
@@ -188,6 +244,8 @@ module.exports = {
   findForbiddenMutationFields,
   normalizeListingQualityMutation,
   mutationIsEmpty,
+  prepareEbayListingQualityRollbackSnapshot,
+  buildEbayListingQualityResultRecord,
   buildEbayListingQualityExecutionIntent,
   executeEbayListingQualityRevision,
 };

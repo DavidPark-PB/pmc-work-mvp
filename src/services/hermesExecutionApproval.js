@@ -13,6 +13,7 @@ const { getClient } = require('../db/supabaseClient');
 const { buildHermesOpportunityActionPlan } = require('./opportunityInbox');
 const {
   buildEbayListingQualityExecutionIntent,
+  buildEbayListingQualityResultRecord,
   executeEbayListingQualityRevision,
 } = require('../adapters/ebayListingQualityExecutionAdapter');
 
@@ -2787,6 +2788,90 @@ async function executeEbayListingQualityPacket({ packetId, dryRun = true } = {})
   };
 }
 
+
+
+async function recordEbayListingQualityExecutionResult({ packetId, dryRun = true } = {}) {
+  const packet = await getEbayListingQualityPacket({ packetId });
+  const request = await getExecutionRequest({ requestId: packet.request_id });
+  const intent = buildEbayListingQualityExecutionIntent({ packet, request, dryRun: true });
+  const blockers = [...(intent.blockers || [])];
+  const executionStatus = blockers.length ? 'blocked' : (dryRun === false ? 'dry_run_recorded' : 'ready_to_execute');
+  const resultRecord = buildEbayListingQualityResultRecord({
+    packet,
+    request,
+    intent,
+    executionMode: dryRun === false ? 'internal_record_only' : 'dry_run',
+    executionStatus,
+    marketplaceResponse: dryRun === false ? { simulated_preview: true, actual_ebay_call: false } : null,
+    error: blockers.length ? { blockers } : null,
+  });
+  const safety = {
+    actual_ebay_call: false,
+    marketplace_api_calls: false,
+    ebay_api_calls: false,
+    marketplace_write_performed: false,
+    live_execution_performed: false,
+    listing_changed: false,
+    price_changes: false,
+    inventory_changes: false,
+    execution_result_updated: false,
+    executed_at_updated: false,
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+    database_writes: dryRun === false,
+  };
+
+  if (blockers.length) {
+    if (dryRun === false) throw new Error(`eBay listing quality result recording blocked: ${blockers.join(', ')}`);
+    return {
+      dry_run: true,
+      recorded: false,
+      blocked: true,
+      blockers,
+      result_record: resultRecord,
+      event_preview: null,
+      safety,
+    };
+  }
+
+  const eventPayload = {
+    ...resultRecord,
+    safety,
+  };
+
+  if (dryRun !== false) {
+    return {
+      dry_run: true,
+      recorded: false,
+      blocked: false,
+      result_record: resultRecord,
+      event_preview: {
+        request_id: request.id,
+        event_type: 'ebay_listing_quality_execution_result_recorded',
+        actor: 'system',
+        payload: eventPayload,
+      },
+      safety,
+    };
+  }
+
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType: 'ebay_listing_quality_execution_result_recorded',
+    actor: 'system',
+    payload: eventPayload,
+  });
+
+  return {
+    dry_run: false,
+    recorded: true,
+    blocked: false,
+    result_record: resultRecord,
+    event,
+    safety,
+  };
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -3007,6 +3092,7 @@ module.exports = {
   getEbayListingQualityPacket,
   confirmEbayListingQualityPacket,
   executeEbayListingQualityPacket,
+  recordEbayListingQualityExecutionResult,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,
