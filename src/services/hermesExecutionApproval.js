@@ -2528,6 +2528,236 @@ async function recordEbayListingQualityPacket({ requestId, title = null, descrip
   };
 }
 
+
+
+function isMissingSchemaError(error) {
+  const text = `${error?.code || ''} ${error?.message || ''}`;
+  return isMissingTableError(error) || /PGRST204|column .* does not exist|Could not find .*column|schema cache/i.test(text);
+}
+
+async function getEbayListingQualityPacket({ packetId } = {}) {
+  const id = intOrNull(packetId);
+  if (id == null) throw new Error('packetId is required');
+  const db = getClient();
+  const { data, error } = await db
+    .from(EBAY_LISTING_QUALITY_PACKET_TABLE)
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error(`eBay listing quality packet id=${id} not found`);
+  return data;
+}
+
+function packetConfirmationSnapshot({ packet, request, actor, reason, confirmedAt }) {
+  return {
+    packet_id: packet.id,
+    request_id: packet.request_id,
+    item_id: packet.item_id || null,
+    packet_hash: packet.packet_hash || null,
+    actor,
+    reason,
+    confirmed_at: confirmedAt,
+    status_before: packet.status || null,
+    confirmation_status_before: packet.confirmation_status || 'not_confirmed',
+    planned_mutation: packet.planned_mutation || {},
+    planned_mutation_hash: sha256Json(packet.planned_mutation || {}),
+    before_snapshot_hash: sha256Json(packet.before_snapshot || {}),
+    rollback_snapshot_hash: sha256Json(packet.rollback_snapshot || {}),
+    request_safety: requestSafetySummary(request),
+    safety: {
+      marketplace_api_calls: false,
+      ebay_api_calls: false,
+      external_api_calls: false,
+      execution_performed: false,
+      price_changes: false,
+      inventory_changes: false,
+      listing_revisions: false,
+      listing_end_create_relist: false,
+      external_action_executed: false,
+      marketplace_execution_approved: false,
+    },
+    policy_version: 'phase-11e-ebay-packet-final-confirmation-v1',
+  };
+}
+
+async function confirmEbayListingQualityPacket({ packetId, actor = null, reason = null, dryRun = true } = {}) {
+  const packet = await getEbayListingQualityPacket({ packetId });
+  const request = await getExecutionRequest({ requestId: packet.request_id });
+  const confirmActor = trimOrNull(actor, 100);
+  const confirmReason = trimOrNull(reason, 1000);
+  const confirmationStatus = packet.confirmation_status || 'not_confirmed';
+  const plannedMutation = packet.planned_mutation || {};
+  const blockedFields = objectHasForbiddenMarketplaceMutationFields(plannedMutation);
+  const blockers = [];
+  const metadata = request.metadata || {};
+
+  if (packet.status !== 'packet_recorded') blockers.push('packet_status_not_packet_recorded');
+  if (confirmationStatus !== 'not_confirmed') blockers.push('confirmation_status_not_not_confirmed');
+  if (request.executed_at != null) blockers.push('executed_at_present');
+  if (request.execution_result != null) blockers.push('execution_result_present');
+  if (metadata.external_action_executed === true) blockers.push('external_action_executed_true');
+  if (metadata.marketplace_execution_approved === true) blockers.push('marketplace_execution_approved_true');
+  if (listingQualityMutationIsEmpty(plannedMutation)) blockers.push('planned_mutation_empty');
+  if (!Object.keys(plannedMutation).every(k => ['title', 'description', 'item_specifics'].includes(k))) blockers.push('planned_mutation_has_non_allowed_fields');
+  if (blockedFields.length) blockers.push('blocked_fields_present_in_planned_mutation');
+  if (dryRun === false && !confirmActor) blockers.push('actor_required');
+  if (dryRun === false && !confirmReason) blockers.push('reason_required');
+
+  const uniqueBlockers = [...new Set(blockers)];
+  const confirmedAt = new Date().toISOString();
+  const confirmationSnapshot = packetConfirmationSnapshot({
+    packet,
+    request,
+    actor: confirmActor,
+    reason: confirmReason,
+    confirmedAt,
+  });
+  const updates = {
+    confirmation_status: 'confirmed',
+    confirmed_by_actor: confirmActor,
+    confirmation_reason: confirmReason,
+    confirmed_at: confirmedAt,
+    confirmation_snapshot: confirmationSnapshot,
+    rejected_by_actor: null,
+    rejection_reason: null,
+    rejected_at: null,
+  };
+  const eventPayload = {
+    packet_id: packet.id,
+    request_id: request.id,
+    sku: request.sku || null,
+    item_id: packet.item_id || null,
+    packet_hash: packet.packet_hash || null,
+    actor: confirmActor,
+    reason: confirmReason,
+    confirmation_status: 'confirmed',
+    blockers: uniqueBlockers,
+    planned_mutation: plannedMutation,
+    execution_performed: false,
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+    marketplace_api_calls: false,
+    ebay_api_calls: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_revisions: false,
+  };
+  const safety = {
+    marketplace_api_calls: false,
+    execution_performed: false,
+    ebay_api_calls: false,
+    external_api_calls: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_revisions: false,
+    listing_end_create_relist: false,
+    database_writes: dryRun === false,
+    external_action_executed: metadata.external_action_executed === true,
+    marketplace_execution_approved: metadata.marketplace_execution_approved === true,
+  };
+
+  if (uniqueBlockers.length) {
+    if (dryRun === false) throw new Error(`eBay listing quality packet confirmation blocked: ${uniqueBlockers.join(', ')}`);
+    return {
+      dry_run: true,
+      updated: false,
+      blocked: true,
+      blockers: uniqueBlockers,
+      packet_id: packet.id,
+      request_id: request.id,
+      before: packet,
+      after: { ...packet, ...updates },
+      confirmation_snapshot: confirmationSnapshot,
+      event_preview: null,
+      safety,
+    };
+  }
+
+  if (dryRun !== false) {
+    return {
+      dry_run: true,
+      updated: false,
+      blocked: false,
+      packet_id: packet.id,
+      request_id: request.id,
+      before: packet,
+      after: { ...packet, ...updates },
+      confirmation_snapshot: confirmationSnapshot,
+      event_preview: {
+        request_id: request.id,
+        event_type: 'ebay_listing_quality_packet_confirmed',
+        actor: confirmActor,
+        payload: eventPayload,
+      },
+      safety,
+    };
+  }
+
+  if (!confirmActor || !confirmReason) {
+    return {
+      dry_run: false,
+      updated: false,
+      blocked: true,
+      blockers: ['actor_required', 'reason_required'].filter(b => (b === 'actor_required' && !confirmActor) || (b === 'reason_required' && !confirmReason)),
+      packet_id: packet.id,
+      request_id: request.id,
+      before: packet,
+      after: { ...packet, ...updates },
+      confirmation_snapshot: confirmationSnapshot,
+      event_preview: null,
+      safety,
+    };
+  }
+
+  const db = getClient();
+  const { data: updated, error } = await db
+    .from(EBAY_LISTING_QUALITY_PACKET_TABLE)
+    .update(updates)
+    .eq('id', packet.id)
+    .select('*')
+    .single();
+  if (error) {
+    if (isMissingSchemaError(error)) {
+      return {
+        dry_run: false,
+        updated: false,
+        blocked: true,
+        migration_required: true,
+        migration: 'supabase/migrations/066_hermes_ebay_packet_confirmation.sql',
+        error: error.message,
+        packet_id: packet.id,
+        request_id: request.id,
+        before: packet,
+        after: { ...packet, ...updates },
+        confirmation_snapshot: confirmationSnapshot,
+        safety,
+      };
+    }
+    throw error;
+  }
+
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType: 'ebay_listing_quality_packet_confirmed',
+    actor: confirmActor,
+    payload: eventPayload,
+  });
+
+  return {
+    dry_run: false,
+    updated: true,
+    blocked: false,
+    packet_id: packet.id,
+    request_id: request.id,
+    before: packet,
+    after: updated,
+    confirmation_snapshot: confirmationSnapshot,
+    event,
+    safety,
+  };
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -2745,6 +2975,8 @@ module.exports = {
   buildOperatorEbayListingQualityPacket,
   listEbayListingQualityPackets,
   recordEbayListingQualityPacket,
+  getEbayListingQualityPacket,
+  confirmEbayListingQualityPacket,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,

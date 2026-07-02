@@ -59,6 +59,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-execution-packet --id=<REQUEST_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-operator-packet --id=<REQUEST_ID> [--title="..."] [--description="..."] [--item-specifics-json="{}"]',
     '  npm run hermes:agent -- ebay-listing-quality-record-packet --id=<REQUEST_ID> --actor=<USER> --reason="..." [--title="..."] [--description="..."] [--item-specifics-json="{}"] [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-confirm-packet --packet-id=<PACKET_ID> --actor=<USER> --reason="..." [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -77,6 +78,7 @@ function printUsage() {
     'Phase 11A eBay Listing Quality Execution Packet: read-only packet preview only; no eBay API call and no listing revision.',
     'Phase 11B eBay Operator Mutation Packet: read-only internal packet preview only; no eBay API call and no listing revision.',
     'Phase 11C eBay Packet Record: default dry-run; --write records only an internal immutable review artifact.',
+    'Phase 11E eBay Packet Confirmation: default dry-run; --write updates only internal confirmation fields/events.',
   ].join('\n'));
 }
 
@@ -434,6 +436,25 @@ async function main() {
       title: arg('title', null),
       description: arg('description', null),
       itemSpecifics: arg('item-specifics-json', arg('item-specifics', '{}')),
+      actor: arg('actor', null),
+      reason: arg('reason', null),
+      dryRun,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-confirm-packet') {
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (packetId == null) {
+      printUsage();
+      throw new Error('packet-id is required');
+    }
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
+    const { confirmEbayListingQualityPacket } = require('../src/services/hermesExecutionApproval');
+    const result = await confirmEbayListingQualityPacket({
+      packetId,
       actor: arg('actor', null),
       reason: arg('reason', null),
       dryRun,

@@ -689,6 +689,14 @@
         </div>
         <div style="color:#cfd8dc;font-size:12px;margin-bottom:6px;">item_id <code style="color:#fff;">${esc(row.item_id || '-')}</code></div>
         <div style="color:#cfd8dc;font-size:12px;margin-bottom:6px;">reason ${esc(row.reason || '-')}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;color:#cfd8dc;font-size:12px;margin-bottom:6px;">
+          <div>confirmation_status<br><code style="color:#fff;">${esc(row.confirmation_status || 'not_confirmed')}</code></div>
+          <div>confirmed_by_actor<br><code style="color:#fff;">${esc(row.confirmed_by_actor || 'null')}</code></div>
+          <div>confirmation_reason<br><code style="color:#fff;white-space:pre-wrap;">${esc(row.confirmation_reason || 'null')}</code></div>
+          <div>confirmed_at<br><code style="color:#fff;">${esc(row.confirmed_at || 'null')}</code></div>
+          <div>rejected_by_actor<br><code style="color:#fff;">${esc(row.rejected_by_actor || 'null')}</code></div>
+          <div>rejected_at<br><code style="color:#fff;">${esc(row.rejected_at || 'null')}</code></div>
+        </div>
         <div style="color:#90caf9;font-size:11px;word-break:break-all;margin-bottom:6px;">packet_hash ${esc(row.packet_hash || '-')}</div>
         <details style="margin-top:8px;">
           <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Planned mutation JSON</summary>
