@@ -1691,14 +1691,159 @@ function hasUnsafeListingQualityDryRunFields(plannedMutation) {
   return objectHasForbiddenMarketplaceMutationFields(plannedMutation);
 }
 
+
+async function safeSelectRows(table, select, buildQuery, fallback = []) {
+  const db = getClient();
+  try {
+    let q = db.from(table).select(select);
+    q = buildQuery ? buildQuery(q) : q;
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || fallback;
+  } catch (e) {
+    if (isMissingTableError(e) || /does not exist|column .* does not exist/i.test(e?.message || '')) return fallback;
+    throw e;
+  }
+}
+
+function normalizeItemSpecifics(rows = []) {
+  const specifics = {};
+  for (const row of rows || []) {
+    const name = trimOrNull(row?.name, 200);
+    if (!name) continue;
+    specifics[name] = row?.value == null ? '' : String(row.value);
+  }
+  return specifics;
+}
+
+function rawDescription(raw = {}) {
+  if (!raw || typeof raw !== 'object') return null;
+  return firstNonEmpty(
+    raw.description,
+    raw.Description,
+    raw.item_description,
+    raw.ItemDescription,
+    raw?.item?.description,
+    raw?.Item?.Description
+  );
+}
+
+async function loadCachedEbayListingEvidence({ sku } = {}) {
+  const targetSku = trimOrNull(sku, 100);
+  if (!targetSku) {
+    return {
+      sku: null,
+      item_id: null,
+      title: null,
+      description: null,
+      item_specifics: {},
+      images: [],
+      policies: null,
+      listing_detail: null,
+      ebay_product: null,
+      source_tables: [],
+      limitations: ['sku_missing'],
+      live_marketplace_state_fetched: false,
+      ebay_api_call_made: false,
+    };
+  }
+
+  const products = await safeSelectRows(
+    'ebay_products',
+    'sku,item_id,title,price_usd,shipping_usd,sales_count,stock,status,updated_at,image_url',
+    q => q.eq('sku', targetSku).not('item_id', 'is', null).neq('item_id', '').order('updated_at', { ascending: false }).limit(5)
+  );
+  const product = products[0] || null;
+  const productItemId = firstNonEmpty(product?.item_id);
+
+  let detailRows = await safeSelectRows(
+    'listing_details',
+    'platform,listing_type,sku,item_id,title,category_id,category_name,condition,listing_status,raw_data,last_enriched_at',
+    q => q.eq('platform', 'ebay').eq('listing_type', 'our').eq('sku', targetSku).limit(5)
+  );
+  if (!detailRows.length && productItemId) {
+    detailRows = await safeSelectRows(
+      'listing_details',
+      'platform,listing_type,sku,item_id,title,category_id,category_name,condition,listing_status,raw_data,last_enriched_at',
+      q => q.eq('platform', 'ebay').eq('listing_type', 'our').eq('item_id', productItemId).limit(5)
+    );
+  }
+  const detail = detailRows[0] || null;
+  const itemId = firstNonEmpty(detail?.item_id, productItemId);
+
+  const [specificRows, imageRows, policyRows] = itemId ? await Promise.all([
+    safeSelectRows('listing_item_specifics', 'platform,listing_type,item_id,name,value,source', q => q.eq('platform', 'ebay').eq('listing_type', 'our').eq('item_id', itemId).limit(200)),
+    safeSelectRows('listing_images', 'platform,listing_type,item_id,image_url,position,width,height,source', q => q.eq('platform', 'ebay').eq('listing_type', 'our').eq('item_id', itemId).order('position', { ascending: true }).limit(50)),
+    safeSelectRows('listing_policies', 'platform,listing_type,item_id,return_policy,shipping_policy,payment_policy,handling_time,estimated_delivery,source', q => q.eq('platform', 'ebay').eq('listing_type', 'our').eq('item_id', itemId).limit(5)),
+  ]) : [[], [], []];
+
+  const itemSpecifics = normalizeItemSpecifics(specificRows);
+  const description = rawDescription(detail?.raw_data || {});
+  const title = firstNonEmpty(detail?.title, product?.title);
+  const sourceTables = [];
+  if (product) sourceTables.push('ebay_products');
+  if (detail) sourceTables.push('listing_details');
+  if (specificRows.length) sourceTables.push('listing_item_specifics');
+  if (imageRows.length) sourceTables.push('listing_images');
+  if (policyRows.length) sourceTables.push('listing_policies');
+
+  const limitations = [];
+  if (!itemId) limitations.push('cached_item_id_missing');
+  if (!title) limitations.push('cached_title_missing');
+  if (!description) limitations.push('cached_description_missing');
+  if (!Object.keys(itemSpecifics).length) limitations.push('cached_item_specifics_missing');
+  if (!detail) limitations.push('listing_details_cache_missing_for_sku');
+
+  return {
+    sku: targetSku,
+    item_id: itemId || null,
+    title: title || null,
+    description: description || null,
+    item_specifics: itemSpecifics,
+    images: imageRows || [],
+    policies: policyRows[0] || null,
+    listing_detail: detail,
+    ebay_product: product,
+    source_tables: sourceTables,
+    limitations,
+    live_marketplace_state_fetched: false,
+    ebay_api_call_made: false,
+  };
+}
+
+function mergeCachedListingEvidenceIntoSnapshot(snapshot = {}, evidence = {}) {
+  return {
+    ...(snapshot || {}),
+    sku: firstNonEmpty(evidence.sku, snapshot?.sku),
+    listing_id: firstNonEmpty(evidence.item_id, snapshot?.listing_id),
+    item_id: firstNonEmpty(evidence.item_id, snapshot?.item_id),
+    ebay_item_id: firstNonEmpty(evidence.item_id, snapshot?.ebay_item_id),
+    title: Object.prototype.hasOwnProperty.call(evidence, 'title') ? evidence.title : snapshot?.title,
+    description: Object.prototype.hasOwnProperty.call(evidence, 'description') ? evidence.description : snapshot?.description,
+    item_specifics: evidence.item_specifics && typeof evidence.item_specifics === 'object' ? evidence.item_specifics : (snapshot?.item_specifics || {}),
+    cached_listing_resolution: {
+      source: 'cached_internal',
+      source_tables: evidence.source_tables || [],
+      item_id_resolved: !!evidence.item_id,
+      title_available: !!evidence.title,
+      description_available: !!evidence.description,
+      item_specifics_available: Object.keys(evidence.item_specifics || {}).length > 0,
+      limitations: evidence.limitations || [],
+    },
+    live_marketplace_state_fetched: false,
+    ebay_api_call_made: false,
+  };
+}
+
 async function buildEbayListingQualityDryRun({ requestId } = {}) {
   const request = await getExecutionRequest({ requestId });
-  const [marketplacePreflight, preflightRecords, internalRecords, events, opportunity] = await Promise.all([
+  const [marketplacePreflight, preflightRecords, internalRecords, events, opportunity, cachedListingEvidence] = await Promise.all([
     buildMarketplacePreflight({ requestId: request.id, marketplace: 'ebay', operation: 'listing_quality_update' }),
     listMarketplacePreflightRecords({ requestId: request.id, limit: 50 }),
     listInternalExecutionRecords({ requestId: request.id, limit: 50 }),
     listExecutionEvents({ requestId: request.id, limit: 200 }),
     getOpportunitySnapshot(request.opportunity_id),
+    loadCachedEbayListingEvidence({ sku: request.sku }),
   ]);
 
   const metadata = request.metadata || {};
@@ -1738,13 +1883,11 @@ async function buildEbayListingQualityDryRun({ requestId } = {}) {
   if (marketplaceExecutionEvents.length) blockers.push('previous_marketplace_execution_lifecycle_event_exists');
   if (marketplacePreflight.allowed !== true) blockers.push('marketplace_preflight_not_currently_allowed');
 
-  const beforeSnapshot = {
+  const beforeSnapshot = mergeCachedListingEvidenceIntoSnapshot({
     ...(marketplacePreflight.listing_snapshot || {}),
     opportunity_snapshot: opportunity || null,
     source: 'cached_internal_data_only',
-    live_marketplace_state_fetched: false,
-    ebay_api_call_made: false,
-  };
+  }, cachedListingEvidence);
   const plannedMutation = buildListingQualityPlannedMutation({ request, marketplacePreflight });
   const blockedFields = hasUnsafeListingQualityDryRunFields(plannedMutation);
   if (blockedFields.length) blockers.push('blocked_fields_present_in_planned_mutation');
@@ -1768,7 +1911,7 @@ async function buildEbayListingQualityDryRun({ requestId } = {}) {
     execution_performed: false,
     target: {
       sku: request.sku || beforeSnapshot.sku || null,
-      item_id: beforeSnapshot.listing_id || null,
+      item_id: beforeSnapshot.item_id || beforeSnapshot.listing_id || beforeSnapshot.ebay_item_id || null,
     },
     before_snapshot: beforeSnapshot,
     planned_mutation: plannedMutation,
@@ -1840,7 +1983,14 @@ function buildRollbackSnapshot({ target, beforeSnapshot, plannedMutation, blocke
   const limitations = [];
   if (!target?.item_id) limitations.push('target_item_id_missing_from_cached_internal_data');
   if (!hasBeforePayload) limitations.push('cached_before_listing_payload_missing');
+  if (!beforeSnapshot?.title) limitations.push('cached_title_missing');
+  if (!beforeSnapshot?.description) limitations.push('cached_description_missing');
+  if (!beforeSnapshot?.item_specifics || Object.keys(beforeSnapshot.item_specifics || {}).length === 0) limitations.push('cached_item_specifics_missing');
+  if (Array.isArray(beforeSnapshot?.cached_listing_resolution?.limitations)) {
+    limitations.push(...beforeSnapshot.cached_listing_resolution.limitations);
+  }
   if ((blockers || []).length) limitations.push('operator_review_blocked');
+  const uniqueLimitations = [...new Set(limitations)];
 
   return {
     available,
@@ -1860,7 +2010,7 @@ function buildRollbackSnapshot({ target, beforeSnapshot, plannedMutation, blocke
       'Restore title, description, and item specifics from restore_payload if a future approved write changes them.',
       'Record operator rollback completion in a later explicitly approved phase.',
     ] : [],
-    limitations,
+    limitations: uniqueLimitations,
   };
 }
 
