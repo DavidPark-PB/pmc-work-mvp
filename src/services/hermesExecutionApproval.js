@@ -15,6 +15,7 @@ const {
   buildEbayListingQualityExecutionIntent,
   buildEbayListingQualityResultRecord,
   buildEbayListingQualityRevisePayload,
+  callEbayListingQualityRevise,
   executeEbayListingQualityRevision,
 } = require('../adapters/ebayListingQualityExecutionAdapter');
 
@@ -2795,6 +2796,23 @@ async function buildEbayListingQualityPayload({ packetId } = {}) {
   };
 }
 
+
+
+async function callEbayListingQualityBoundary({ packetId, dryRun = true, liveEnabled = false, writeRequested = false } = {}) {
+  const packet = await getEbayListingQualityPacket({ packetId });
+  const request = await getExecutionRequest({ requestId: packet.request_id });
+  const intent = buildEbayListingQualityExecutionIntent({ packet, request, dryRun: true });
+  const payload = buildEbayListingQualityRevisePayload({ packet, request, intent });
+  return callEbayListingQualityRevise({
+    packet,
+    request,
+    payload,
+    dryRun: dryRun !== false,
+    liveEnabled: liveEnabled === true,
+    writeRequested: writeRequested === true,
+  });
+}
+
 async function executeEbayListingQualityPacket({ packetId, dryRun = true } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -3122,6 +3140,7 @@ module.exports = {
   getEbayListingQualityPacket,
   confirmEbayListingQualityPacket,
   buildEbayListingQualityPayload,
+  callEbayListingQualityBoundary,
   executeEbayListingQualityPacket,
   recordEbayListingQualityExecutionResult,
   reviewExecutionRequest,

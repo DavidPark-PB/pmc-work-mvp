@@ -286,6 +286,89 @@ function buildEbayListingQualityRevisePayload({ packet, request, intent } = {}) 
   };
 }
 
+
+
+function envLiveEbayExecutionEnabled(env = process.env) {
+  return String(env.HERMES_EBAY_LIVE_EXECUTION_ENABLED || '').toLowerCase() === 'true';
+}
+
+function callEbayListingQualityRevise({ packet, request, payload, dryRun = true, liveEnabled = false, writeRequested = false } = {}) {
+  const payloadObject = isPlainObject(payload) ? payload : {};
+  const payloadSummary = isPlainObject(payloadObject.payload_summary) ? payloadObject.payload_summary : {};
+  const rollbackSnapshot = prepareEbayListingQualityRollbackSnapshot({ packet });
+  const baseBlockers = Array.isArray(payloadObject.blockers) ? payloadObject.blockers : [];
+  const liveBlockers = [];
+  const isDryRun = dryRun !== false;
+  const envLiveEnabled = envLiveEbayExecutionEnabled();
+  const targetItemId = payloadObject.target_item_id || packet?.item_id || null;
+
+  if (!writeRequested && !isDryRun) liveBlockers.push('explicit_cli_write_required');
+  if (!liveEnabled) liveBlockers.push('live_ebay_execution_disabled');
+  if (!envLiveEnabled) liveBlockers.push('live_ebay_execution_env_disabled');
+  if (packet?.confirmation_status !== 'confirmed') liveBlockers.push('packet_confirmation_status_not_confirmed');
+  if (request?.final_approval_status !== 'approved') liveBlockers.push('request_final_approval_not_approved');
+  if (!targetItemId) liveBlockers.push('target_item_id_missing');
+  if (!rollbackSnapshot || rollbackSnapshot.available !== true) liveBlockers.push('rollback_snapshot_missing');
+  if (payloadSummary.forbidden_fields_present === true) liveBlockers.push('forbidden_marketplace_mutation_fields_present');
+  if (Array.isArray(payloadSummary.non_allowed_fields) && payloadSummary.non_allowed_fields.length) liveBlockers.push('payload_has_non_allowed_fields');
+  if (Array.isArray(payloadSummary.forbidden_fields) && payloadSummary.forbidden_fields.length) liveBlockers.push('payload_has_forbidden_fields');
+
+  const readinessBlockers = [...new Set(baseBlockers)];
+  const readyForLiveCall = readinessBlockers.length === 0;
+  const blockers = isDryRun ? readinessBlockers : [...new Set([...readinessBlockers, ...liveBlockers])];
+  const blocked = isDryRun ? false : blockers.length > 0;
+
+  return {
+    packet_id: packet?.id || payloadObject.packet_id || null,
+    request_id: request?.id || packet?.request_id || payloadObject.request_id || null,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    api_operation: payloadObject.api_operation || 'ReviseFixedPriceItem',
+    target_item_id: targetItemId,
+    target_listing_id: payloadObject.target_listing_id || targetItemId,
+    ready_for_live_call: readyForLiveCall,
+    dry_run: isDryRun,
+    live_enabled: liveEnabled === true,
+    env_live_enabled: envLiveEnabled,
+    explicit_write_requested: writeRequested === true,
+    blocked,
+    would_call_ebay: readyForLiveCall,
+    actual_ebay_call: false,
+    actual_network_call: false,
+    actual_database_write: false,
+    marketplace_write_performed: false,
+    listing_changed: false,
+    price_changes: false,
+    inventory_changes: false,
+    executed_at_updated: false,
+    execution_result_updated: false,
+    blockers,
+    live_blockers: isDryRun ? [] : [...new Set(liveBlockers)],
+    payload: payloadObject.payload || null,
+    payload_summary: payloadSummary,
+    rollback_snapshot_present: rollbackSnapshot?.available === true,
+    rollback_snapshot_reference: {
+      packet_hash: rollbackSnapshot?.packet_hash || packet?.packet_hash || null,
+      confirmation_snapshot_reference: rollbackSnapshot?.confirmation_snapshot_reference || null,
+      source: rollbackSnapshot?.source || null,
+    },
+    safety: {
+      marketplace_api_calls: false,
+      ebay_api_calls: false,
+      network_calls: false,
+      marketplace_write_performed: false,
+      live_execution_performed: false,
+      listing_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      execution_result_updated: false,
+      executed_at_updated: false,
+      database_writes: false,
+    },
+    source: 'phase_12d_live_call_boundary_v1',
+  };
+}
+
 async function executeEbayListingQualityRevision(intent, { dryRun = true } = {}) {
   if (dryRun !== false) {
     return {
@@ -327,6 +410,7 @@ module.exports = {
   prepareEbayListingQualityRollbackSnapshot,
   buildEbayListingQualityResultRecord,
   buildEbayListingQualityRevisePayload,
+  callEbayListingQualityRevise,
   buildEbayListingQualityExecutionIntent,
   executeEbayListingQualityRevision,
 };
