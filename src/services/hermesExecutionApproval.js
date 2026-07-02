@@ -16,6 +16,8 @@ const {
   buildEbayListingQualityResultRecord,
   buildEbayListingQualityRevisePayload,
   callEbayListingQualityRevise,
+  parseEbayReviseFixedPriceItemResponse,
+  prepareEbayListingQualityRollbackSnapshot,
   mockCallEbayListingQualityRevise,
   executeEbayListingQualityRevision,
 } = require('../adapters/ebayListingQualityExecutionAdapter');
@@ -26,6 +28,16 @@ const OPPORTUNITY_TABLE = 'opportunity_inbox';
 const INTERNAL_EXECUTION_RECORD_TABLE = 'hermes_internal_execution_records';
 const MARKETPLACE_PREFLIGHT_RECORD_TABLE = 'hermes_marketplace_preflight_records';
 const EBAY_LISTING_QUALITY_PACKET_TABLE = 'hermes_ebay_listing_quality_packets';
+
+const EBAY_LIVE_CREDENTIAL_ENV_NAMES = [
+  'EBAY_APP_ID',
+  'EBAY_CERT_ID',
+  'EBAY_DEV_ID',
+  'EBAY_USER_TOKEN',
+  'EBAY_REFRESH_TOKEN',
+];
+const EBAY_LIVE_OPTIONAL_ENV_NAMES = ['EBAY_ENVIRONMENT'];
+const EBAY_LIVE_ENABLE_ENV_NAME = 'HERMES_EBAY_LIVE_EXECUTION_ENABLED';
 
 const STATUSES = new Set([
   'draft',
@@ -2799,6 +2811,140 @@ async function buildEbayListingQualityPayload({ packetId } = {}) {
 
 
 
+
+
+async function buildEbayListingQualityLiveReadiness({ packetId } = {}) {
+  const packet = await getEbayListingQualityPacket({ packetId });
+  const request = await getExecutionRequest({ requestId: packet.request_id });
+  const intent = buildEbayListingQualityExecutionIntent({ packet, request, dryRun: true });
+  const payload = buildEbayListingQualityRevisePayload({ packet, request, intent });
+  const rollbackSnapshot = prepareEbayListingQualityRollbackSnapshot({ packet });
+  const boundary = callEbayListingQualityRevise({
+    packet,
+    request,
+    payload,
+    dryRun: true,
+    liveEnabled: false,
+    writeRequested: false,
+  });
+  const db = getClient();
+  const executionEventTypes = [
+    'request_executed',
+    'execution_started',
+    'execution_completed',
+    'execution_failed',
+    'marketplace_execution_started',
+    'marketplace_execution_completed',
+    'marketplace_execution_failed',
+  ];
+  const { count: previousMarketplaceExecutionEventCount, error: executionEventsError } = await db
+    .from(EVENT_TABLE)
+    .select('*', { count: 'exact', head: true })
+    .eq('request_id', request.id)
+    .in('event_type', executionEventTypes);
+  if (executionEventsError) throw executionEventsError;
+
+  const envPresence = Object.fromEntries([
+    EBAY_LIVE_ENABLE_ENV_NAME,
+    ...EBAY_LIVE_CREDENTIAL_ENV_NAMES,
+    ...EBAY_LIVE_OPTIONAL_ENV_NAMES,
+  ].map(name => [name, Boolean(process.env[name])]));
+  const missingCredentialEnvNames = EBAY_LIVE_CREDENTIAL_ENV_NAMES.filter(name => !envPresence[name]);
+  const liveEnabled = String(process.env[EBAY_LIVE_ENABLE_ENV_NAME] || '').toLowerCase() === 'true';
+  const credentialsPresent = missingCredentialEnvNames.length === 0;
+  const responseParserExists = typeof parseEbayReviseFixedPriceItemResponse === 'function';
+  const liveCallBoundaryExists = typeof callEbayListingQualityRevise === 'function';
+  const payloadBuilds = Boolean(payload && payload.payload && payload.target_item_id && !payload.blockers?.includes('target_item_id_missing'));
+  const payloadOnlyAllowedFields = payload?.payload_summary?.forbidden_fields_present === false
+    && Array.isArray(payload?.payload_summary?.non_allowed_fields)
+    && payload.payload_summary.non_allowed_fields.length === 0;
+  const rollbackSnapshotExists = rollbackSnapshot?.available === true;
+  const noPreviousMarketplaceExecutionEvent = (previousMarketplaceExecutionEventCount || 0) === 0;
+
+  const missingRequirements = [];
+  if (!packet) missingRequirements.push('packet_missing');
+  if (packet?.status !== 'packet_recorded') missingRequirements.push('packet_status_not_packet_recorded');
+  if (packet?.confirmation_status !== 'confirmed') missingRequirements.push('packet_confirmation_status_not_confirmed');
+  if (request?.final_approval_status !== 'approved') missingRequirements.push('request_final_approval_not_approved');
+  if (!packet?.item_id) missingRequirements.push('target_item_id_missing');
+  if (!payloadBuilds) missingRequirements.push('payload_build_failed');
+  if (!payloadOnlyAllowedFields) missingRequirements.push('payload_forbidden_or_non_allowed_fields_present');
+  if (!rollbackSnapshotExists) missingRequirements.push('rollback_snapshot_missing');
+  if (!responseParserExists) missingRequirements.push('response_parser_missing');
+  if (!liveCallBoundaryExists) missingRequirements.push('live_call_boundary_missing');
+  if (request?.executed_at != null) missingRequirements.push('request_executed_at_present');
+  if (request?.execution_result != null) missingRequirements.push('request_execution_result_present');
+  if (!noPreviousMarketplaceExecutionEvent) missingRequirements.push('previous_marketplace_execution_event_exists');
+  if (!liveEnabled) missingRequirements.push('live_ebay_execution_disabled');
+  if (!credentialsPresent) missingRequirements.push('ebay_credentials_missing');
+
+  const dryRunRequirements = missingRequirements.filter(name => ![
+    'live_ebay_execution_disabled',
+    'ebay_credentials_missing',
+  ].includes(name));
+
+  return {
+    packet_id: packet.id,
+    request_id: request.id,
+    ready_for_live_execution: missingRequirements.length === 0,
+    ready_for_dry_run: dryRunRequirements.length === 0,
+    live_enabled: liveEnabled,
+    credentials_present: credentialsPresent,
+    missing_requirements: missingRequirements,
+    dry_run_missing_requirements: dryRunRequirements,
+    checks: {
+      packet_exists: Boolean(packet),
+      packet_status: packet?.status || null,
+      confirmation_status: packet?.confirmation_status || null,
+      request_final_approval_status: request?.final_approval_status || 'not_requested',
+      target_item_id_exists: Boolean(packet?.item_id),
+      payload_builds: payloadBuilds,
+      payload_only_allowed_fields: payloadOnlyAllowedFields,
+      payload_forbidden_fields_present: payload?.payload_summary?.forbidden_fields_present === true,
+      rollback_snapshot_exists: rollbackSnapshotExists,
+      response_parser_exists: responseParserExists,
+      live_call_boundary_exists: liveCallBoundaryExists,
+      request_executed_at_is_null: request?.executed_at == null,
+      request_execution_result_is_null: request?.execution_result == null,
+      no_previous_marketplace_execution_event: noPreviousMarketplaceExecutionEvent,
+      previous_marketplace_execution_event_count: previousMarketplaceExecutionEventCount || 0,
+    },
+    environment: {
+      checked_names_only: true,
+      live_enable_env_name: EBAY_LIVE_ENABLE_ENV_NAME,
+      live_enable_env_present: envPresence[EBAY_LIVE_ENABLE_ENV_NAME],
+      credential_env_presence: Object.fromEntries(EBAY_LIVE_CREDENTIAL_ENV_NAMES.map(name => [name, envPresence[name]])),
+      optional_env_presence: Object.fromEntries(EBAY_LIVE_OPTIONAL_ENV_NAMES.map(name => [name, envPresence[name]])),
+      missing_credential_env_names: missingCredentialEnvNames,
+      values_printed: false,
+    },
+    target_item_id: packet?.item_id || null,
+    payload_summary: payload?.payload_summary || null,
+    boundary_summary: {
+      ready_for_live_call: boundary.ready_for_live_call,
+      would_call_ebay: boundary.would_call_ebay,
+      actual_ebay_call: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      blockers: boundary.blockers || [],
+    },
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      executed_at_updated: false,
+      execution_result_updated: false,
+      secrets_printed: false,
+      read_only: true,
+    },
+    source: 'phase_12f_ebay_live_readiness_preflight_v1',
+  };
+}
+
 async function callEbayListingQualityBoundary({ packetId, dryRun = true, liveEnabled = false, writeRequested = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -3196,6 +3342,7 @@ module.exports = {
   getEbayListingQualityPacket,
   confirmEbayListingQualityPacket,
   buildEbayListingQualityPayload,
+  buildEbayListingQualityLiveReadiness,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
   executeEbayListingQualityPacket,
