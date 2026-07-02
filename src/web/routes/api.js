@@ -3762,9 +3762,10 @@ router.get('/orders/:orderNo/fedex-label', async (req, res) => {
 router.post('/orders/:orderNo/koreapost-label', async (req, res) => {
   try {
     const { orderNo } = req.params;
-    const { weightKg, dimensions, serviceType = 'KPACKET', vatdscrnno } = req.body || {};
+    const { weightKg, dimensions, serviceType = 'KPACKET', vatdscrnno: vatOverride } = req.body || {};
 
     const { getKoreaPostAPI } = require('../../api/koreaPostAPI');
+    const { EU_COUNTRIES } = require('../../services/carrierSheets');
     const kp = getKoreaPostAPI();
     if (!kp.isConfigured()) {
       return res.status(503).json({ success: false, error: '우체국 API 키 미설정 (KOREAPOST_API_KEY)' });
@@ -3773,7 +3774,7 @@ router.post('/orders/:orderNo/koreapost-label', async (req, res) => {
     const { getClient } = require('../../db/supabaseClient');
     const db = getClient();
     const { data: order } = await db.from('orders')
-      .select('order_no, buyer_name, street, city, province, zip_code, country_code, phone, email, payment_amount, currency, sku, title, quantity, weight_kg, box_length, box_width, box_height, tracking_no')
+      .select('order_no, buyer_name, buyer_ioss, street, city, province, zip_code, country_code, phone, email, payment_amount, currency, sku, title, quantity, weight_kg, box_length, box_width, box_height, tracking_no')
       .eq('order_no', orderNo).maybeSingle();
     if (!order) return res.status(404).json({ success: false, error: '주문을 찾을 수 없습니다' });
     if (order.tracking_no) return res.status(409).json({ success: false, error: `이미 발급됨 (tracking_no=${order.tracking_no})` });
@@ -3808,6 +3809,17 @@ router.post('/orders/:orderNo/koreapost-label', async (req, res) => {
       addr1 = street; addr2 = 'N/A'; addr3 = street;
     }
 
+    // IOSS 결정 우선순위 (사장님 결정 2026-07-02):
+    //   1. body 의 vatdscrnno (수동 override — 특수 케이스)
+    //   2. order.buyer_ioss (eBay/Shopify sync 시 저장된 판매처 IOSS)
+    //   3. EU 국가면 env KOREAPOST_IOSS_NO (PMC 우체국 계약 IOSS fallback)
+    //   4. 그 외 → 빈 값 (우체국 API 가 IOSS 필드 skip)
+    const cc = String(order.country_code || '').toUpperCase();
+    let vatdscrnno = vatOverride || order.buyer_ioss || null;
+    if (!vatdscrnno && EU_COUNTRIES.has(cc)) {
+      vatdscrnno = process.env.KOREAPOST_IOSS_NO || null;
+    }
+
     const result = await kp.createKPacketParcel({
       order: { orderNo: order.order_no },
       recipient: {
@@ -3831,24 +3843,59 @@ router.post('/orders/:orderNo/koreapost-label', async (req, res) => {
       vatdscrnno,
     });
 
-    // orders 업데이트 (regino = 운송장 번호)
+    // orders 업데이트 (사장님 결정 2026-07-02):
+    //   status='PENDING_KOREAPOST' — "우체국에 신규 등록만 완료" 상태.
+    //   실제 발행 확정은 사장님이 biz.epost.go.kr 에서 검토/발행 후 앱에서
+    //   POST /koreapost-confirm-shipped 로 SHIPPED 전환.
     await db.from('orders').update({
       carrier: serviceType === 'EMS' ? '우체국 EMS' : '우체국 K-Packet',
       tracking_no: result.regino,
       shipping_cost: result.cost || null,
       shipping_currency: 'KRW',
       service_type: serviceType,
-      status: 'SHIPPED',
+      status: 'PENDING_KOREAPOST',
     }).eq('order_no', orderNo);
 
     res.json({
       success: true,
+      status: 'PENDING_KOREAPOST',
       trackingNumber: result.regino,
       cost: result.cost,
       reqno: result.reqno,
+      iossUsed: vatdscrnno || null,
+      reviewUrl: 'https://biz.epost.go.kr',   // 사장님이 여기서 검토/발행
+      message: '우체국에 신규 등록 완료. biz.epost.go.kr 에서 검토/발행 후 앱에서 "발매 확정" 눌러주세요.',
     });
   } catch (e) {
     console.error('❌ orders/koreapost-label:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/orders/:orderNo/koreapost-confirm-shipped — 사장님이 우체국 사이트에서
+// 검토/발행 완료 후 앱에서 최종 SHIPPED 로 전환하는 라우트 (사장님 결정 2026-07-02).
+// 우체국에는 API 호출 안 함 — DB status 만 SHIPPED 로 변경.
+router.post('/orders/:orderNo/koreapost-confirm-shipped', async (req, res) => {
+  try {
+    const { orderNo } = req.params;
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+
+    const { data: order } = await db.from('orders')
+      .select('order_no, status, tracking_no, carrier')
+      .eq('order_no', orderNo).maybeSingle();
+    if (!order) return res.status(404).json({ success: false, error: '주문을 찾을 수 없습니다' });
+    if (order.status !== 'PENDING_KOREAPOST') {
+      return res.status(409).json({ success: false, error: `PENDING_KOREAPOST 상태가 아닙니다 (현재: ${order.status})` });
+    }
+    if (!order.tracking_no) {
+      return res.status(409).json({ success: false, error: '운송장 번호가 없습니다 — 먼저 신규 등록이 필요합니다' });
+    }
+
+    await db.from('orders').update({ status: 'SHIPPED' }).eq('order_no', orderNo);
+    res.json({ success: true, status: 'SHIPPED', trackingNumber: order.tracking_no });
+  } catch (e) {
+    console.error('❌ orders/koreapost-confirm-shipped:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });

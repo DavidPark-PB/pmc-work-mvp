@@ -6721,7 +6721,10 @@ async function shippingFedexLabel(opts) {
   }
 }
 
-// 우체국 라벨 즉시 발급 (소포신청)
+// 우체국 신규 등록 (사장님 결정 2026-07-02):
+// - 라벨 즉시 발행이 아니라 우체국에 "신규 등록" 만. 사장님이 biz.epost.go.kr
+//   에서 검토/수정/발행 후 앱의 shippingKoreaPostConfirm() 로 SHIPPED 전환.
+// - PDF 자동 open 제거 (검토 없이 발행되는 것처럼 오인 방지).
 async function shippingKoreaPostLabel(opts) {
   const { orderNo, rowIdx, serviceType, weightKg, dims } = opts || {};
   if (!orderNo || !serviceType || !weightKg) {
@@ -6729,10 +6732,15 @@ async function shippingKoreaPostLabel(opts) {
     return;
   }
   const svcLabel = serviceType === 'EMS' ? 'EMS' : 'K-Packet';
-  if (!confirm(`우체국 ${svcLabel} 라벨을 즉시 발급하시겠어요?\n\n주문: ${orderNo}\n무게: ${weightKg}kg\n\n실제 운송장 번호가 발급되고 PDF 가 새 창에서 열립니다.`)) return;
+  if (!confirm(
+    `우체국 ${svcLabel} 에 신규 등록 하시겠어요?\n\n` +
+    `주문: ${orderNo}\n무게: ${weightKg}kg\n\n` +
+    `⚠ 라벨이 즉시 발행되지 않습니다.\n` +
+    `우체국에 임시 접수만 되고, 사장님이 biz.epost.go.kr 에서 확인/수정/발행 후 앱에서 '발매 확정' 버튼을 눌러야 배송 완료로 처리됩니다.`
+  )) return;
 
   const panel = document.getElementById(`est-panel-${rowIdx}`);
-  if (panel) panel.innerHTML = '<div style="padding:8px;color:#888;font-size:11px;">⏳ 우체국 라벨 발급 중…</div>';
+  if (panel) panel.innerHTML = '<div style="padding:8px;color:#888;font-size:11px;">⏳ 우체국 신규 등록 중…</div>';
 
   try {
     const r = await fetch(`/api/orders/${encodeURIComponent(orderNo)}/koreapost-label`, {
@@ -6744,27 +6752,46 @@ async function shippingKoreaPostLabel(opts) {
       }),
     });
     const j = await r.json();
-    if (!r.ok || !j.success) throw new Error(j.error || '라벨 발급 실패');
+    if (!r.ok || !j.success) throw new Error(j.error || '신규 등록 실패');
 
-    if (panel) panel.innerHTML = `<div style="padding:8px;background:#e8f5e9;border-radius:4px;font-size:11px;color:#2e7d32;">
-      ✓ 운송장 <code>${j.trackingNumber}</code> · ₩${(j.cost || 0).toLocaleString()}<br>
-      라벨 PDF 새 창에서 열립니다…
+    const iossLine = j.iossUsed
+      ? `<div style="margin-top:4px;color:#666">IOSS: <code>${j.iossUsed}</code></div>`
+      : '';
+    if (panel) panel.innerHTML = `<div style="padding:8px;background:#fff8e1;border:1px solid #f9a825;border-radius:4px;font-size:11px;color:#e65100;">
+      🟡 우체국 신규 등록 완료 — <strong>발매 대기</strong><br>
+      운송장 <code>${j.trackingNumber}</code> · ₩${(j.cost || 0).toLocaleString()}
+      ${iossLine}
+      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">
+        <a href="${j.reviewUrl || 'https://biz.epost.go.kr'}" target="_blank" style="padding:3px 8px;background:#1565c0;color:#fff;border-radius:4px;text-decoration:none;font-size:10px;font-weight:600">🌐 우체국 사이트에서 검토</a>
+        <button onclick="shippingKoreaPostConfirm('${encodeURIComponent(orderNo)}', ${rowIdx})" style="padding:3px 8px;background:#2e7d32;color:#fff;border:0;border-radius:4px;cursor:pointer;font-size:10px;font-weight:600">✓ 발매 확정</button>
+      </div>
     </div>`;
-
-    if (j.labelStored) {
-      try {
-        // 우체국용 signed URL — 같은 버킷 (shipping-labels) 사용. FedEx 라우트 재활용 가능.
-        const u = await fetch(`/api/orders/${encodeURIComponent(orderNo)}/fedex-label`);
-        const uj = await u.json();
-        if (uj.url) window.open(uj.url, '_blank');
-      } catch {}
-    }
 
     setTimeout(() => {
       if (typeof shippingLoadRecent === 'function') shippingLoadRecent();
     }, 1500);
   } catch (e) {
     if (panel) panel.innerHTML = `<div style="padding:8px;color:#c62828;font-size:11px;">❌ ${e.message}</div>`;
+  }
+}
+
+// 우체국 사이트에서 발행 확정 후 앱에서 SHIPPED 로 전환 (사장님 결정 2026-07-02).
+// DB status 만 변경 — 우체국에 별도 API 호출 없음.
+async function shippingKoreaPostConfirm(encodedOrderNo, rowIdx) {
+  if (!confirm('우체국 사이트에서 라벨 발행을 완료하셨나요?\n\n앱에서 이 주문을 SHIPPED 로 변경합니다.')) return;
+  const panel = document.getElementById(`est-panel-${rowIdx}`);
+  try {
+    const r = await fetch(`/api/orders/${encodedOrderNo}/koreapost-confirm-shipped`, { method: 'POST' });
+    const j = await r.json();
+    if (!r.ok || !j.success) throw new Error(j.error || '발매 확정 실패');
+    if (panel) panel.innerHTML = `<div style="padding:8px;background:#e8f5e9;border:1px solid #2e7d32;border-radius:4px;font-size:11px;color:#2e7d32;">
+      ✅ 발매 확정 — 운송장 <code>${j.trackingNumber}</code>
+    </div>`;
+    setTimeout(() => {
+      if (typeof shippingLoadRecent === 'function') shippingLoadRecent();
+    }, 1000);
+  } catch (e) {
+    alert('발매 확정 실패: ' + e.message);
   }
 }
 
