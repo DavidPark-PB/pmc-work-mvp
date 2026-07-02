@@ -67,6 +67,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-mock-call --packet-id=<PACKET_ID> --scenario=success|warning|failure [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-live-readiness --packet-id=<PACKET_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-live-transport --packet-id=<PACKET_ID> [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-live-runbook --packet-id=<PACKET_ID>',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -93,6 +94,7 @@ function printUsage() {
     'Phase 12E eBay Mock Transport: mock response parser only; no eBay call and no DB write by default.',
     'Phase 12F eBay Live Readiness: read-only preflight; checks env presence only and prints no secret values.',
     'Phase 12G eBay Live Transport Wiring: existing eBay API module wired, but live calls remain disabled unless all gates pass.',
+    'Phase 12H eBay Live Runbook: read-only operator checklist; does not execute live marketplace changes.',
   ].join('\n'));
 }
 
@@ -585,6 +587,19 @@ async function main() {
       writeRequested: hasFlag('write'),
       liveEnabled,
     });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-live-runbook') {
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (packetId == null) {
+      printUsage();
+      throw new Error('packet-id is required');
+    }
+    const { buildEbayListingQualityLiveRunbook } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayListingQualityLiveRunbook({ packetId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
