@@ -56,6 +56,7 @@ function printUsage() {
     '  npm run hermes:agent -- marketplace-preflight-record --id=<REQUEST_ID> --marketplace=ebay --operation=listing_quality_update --actor=<USER> --reason="..." [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-dry-run --id=<REQUEST_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-target-review --id=<REQUEST_ID>',
+    '  npm run hermes:agent -- ebay-listing-quality-execution-packet --id=<REQUEST_ID>',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -71,6 +72,7 @@ function printUsage() {
     'Phase 8 Marketplace Preflight: default dry-run; --write records only internal preflight audit, never marketplace execution.',
     'Phase 9 eBay Listing Quality Dry-Run: read-only; no eBay API call and no listing revision.',
     'Phase 10 eBay Listing Quality Target Review: read-only; resolves cached target and rollback review only.',
+    'Phase 11A eBay Listing Quality Execution Packet: read-only packet preview only; no eBay API call and no listing revision.',
   ].join('\n'));
 }
 
@@ -379,6 +381,19 @@ async function main() {
     }
     const { buildEbayListingQualityTargetReview } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayListingQualityTargetReview({ requestId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-execution-packet') {
+    const requestId = intArg('id', intArg('request-id', null));
+    if (requestId == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const { buildEbayListingQualityExecutionPacket } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayListingQualityExecutionPacket({ requestId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }

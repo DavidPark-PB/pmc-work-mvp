@@ -583,6 +583,49 @@
     `;
   }
 
+
+  function renderEbayListingQualityExecutionPacket(packet) {
+    if (!packet) {
+      return '<div style="color:#666;font-size:12px;padding:12px;text-align:center;">eBay execution packet 없음</div>';
+    }
+    const list = (title, rows, color) => `
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;margin-top:8px;">
+        <div style="color:${color || '#90a4ae'};font-size:10px;margin-bottom:4px;font-weight:700;">${esc(title)}</div>
+        ${Array.isArray(rows) && rows.length ? `<ul style="margin:0;padding-left:18px;color:#cfd8dc;font-size:12px;line-height:1.45;">${rows.map(row => `<li>${esc(row)}</li>`).join('')}</ul>` : '<div style="color:#666;font-size:12px;">none</div>'}
+      </div>
+    `;
+    return `
+      <div style="background:#261f12;border:1px solid #5d3a00;border-radius:6px;padding:10px;color:#ffcc80;font-size:12px;line-height:1.5;margin-bottom:8px;">
+        Execution packet is not eBay execution.<br>
+        No eBay API call is made.<br>
+        Operator packet must be non-empty before any future write phase.
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;color:#cfd8dc;font-size:12px;">
+        <div>execution_packet_ready<br>${boolPill(packet.execution_packet_ready === true)}</div>
+        <div>operator_packet_ready<br>${boolPill(packet.operator_packet?.ready === true)}</div>
+        <div>dry_run<br>${boolPill(packet.dry_run === true)}</div>
+        <div>marketplace_api_calls<br>${boolPill(packet.safety?.marketplace_api_calls === true)}</div>
+        <div>execution_performed<br>${boolPill(packet.safety?.execution_performed === true)}</div>
+        <div>target item_id<br><code style="color:#fff;">${esc(packet.target?.item_id || 'null')}</code></div>
+      </div>
+      ${list('packet blockers', packet.operator_packet?.blockers || [], '#ef9a9a')}
+      ${list('packet warnings', packet.operator_packet?.warnings || [], '#ffcc80')}
+      ${list('required confirmations', packet.operator_packet?.required_confirmations || [], '#90caf9')}
+      <details style="margin-top:8px;">
+        <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Planned mutation JSON</summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(packet.planned_mutation || {})}</pre>
+      </details>
+      <details style="margin-top:8px;">
+        <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Rollback snapshot JSON</summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(packet.rollback_snapshot || {})}</pre>
+      </details>
+      <details style="margin-top:8px;">
+        <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Raw execution packet JSON</summary>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:220px;overflow:auto;">${pretty(packet)}</pre>
+      </details>
+    `;
+  }
+
   function renderDetail() {
     const el = document.getElementById('her-detail');
     if (!el || !selectedDetail) return;
@@ -659,6 +702,12 @@
       <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">eBay listing quality target review</div>
         ${renderEbayListingQualityTargetReview(selectedDetail.ebay_listing_quality_target_review)}
+      </div>
+
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">eBay listing quality execution packet</div>
+        ${renderEbayListingQualityExecutionPacket(selectedDetail.ebay_listing_quality_execution_packet)}
       </div>
 
       ${opp ? `
