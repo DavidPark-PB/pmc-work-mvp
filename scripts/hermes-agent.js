@@ -64,6 +64,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-record-result --packet-id=<PACKET_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-build-payload --packet-id=<PACKET_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-call-boundary --packet-id=<PACKET_ID> [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-mock-call --packet-id=<PACKET_ID> --scenario=success|warning|failure [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -87,6 +88,7 @@ function printUsage() {
     'Phase 12B eBay Result Recorder: default dry-run; --write records internal result scaffolding only, never marketplace success.',
     'Phase 12C eBay Payload Builder: build payload only; no eBay call and no database write.',
     'Phase 12D eBay Live Call Boundary: default dry-run; --write remains blocked unless live env is explicitly enabled.',
+    'Phase 12E eBay Mock Transport: mock response parser only; no eBay call and no DB write by default.',
   ].join('\n'));
 }
 
@@ -527,6 +529,24 @@ async function main() {
       dryRun,
       liveEnabled,
       writeRequested: hasFlag('write'),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-mock-call') {
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (packetId == null) {
+      printUsage();
+      throw new Error('packet-id is required');
+    }
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
+    const { mockCallEbayListingQualityPacket } = require('../src/services/hermesExecutionApproval');
+    const result = await mockCallEbayListingQualityPacket({
+      packetId,
+      scenario: arg('scenario', 'success'),
+      dryRun,
     });
     console.log(JSON.stringify(result, null, 2));
     return;

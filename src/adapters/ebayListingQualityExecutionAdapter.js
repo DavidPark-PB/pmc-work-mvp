@@ -369,6 +369,136 @@ function callEbayListingQualityRevise({ packet, request, payload, dryRun = true,
   };
 }
 
+
+
+function normalizeEbayMessages(value) {
+  const input = Array.isArray(value) ? value : (value ? [value] : []);
+  return input.map((entry, index) => {
+    if (typeof entry === 'string') return { code: null, severity: null, message: entry, index };
+    if (!isPlainObject(entry)) return { code: null, severity: null, message: String(entry), index };
+    return {
+      code: entry.ErrorCode || entry.code || null,
+      severity: entry.SeverityCode || entry.severity || null,
+      short_message: entry.ShortMessage || entry.short_message || null,
+      long_message: entry.LongMessage || entry.long_message || entry.message || null,
+      message: entry.LongMessage || entry.ShortMessage || entry.message || null,
+      index,
+    };
+  });
+}
+
+function parseEbayReviseFixedPriceItemResponse(rawResponse = {}) {
+  const response = isPlainObject(rawResponse) ? rawResponse : {};
+  const ack = response.Ack || response.ack || 'Unknown';
+  const errors = normalizeEbayMessages(response.Errors || response.errors)
+    .filter(error => !/warning/i.test(String(error.severity || '')));
+  const warnings = normalizeEbayMessages(response.Warnings || response.warnings)
+    .concat(normalizeEbayMessages(response.Errors || response.errors).filter(error => /warning/i.test(String(error.severity || ''))));
+  const itemId = response.ItemID || response.item_id || response.Item?.ItemID || null;
+  const correlationId = response.CorrelationID || response.correlation_id || response.correlationId || null;
+  const timestamp = response.Timestamp || response.timestamp || new Date().toISOString();
+  const success = /^(success|warning)$/i.test(String(ack)) && errors.length === 0;
+
+  return {
+    success,
+    ack,
+    item_id: itemId,
+    correlation_id: correlationId,
+    timestamp,
+    warnings,
+    errors,
+    raw_response: response,
+  };
+}
+
+function mockEbayListingQualityReviseTransport({ payload, scenario = 'success', correlationId = null, timestamp = null } = {}) {
+  const normalizedScenario = ['success', 'warning', 'failure'].includes(String(scenario).toLowerCase())
+    ? String(scenario).toLowerCase()
+    : 'success';
+  const now = timestamp || new Date().toISOString();
+  const itemId = payload?.Item?.ItemID || null;
+  const id = correlationId || `mock-ebay-listing-quality-${normalizedScenario}-${itemId || 'unknown'}`;
+  const base = {
+    Timestamp: now,
+    CorrelationID: id,
+    Version: 'mock-phase-12e-v1',
+    Build: 'mock-transport',
+    ItemID: itemId,
+  };
+
+  if (normalizedScenario === 'warning') {
+    return {
+      ...base,
+      Ack: 'Warning',
+      Warnings: [{
+        SeverityCode: 'Warning',
+        ErrorCode: '21919456',
+        ShortMessage: 'Mock warning',
+        LongMessage: 'Mock transport warning: eBay accepted the revise payload with a non-blocking listing quality warning.',
+      }],
+    };
+  }
+
+  if (normalizedScenario === 'failure') {
+    return {
+      ...base,
+      Ack: 'Failure',
+      Errors: [{
+        SeverityCode: 'Error',
+        ErrorCode: '21919188',
+        ShortMessage: 'Mock failure',
+        LongMessage: 'Mock transport failure: eBay rejected the revise payload for validation testing.',
+      }],
+    };
+  }
+
+  return {
+    ...base,
+    Ack: 'Success',
+  };
+}
+
+function mockCallEbayListingQualityRevise({ packet, request, payload, scenario = 'success' } = {}) {
+  const payloadObject = isPlainObject(payload) ? payload : {};
+  const rawResponse = mockEbayListingQualityReviseTransport({
+    payload: payloadObject.payload || payloadObject,
+    scenario,
+  });
+  const parsed_response = parseEbayReviseFixedPriceItemResponse(rawResponse);
+  return {
+    packet_id: packet?.id || payloadObject.packet_id || null,
+    request_id: request?.id || packet?.request_id || payloadObject.request_id || null,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    api_operation: payloadObject.api_operation || 'ReviseFixedPriceItem',
+    scenario: ['success', 'warning', 'failure'].includes(String(scenario).toLowerCase()) ? String(scenario).toLowerCase() : 'success',
+    target_item_id: payloadObject.target_item_id || packet?.item_id || null,
+    payload: payloadObject.payload || payloadObject,
+    mock_transport: true,
+    actual_ebay_call: false,
+    actual_network_call: false,
+    actual_database_write: false,
+    marketplace_write_performed: false,
+    raw_response: rawResponse,
+    parsed_response,
+    safety: {
+      marketplace_api_calls: false,
+      ebay_api_calls: false,
+      network_calls: false,
+      mock_transport: true,
+      marketplace_write_performed: false,
+      live_execution_performed: false,
+      listing_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      execution_result_updated: false,
+      executed_at_updated: false,
+      database_writes: false,
+    },
+    source: 'phase_12e_mock_transport_v1',
+  };
+}
+
 async function executeEbayListingQualityRevision(intent, { dryRun = true } = {}) {
   if (dryRun !== false) {
     return {
@@ -411,6 +541,9 @@ module.exports = {
   buildEbayListingQualityResultRecord,
   buildEbayListingQualityRevisePayload,
   callEbayListingQualityRevise,
+  parseEbayReviseFixedPriceItemResponse,
+  mockEbayListingQualityReviseTransport,
+  mockCallEbayListingQualityRevise,
   buildEbayListingQualityExecutionIntent,
   executeEbayListingQualityRevision,
 };

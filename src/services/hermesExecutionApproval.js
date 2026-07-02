@@ -16,6 +16,7 @@ const {
   buildEbayListingQualityResultRecord,
   buildEbayListingQualityRevisePayload,
   callEbayListingQualityRevise,
+  mockCallEbayListingQualityRevise,
   executeEbayListingQualityRevision,
 } = require('../adapters/ebayListingQualityExecutionAdapter');
 
@@ -2813,6 +2814,61 @@ async function callEbayListingQualityBoundary({ packetId, dryRun = true, liveEna
   });
 }
 
+
+
+async function mockCallEbayListingQualityPacket({ packetId, scenario = 'success', dryRun = true } = {}) {
+  const packet = await getEbayListingQualityPacket({ packetId });
+  const request = await getExecutionRequest({ requestId: packet.request_id });
+  const intent = buildEbayListingQualityExecutionIntent({ packet, request, dryRun: true });
+  const payload = buildEbayListingQualityRevisePayload({ packet, request, intent });
+  const mockResult = mockCallEbayListingQualityRevise({ packet, request, payload, scenario });
+  const eventPayload = {
+    ...mockResult,
+    internal_validation_only: true,
+    actual_ebay_call: false,
+    mock_transport: true,
+    marketplace_write_performed: false,
+  };
+
+  if (dryRun !== false) {
+    return {
+      dry_run: true,
+      recorded: false,
+      ...mockResult,
+      event_preview: {
+        request_id: request.id,
+        event_type: 'ebay_listing_quality_mock_call_validated',
+        actor: 'system',
+        payload: eventPayload,
+      },
+    };
+  }
+
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType: 'ebay_listing_quality_mock_call_validated',
+    actor: 'system',
+    payload: eventPayload,
+  });
+
+  return {
+    dry_run: false,
+    recorded: true,
+    ...mockResult,
+    actual_database_write: true,
+    safety: {
+      ...(mockResult.safety || {}),
+      database_writes: true,
+      actual_ebay_call: false,
+      mock_transport: true,
+      marketplace_write_performed: false,
+      execution_result_updated: false,
+      executed_at_updated: false,
+    },
+    event,
+  };
+}
+
 async function executeEbayListingQualityPacket({ packetId, dryRun = true } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -3141,6 +3197,7 @@ module.exports = {
   confirmEbayListingQualityPacket,
   buildEbayListingQualityPayload,
   callEbayListingQualityBoundary,
+  mockCallEbayListingQualityPacket,
   executeEbayListingQualityPacket,
   recordEbayListingQualityExecutionResult,
   reviewExecutionRequest,
