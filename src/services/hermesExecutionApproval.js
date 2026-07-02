@@ -2950,6 +2950,304 @@ async function persistEbayListingQualityLiveExecutionResult({ packet, request, p
   };
 }
 
+
+
+const MARKETPLACE_EXECUTION_EVENT_TYPES = [
+  'request_executed',
+  'execution_started',
+  'execution_completed',
+  'execution_failed',
+  'marketplace_execution_started',
+  'marketplace_execution_completed',
+  'marketplace_execution_failed',
+];
+
+function normalizeSignalTypes(signals = []) {
+  return [...new Set((Array.isArray(signals) ? signals : [])
+    .map(signal => {
+      if (typeof signal === 'string') return signal;
+      if (signal && typeof signal === 'object') return signal.type || signal.signal_type || signal.name || null;
+      return null;
+    })
+    .filter(Boolean)
+    .map(value => String(value)))]
+    .sort();
+}
+
+function collectCandidateSignalSummary({ opportunity, request } = {}) {
+  const opportunityMetadata = opportunity?.metadata || {};
+  const requestMetadata = request?.metadata || {};
+  const requestedAction = request?.requested_action || {};
+  const signals = normalizeSignalTypes([
+    ...(opportunityMetadata.source_signals || []),
+    ...(requestMetadata.source_signals || []),
+    ...(requestedAction.source_signals || []),
+    ...(requestedAction.action_plan?.source_signals || []),
+  ]);
+  const recommendations = normalizeSignalTypes([
+    ...(opportunityMetadata.source_recommendations || []),
+    ...(requestMetadata.source_recommendations || []),
+    ...(requestedAction.source_recommendations || []),
+    ...(requestedAction.action_plan?.source_recommendations || []),
+  ]);
+  return {
+    signals,
+    recommendations,
+    has_listing_quality_low: signals.includes('listing_quality_low') || recommendations.includes('listing_quality_review'),
+    has_price_pressure: signals.some(signal => /price|competitor_lower_price|price_attack/i.test(signal)),
+    has_inventory_pressure: signals.some(signal => /inventory|stock|quantity/i.test(signal)),
+  };
+}
+
+function deterministicTitleImprovement(title) {
+  const original = typeof title === 'string' ? title : '';
+  const cleaned = original.replace(/\s+/g, ' ').trim().slice(0, 80);
+  return {
+    current_title: original || null,
+    proposed_title: cleaned || null,
+    title_improvement_only: Boolean(cleaned),
+    title_changed_by_rule: Boolean(cleaned && cleaned !== original),
+    rule: 'trim/collapse whitespace and enforce eBay title length cap; no AI call',
+  };
+}
+
+function candidateEventItemIds(events = []) {
+  const ids = new Set();
+  for (const event of events || []) {
+    const payload = event?.payload || {};
+    for (const value of [
+      payload.target_item_id,
+      payload.item_id,
+      payload?.payload?.Item?.ItemID,
+      payload?.parsed_response?.item_id,
+      payload?.raw_response?.ItemID,
+    ]) {
+      if (value != null && String(value).trim()) ids.add(String(value).trim());
+    }
+  }
+  return ids;
+}
+
+function phase13CandidateBaseExclusions({ request, opportunity, evidence, marketplaceEventsByRequest, marketplaceExecutedItemIds } = {}) {
+  const blockers = [];
+  const requestId = intOrNull(request?.id);
+  const opportunityId = intOrNull(opportunity?.id);
+  const itemId = firstNonEmpty(evidence?.item_id, request?.metadata?.item_id, request?.metadata?.listing_id, opportunity?.metadata?.item_id, opportunity?.metadata?.listing_id, opportunity?.metadata?.ebay_item_id);
+  if (requestId === 1) blockers.push('request_id_1_excluded');
+  if (request?.executed_at != null) blockers.push('request_executed_at_present');
+  if (request?.execution_result != null) blockers.push('request_execution_result_present');
+  if (itemId === '202551129453') blockers.push('item_id_202551129453_excluded');
+  if (marketplaceExecutedItemIds.has(String(itemId || ''))) blockers.push('item_previous_marketplace_execution_completed_event_exists');
+  if (requestId != null && (marketplaceEventsByRequest.get(requestId) || []).some(ev => ev.event_type === 'marketplace_execution_completed')) {
+    blockers.push('request_previous_marketplace_execution_completed_event_exists');
+  }
+  if (opportunityId === 4 && itemId === '202551129453') blockers.push('phase_12_source_opportunity_excluded');
+  return [...new Set(blockers)];
+}
+
+function phase13CandidateQualityBlockers({ request, opportunity, evidence, signalSummary, titleProposal } = {}) {
+  const blockers = [];
+  const itemId = firstNonEmpty(evidence?.item_id, request?.metadata?.item_id, request?.metadata?.listing_id, opportunity?.metadata?.item_id, opportunity?.metadata?.listing_id, opportunity?.metadata?.ebay_item_id);
+  if (!signalSummary.has_listing_quality_low) blockers.push('listing_quality_low_signal_missing');
+  if (!itemId) blockers.push('valid_ebay_item_id_missing');
+  if (!titleProposal.proposed_title) blockers.push('title_evidence_missing');
+  if (signalSummary.has_price_pressure) blockers.push('price_pressure_signal_present');
+  if (signalSummary.has_inventory_pressure) blockers.push('inventory_or_stock_signal_present');
+  const opportunityStatus = opportunity?.status || null;
+  if (opportunity && !['new', 'reviewing', 'approved'].includes(opportunityStatus)) blockers.push(`opportunity_status_${opportunityStatus || 'missing'}_not_active`);
+  const requestStatus = request?.status || null;
+  if (request && ['cancelled', 'rejected', 'failed', 'executed'].includes(requestStatus)) blockers.push(`request_status_${requestStatus}_not_selectable`);
+  return [...new Set(blockers)];
+}
+
+function phase13RiskLevel({ evidence, titleProposal, qualityBlockers } = {}) {
+  if ((qualityBlockers || []).length) return 'blocked';
+  const limitations = evidence?.limitations || [];
+  if (!evidence?.item_id || !titleProposal.proposed_title) return 'high';
+  if (limitations.includes('cached_title_missing')) return 'high';
+  if (limitations.includes('listing_details_cache_missing_for_sku')) return 'medium';
+  if (limitations.includes('cached_description_missing') || limitations.includes('cached_item_specifics_missing')) return 'low';
+  return 'low';
+}
+
+function phase13ScoreCandidate({ signalSummary, evidence, titleProposal, qualityBlockers, baseExclusions, sourceType } = {}) {
+  let score = 0;
+  if (sourceType === 'opportunity') score += 5;
+  if (signalSummary.has_listing_quality_low) score += 40;
+  if (evidence?.item_id) score += 25;
+  if (titleProposal.proposed_title) score += 20;
+  if (titleProposal.title_changed_by_rule) score += 10;
+  if ((evidence?.source_tables || []).includes('listing_details')) score += 8;
+  if ((evidence?.source_tables || []).includes('ebay_products')) score += 5;
+  if (Array.isArray(evidence?.limitations) && evidence.limitations.length) score -= Math.min(20, evidence.limitations.length * 4);
+  score -= (qualityBlockers || []).length * 20;
+  score -= (baseExclusions || []).length * 100;
+  return score;
+}
+
+async function buildPhase13CandidateFromSource({ sourceType, request = null, opportunity = null, marketplaceEventsByRequest, marketplaceExecutedItemIds } = {}) {
+  const metadata = opportunity?.metadata || {};
+  const sku = firstNonEmpty(request?.sku, metadata.sku, request?.metadata?.sku);
+  const evidence = await loadCachedEbayListingEvidence({ sku });
+  const signalSummary = collectCandidateSignalSummary({ opportunity, request });
+  const titleProposal = deterministicTitleImprovement(evidence?.title);
+  const baseExclusions = phase13CandidateBaseExclusions({ request, opportunity, evidence, marketplaceEventsByRequest, marketplaceExecutedItemIds });
+  const qualityBlockers = phase13CandidateQualityBlockers({ request, opportunity, evidence, signalSummary, titleProposal });
+  const riskLevel = phase13RiskLevel({ evidence, titleProposal, qualityBlockers });
+  const score = phase13ScoreCandidate({ signalSummary, evidence, titleProposal, qualityBlockers, baseExclusions, sourceType });
+  const itemId = firstNonEmpty(evidence?.item_id, request?.metadata?.item_id, request?.metadata?.listing_id, metadata.item_id, metadata.listing_id, metadata.ebay_item_id);
+  const selectable = baseExclusions.length === 0 && qualityBlockers.length === 0 && riskLevel === 'low';
+
+  return {
+    source_type: sourceType,
+    score,
+    selectable,
+    request_id: request?.id || null,
+    opportunity_id: opportunity?.id || request?.opportunity_id || null,
+    opportunity_status: opportunity?.status || null,
+    request_status: request?.status || null,
+    sku: sku || null,
+    item_id: itemId || null,
+    listing_id: itemId || null,
+    signal_summary: signalSummary,
+    proposed_mutation_fields: titleProposal.proposed_title ? ['title'] : [],
+    proposed_mutation_preview: titleProposal.proposed_title ? {
+      title: titleProposal.proposed_title,
+      description: null,
+      item_specifics: {},
+      title_improvement_only: true,
+      rule: titleProposal.rule,
+    } : null,
+    forbidden_field_check: {
+      forbidden_fields_present: false,
+      forbidden_fields: [],
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_end_create_relist: false,
+      sku_remapping: false,
+    },
+    evidence_summary: {
+      cached_internal_data_only: true,
+      source_tables: evidence?.source_tables || [],
+      title_present: Boolean(evidence?.title),
+      description_present: Boolean(evidence?.description),
+      item_specifics_count: Object.keys(evidence?.item_specifics || {}).length,
+      rollback_snapshot_available: Boolean(itemId && titleProposal.current_title),
+      limitations: evidence?.limitations || [],
+      live_marketplace_state_fetched: false,
+      ebay_api_call_made: false,
+    },
+    risk_level: riskLevel,
+    exclusion_blockers: baseExclusions,
+    candidate_blockers: qualityBlockers,
+    reason_selected: selectable
+      ? 'listing_quality_low candidate with cached eBay item id, title-only deterministic mutation preview, no forbidden fields, and low rollback risk'
+      : null,
+    reason_not_selected: selectable ? null : [...baseExclusions, ...qualityBlockers].join(', '),
+    recommended_next_action: selectable
+      ? `Run read-only target review/operator packet preview for SKU ${sku}; do not create packet or approval until operator reviews the title proposal.`
+      : 'No action until blockers are resolved; do not create packet or execute marketplace write.',
+  };
+}
+
+async function selectNextEbayListingQualityCandidate({ limit = 10 } = {}) {
+  const safeLimit = Math.min(50, Math.max(1, intOrNull(limit) || 10));
+  const db = getClient();
+  const [requestsResult, opportunitiesResult, eventsResult] = await Promise.all([
+    db.from(REQUEST_TABLE).select('*').order('id', { ascending: false }).limit(200),
+    db.from(OPPORTUNITY_TABLE).select('*').order('id', { ascending: false }).limit(200),
+    db.from(EVENT_TABLE).select('id,request_id,event_type,payload,created_at').in('event_type', MARKETPLACE_EXECUTION_EVENT_TYPES).order('id', { ascending: false }).limit(500),
+  ]);
+  if (requestsResult.error) throw requestsResult.error;
+  if (opportunitiesResult.error) throw opportunitiesResult.error;
+  if (eventsResult.error) throw eventsResult.error;
+
+  const requests = requestsResult.data || [];
+  const opportunities = opportunitiesResult.data || [];
+  const events = eventsResult.data || [];
+  const marketplaceEventsByRequest = new Map();
+  for (const event of events) {
+    const id = intOrNull(event.request_id);
+    if (id == null) continue;
+    if (!marketplaceEventsByRequest.has(id)) marketplaceEventsByRequest.set(id, []);
+    marketplaceEventsByRequest.get(id).push(event);
+  }
+  const completedEvents = events.filter(event => event.event_type === 'marketplace_execution_completed');
+  const marketplaceExecutedItemIds = candidateEventItemIds(completedEvents);
+
+  const opportunityById = new Map(opportunities.map(row => [row.id, row]));
+  const sources = [];
+  for (const request of requests) {
+    if (request.id === 1) continue;
+    const opportunity = opportunityById.get(request.opportunity_id) || null;
+    sources.push({ sourceType: 'request', request, opportunity });
+  }
+  const requestOpportunityIds = new Set(requests.map(row => row.opportunity_id).filter(v => v != null));
+  for (const opportunity of opportunities) {
+    const metadata = opportunity.metadata || {};
+    if (requestOpportunityIds.has(opportunity.id)) continue;
+    if (metadata.hermes_generated !== true) continue;
+    if (opportunity.opportunity_type !== 'listing_quality_review' && metadata.candidate_type !== 'listing_quality_review') continue;
+    sources.push({ sourceType: 'opportunity', request: null, opportunity });
+  }
+
+  const allCandidates = [];
+  for (const source of sources) {
+    allCandidates.push(await buildPhase13CandidateFromSource({
+      ...source,
+      marketplaceEventsByRequest,
+      marketplaceExecutedItemIds,
+    }));
+  }
+  allCandidates.sort((a, b) => b.score - a.score || String(a.sku || '').localeCompare(String(b.sku || '')));
+  const selectableCandidates = allCandidates.filter(candidate => candidate.selectable);
+  const rankedCandidates = selectableCandidates.slice(0, safeLimit).map((candidate, index) => ({ rank: index + 1, ...candidate }));
+  const blockedCandidates = allCandidates.filter(candidate => !candidate.selectable).slice(0, safeLimit).map((candidate, index) => ({ rank_if_unblocked: index + 1, ...candidate }));
+
+  return {
+    read_only: true,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    limit: safeLimit,
+    scanned: {
+      request_count: requests.length,
+      opportunity_count: opportunities.length,
+      source_count: sources.length,
+      marketplace_execution_event_count: events.length,
+      completed_marketplace_item_ids: [...marketplaceExecutedItemIds].sort(),
+    },
+    exclusions: {
+      excluded_packet_ids: [1],
+      excluded_request_ids: [1],
+      excluded_item_ids: ['202551129453'],
+      executed_requests_excluded: true,
+      execution_result_requests_excluded: true,
+      previous_marketplace_execution_completed_items_excluded: true,
+    },
+    ranked_candidates: rankedCandidates,
+    blocked_or_excluded_candidates: blockedCandidates,
+    selected_candidate: rankedCandidates[0] || null,
+    recommended_next_action: rankedCandidates[0]
+      ? 'Review the selected candidate, then create a new read-only operator packet preview in a later phase. Do not execute marketplace writes in Phase 13A.'
+      : 'No selectable next eBay listing_quality_update candidate found. Do not create a packet or approval until an active listing_quality_low opportunity with valid cached eBay item evidence exists.',
+    safety: {
+      read_only: true,
+      actual_ebay_call: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      packet_created: false,
+      approval_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+    },
+    source: 'phase_13a_controlled_expansion_candidate_selector_v1',
+  };
+}
+
 async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -3694,6 +3992,7 @@ module.exports = {
   buildEbayListingQualityPayload,
   buildEbayListingQualityLiveReadiness,
   buildEbayListingQualityLiveRunbook,
+  selectNextEbayListingQualityCandidate,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
