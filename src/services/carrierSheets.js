@@ -237,7 +237,14 @@ class CarrierSheets {
     // 포맷 규칙 적용
     const email = order.email || 'info@ccorea.com';
     const phone = order.phone || '';
-    const zipCode = (order.zipCode || '').replace(/^(\d{5}).*$/, '$1'); // 5자리만
+    // 우편번호 — 미국(US) 만 5자리로 자름 (SHIPTER 라벨 요구사항, ZIP+4 → ZIP5).
+    // 사장님 보고 2026-07-02: 전 국가에 5자리 자르기를 적용하던 옛 로직이 브라질(8자리) /
+    // 일본(7자리) 등 5자리 초과 우편번호를 잘라 SHIPTER 송장 출력 실패.
+    // 다른 국가는 원본 그대로 (공백/dash 유지) — trim 만 적용.
+    const rawZip = String(order.zipCode || '').trim();
+    const zipCode = countryCode === 'US'
+      ? rawZip.replace(/^(\d{5}).*$/, '$1')
+      : rawZip;
     const state = (order.province || '').replace(/^([A-Z]{2}).*$/i, '$1').toUpperCase(); // 2자리
 
     // A~C만 쓰기 (G-M 발송인은 템플릿에 이미 있음)
