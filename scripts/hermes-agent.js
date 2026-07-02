@@ -58,6 +58,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-target-review --id=<REQUEST_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-execution-packet --id=<REQUEST_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-operator-packet --id=<REQUEST_ID> [--title="..."] [--description="..."] [--item-specifics-json="{}"]',
+    '  npm run hermes:agent -- ebay-listing-quality-record-packet --id=<REQUEST_ID> --actor=<USER> --reason="..." [--title="..."] [--description="..."] [--item-specifics-json="{}"] [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -75,6 +76,7 @@ function printUsage() {
     'Phase 10 eBay Listing Quality Target Review: read-only; resolves cached target and rollback review only.',
     'Phase 11A eBay Listing Quality Execution Packet: read-only packet preview only; no eBay API call and no listing revision.',
     'Phase 11B eBay Operator Mutation Packet: read-only internal packet preview only; no eBay API call and no listing revision.',
+    'Phase 11C eBay Packet Record: default dry-run; --write records only an internal immutable review artifact.',
   ].join('\n'));
 }
 
@@ -413,6 +415,28 @@ async function main() {
       title: arg('title', null),
       description: arg('description', null),
       itemSpecifics: arg('item-specifics-json', arg('item-specifics', '{}')),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-record-packet') {
+    const requestId = intArg('id', intArg('request-id', null));
+    if (requestId == null) {
+      printUsage();
+      throw new Error('id is required');
+    }
+    const dryRun = hasFlag('dry-run') || !hasFlag('write');
+    const { recordEbayListingQualityPacket } = require('../src/services/hermesExecutionApproval');
+    const result = await recordEbayListingQualityPacket({
+      requestId,
+      title: arg('title', null),
+      description: arg('description', null),
+      itemSpecifics: arg('item-specifics-json', arg('item-specifics', '{}')),
+      actor: arg('actor', null),
+      reason: arg('reason', null),
+      dryRun,
     });
     console.log(JSON.stringify(result, null, 2));
     return;

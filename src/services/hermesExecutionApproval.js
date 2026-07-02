@@ -17,6 +17,7 @@ const EVENT_TABLE = 'hermes_execution_events';
 const OPPORTUNITY_TABLE = 'opportunity_inbox';
 const INTERNAL_EXECUTION_RECORD_TABLE = 'hermes_internal_execution_records';
 const MARKETPLACE_PREFLIGHT_RECORD_TABLE = 'hermes_marketplace_preflight_records';
+const EBAY_LISTING_QUALITY_PACKET_TABLE = 'hermes_ebay_listing_quality_packets';
 
 const STATUSES = new Set([
   'draft',
@@ -2333,6 +2334,200 @@ async function buildOperatorEbayListingQualityPacket({ requestId, title = null, 
   };
 }
 
+
+
+async function listEbayListingQualityPackets({ requestId = null, limit = 50 } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, intOrNull(limit) || 50));
+  const db = getClient();
+  let q = db.from(EBAY_LISTING_QUALITY_PACKET_TABLE).select('*').order('id', { ascending: false }).limit(safeLimit);
+  const id = intOrNull(requestId);
+  if (id != null) q = q.eq('request_id', id);
+  const { data, error } = await q;
+  if (error) {
+    if (isMissingTableError(error)) {
+      return {
+        count: 0,
+        data: [],
+        migration_required: true,
+        migration: 'supabase/migrations/065_hermes_ebay_listing_quality_packets.sql',
+        error: error.message,
+      };
+    }
+    throw error;
+  }
+  return { count: (data || []).length, data: data || [], migration_required: false };
+}
+
+async function recordEbayListingQualityPacket({ requestId, title = null, description = null, itemSpecifics = {}, actor = null, reason = null, dryRun = true } = {}) {
+  const request = await getExecutionRequest({ requestId });
+  const packetActor = trimOrNull(actor, 100);
+  const packetReason = trimOrNull(reason, 1000);
+  const operatorPacket = await buildOperatorEbayListingQualityPacket({
+    requestId: request.id,
+    title,
+    description,
+    itemSpecifics,
+  });
+  const plannedMutation = operatorPacket.planned_mutation || {};
+  const blockedFields = objectHasForbiddenMarketplaceMutationFields(plannedMutation);
+  const mutationEmpty = listingQualityMutationIsEmpty(plannedMutation);
+  const blockers = [...(operatorPacket.operator_packet?.blockers || [])];
+
+  if (operatorPacket.operator_packet?.ready !== true) blockers.push('operator_packet_not_ready');
+  if (operatorPacket.execution_packet_ready !== true) blockers.push('execution_packet_not_ready');
+  if (mutationEmpty) blockers.push('planned_mutation_empty');
+  if (blockedFields.length) blockers.push('blocked_fields_present_in_planned_mutation');
+  if (dryRun === false && !packetActor) blockers.push('actor_required');
+  if (dryRun === false && !packetReason) blockers.push('reason_required');
+
+  const uniqueBlockers = [...new Set(blockers)];
+  const packetHash = sha256Json({
+    request_id: request.id,
+    item_id: operatorPacket.target?.item_id || null,
+    planned_mutation: plannedMutation,
+    before_snapshot_hash: sha256Json(operatorPacket.before_snapshot || {}),
+    rollback_snapshot_hash: sha256Json(operatorPacket.rollback_snapshot || {}),
+    policy_version: 'phase-11c-ebay-listing-quality-packet-record-v1',
+  });
+  const safetyFlags = {
+    ...(operatorPacket.safety || {}),
+    marketplace_api_calls: false,
+    execution_performed: false,
+    ebay_api_calls: false,
+    external_api_calls: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_revisions: false,
+    listing_end_create_relist: false,
+    database_writes: dryRun === false,
+  };
+  const record = {
+    request_id: request.id,
+    item_id: operatorPacket.target?.item_id || null,
+    actor: packetActor,
+    reason: packetReason,
+    packet_hash: packetHash,
+    planned_mutation: plannedMutation,
+    before_snapshot: operatorPacket.before_snapshot || {},
+    rollback_snapshot: operatorPacket.rollback_snapshot || {},
+    safety_flags: safetyFlags,
+    status: uniqueBlockers.length ? 'packet_rejected' : 'packet_recorded',
+  };
+  const eventPayload = {
+    request_id: request.id,
+    sku: request.sku || null,
+    item_id: record.item_id,
+    actor: packetActor,
+    reason: packetReason,
+    packet_hash: packetHash,
+    status: record.status,
+    blockers: uniqueBlockers,
+    planned_mutation: plannedMutation,
+    execution_performed: false,
+    external_action_executed: false,
+    marketplace_execution_approved: false,
+    marketplace_api_calls: false,
+    ebay_api_calls: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_revisions: false,
+  };
+
+  if (uniqueBlockers.length) {
+    if (dryRun === false) throw new Error(`eBay listing quality packet blocked: ${uniqueBlockers.join(', ')}`);
+    return {
+      dry_run: true,
+      created: false,
+      blocked: true,
+      blockers: uniqueBlockers,
+      request_id: request.id,
+      operator_packet: operatorPacket,
+      packet_hash: packetHash,
+      record_preview: record,
+      event_preview: null,
+      safety: safetyFlags,
+    };
+  }
+
+  if (dryRun !== false) {
+    return {
+      dry_run: true,
+      created: false,
+      blocked: false,
+      request_id: request.id,
+      operator_packet: operatorPacket,
+      packet_hash: packetHash,
+      record_preview: record,
+      event_preview: {
+        request_id: request.id,
+        event_type: 'ebay_listing_quality_packet_recorded',
+        actor: packetActor,
+        payload: eventPayload,
+      },
+      safety: safetyFlags,
+    };
+  }
+
+  if (!packetActor || !packetReason) {
+    return {
+      dry_run: false,
+      created: false,
+      blocked: true,
+      blockers: ['actor_required', 'reason_required'].filter(b => (b === 'actor_required' && !packetActor) || (b === 'reason_required' && !packetReason)),
+      request_id: request.id,
+      operator_packet: operatorPacket,
+      packet_hash: packetHash,
+      record_preview: record,
+      event_preview: null,
+      safety: safetyFlags,
+    };
+  }
+
+  const db = getClient();
+  const { data: inserted, error } = await db
+    .from(EBAY_LISTING_QUALITY_PACKET_TABLE)
+    .insert(record)
+    .select('*')
+    .single();
+  if (error) {
+    if (isMissingTableError(error)) {
+      return {
+        dry_run: false,
+        created: false,
+        blocked: true,
+        migration_required: true,
+        migration: 'supabase/migrations/065_hermes_ebay_listing_quality_packets.sql',
+        error: error.message,
+        request_id: request.id,
+        operator_packet: operatorPacket,
+        packet_hash: packetHash,
+        record_preview: record,
+        safety: safetyFlags,
+      };
+    }
+    throw error;
+  }
+
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType: 'ebay_listing_quality_packet_recorded',
+    actor: packetActor,
+    payload: eventPayload,
+  });
+
+  return {
+    dry_run: false,
+    created: true,
+    blocked: false,
+    request_id: request.id,
+    operator_packet: operatorPacket,
+    packet_hash: packetHash,
+    record: inserted,
+    event,
+    safety: safetyFlags,
+  };
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -2366,7 +2561,7 @@ async function getOpportunitySnapshot(opportunityId) {
 
 async function getExecutionRequestDetail({ requestId } = {}) {
   const request = await getExecutionRequest({ requestId });
-  const [opportunity, events, executorPreflight, internalExecutionRecords, marketplacePreflight, marketplacePreflightRecords, ebayListingQualityDryRun, ebayListingQualityTargetReview, ebayListingQualityExecutionPacket, operatorEbayListingQualityPacket] = await Promise.all([
+  const [opportunity, events, executorPreflight, internalExecutionRecords, marketplacePreflight, marketplacePreflightRecords, ebayListingQualityDryRun, ebayListingQualityTargetReview, ebayListingQualityExecutionPacket, operatorEbayListingQualityPacket, ebayListingQualityPackets] = await Promise.all([
     getOpportunitySnapshot(request.opportunity_id),
     listExecutionEvents({ requestId: request.id, limit: 100 }),
     buildExecutorPreflight({ requestId: request.id }),
@@ -2377,6 +2572,7 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     buildEbayListingQualityTargetReview({ requestId: request.id }),
     buildEbayListingQualityExecutionPacket({ requestId: request.id }),
     buildOperatorEbayListingQualityPacket({ requestId: request.id }),
+    listEbayListingQualityPackets({ requestId: request.id, limit: 50 }),
   ]);
 
   return {
@@ -2395,6 +2591,7 @@ async function getExecutionRequestDetail({ requestId } = {}) {
     ebay_listing_quality_target_review: ebayListingQualityTargetReview,
     ebay_listing_quality_execution_packet: ebayListingQualityExecutionPacket,
     operator_ebay_listing_quality_packet: operatorEbayListingQualityPacket,
+    ebay_listing_quality_packets: ebayListingQualityPackets,
     read_only: true,
     execution_performed: false,
   };
@@ -2546,6 +2743,8 @@ module.exports = {
   buildEbayListingQualityTargetReview,
   buildEbayListingQualityExecutionPacket,
   buildOperatorEbayListingQualityPacket,
+  listEbayListingQualityPackets,
+  recordEbayListingQualityPacket,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,

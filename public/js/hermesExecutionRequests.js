@@ -671,6 +671,37 @@
     `;
   }
 
+
+  function renderEbayListingQualityPacketRecords(records) {
+    const rows = Array.isArray(records?.data) ? records.data : [];
+    if (records?.migration_required) {
+      return '<div style="color:#ef9a9a;font-size:12px;padding:12px;text-align:center;">migration 065 required for packet records</div>';
+    }
+    if (!rows.length) {
+      return '<div style="color:#666;font-size:12px;padding:12px;text-align:center;">recorded eBay packet 없음</div>';
+    }
+    return rows.map(row => `
+      <div style="background:#0f0f23;border:1px solid #263238;border-radius:6px;padding:8px;margin-bottom:8px;">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:5px;">
+          <span style="color:#80deea;font-size:11px;font-family:monospace;font-weight:700;">${esc(row.status)}</span>
+          <span style="color:#aaa;font-size:11px;">actor ${esc(row.actor || '-')}</span>
+          <span style="margin-left:auto;color:#666;font-size:10px;">#${esc(row.id)} · ${fmtDate(row.created_at)}</span>
+        </div>
+        <div style="color:#cfd8dc;font-size:12px;margin-bottom:6px;">item_id <code style="color:#fff;">${esc(row.item_id || '-')}</code></div>
+        <div style="color:#cfd8dc;font-size:12px;margin-bottom:6px;">reason ${esc(row.reason || '-')}</div>
+        <div style="color:#90caf9;font-size:11px;word-break:break-all;margin-bottom:6px;">packet_hash ${esc(row.packet_hash || '-')}</div>
+        <details style="margin-top:8px;">
+          <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Planned mutation JSON</summary>
+          <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:180px;overflow:auto;">${pretty(row.planned_mutation || {})}</pre>
+        </details>
+        <details style="margin-top:8px;">
+          <summary style="color:#aaa;font-size:11px;font-weight:700;cursor:pointer;">Rollback snapshot JSON</summary>
+          <pre style="white-space:pre-wrap;word-break:break-word;color:#cfd8dc;font-size:11px;line-height:1.35;margin:8px 0 0;max-height:180px;overflow:auto;">${pretty(row.rollback_snapshot || {})}</pre>
+        </details>
+      </div>
+    `).join('');
+  }
+
   function renderDetail() {
     const el = document.getElementById('her-detail');
     if (!el || !selectedDetail) return;
@@ -759,6 +790,12 @@
       <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">operator eBay listing quality packet preview</div>
         ${renderOperatorEbayListingQualityPacket(selectedDetail.operator_ebay_listing_quality_packet)}
+      </div>
+
+
+      <div style="background:#0f0f23;border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:8px;font-weight:700;">recorded eBay listing quality packets</div>
+        ${renderEbayListingQualityPacketRecords(selectedDetail.ebay_listing_quality_packets)}
       </div>
 
       ${opp ? `
