@@ -387,8 +387,54 @@ function normalizeEbayMessages(value) {
   });
 }
 
+
+function firstXmlTag(xml, tagName) {
+  if (typeof xml !== 'string') return null;
+  const match = xml.match(new RegExp(`<(?:[^:>]+:)?${tagName}[^>]*>([\\s\\S]*?)<\\/(?:[^:>]+:)?${tagName}>`, 'i'));
+  return match ? match[1] : null;
+}
+
+function allXmlTagBlocks(xml, tagName) {
+  if (typeof xml !== 'string') return [];
+  const regex = new RegExp(`<(?:[^:>]+:)?${tagName}[^>]*>([\\s\\S]*?)<\\/(?:[^:>]+:)?${tagName}>`, 'gi');
+  const blocks = [];
+  let match;
+  while ((match = regex.exec(xml)) !== null) blocks.push(match[1]);
+  return blocks;
+}
+
+function stripXmlCdata(value) {
+  if (value == null) return value;
+  return String(value).replace(/^<!\\[CDATA\\[/, '').replace(/\\]\\]>$/, '');
+}
+
+function parseEbayXmlErrors(xml) {
+  return allXmlTagBlocks(xml, 'Errors').map((block, index) => ({
+    ErrorCode: stripXmlCdata(firstXmlTag(block, 'ErrorCode')),
+    SeverityCode: stripXmlCdata(firstXmlTag(block, 'SeverityCode')),
+    ShortMessage: stripXmlCdata(firstXmlTag(block, 'ShortMessage')),
+    LongMessage: stripXmlCdata(firstXmlTag(block, 'LongMessage')),
+    index,
+  }));
+}
+
+function parseEbayXmlResponse(xml) {
+  return {
+    Ack: stripXmlCdata(firstXmlTag(xml, 'Ack')) || 'Unknown',
+    ItemID: stripXmlCdata(firstXmlTag(xml, 'ItemID')),
+    CorrelationID: stripXmlCdata(firstXmlTag(xml, 'CorrelationID')),
+    Timestamp: stripXmlCdata(firstXmlTag(xml, 'Timestamp')),
+    Version: stripXmlCdata(firstXmlTag(xml, 'Version')),
+    Build: stripXmlCdata(firstXmlTag(xml, 'Build')),
+    Errors: parseEbayXmlErrors(xml),
+    raw_xml: xml,
+  };
+}
+
 function parseEbayReviseFixedPriceItemResponse(rawResponse = {}) {
-  const response = isPlainObject(rawResponse) ? rawResponse : {};
+  const response = typeof rawResponse === 'string'
+    ? parseEbayXmlResponse(rawResponse)
+    : (isPlainObject(rawResponse) ? rawResponse : {});
   const ack = response.Ack || response.ack || 'Unknown';
   const errors = normalizeEbayMessages(response.Errors || response.errors)
     .filter(error => !/warning/i.test(String(error.severity || '')));

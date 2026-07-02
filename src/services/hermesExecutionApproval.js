@@ -2824,12 +2824,176 @@ function resolveExistingEbayApiModulePath() {
   }
 }
 
+async function countMarketplaceExecutionEvents(requestId) {
+  const db = getClient();
+  const executionEventTypes = [
+    'request_executed',
+    'execution_started',
+    'execution_completed',
+    'execution_failed',
+    'marketplace_execution_started',
+    'marketplace_execution_completed',
+    'marketplace_execution_failed',
+  ];
+  const { count, error } = await db
+    .from(EVENT_TABLE)
+    .select('*', { count: 'exact', head: true })
+    .eq('request_id', requestId)
+    .in('event_type', executionEventTypes);
+  if (error) throw error;
+  return count || 0;
+}
+
+function buildPhase12ILiveExecutionBlockers({ packet, request, payload, rollbackSnapshot, previousMarketplaceExecutionEventCount } = {}) {
+  const summary = payload?.payload_summary || {};
+  const payloadFields = Array.isArray(summary.payload_fields) ? summary.payload_fields : [];
+  const blockers = [];
+  if (packet?.id !== 1) blockers.push('packet_id_not_1');
+  if (String(packet?.item_id || '') !== '202551129453') blockers.push('target_item_id_not_202551129453');
+  if (packet?.confirmation_status !== 'confirmed') blockers.push('packet_confirmation_status_not_confirmed');
+  if (request?.final_approval_status !== 'approved') blockers.push('request_final_approval_not_approved');
+  if (!rollbackSnapshot || rollbackSnapshot.available !== true) blockers.push('rollback_snapshot_missing');
+  if (request?.executed_at != null) blockers.push('request_executed_at_present');
+  if (request?.execution_result != null) blockers.push('request_execution_result_present');
+  if ((previousMarketplaceExecutionEventCount || 0) > 0) blockers.push('previous_marketplace_execution_event_exists');
+  if (summary.updates_title !== true) blockers.push('payload_does_not_update_title');
+  if (summary.updates_description === true) blockers.push('payload_updates_description_not_allowed_phase_12i');
+  if (summary.updates_item_specifics === true) blockers.push('payload_updates_item_specifics_not_allowed_phase_12i');
+  if (payloadFields.length !== 1 || payloadFields[0] !== 'Title') blockers.push('payload_not_title_only');
+  if (summary.forbidden_fields_present === true) blockers.push('payload_forbidden_fields_present');
+  if (Array.isArray(summary.forbidden_fields) && summary.forbidden_fields.length) blockers.push('payload_forbidden_fields_present');
+  if (Array.isArray(summary.non_allowed_fields) && summary.non_allowed_fields.length) blockers.push('payload_non_allowed_fields_present');
+  return [...new Set(blockers)];
+}
+
+async function persistEbayListingQualityLiveExecutionResult({ packet, request, payload, transportResult } = {}) {
+  const parsed = transportResult?.parsed_response || {};
+  const success = parsed.success === true;
+  const timestamp = parsed.timestamp || new Date().toISOString();
+  const rollbackSnapshot = prepareEbayListingQualityRollbackSnapshot({ packet });
+  const executionResult = {
+    packet_id: packet.id,
+    request_id: request.id,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    api_operation: 'ReviseFixedPriceItem',
+    target_item_id: packet.item_id,
+    payload: payload.payload,
+    payload_summary: payload.payload_summary,
+    rollback_snapshot: rollbackSnapshot,
+    raw_response: transportResult.raw_response || null,
+    parsed_response: parsed,
+    success,
+    ack: parsed.ack || null,
+    correlation_id: parsed.correlation_id || null,
+    response_timestamp: parsed.timestamp || null,
+    actual_ebay_call: transportResult.actual_ebay_call === true,
+    actual_network_call: transportResult.actual_network_call === true,
+    marketplace_write_performed: transportResult.marketplace_write_performed === true,
+    price_changes: false,
+    inventory_changes: false,
+    title_only: true,
+    recorded_at: new Date().toISOString(),
+    source: 'phase_12i_ebay_live_single_sku_execution_v1',
+  };
+  const eventType = success ? 'marketplace_execution_completed' : 'marketplace_execution_failed';
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType,
+    actor: 'operator',
+    payload: executionResult,
+  });
+
+  let updatedRequest = request;
+  if (success) {
+    const db = getClient();
+    const metadata = {
+      ...(request.metadata || {}),
+      external_action_executed: true,
+      marketplace_execution_approved: true,
+      marketplace_execution_packet_id: packet.id,
+      marketplace_execution_event_id: event.id,
+      marketplace_execution_completed_at: timestamp,
+      marketplace_execution_scope: 'phase_12i_single_sku_title_only',
+      marketplace_execution_price_changes: false,
+      marketplace_execution_inventory_changes: false,
+    };
+    const { data, error } = await db
+      .from(REQUEST_TABLE)
+      .update({
+        status: 'executed',
+        executed_at: timestamp,
+        execution_result: executionResult,
+        metadata,
+      })
+      .eq('id', request.id)
+      .is('executed_at', null)
+      .is('execution_result', null)
+      .select('*')
+      .single();
+    if (error) throw error;
+    updatedRequest = data;
+  }
+
+  return {
+    execution_recorded: true,
+    execution_success: success,
+    event,
+    updated_request: updatedRequest,
+    execution_result: executionResult,
+    executed_at: success ? updatedRequest.executed_at : null,
+    execution_result_updated: success,
+    executed_at_updated: success,
+    note: success
+      ? 'eBay response parsed as success/warning; executed_at and execution_result were recorded after the confirmed eBay response.'
+      : 'eBay response was not success; marketplace failure event recorded, but executed_at was not set.',
+  };
+}
+
 async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
   const intent = buildEbayListingQualityExecutionIntent({ packet, request, dryRun: true });
   const payload = buildEbayListingQualityRevisePayload({ packet, request, intent });
   const ebayApiModulePath = resolveExistingEbayApiModulePath();
+  const rollbackSnapshot = prepareEbayListingQualityRollbackSnapshot({ packet });
+  const previousMarketplaceExecutionEventCount = await countMarketplaceExecutionEvents(request.id);
+  const liveAttempt = dryRun === false && writeRequested === true && liveEnabled === true;
+
+  if (liveAttempt) {
+    const phase12IBlockers = buildPhase12ILiveExecutionBlockers({
+      packet,
+      request,
+      payload,
+      rollbackSnapshot,
+      previousMarketplaceExecutionEventCount,
+    });
+    if (phase12IBlockers.length) {
+      return {
+        packet_id: packet.id,
+        request_id: request.id,
+        target_item_id: packet.item_id || null,
+        blocked: true,
+        blockers: phase12IBlockers,
+        phase_12i_hard_abort: true,
+        actual_ebay_call: false,
+        actual_network_call: false,
+        actual_database_write: false,
+        marketplace_write_performed: false,
+        payload_summary: payload.payload_summary,
+        safety: {
+          actual_ebay_call: false,
+          actual_network_call: false,
+          actual_database_write: false,
+          marketplace_write_performed: false,
+          price_changes: false,
+          inventory_changes: false,
+        },
+        source: 'phase_12i_hard_safety_abort',
+      };
+    }
+  }
+
   const result = await callEbayListingQualityLiveTransport({
     packet,
     request,
@@ -2839,12 +3003,43 @@ async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = 
     liveEnabled: liveEnabled === true,
     ebayApiModulePath,
   });
-  return {
+  const base = {
     ...result,
+    previous_marketplace_execution_event_count_before_call: previousMarketplaceExecutionEventCount,
     existing_ebay_api_module_path: ebayApiModulePath ? 'src/api/ebayAPI.js' : null,
     existing_ebay_api_module_export_detected: Boolean(ebayApiModulePath),
     existing_ebay_api_auth_logic_reused: Boolean(ebayApiModulePath),
     new_auth_logic_created: false,
+  };
+
+  if (!liveAttempt || result.blocked || result.actual_ebay_call !== true) return base;
+
+  const persistence = await persistEbayListingQualityLiveExecutionResult({
+    packet,
+    request,
+    payload,
+    transportResult: result,
+  });
+
+  return {
+    ...base,
+    actual_database_write: true,
+    execution_recorded: persistence.execution_recorded,
+    execution_success: persistence.execution_success,
+    event: persistence.event,
+    executed_at: persistence.executed_at,
+    execution_result_updated: persistence.execution_result_updated,
+    executed_at_updated: persistence.executed_at_updated,
+    execution_result: persistence.execution_result,
+    persistence_note: persistence.note,
+    safety: {
+      ...(base.safety || {}),
+      database_writes: true,
+      execution_result_updated: persistence.execution_result_updated,
+      executed_at_updated: persistence.executed_at_updated,
+      price_changes: false,
+      inventory_changes: false,
+    },
   };
 }
 
