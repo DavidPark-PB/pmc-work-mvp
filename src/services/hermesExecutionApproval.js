@@ -14,6 +14,7 @@ const { buildHermesOpportunityActionPlan } = require('./opportunityInbox');
 const {
   buildEbayListingQualityExecutionIntent,
   buildEbayListingQualityResultRecord,
+  buildEbayListingQualityRevisePayload,
   executeEbayListingQualityRevision,
 } = require('../adapters/ebayListingQualityExecutionAdapter');
 
@@ -2765,6 +2766,35 @@ async function confirmEbayListingQualityPacket({ packetId, actor = null, reason 
 
 
 
+
+
+async function buildEbayListingQualityPayload({ packetId } = {}) {
+  const packet = await getEbayListingQualityPacket({ packetId });
+  const request = await getExecutionRequest({ requestId: packet.request_id });
+  const intent = buildEbayListingQualityExecutionIntent({ packet, request, dryRun: true });
+  const payload = buildEbayListingQualityRevisePayload({ packet, request, intent });
+  return {
+    ...payload,
+    build_only: true,
+    actual_ebay_call: false,
+    actual_database_write: false,
+    execution_result_updated: false,
+    executed_at_updated: false,
+    safety: {
+      marketplace_api_calls: false,
+      ebay_api_calls: false,
+      marketplace_write_performed: false,
+      database_writes: false,
+      executed_at_updated: false,
+      execution_result_updated: false,
+      listing_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      live_execution_performed: false,
+    },
+  };
+}
+
 async function executeEbayListingQualityPacket({ packetId, dryRun = true } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -3091,6 +3121,7 @@ module.exports = {
   recordEbayListingQualityPacket,
   getEbayListingQualityPacket,
   confirmEbayListingQualityPacket,
+  buildEbayListingQualityPayload,
   executeEbayListingQualityPacket,
   recordEbayListingQualityExecutionResult,
   reviewExecutionRequest,

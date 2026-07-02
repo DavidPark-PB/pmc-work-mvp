@@ -20,6 +20,11 @@ const FORBIDDEN_FIELD_PATTERNS = [
   /^create$/i,
   /relist/i,
   /revise/i,
+  /sku(_?remap|_?mapping)?/i,
+  /shipping/i,
+  /payment/i,
+  /returns?/i,
+  /return_?policy/i,
 ];
 
 function isPlainObject(value) {
@@ -206,6 +211,81 @@ function buildEbayListingQualityResultRecord({ packet, request, intent, executio
   };
 }
 
+
+
+function itemSpecificsToNameValueList(itemSpecifics) {
+  if (!isPlainObject(itemSpecifics)) return [];
+  return Object.entries(itemSpecifics)
+    .filter(([key, value]) => String(key || '').trim() && value != null && !(typeof value === 'string' && !value.trim()))
+    .map(([key, value]) => ({
+      Name: String(key).trim(),
+      Value: Array.isArray(value) ? value.map(v => String(v)) : String(value),
+    }));
+}
+
+function buildEbayListingQualityRevisePayload({ packet, request, intent } = {}) {
+  const executionIntent = intent || buildEbayListingQualityExecutionIntent({ packet, request, dryRun: true });
+  const plannedMutation = normalizeListingQualityMutation(packet?.planned_mutation || executionIntent.planned_mutation || {});
+  const rawMutation = isPlainObject(packet?.planned_mutation) ? packet.planned_mutation : plannedMutation;
+  const forbiddenFields = findForbiddenMutationFields(rawMutation);
+  const nonAllowedFields = Object.keys(rawMutation).filter(key => !ALLOWED_LISTING_QUALITY_FIELDS.includes(key));
+  const targetItemId = packet?.item_id || executionIntent.target?.item_id || null;
+  const payload = {
+    Item: {
+      ItemID: targetItemId,
+    },
+  };
+
+  if (plannedMutation.title) payload.Item.Title = plannedMutation.title;
+  if (plannedMutation.description) payload.Item.Description = plannedMutation.description;
+  const nameValueList = itemSpecificsToNameValueList(plannedMutation.item_specifics);
+  if (nameValueList.length) payload.Item.ItemSpecifics = { NameValueList: nameValueList };
+
+  const updatesTitle = Boolean(plannedMutation.title);
+  const updatesDescription = Boolean(plannedMutation.description);
+  const updatesItemSpecifics = nameValueList.length > 0;
+  const blockers = [];
+  if (!packet) blockers.push('packet_required');
+  if (!request) blockers.push('request_required');
+  if (!targetItemId) blockers.push('target_item_id_missing');
+  if (packet && packet.status !== 'packet_recorded') blockers.push('packet_status_not_packet_recorded');
+  if (packet && packet.confirmation_status !== 'confirmed') blockers.push('packet_confirmation_status_not_confirmed');
+  if (request && request.final_approval_status !== 'approved') blockers.push('request_final_approval_not_approved');
+  if (request && request.executed_at != null) blockers.push('request_executed_at_present');
+  if (request && request.execution_result != null) blockers.push('request_execution_result_present');
+  if (request?.metadata?.external_action_executed === true) blockers.push('external_action_executed_true');
+  if (request?.metadata?.marketplace_execution_approved === true) blockers.push('marketplace_execution_approved_true');
+  if (nonAllowedFields.length) blockers.push('planned_mutation_has_non_allowed_fields');
+  if (forbiddenFields.length) blockers.push('forbidden_marketplace_mutation_fields_present');
+  if (!updatesTitle && !updatesDescription && !updatesItemSpecifics) blockers.push('planned_mutation_empty');
+
+  return {
+    packet_id: packet?.id || executionIntent.packet_id || null,
+    request_id: request?.id || packet?.request_id || executionIntent.request_id || null,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    api_operation: 'ReviseFixedPriceItem',
+    target_item_id: targetItemId,
+    target_listing_id: targetItemId,
+    payload,
+    payload_summary: {
+      updates_title: updatesTitle,
+      updates_description: updatesDescription,
+      updates_item_specifics: updatesItemSpecifics,
+      allowed_fields: ALLOWED_LISTING_QUALITY_FIELDS,
+      payload_fields: Object.keys(payload.Item).filter(key => key !== 'ItemID'),
+      forbidden_fields_present: forbiddenFields.length > 0 || nonAllowedFields.length > 0,
+      forbidden_fields: forbiddenFields,
+      non_allowed_fields: nonAllowedFields,
+    },
+    blockers: [...new Set(blockers)],
+    actual_ebay_call: false,
+    actual_database_write: false,
+    marketplace_write_performed: false,
+    source: 'confirmed_packet_payload_builder_v1',
+  };
+}
+
 async function executeEbayListingQualityRevision(intent, { dryRun = true } = {}) {
   if (dryRun !== false) {
     return {
@@ -246,6 +326,7 @@ module.exports = {
   mutationIsEmpty,
   prepareEbayListingQualityRollbackSnapshot,
   buildEbayListingQualityResultRecord,
+  buildEbayListingQualityRevisePayload,
   buildEbayListingQualityExecutionIntent,
   executeEbayListingQualityRevision,
 };

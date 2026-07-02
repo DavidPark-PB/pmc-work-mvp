@@ -62,6 +62,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-confirm-packet --packet-id=<PACKET_ID> --actor=<USER> --reason="..." [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-execute --packet-id=<PACKET_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-record-result --packet-id=<PACKET_ID> [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-build-payload --packet-id=<PACKET_ID>',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -83,6 +84,7 @@ function printUsage() {
     'Phase 11E eBay Packet Confirmation: default dry-run; --write updates only internal confirmation fields/events.',
     'Phase 12A eBay Listing Quality Execute: default dry-run; --write is guarded and must pass all safety gates.',
     'Phase 12B eBay Result Recorder: default dry-run; --write records internal result scaffolding only, never marketplace success.',
+    'Phase 12C eBay Payload Builder: build payload only; no eBay call and no database write.',
   ].join('\n'));
 }
 
@@ -491,6 +493,19 @@ async function main() {
     const dryRun = hasFlag('dry-run') || !hasFlag('write');
     const { recordEbayListingQualityExecutionResult } = require('../src/services/hermesExecutionApproval');
     const result = await recordEbayListingQualityExecutionResult({ packetId, dryRun });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-build-payload') {
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (packetId == null) {
+      printUsage();
+      throw new Error('packet-id is required');
+    }
+    const { buildEbayListingQualityPayload } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayListingQualityPayload({ packetId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
