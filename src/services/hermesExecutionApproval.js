@@ -11,6 +11,10 @@ const crypto = require('crypto');
 
 const { getClient } = require('../db/supabaseClient');
 const { buildHermesOpportunityActionPlan } = require('./opportunityInbox');
+const {
+  buildEbayListingQualityExecutionIntent,
+  executeEbayListingQualityRevision,
+} = require('../adapters/ebayListingQualityExecutionAdapter');
 
 const REQUEST_TABLE = 'hermes_execution_requests';
 const EVENT_TABLE = 'hermes_execution_events';
@@ -2758,6 +2762,31 @@ async function confirmEbayListingQualityPacket({ packetId, actor = null, reason 
   };
 }
 
+
+
+async function executeEbayListingQualityPacket({ packetId, dryRun = true } = {}) {
+  const packet = await getEbayListingQualityPacket({ packetId });
+  const request = await getExecutionRequest({ requestId: packet.request_id });
+  const intent = buildEbayListingQualityExecutionIntent({
+    packet,
+    request,
+    dryRun: dryRun !== false,
+  });
+  const adapterResult = await executeEbayListingQualityRevision(intent, { dryRun: dryRun !== false });
+
+  return {
+    ...adapterResult,
+    packet_id: packet.id,
+    request_id: request.id,
+    target_marketplace: 'ebay',
+    target_item_id: intent.target.item_id,
+    target_listing_id: intent.target.listing_id,
+    confirmation_status: packet.confirmation_status || null,
+    approval_status: request.final_approval_status || 'not_requested',
+    request_safety: requestSafetySummary(request),
+  };
+}
+
 async function getOpportunitySnapshot(opportunityId) {
   const id = intOrNull(opportunityId);
   if (id == null) return null;
@@ -2977,6 +3006,7 @@ module.exports = {
   recordEbayListingQualityPacket,
   getEbayListingQualityPacket,
   confirmEbayListingQualityPacket,
+  executeEbayListingQualityPacket,
   reviewExecutionRequest,
   listExecutionEvents,
   recordExecutionEvent,
