@@ -4601,6 +4601,138 @@ async function previewEbayListingQualityOpportunities({ limit = 10, dryRun = tru
   };
 }
 
+
+function isPhase13JBorderlineGap(gap = '') {
+  return [
+    'pictures_below_2',
+    'item_specifics_below_5',
+    'description_under_800_chars',
+    'short_title_under_35_chars',
+    'title_over_80_chars',
+    'title_extra_whitespace',
+    'title_all_caps_style',
+    'title_lacks_alphanumeric_text',
+  ].includes(String(gap || ''));
+}
+
+function phase13JAllowedProposedFields(fields = []) {
+  const allowed = new Set(['title', 'description', 'item_specifics']);
+  return (fields || []).filter(field => allowed.has(String(field || '')));
+}
+
+async function previewEbayListingQualityBorderlineImprovements({ limit = 20, dryRun = true } = {}) {
+  const safeLimit = Math.min(50, Math.max(1, intOrNull(limit) || 20));
+  const [rows, events] = await Promise.all([
+    safeSelectRows(
+      'listing_details',
+      'platform,listing_type,sku,item_id,title,category_id,category_name,listing_status,source_api,last_enriched_at',
+      q => q.eq('platform', 'ebay').eq('listing_type', 'our').order('last_enriched_at', { ascending: false, nullsFirst: false }).limit(safeLimit * 3)
+    ),
+    safeSelectRows(
+      EVENT_TABLE,
+      'id,request_id,event_type,payload,created_at',
+      q => q.eq('event_type', 'marketplace_execution_completed').order('created_at', { ascending: false }).limit(200)
+    ),
+  ]);
+  const marketplaceExecutedItemIds = candidateEventItemIds(events);
+  const scored = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    const itemId = String(row?.item_id || '').trim();
+    if (!itemId || seen.has(itemId)) continue;
+    seen.add(itemId);
+    if (itemId === '202551129453') continue;
+    if (marketplaceExecutedItemIds.has(itemId)) continue;
+    const evidence = await loadPhase13GScoringEvidenceByItemId(itemId);
+    const score = scoreCachedListingQualityEvidence(evidence);
+    scored.push(score);
+    if (scored.length >= safeLimit) break;
+  }
+
+  const ranked = scored
+    .map(score => {
+      const borderlineGaps = (score.detected_gaps || []).filter(isPhase13JBorderlineGap);
+      const proposedFields = phase13JAllowedProposedFields(score.proposed_mutation_fields || []);
+      const forbidden = score.forbidden_field_check || {};
+      const active = score.evidence_metrics?.listing_status_active === true;
+      const eligible = score.listing_quality_score >= 70
+        && score.listing_quality_score < 90
+        && borderlineGaps.length > 0
+        && active
+        && score.item_id !== '202551129453'
+        && !marketplaceExecutedItemIds.has(String(score.item_id || ''))
+        && forbidden.forbidden_fields_present !== true
+        && forbidden.price_changes !== true
+        && forbidden.inventory_changes !== true
+        && forbidden.quantity_changes !== true
+        && proposedFields.length === (score.proposed_mutation_fields || []).length;
+      return {
+        item_id: score.item_id,
+        sku: score.sku,
+        title: score.title,
+        score: score.listing_quality_score,
+        detected_gaps: score.detected_gaps,
+        borderline_gaps: borderlineGaps,
+        gap_reasons: score.gap_reasons,
+        proposed_mutation_fields: proposedFields,
+        risk_level: score.risk_level,
+        eligible_for_human_review: eligible,
+        why_not_listing_quality_low: score.would_create_listing_quality_low_opportunity
+          ? null
+          : `score ${score.listing_quality_score} is at or above listing_quality_low threshold and required low-quality triggers are absent`,
+        recommended_next_action: eligible
+          ? 'Preview only: human may review minor listing-quality improvements in a later explicit write/approval phase; do not create opportunities, packets, approvals, or marketplace writes now.'
+          : 'No borderline human-review preview action for this listing under Phase 13J rules.',
+        evidence_source: score.evidence_source,
+        evidence_metrics: score.evidence_metrics,
+      };
+    })
+    .filter(row => row.eligible_for_human_review)
+    .sort((a, b) => {
+      if (a.score !== b.score) return a.score - b.score;
+      if (b.borderline_gaps.length !== a.borderline_gaps.length) return b.borderline_gaps.length - a.borderline_gaps.length;
+      return String(a.item_id).localeCompare(String(b.item_id));
+    })
+    .map((row, index) => ({ rank: index + 1, ...row }));
+
+  return {
+    read_only: true,
+    dry_run: dryRun !== false,
+    marketplace: 'ebay',
+    operation: 'listing_quality_borderline_improvement_preview',
+    limit: safeLimit,
+    scanned_count: scored.length,
+    borderline_candidate_count: ranked.length,
+    ranked_borderline_candidates: ranked,
+    recommended_next_action: ranked.length
+      ? 'Borderline improvement candidates found for preview only. Do not create opportunities, packets, approvals, execution-state changes, or marketplace writes in Phase 13J.'
+      : 'No borderline improvement candidates found. Do not force a candidate.',
+    exclusions: {
+      excluded_item_ids: ['202551129453'],
+      previous_marketplace_execution_completed_items_excluded: true,
+      completed_marketplace_item_ids: [...marketplaceExecutedItemIds].sort(),
+    },
+    safety: {
+      cached_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+    source: 'phase_13j_borderline_listing_quality_improvement_preview_v1',
+  };
+}
+
 async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -5358,6 +5490,7 @@ module.exports = {
   scoreEbayListingQualityEvidence,
   auditEbayListingQualityScore,
   previewEbayListingQualityOpportunities,
+  previewEbayListingQualityBorderlineImprovements,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
