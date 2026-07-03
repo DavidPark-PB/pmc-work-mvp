@@ -4045,13 +4045,55 @@ async function writeInternalListingEvidenceCache({ candidate, evidence } = {}) {
   };
 }
 
-async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write = false } = {}) {
+function normalizePhase13EvidenceFetchItemIds(itemIds = null) {
+  if (!itemIds) return [];
+  const raw = Array.isArray(itemIds) ? itemIds : String(itemIds).split(',');
+  const normalized = [];
+  const seen = new Set();
+  for (const value of raw) {
+    const itemId = trimOrNull(value, 100);
+    if (!itemId || itemId === '202551129453' || seen.has(itemId)) continue;
+    seen.add(itemId);
+    normalized.push(itemId);
+    if (normalized.length >= 5) break;
+  }
+  return normalized;
+}
+
+async function buildPhase13EvidenceFetchCandidates({ limit = 5, itemIds = null } = {}) {
   const safeLimit = Math.min(5, Math.max(1, intOrNull(limit) || 5));
+  const scopedItemIds = normalizePhase13EvidenceFetchItemIds(itemIds);
+  const plan = await buildEbayListingQualityEvidenceRefreshPlan({ limit: Math.max(50, safeLimit) });
+  const unexecutedPlanRows = (plan.listings || [])
+    .filter(row => row.item_id && String(row.item_id) !== '202551129453' && !row.excluded_already_executed);
+  const byItemId = new Map(unexecutedPlanRows.map(row => [String(row.item_id), row]));
+  const selectedRows = scopedItemIds.length
+    ? scopedItemIds.map(itemId => byItemId.get(itemId)).filter(Boolean)
+    : (plan.evidence_refresh_candidates || []).filter(row => row.item_id && String(row.item_id) !== '202551129453').slice(0, safeLimit);
+  const candidates = selectedRows.slice(0, safeLimit).map((candidate, index) => ({
+    rank: index + 1,
+    sku: candidate.sku,
+    item_id: candidate.item_id,
+    listing_id: candidate.listing_id,
+    title: candidate.cached_evidence_summary?.title_present ? candidate.cached_evidence_summary.title : undefined,
+    title_present: candidate.cached_evidence_summary?.title_present === true,
+    title_length: candidate.cached_evidence_summary?.title_length || 0,
+    current_evidence_gaps: candidate.missing_evidence_fields || [],
+    signal_summary: candidate.signal_summary || {},
+    scoped_by_item_ids: scopedItemIds.length > 0,
+  }));
+  return {
+    safeLimit,
+    scopedItemIds,
+    sourcePlanSummary: plan.totals,
+    candidates,
+    missing_requested_item_ids: scopedItemIds.filter(itemId => !byItemId.has(itemId)),
+  };
+}
+
+async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write = false, itemIds = null } = {}) {
+  const { safeLimit, scopedItemIds, sourcePlanSummary, candidates, missing_requested_item_ids: missingRequestedItemIds } = await buildPhase13EvidenceFetchCandidates({ limit, itemIds });
   const writeRequested = write === true || dryRun === false;
-  const sample = await sampleEbayListingQualityEvidenceRefresh({ limit: safeLimit, dryRun: true });
-  const candidates = (sample.samples || [])
-    .filter(row => row.item_id && String(row.item_id) !== '202551129453')
-    .slice(0, safeLimit);
 
   const result = {
     read_only: true,
@@ -4059,11 +4101,14 @@ async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write
     marketplace: 'ebay',
     operation: 'listing_quality_evidence_fetch',
     limit: safeLimit,
-    source_sample_summary: sample.source_plan_summary,
+    source_sample_summary: sourcePlanSummary,
     candidate_count: candidates.length,
     fetch_scope: {
       max_items: 5,
       selected_items: candidates.map(c => ({ sku: c.sku, item_id: c.item_id, title: c.title, evidence_gaps: c.current_evidence_gaps })),
+      requested_item_ids: scopedItemIds,
+      missing_requested_item_ids: missingRequestedItemIds,
+      item_id_scoped: scopedItemIds.length > 0,
       excluded_item_ids: ['202551129453'],
       already_executed_listings_excluded: true,
       read_operation: 'Trading API GetItem',
@@ -4071,7 +4116,7 @@ async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write
     fetch_results: [],
     write_results: [],
     partial_failure: false,
-    blocker: candidates.length === 0 ? 'no_evidence_refresh_sample_candidates' : null,
+    blocker: candidates.length === 0 ? (scopedItemIds.length ? 'no_matching_item_id_scoped_evidence_refresh_candidates' : 'no_evidence_refresh_sample_candidates') : null,
     safety: {
       read_only: true,
       actual_read_only_ebay_call: false,
@@ -4089,7 +4134,7 @@ async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write
       price_changes: false,
       inventory_changes: false,
     },
-    source: 'phase_13e_read_only_listing_evidence_fetch_v1',
+    source: scopedItemIds.length ? 'phase_13f_item_id_scoped_listing_evidence_fetch_v1' : 'phase_13e_read_only_listing_evidence_fetch_v1',
   };
 
   if (!candidates.length) return result;
@@ -4144,7 +4189,7 @@ async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write
   result.fetched_count = result.fetch_results.filter(row => row.success).length;
   result.failed_count = result.fetch_results.filter(row => row.success === false).length;
   result.recommended_next_action = writeRequested
-    ? 'Internal evidence cache write mode completed only for successful read-only GetItem results. Do not create opportunities, packets, approvals, or marketplace writes in Phase 13E.'
+    ? 'Internal evidence cache write mode completed only for successful read-only GetItem results. Do not create opportunities, packets, approvals, execution-state changes, or marketplace writes in Phase 13F.'
     : 'Review fetched read-only evidence. If internal cache persistence is desired, run the same command with --write after confirming evidence-only scope.';
   return result;
 }

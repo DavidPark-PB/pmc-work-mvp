@@ -74,7 +74,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-plan [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-preview [--limit=20] [--dry-run]',
     '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-sample [--limit=5] [--dry-run]',
-    '  npm run hermes:agent -- ebay-listing-quality-evidence-fetch [--limit=5] [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-evidence-fetch [--limit=5|--item-ids=ID1,ID2] [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -683,6 +683,7 @@ async function main() {
     const write = hasFlag('write');
     const result = await fetchEbayListingQualityEvidence({
       limit: intArg('limit', 5),
+      itemIds: arg('item-ids', null),
       dryRun: !write,
       write,
     });
