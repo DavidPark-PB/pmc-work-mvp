@@ -5870,7 +5870,12 @@ function normalizePhase13RPromotedPacketRow(row = {}) {
     rollback_snapshot: packet.rollback_snapshot || null,
     packet_hash: packet.packet_hash || metadata.packet_hash || null,
     packet_status: packet.status || row.status || null,
-    confirmation_status: packet.confirmation_status || 'not_confirmed',
+    confirmation_status: packet.confirmation_status || metadata.confirmation_status || 'not_confirmed',
+    confirmed_by_actor: packet.confirmed_by_actor || metadata.confirmed_by_actor || null,
+    confirmation_reason: packet.confirmation_reason || metadata.confirmation_reason || null,
+    confirmed_at: packet.confirmed_at || metadata.confirmed_at || null,
+    confirmation_snapshot: packet.confirmation_snapshot || metadata.confirmation_snapshot || null,
+    still_not_execution_candidate: packet.still_not_execution_candidate === true || metadata.still_not_execution_candidate === true || packet.not_execution_candidate === true || metadata.not_execution_candidate === true,
     not_execution_candidate: packet.not_execution_candidate === true || metadata.not_execution_candidate === true,
     request_id: packet.request_id || null,
     approval_request_id: packet.approval_request_id || null,
@@ -6197,6 +6202,302 @@ async function createEbayListingQualityPromotedPacket({ opportunityId, dryRun = 
     safety: phase13RPromotedPacketSafety({ databaseWrite: true }),
     recommended_next_action: 'Internal promoted packet artifact created only. Do not create approval/execution requests or marketplace writes until a later explicit phase.',
     source: 'phase_13r_promoted_packet_creation_v1',
+  };
+}
+
+
+function phase13SPromotedPacketSafety({ databaseWrite = false } = {}) {
+  return {
+    cached_evidence_only: true,
+    actual_ebay_call: false,
+    get_item_called: false,
+    actual_network_call: false,
+    actual_database_write: databaseWrite === true,
+    database_write_scope: databaseWrite === true ? 'opportunity_inbox promoted packet confirmation metadata/status only' : null,
+    marketplace_write_performed: false,
+    revise_fixed_price_item_called: false,
+    normal_opportunity_created: false,
+    approval_created: false,
+    execution_request_created: false,
+    execution_state_changed: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    listing_changed: false,
+  };
+}
+
+function buildPhase13SPromotedPacketConfirmationSnapshot({ row, packet, actor, reason, confirmedAt, executionRequestsForOpportunity = [] } = {}) {
+  return {
+    packet_artifact_id: row?.id || null,
+    source_type: row?.source_type || null,
+    status_before: row?.status || null,
+    confirmation_status_before: packet?.confirmation_status || 'not_confirmed',
+    source_promoted_opportunity_id: packet?.opportunity_id || null,
+    source_review_id: packet?.source_review_id || null,
+    target_item_id: packet?.target_item_id || packet?.item_id || null,
+    marketplace: packet?.marketplace || 'ebay',
+    operation: packet?.operation || 'listing_quality_update',
+    actor,
+    reason,
+    confirmed_at: confirmedAt,
+    packet_hash: packet?.packet_hash || null,
+    planned_mutation: packet?.planned_mutation || {},
+    planned_mutation_hash: sha256Json(packet?.planned_mutation || {}),
+    rollback_snapshot_hash: sha256Json(packet?.rollback_snapshot || {}),
+    approval_request_count_for_source_opportunity: executionRequestsForOpportunity.length,
+    execution_request_count_for_source_opportunity: executionRequestsForOpportunity.length,
+    still_not_execution_candidate: true,
+    safety: {
+      no_ebay_call: true,
+      no_get_item_call: true,
+      no_revise_fixed_price_item_call: true,
+      no_marketplace_write: true,
+      no_approval_created: true,
+      no_execution_request_created: true,
+      no_execution_state_change: true,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+    policy_version: 'phase-13s-promoted-packet-confirmation-v1',
+  };
+}
+
+function validatePhase13SPromotedPacketConfirmation({ row, packet, actor, reason, executionRequestsForOpportunity = [], dryRun = true } = {}) {
+  const blockers = [];
+  const plannedMutation = packet?.planned_mutation || {};
+  const plannedFields = Object.keys(plannedMutation || {});
+  const forbiddenFields = objectHasForbiddenMarketplaceMutationFields(plannedMutation);
+  if (!row) blockers.push('packet_artifact_missing');
+  if (row && row.opportunity_type !== 'listing_quality_update_packet') blockers.push('opportunity_type_not_listing_quality_update_packet');
+  if (row && row.source_type !== 'phase_13r_promoted_packet_creation') blockers.push('source_type_not_phase_13r_promoted_packet_creation');
+  if (row && row.status !== 'packet_recorded') blockers.push('packet_status_not_packet_recorded');
+  if ((packet?.confirmation_status || 'not_confirmed') !== 'not_confirmed') blockers.push('confirmation_status_not_not_confirmed');
+  if (plannedFields.length !== 1 || plannedFields[0] !== 'item_specifics') blockers.push('planned_mutation_not_item_specifics_only');
+  if (forbiddenFields.length) blockers.push('forbidden_marketplace_mutation_fields_present');
+  if (packet?.target_item_id !== '206315990948' && packet?.item_id !== '206315990948') blockers.push('target_item_id_not_206315990948');
+  if (packet?.request_id != null) blockers.push('request_id_present');
+  if (packet?.approval_request_id != null) blockers.push('approval_request_id_present');
+  if (packet?.execution_request_id != null) blockers.push('execution_request_id_present');
+  if (executionRequestsForOpportunity.length > 0) blockers.push('approval_or_execution_request_exists_for_source_opportunity');
+  if (dryRun === false && !actor) blockers.push('actor_required');
+  if (dryRun === false && !reason) blockers.push('reason_required');
+  return {
+    blockers: [...new Set(blockers)],
+    planned_mutation_fields: plannedFields,
+    forbidden_fields: forbiddenFields,
+    planned_mutation_item_specifics_only: plannedFields.length === 1 && plannedFields[0] === 'item_specifics',
+  };
+}
+
+async function confirmEbayListingQualityPromotedPacket({ packetId, actor = null, reason = null, dryRun = true, write = false } = {}) {
+  const id = intOrNull(packetId);
+  if (id == null) throw new Error('packet-id is required');
+  const writeRequested = write === true || dryRun === false;
+  const confirmActor = trimOrNull(actor, 100);
+  const confirmReason = trimOrNull(reason, 1000);
+  const detail = await getEbayListingQualityPromotedPacketDetail({ packetId: id });
+  const row = detail.packets?.[0] ? (await safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at',
+    q => q.eq('id', id).limit(1)
+  ))[0] : null;
+  const current = row ? normalizePhase13RPromotedPacketRow(row) : null;
+  const packet = row?.metadata?.packet || {};
+  const sourceOpportunityId = current?.opportunity_id || packet.opportunity_id || row?.metadata?.source_promoted_opportunity_id || null;
+  const beforeRequests = sourceOpportunityId != null
+    ? await safeSelectRows(REQUEST_TABLE, 'id,opportunity_id,status,execution_type,final_approval_status,executed_at,execution_result,created_at', q => q.eq('opportunity_id', sourceOpportunityId).limit(50))
+    : [];
+  const validation = validatePhase13SPromotedPacketConfirmation({
+    row,
+    packet,
+    actor: confirmActor,
+    reason: confirmReason,
+    executionRequestsForOpportunity: beforeRequests,
+    dryRun: !writeRequested,
+  });
+  const confirmedAt = new Date().toISOString();
+  const confirmationSnapshot = buildPhase13SPromotedPacketConfirmationSnapshot({
+    row,
+    packet,
+    actor: confirmActor,
+    reason: confirmReason,
+    confirmedAt,
+    executionRequestsForOpportunity: beforeRequests,
+  });
+  const nextPacket = {
+    ...packet,
+    confirmation_status: 'confirmed',
+    confirmed_by_actor: confirmActor,
+    confirmation_reason: confirmReason,
+    confirmed_at: confirmedAt,
+    confirmation_snapshot: confirmationSnapshot,
+    still_not_execution_candidate: true,
+    not_execution_candidate: true,
+    approval_request_id: null,
+    execution_request_id: null,
+    request_id: null,
+  };
+  const nextMetadata = {
+    ...(row?.metadata || {}),
+    phase_13s_promoted_packet_confirmation: true,
+    confirmation_status: 'confirmed',
+    confirmed_by_actor: confirmActor,
+    confirmation_reason: confirmReason,
+    confirmed_at: confirmedAt,
+    confirmation_snapshot: confirmationSnapshot,
+    still_not_execution_candidate: true,
+    not_execution_candidate: true,
+    approval_created: false,
+    execution_request_created: false,
+    execution_state_changed: false,
+    marketplace_write_performed: false,
+    packet: nextPacket,
+    safety_boundary: {
+      ...((row?.metadata || {}).safety_boundary || {}),
+      no_ebay_call: true,
+      no_get_item_call: true,
+      no_revise_fixed_price_item_call: true,
+      no_marketplace_write: true,
+      no_approval_created: true,
+      no_execution_request_created: true,
+      no_execution_state_change: true,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+  };
+
+  if (validation.blockers.length) {
+    if (writeRequested) throw new Error(`promoted packet confirmation blocked: ${validation.blockers.join(', ')}`);
+    return {
+      read_only: true,
+      dry_run: true,
+      write_requested: false,
+      marketplace: 'ebay',
+      operation: 'listing_quality_update',
+      packet_id: id,
+      updated: false,
+      blocked: true,
+      blockers: validation.blockers,
+      before_packet: current,
+      planned_update: {
+        confirmation_status: 'confirmed',
+        confirmed_by_actor: confirmActor,
+        confirmation_reason: confirmReason,
+        confirmed_at: confirmedAt,
+        still_not_execution_candidate: true,
+      },
+      confirmation_snapshot: confirmationSnapshot,
+      verification: {
+        packet_exists: Boolean(row),
+        source_type: row?.source_type || null,
+        status: row?.status || null,
+        confirmation_status: packet?.confirmation_status || 'not_confirmed',
+        planned_mutation_fields: validation.planned_mutation_fields,
+        planned_mutation_item_specifics_only: validation.planned_mutation_item_specifics_only,
+        forbidden_fields: validation.forbidden_fields,
+        target_item_id: packet?.target_item_id || packet?.item_id || null,
+        approval_request_count_for_source_opportunity_before: beforeRequests.length,
+        execution_request_count_for_source_opportunity_before: beforeRequests.length,
+      },
+      safety: phase13SPromotedPacketSafety({ databaseWrite: false }),
+      source: 'phase_13s_promoted_packet_confirmation_v1',
+    };
+  }
+
+  if (!writeRequested) {
+    return {
+      read_only: true,
+      dry_run: true,
+      write_requested: false,
+      marketplace: 'ebay',
+      operation: 'listing_quality_update',
+      packet_id: id,
+      updated: false,
+      blocked: false,
+      blockers: [],
+      before_packet: current,
+      planned_update: {
+        confirmation_status: 'confirmed',
+        confirmed_by_actor: confirmActor,
+        confirmation_reason: confirmReason,
+        confirmed_at: confirmedAt,
+        still_not_execution_candidate: true,
+      },
+      confirmation_snapshot: confirmationSnapshot,
+      verification: {
+        packet_exists: true,
+        source_type_valid: row.source_type === 'phase_13r_promoted_packet_creation',
+        status_packet_recorded: row.status === 'packet_recorded',
+        confirmation_status_not_confirmed: (packet.confirmation_status || 'not_confirmed') === 'not_confirmed',
+        planned_mutation_fields: validation.planned_mutation_fields,
+        planned_mutation_item_specifics_only: validation.planned_mutation_item_specifics_only,
+        forbidden_fields_absent: validation.forbidden_fields.length === 0,
+        target_item_id: packet?.target_item_id || packet?.item_id || null,
+        target_item_id_valid: (packet?.target_item_id || packet?.item_id) === '206315990948',
+        approval_request_count_for_source_opportunity_before: beforeRequests.length,
+        approval_request_count_for_source_opportunity_after: beforeRequests.length,
+        execution_request_count_for_source_opportunity_before: beforeRequests.length,
+        execution_request_count_for_source_opportunity_after: beforeRequests.length,
+      },
+      safety: phase13SPromotedPacketSafety({ databaseWrite: false }),
+      recommended_next_action: 'Dry-run only. Re-run with --write to confirm the internal promoted packet artifact; do not create approval/execution requests or marketplace writes.',
+      source: 'phase_13s_promoted_packet_confirmation_v1',
+    };
+  }
+
+  const db = getClient();
+  const { data: updated, error } = await db
+    .from(OPPORTUNITY_TABLE)
+    .update({ status: 'packet_recorded', metadata: nextMetadata, updated_at: confirmedAt })
+    .eq('id', id)
+    .eq('opportunity_type', 'listing_quality_update_packet')
+    .eq('source_type', 'phase_13r_promoted_packet_creation')
+    .select('id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at')
+    .single();
+  if (error) throw error;
+  const after = normalizePhase13RPromotedPacketRow(updated);
+  const afterRequests = sourceOpportunityId != null
+    ? await safeSelectRows(REQUEST_TABLE, 'id,opportunity_id,status,execution_type,final_approval_status,executed_at,execution_result,created_at', q => q.eq('opportunity_id', sourceOpportunityId).limit(50))
+    : [];
+  return {
+    read_only: false,
+    dry_run: false,
+    write_requested: true,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    packet_id: id,
+    updated: true,
+    blocked: false,
+    blockers: [],
+    before_packet: current,
+    after_packet: after,
+    confirmation_snapshot: confirmationSnapshot,
+    verification: {
+      packet_id: after.id,
+      confirmation_status: after.confirmation_status,
+      confirmed_by_actor: after.confirmed_by_actor,
+      confirmation_reason: after.confirmation_reason,
+      confirmed_at: after.confirmed_at,
+      still_not_execution_candidate: after.still_not_execution_candidate === true,
+      not_execution_candidate: after.not_execution_candidate === true,
+      planned_mutation_fields: after.planned_mutation_fields,
+      planned_mutation_item_specifics_only: JSON.stringify(after.planned_mutation_fields || []) === JSON.stringify(['item_specifics']),
+      approval_request_count_for_source_opportunity_before: beforeRequests.length,
+      approval_request_count_for_source_opportunity_after: afterRequests.length,
+      approval_request_created: afterRequests.length > beforeRequests.length,
+      execution_request_count_for_source_opportunity_before: beforeRequests.length,
+      execution_request_count_for_source_opportunity_after: afterRequests.length,
+      execution_request_created: afterRequests.length > beforeRequests.length,
+      execution_state_updated: false,
+    },
+    safety: phase13SPromotedPacketSafety({ databaseWrite: true }),
+    recommended_next_action: 'Internal promoted packet confirmation recorded only. Do not create approval/execution requests or marketplace writes until a later explicit phase.',
+    source: 'phase_13s_promoted_packet_confirmation_v1',
   };
 }
 
@@ -6971,6 +7272,7 @@ module.exports = {
   buildEbayListingQualityPromotedPacketPreview,
   createEbayListingQualityPromotedPacket,
   getEbayListingQualityPromotedPacketDetail,
+  confirmEbayListingQualityPromotedPacket,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
