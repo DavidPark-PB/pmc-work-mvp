@@ -80,6 +80,9 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-opportunity-preview [--limit=10] [--dry-run]',
     '  npm run hermes:agent -- ebay-listing-quality-borderline-preview [--limit=20] [--dry-run]',
     '  npm run hermes:agent -- ebay-listing-quality-borderline-inbox [--limit=20] [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-borderline-reviews [--limit=20]',
+    '  npm run hermes:agent -- ebay-listing-quality-borderline-review-detail --id=<REVIEW_ID>',
+    '  npm run hermes:agent -- ebay-listing-quality-borderline-review-action --id=<REVIEW_ID> --action=<shortlist|reject> --actor=<USER> --reason=... [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -116,6 +119,7 @@ function printUsage() {
     'Phase 13H Listing Quality Score Audit: cached evidence only; audits description normalization and score gaps without writes.',
     'Phase 13J Borderline Improvement Preview: cached evidence only; previews minor human-review candidates without writes.',
     'Phase 13K Borderline Human Review Inbox: optional internal review-record write only; no opportunity/packet/approval/marketplace write.',
+    'Phase 13L Borderline Review Decision Gate: read reviews and optionally update internal review metadata/status only.',
   ].join('\n'));
 }
 
@@ -750,6 +754,42 @@ async function main() {
     const write = hasFlag('write');
     const result = await writeEbayListingQualityBorderlineInbox({
       limit: intArg('limit', 20),
+      dryRun: !write,
+      write,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-borderline-reviews') {
+    const { listEbayListingQualityBorderlineReviews } = require('../src/services/hermesExecutionApproval');
+    const result = await listEbayListingQualityBorderlineReviews({
+      limit: intArg('limit', 20),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-borderline-review-detail') {
+    const { getEbayListingQualityBorderlineReviewDetail } = require('../src/services/hermesExecutionApproval');
+    const reviewId = intArg('id', null);
+    if (reviewId == null) throw new Error('id is required');
+    const result = await getEbayListingQualityBorderlineReviewDetail({ id: reviewId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-borderline-review-action') {
+    const { actOnEbayListingQualityBorderlineReview } = require('../src/services/hermesExecutionApproval');
+    const reviewId = intArg('id', null);
+    if (reviewId == null) throw new Error('id is required');
+    const write = hasFlag('write');
+    const result = await actOnEbayListingQualityBorderlineReview({
+      id: reviewId,
+      action: arg('action', null),
+      actor: arg('actor', null),
+      reason: arg('reason', null),
       dryRun: !write,
       write,
     });

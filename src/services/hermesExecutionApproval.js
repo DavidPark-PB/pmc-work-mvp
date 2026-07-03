@@ -4883,6 +4883,216 @@ async function writeEbayListingQualityBorderlineInbox({ limit = 20, dryRun = tru
   };
 }
 
+
+function normalizePhase13LReviewRow(row = {}) {
+  const metadata = row.metadata || {};
+  return {
+    id: row.id,
+    type: row.opportunity_type,
+    source: row.source_type,
+    status: row.status,
+    title: row.title || metadata.title || null,
+    item_id: metadata.item_id || null,
+    sku: metadata.sku || null,
+    score: metadata.score ?? null,
+    detected_gaps: metadata.detected_gaps || [],
+    proposed_mutation_fields: metadata.proposed_mutation_fields || [],
+    evidence_source: metadata.evidence_source || [],
+    risk_level: metadata.risk_level || null,
+    why_not_listing_quality_low: metadata.why_not_listing_quality_low || null,
+    recommended_next_action: metadata.recommended_next_action || null,
+    not_listing_quality_low: metadata.not_listing_quality_low === true,
+    not_execution_candidate: metadata.not_execution_candidate === true,
+    requires_human_review: metadata.requires_human_review === true,
+    review_status: metadata.review_status || null,
+    reviewed_by: metadata.reviewed_by || null,
+    reviewed_at: metadata.reviewed_at || null,
+    review_reason: metadata.review_reason || null,
+    still_not_execution_candidate: metadata.still_not_execution_candidate === true,
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+  };
+}
+
+async function listEbayListingQualityBorderlineReviews({ limit = 20 } = {}) {
+  const safeLimit = Math.min(100, Math.max(1, intOrNull(limit) || 20));
+  const rows = await safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,metadata,created_at,updated_at',
+    q => q.eq('opportunity_type', 'listing_quality_borderline_review').eq('source_type', 'phase_13j_borderline_preview').order('created_at', { ascending: false }).limit(safeLimit)
+  );
+  return {
+    read_only: true,
+    marketplace: 'ebay',
+    operation: 'listing_quality_borderline_review_list',
+    limit: safeLimit,
+    count: rows.length,
+    reviews: rows.map(normalizePhase13LReviewRow),
+    safety: {
+      cached_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      normal_opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+    source: 'phase_13l_borderline_review_reader_v1',
+  };
+}
+
+async function getEbayListingQualityBorderlineReviewDetail({ id } = {}) {
+  const reviewId = intOrNull(id);
+  if (reviewId == null) throw new Error('id is required');
+  const rows = await safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at',
+    q => q.eq('id', reviewId).eq('opportunity_type', 'listing_quality_borderline_review').eq('source_type', 'phase_13j_borderline_preview').limit(1)
+  );
+  const row = rows[0] || null;
+  return {
+    read_only: true,
+    marketplace: 'ebay',
+    operation: 'listing_quality_borderline_review_detail',
+    id: reviewId,
+    found: Boolean(row),
+    review: row ? { ...normalizePhase13LReviewRow(row), notes: row.notes || null, metadata: row.metadata || {} } : null,
+    recommended_next_action: row
+      ? 'Review detail only. Use borderline-review-action with --dry-run first; do not create opportunities, packets, approvals, or marketplace writes in Phase 13L.'
+      : 'Review record not found.',
+    safety: {
+      cached_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      normal_opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+    source: 'phase_13l_borderline_review_detail_v1',
+  };
+}
+
+async function actOnEbayListingQualityBorderlineReview({ id, action, actor = null, reason = null, dryRun = true, write = false } = {}) {
+  const reviewId = intOrNull(id);
+  if (reviewId == null) throw new Error('id is required');
+  const normalizedAction = String(action || '').trim().toLowerCase();
+  if (!['shortlist', 'reject'].includes(normalizedAction)) throw new Error('action must be shortlist or reject');
+  const writeRequested = write === true && dryRun === false;
+  const before = {
+    listing_quality_low_opportunities: await countRows(OPPORTUNITY_TABLE, q => q.eq('opportunity_type', 'listing_quality_low')),
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  const detail = await getEbayListingQualityBorderlineReviewDetail({ id: reviewId });
+  if (!detail.found) throw new Error(`borderline review ${reviewId} not found`);
+  const current = detail.review;
+  const reviewedAt = new Date().toISOString();
+  const reviewStatus = normalizedAction === 'shortlist' ? 'shortlisted' : 'rejected';
+  const nextStatus = normalizedAction === 'reject' ? 'rejected' : 'reviewing';
+  const nextMetadata = {
+    ...(current.metadata || {}),
+    review_status: reviewStatus,
+    reviewed_by: actor || null,
+    reviewed_at: reviewedAt,
+    review_reason: reason || null,
+    review_action: normalizedAction,
+    still_not_execution_candidate: true,
+    not_listing_quality_low: true,
+    not_execution_candidate: true,
+    requires_human_review: true,
+    phase_13l_decision_gate: true,
+  };
+  let updated = null;
+  if (writeRequested) {
+    const db = getClient();
+    const { data, error } = await db
+      .from(OPPORTUNITY_TABLE)
+      .update({ status: nextStatus, metadata: nextMetadata, updated_at: reviewedAt })
+      .eq('id', reviewId)
+      .eq('opportunity_type', 'listing_quality_borderline_review')
+      .eq('source_type', 'phase_13j_borderline_preview')
+      .select('id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at')
+      .single();
+    if (error) throw error;
+    updated = data;
+  }
+  const after = {
+    listing_quality_low_opportunities: await countRows(OPPORTUNITY_TABLE, q => q.eq('opportunity_type', 'listing_quality_low')),
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  return {
+    read_only: !writeRequested,
+    dry_run: !writeRequested,
+    write_requested: writeRequested,
+    marketplace: 'ebay',
+    operation: 'listing_quality_borderline_review_action',
+    id: reviewId,
+    action: normalizedAction,
+    planned_decision: {
+      review_status: reviewStatus,
+      status: nextStatus,
+      reviewed_by: actor || null,
+      reviewed_at: reviewedAt,
+      review_reason: reason || null,
+      still_not_execution_candidate: true,
+    },
+    before_review: current,
+    updated_review: updated ? normalizePhase13LReviewRow(updated) : null,
+    verification: {
+      normal_listing_quality_low_opportunity_count_before: before.listing_quality_low_opportunities,
+      normal_listing_quality_low_opportunity_count_after: after.listing_quality_low_opportunities,
+      normal_opportunity_created: after.listing_quality_low_opportunities > before.listing_quality_low_opportunities,
+      packet_count_before: before.listing_quality_packets,
+      packet_count_after: after.listing_quality_packets,
+      packet_created: after.listing_quality_packets > before.listing_quality_packets,
+      approval_request_count_before: before.execution_requests,
+      approval_request_count_after: after.execution_requests,
+      approval_created: after.execution_requests > before.execution_requests,
+      execution_state_updated: false,
+    },
+    recommended_next_action: writeRequested
+      ? 'Internal review decision recorded only. This remains not_listing_quality_low and not_execution_candidate; do not create opportunities, packets, approvals, or marketplace writes without a later explicit phase.'
+      : 'Dry-run only. Re-run with --write to update the internal review metadata/status only.',
+    safety: {
+      cached_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      actual_network_call: false,
+      actual_database_write: writeRequested,
+      database_write_scope: writeRequested ? 'opportunity_inbox internal review metadata/status only' : null,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      normal_opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+    source: 'phase_13l_borderline_review_decision_gate_v1',
+  };
+}
+
 async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -5642,6 +5852,9 @@ module.exports = {
   previewEbayListingQualityOpportunities,
   previewEbayListingQualityBorderlineImprovements,
   writeEbayListingQualityBorderlineInbox,
+  listEbayListingQualityBorderlineReviews,
+  getEbayListingQualityBorderlineReviewDetail,
+  actOnEbayListingQualityBorderlineReview,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
