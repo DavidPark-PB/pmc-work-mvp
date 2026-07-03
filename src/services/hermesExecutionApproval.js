@@ -3848,6 +3848,307 @@ async function previewEbayListingQualityEvidenceRefresh({ limit = 20, dryRun = t
   };
 }
 
+
+
+function decodeXmlText(value) {
+  return String(value || '')
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+function xmlValue(xml, tagName) {
+  const pattern = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+  const match = String(xml || '').match(pattern);
+  return match ? decodeXmlText(match[1]) : '';
+}
+
+function xmlBlocks(xml, tagName) {
+  const pattern = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`, 'gi');
+  const out = [];
+  let match;
+  while ((match = pattern.exec(String(xml || ''))) !== null) out.push(match[1]);
+  return out;
+}
+
+function parseEbayGetItemEvidenceXml(xml, { sku = null, itemId = null, fetchedAt = null } = {}) {
+  const itemBlock = xmlValue(xml, 'Item') ? xmlBlocks(xml, 'Item')[0] : String(xml || '');
+  const ack = xmlValue(xml, 'Ack') || null;
+  const errors = xmlBlocks(xml, 'Errors').map(block => ({
+    severity: xmlValue(block, 'SeverityCode') || null,
+    code: xmlValue(block, 'ErrorCode') || null,
+    short_message: xmlValue(block, 'ShortMessage') || null,
+    long_message: xmlValue(block, 'LongMessage') || null,
+  }));
+  const description = xmlValue(itemBlock, 'Description');
+  const pictureUrls = xmlBlocks(itemBlock, 'PictureURL').map(decodeXmlText).filter(Boolean);
+  const itemSpecifics = {};
+  for (const block of xmlBlocks(itemBlock, 'NameValueList')) {
+    const name = xmlValue(block, 'Name');
+    if (!name) continue;
+    const values = xmlBlocks(block, 'Value').map(decodeXmlText).filter(v => v !== '');
+    itemSpecifics[name] = values.length > 1 ? values : (values[0] || '');
+  }
+  const categoryId = xmlValue(xmlBlocks(itemBlock, 'PrimaryCategory')[0] || '', 'CategoryID') || xmlValue(itemBlock, 'CategoryID');
+  const categoryName = xmlValue(xmlBlocks(itemBlock, 'PrimaryCategory')[0] || '', 'CategoryName') || xmlValue(itemBlock, 'CategoryName');
+  const listingStatus = xmlValue(itemBlock, 'ListingStatus') || xmlValue(xmlBlocks(itemBlock, 'SellingStatus')[0] || '', 'ListingStatus') || null;
+  const title = xmlValue(itemBlock, 'Title');
+  const resolvedItemId = xmlValue(itemBlock, 'ItemID') || itemId || null;
+  const resolvedFetchedAt = fetchedAt || new Date().toISOString();
+  const errorSeverityErrors = errors.filter(e => String(e.severity || '').toLowerCase() === 'error');
+
+  return {
+    item_id: resolvedItemId,
+    sku: sku || resolvedItemId,
+    title: title || null,
+    description_present: Boolean(description),
+    description_length: description.length,
+    item_specifics_present: Object.keys(itemSpecifics).length > 0,
+    item_specifics_count: Object.keys(itemSpecifics).length,
+    picture_count: pictureUrls.length,
+    category_id: categoryId || null,
+    category_name: categoryName || null,
+    listing_status: listingStatus,
+    fetched_at: resolvedFetchedAt,
+    source: 'ebay_get_item_read_only',
+    ack,
+    success: !errorSeverityErrors.length && ['Success', 'Warning'].includes(String(ack || '')),
+    errors,
+    raw_response_summary: {
+      ack,
+      error_count: errors.length,
+      error_severity_count: errorSeverityErrors.length,
+      has_item: Boolean(resolvedItemId || title),
+      raw_response_preserved_without_secrets: true,
+    },
+    raw_data: {
+      ItemID: resolvedItemId,
+      Title: title || null,
+      Description: description || null,
+      ItemSpecifics: itemSpecifics,
+      PictureURLs: pictureUrls,
+      PrimaryCategory: {
+        CategoryID: categoryId || null,
+        CategoryName: categoryName || null,
+      },
+      ListingStatus: listingStatus,
+      fetched_at: resolvedFetchedAt,
+      source: 'ebay_get_item_read_only',
+    },
+  };
+}
+
+function classifyEbayReadOnlyFetchError(error) {
+  const message = String(error?.message || error || 'unknown error');
+  const lower = message.toLowerCase();
+  let errorType = 'fetch_failed';
+  if (/rate|quota|limit|throttl/.test(lower)) errorType = 'rate_limit';
+  else if (/token|auth|unauthorized|credential|refresh/.test(lower)) errorType = 'invalid_token_or_auth';
+  else if (/not found|invalid item|item.*invalid|missing item/.test(lower)) errorType = 'missing_or_invalid_item';
+  return {
+    error_type: errorType,
+    message,
+    retry_safe: errorType === 'rate_limit',
+    evidence_faked: false,
+  };
+}
+
+function escapeXmlText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildGetItemRequestBody(itemId) {
+  return `
+  <ItemID>${escapeXmlText(itemId)}</ItemID>
+  <DetailLevel>ReturnAll</DetailLevel>
+  <IncludeItemSpecifics>true</IncludeItemSpecifics>
+  <IncludeWatchCount>true</IncludeWatchCount>`;
+}
+
+async function writeInternalListingEvidenceCache({ candidate, evidence } = {}) {
+  if (!candidate?.item_id || !evidence?.item_id) throw new Error('item_id is required for evidence cache write');
+  const db = getClient();
+  const now = evidence.fetched_at || new Date().toISOString();
+  const detailRecord = {
+    platform: 'ebay',
+    listing_type: 'our',
+    sku: candidate.sku || evidence.sku || evidence.item_id,
+    item_id: String(evidence.item_id),
+    title: evidence.title || '',
+    category_id: evidence.category_id || '',
+    category_name: evidence.category_name || '',
+    listing_status: evidence.listing_status || '',
+    image_count: evidence.picture_count || 0,
+    source_api: 'ebay_get_item_read_only',
+    last_enriched_at: now,
+    raw_data: evidence.raw_data || {},
+  };
+  const { data: detail, error: detailError } = await db
+    .from('listing_details')
+    .upsert(detailRecord, { onConflict: 'platform,listing_type,item_id' })
+    .select('id,item_id,sku,last_enriched_at')
+    .single();
+  if (detailError) throw detailError;
+
+  const specifics = evidence.raw_data?.ItemSpecifics || {};
+  const specificRows = Object.entries(specifics).map(([name, value]) => ({
+    platform: 'ebay',
+    listing_type: 'our',
+    item_id: String(evidence.item_id),
+    name: String(name),
+    value: Array.isArray(value) ? value.join(', ') : String(value ?? ''),
+    source: 'ebay_get_item_read_only',
+  }));
+  let specificsWritten = 0;
+  if (specificRows.length) {
+    const { data, error } = await db
+      .from('listing_item_specifics')
+      .upsert(specificRows, { onConflict: 'platform,listing_type,item_id,name' })
+      .select('id');
+    if (error) throw error;
+    specificsWritten = (data || []).length;
+  }
+
+  const imageRows = (evidence.raw_data?.PictureURLs || []).map((url, index) => ({
+    platform: 'ebay',
+    listing_type: 'our',
+    item_id: String(evidence.item_id),
+    image_url: String(url),
+    position: index + 1,
+    source: 'ebay_get_item_read_only',
+  }));
+  let imagesWritten = 0;
+  if (imageRows.length) {
+    const { data, error } = await db
+      .from('listing_images')
+      .upsert(imageRows, { onConflict: 'platform,listing_type,item_id,image_url' })
+      .select('id');
+    if (error) throw error;
+    imagesWritten = (data || []).length;
+  }
+
+  return {
+    detail_row: detail,
+    listing_details_written: true,
+    item_specifics_upserted: specificsWritten,
+    images_upserted: imagesWritten,
+    source: 'internal_listing_quality_evidence_cache',
+  };
+}
+
+async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write = false } = {}) {
+  const safeLimit = Math.min(5, Math.max(1, intOrNull(limit) || 5));
+  const writeRequested = write === true || dryRun === false;
+  const sample = await sampleEbayListingQualityEvidenceRefresh({ limit: safeLimit, dryRun: true });
+  const candidates = (sample.samples || [])
+    .filter(row => row.item_id && String(row.item_id) !== '202551129453')
+    .slice(0, safeLimit);
+
+  const result = {
+    read_only: true,
+    dry_run: !writeRequested,
+    marketplace: 'ebay',
+    operation: 'listing_quality_evidence_fetch',
+    limit: safeLimit,
+    source_sample_summary: sample.source_plan_summary,
+    candidate_count: candidates.length,
+    fetch_scope: {
+      max_items: 5,
+      selected_items: candidates.map(c => ({ sku: c.sku, item_id: c.item_id, title: c.title, evidence_gaps: c.current_evidence_gaps })),
+      excluded_item_ids: ['202551129453'],
+      already_executed_listings_excluded: true,
+      read_operation: 'Trading API GetItem',
+    },
+    fetch_results: [],
+    write_results: [],
+    partial_failure: false,
+    blocker: candidates.length === 0 ? 'no_evidence_refresh_sample_candidates' : null,
+    safety: {
+      read_only: true,
+      actual_read_only_ebay_call: false,
+      actual_ebay_call: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      ebay_write_api_called: false,
+      opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_state_changed: false,
+      listing_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+    },
+    source: 'phase_13e_read_only_listing_evidence_fetch_v1',
+  };
+
+  if (!candidates.length) return result;
+
+  const EbayAPI = require('../api/ebayAPI');
+  const ebay = new EbayAPI();
+  for (const candidate of candidates) {
+    const fetchedAt = new Date().toISOString();
+    try {
+      const xml = await ebay.callTradingAPI('GetItem', buildGetItemRequestBody(candidate.item_id));
+      result.safety.actual_read_only_ebay_call = true;
+      result.safety.actual_ebay_call = true;
+      result.safety.actual_network_call = true;
+      const evidence = parseEbayGetItemEvidenceXml(xml, { sku: candidate.sku, itemId: candidate.item_id, fetchedAt });
+      const shaped = {
+        sku: candidate.sku,
+        item_id: evidence.item_id,
+        title: evidence.title,
+        description_present: evidence.description_present,
+        description_length: evidence.description_length,
+        item_specifics_present: evidence.item_specifics_present,
+        item_specifics_count: evidence.item_specifics_count,
+        picture_count: evidence.picture_count,
+        category_id: evidence.category_id,
+        category_name: evidence.category_name,
+        listing_status: evidence.listing_status,
+        fetched_at: evidence.fetched_at,
+        source: evidence.source,
+        success: evidence.success,
+        ack: evidence.ack,
+        errors: evidence.errors,
+        raw_response_summary: evidence.raw_response_summary,
+        evidence_faked: false,
+      };
+      result.fetch_results.push(shaped);
+      if (writeRequested && evidence.success) {
+        const writeResult = await writeInternalListingEvidenceCache({ candidate, evidence });
+        result.write_results.push({ sku: candidate.sku, item_id: evidence.item_id, written: true, ...writeResult });
+        result.safety.actual_database_write = true;
+      }
+    } catch (e) {
+      result.partial_failure = true;
+      result.fetch_results.push({
+        sku: candidate.sku,
+        item_id: candidate.item_id,
+        success: false,
+        ...classifyEbayReadOnlyFetchError(e),
+      });
+    }
+  }
+
+  result.fetched_count = result.fetch_results.filter(row => row.success).length;
+  result.failed_count = result.fetch_results.filter(row => row.success === false).length;
+  result.recommended_next_action = writeRequested
+    ? 'Internal evidence cache write mode completed only for successful read-only GetItem results. Do not create opportunities, packets, approvals, or marketplace writes in Phase 13E.'
+    : 'Review fetched read-only evidence. If internal cache persistence is desired, run the same command with --write after confirming evidence-only scope.';
+  return result;
+}
+
 async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -4598,6 +4899,7 @@ module.exports = {
   buildEbayListingQualityEvidenceRefreshPlan,
   previewEbayListingQualityEvidenceRefresh,
   sampleEbayListingQualityEvidenceRefresh,
+  fetchEbayListingQualityEvidence,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
