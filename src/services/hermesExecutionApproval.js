@@ -3266,6 +3266,8 @@ async function selectNextEbayListingQualityCandidate({ limit = 10 } = {}) {
       excluded_packet_ids: [1],
       excluded_request_ids: [1],
       excluded_item_ids: ['202551129453'],
+      already_cached_items_excluded_by_missing_evidence_plan: true,
+      previous_marketplace_execution_completed_items_excluded: true,
       executed_requests_excluded: true,
       execution_result_requests_excluded: true,
       previous_marketplace_execution_completed_items_excluded: true,
@@ -4106,13 +4108,13 @@ function normalizePhase13EvidenceFetchItemIds(itemIds = null) {
     if (!itemId || itemId === '202551129453' || seen.has(itemId)) continue;
     seen.add(itemId);
     normalized.push(itemId);
-    if (normalized.length >= 5) break;
+    if (normalized.length >= 10) break;
   }
   return normalized;
 }
 
 async function buildPhase13EvidenceFetchCandidates({ limit = 5, itemIds = null } = {}) {
-  const safeLimit = Math.min(5, Math.max(1, intOrNull(limit) || 5));
+  const safeLimit = Math.min(10, Math.max(1, intOrNull(limit) || 5));
   const scopedItemIds = normalizePhase13EvidenceFetchItemIds(itemIds);
   const plan = await buildEbayListingQualityEvidenceRefreshPlan({ limit: Math.max(50, safeLimit) });
   const unexecutedPlanRows = (plan.listings || [])
@@ -4155,7 +4157,7 @@ async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write
     source_sample_summary: sourcePlanSummary,
     candidate_count: candidates.length,
     fetch_scope: {
-      max_items: 5,
+      max_items: 10,
       selected_items: candidates.map(c => ({ sku: c.sku, item_id: c.item_id, title: c.title, evidence_gaps: c.current_evidence_gaps })),
       requested_item_ids: scopedItemIds,
       missing_requested_item_ids: missingRequestedItemIds,
@@ -4186,7 +4188,7 @@ async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write
       price_changes: false,
       inventory_changes: false,
     },
-    source: scopedItemIds.length ? 'phase_13f_item_id_scoped_listing_evidence_fetch_v1' : 'phase_13e_read_only_listing_evidence_fetch_v1',
+    source: scopedItemIds.length ? 'phase_13f_item_id_scoped_listing_evidence_fetch_v1' : 'phase_13i_batch_listing_evidence_fetch_v1',
   };
 
   if (!candidates.length) return result;
@@ -4199,6 +4201,7 @@ async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write
       const xml = await ebay.callTradingAPI('GetItem', buildGetItemRequestBody(candidate.item_id));
       result.safety.actual_read_only_ebay_call = true;
       result.safety.actual_ebay_call = true;
+      result.safety.get_item_called = true;
       result.safety.actual_network_call = true;
       const evidence = parseEbayGetItemEvidenceXml(xml, { sku: candidate.sku, itemId: candidate.item_id, fetchedAt });
       const shaped = {
@@ -4241,7 +4244,7 @@ async function fetchEbayListingQualityEvidence({ limit = 5, dryRun = true, write
   result.fetched_count = result.fetch_results.filter(row => row.success).length;
   result.failed_count = result.fetch_results.filter(row => row.success === false).length;
   result.recommended_next_action = writeRequested
-    ? 'Internal evidence cache write mode completed only for successful read-only GetItem results. Do not create opportunities, packets, approvals, execution-state changes, or marketplace writes in Phase 13F.'
+    ? 'Internal evidence cache write mode completed only for successful read-only GetItem results. Do not create opportunities, packets, approvals, execution-state changes, or marketplace writes in Phase 13I.'
     : 'Review fetched read-only evidence. If internal cache persistence is desired, run the same command with --write after confirming evidence-only scope.';
   return result;
 }
@@ -4439,7 +4442,7 @@ async function loadPhase13GScoringEvidenceByItemId(itemId) {
 async function scoreEbayListingQualityEvidence({ itemIds = null, limit = 5, dryRun = true } = {}) {
   const scopedItemIds = normalizePhase13EvidenceFetchItemIds(itemIds);
   if (!scopedItemIds.length) throw new Error('item-ids is required');
-  const safeLimit = Math.min(10, Math.max(1, intOrNull(limit) || scopedItemIds.length || 5));
+  const safeLimit = Math.min(50, Math.max(1, intOrNull(limit) || scopedItemIds.length || 5));
   const scores = [];
   for (const itemId of scopedItemIds.slice(0, safeLimit)) {
     const evidence = await loadPhase13GScoringEvidenceByItemId(itemId);
@@ -4478,7 +4481,7 @@ async function scoreEbayListingQualityEvidence({ itemIds = null, limit = 5, dryR
 async function auditEbayListingQualityScore({ itemIds = null, limit = 5 } = {}) {
   const scopedItemIds = normalizePhase13EvidenceFetchItemIds(itemIds);
   if (!scopedItemIds.length) throw new Error('item-ids is required');
-  const safeLimit = Math.min(10, Math.max(1, intOrNull(limit) || scopedItemIds.length || 5));
+  const safeLimit = Math.min(50, Math.max(1, intOrNull(limit) || scopedItemIds.length || 5));
   const audits = [];
   for (const itemId of scopedItemIds.slice(0, safeLimit)) {
     const evidence = await loadPhase13GScoringEvidenceByItemId(itemId);
