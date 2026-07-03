@@ -79,6 +79,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-score-audit --item-ids=ID1,ID2',
     '  npm run hermes:agent -- ebay-listing-quality-opportunity-preview [--limit=10] [--dry-run]',
     '  npm run hermes:agent -- ebay-listing-quality-borderline-preview [--limit=20] [--dry-run]',
+    '  npm run hermes:agent -- ebay-listing-quality-borderline-inbox [--limit=20] [--dry-run|--write]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -114,6 +115,7 @@ function printUsage() {
     'Phase 13G Listing Quality Evidence Scoring: cached evidence only; no eBay call, DB write, opportunity creation, packet, or approval.',
     'Phase 13H Listing Quality Score Audit: cached evidence only; audits description normalization and score gaps without writes.',
     'Phase 13J Borderline Improvement Preview: cached evidence only; previews minor human-review candidates without writes.',
+    'Phase 13K Borderline Human Review Inbox: optional internal review-record write only; no opportunity/packet/approval/marketplace write.',
   ].join('\n'));
 }
 
@@ -737,6 +739,19 @@ async function main() {
     const result = await previewEbayListingQualityBorderlineImprovements({
       limit: intArg('limit', 20),
       dryRun: true,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-borderline-inbox') {
+    const { writeEbayListingQualityBorderlineInbox } = require('../src/services/hermesExecutionApproval');
+    const write = hasFlag('write');
+    const result = await writeEbayListingQualityBorderlineInbox({
+      limit: intArg('limit', 20),
+      dryRun: !write,
+      write,
     });
     console.log(JSON.stringify(result, null, 2));
     return;

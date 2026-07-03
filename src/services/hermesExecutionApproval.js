@@ -4733,6 +4733,156 @@ async function previewEbayListingQualityBorderlineImprovements({ limit = 20, dry
   };
 }
 
+
+async function countRows(table, buildQuery = null) {
+  const db = getClient();
+  try {
+    let q = db.from(table).select('*', { count: 'exact', head: true });
+    q = buildQuery ? buildQuery(q) : q;
+    const { count, error } = await q;
+    if (error) throw error;
+    return count || 0;
+  } catch (e) {
+    if (isMissingTableError(e) || /does not exist|column .* does not exist/i.test(e?.message || '')) return 0;
+    throw e;
+  }
+}
+
+function buildPhase13KBorderlineReviewRecord(candidate = {}) {
+  return {
+    opportunity_type: 'listing_quality_borderline_review',
+    source_type: 'phase_13j_borderline_preview',
+    input_channel: 'api',
+    source_name: 'phase_13k_borderline_human_review_inbox',
+    title: trimOrNull(candidate.title, 255),
+    category: 'ebay_listing_quality',
+    priority: 'normal',
+    status: 'reviewing',
+    notes: candidate.recommended_next_action || 'Internal human review required before any opportunity, packet, approval, or marketplace flow.',
+    metadata: {
+      type: 'listing_quality_borderline_review',
+      source: 'phase_13j_borderline_preview',
+      not_listing_quality_low: true,
+      not_execution_candidate: true,
+      requires_human_review: true,
+      item_id: candidate.item_id || null,
+      sku: candidate.sku || null,
+      title: candidate.title || null,
+      score: candidate.score,
+      detected_gaps: candidate.detected_gaps || [],
+      borderline_gaps: candidate.borderline_gaps || [],
+      proposed_mutation_fields: candidate.proposed_mutation_fields || [],
+      evidence_source: candidate.evidence_source || [],
+      risk_level: candidate.risk_level || null,
+      why_not_listing_quality_low: candidate.why_not_listing_quality_low || null,
+      recommended_next_action: candidate.recommended_next_action || null,
+      rank: candidate.rank || null,
+      phase: '13K',
+    },
+  };
+}
+
+async function listExistingPhase13KBorderlineReviewRows() {
+  return safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,metadata,created_at',
+    q => q.eq('opportunity_type', 'listing_quality_borderline_review').eq('source_type', 'phase_13j_borderline_preview').order('created_at', { ascending: false }).limit(200)
+  );
+}
+
+async function writeEbayListingQualityBorderlineInbox({ limit = 20, dryRun = true, write = false } = {}) {
+  const writeRequested = write === true && dryRun === false;
+  const preview = await previewEbayListingQualityBorderlineImprovements({ limit, dryRun: true });
+  const candidates = preview.ranked_borderline_candidates || [];
+  const before = {
+    review_records: await countRows(OPPORTUNITY_TABLE, q => q.eq('opportunity_type', 'listing_quality_borderline_review').eq('source_type', 'phase_13j_borderline_preview')),
+    listing_quality_low_opportunities: await countRows(OPPORTUNITY_TABLE, q => q.eq('opportunity_type', 'listing_quality_low')),
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  const existingRows = await listExistingPhase13KBorderlineReviewRows();
+  const existingItemIds = new Set((existingRows || []).map(row => String(row?.metadata?.item_id || '')).filter(Boolean));
+  const records = candidates.map(buildPhase13KBorderlineReviewRecord);
+  const recordsToInsert = records.filter(record => !existingItemIds.has(String(record.metadata.item_id || '')));
+  let insertedRows = [];
+  if (writeRequested && recordsToInsert.length) {
+    const db = getClient();
+    const { data, error } = await db.from(OPPORTUNITY_TABLE).insert(recordsToInsert).select('id,opportunity_type,source_type,title,status,metadata,created_at');
+    if (error) throw error;
+    insertedRows = data || [];
+  }
+  const afterRows = await listExistingPhase13KBorderlineReviewRows();
+  const candidateItemIds = new Set(candidates.map(c => String(c.item_id || '')).filter(Boolean));
+  const matchingRows = (afterRows || []).filter(row => candidateItemIds.has(String(row?.metadata?.item_id || '')));
+  const after = {
+    review_records: await countRows(OPPORTUNITY_TABLE, q => q.eq('opportunity_type', 'listing_quality_borderline_review').eq('source_type', 'phase_13j_borderline_preview')),
+    listing_quality_low_opportunities: await countRows(OPPORTUNITY_TABLE, q => q.eq('opportunity_type', 'listing_quality_low')),
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  return {
+    read_only: !writeRequested,
+    dry_run: !writeRequested,
+    write_requested: writeRequested,
+    marketplace: 'ebay',
+    operation: 'listing_quality_borderline_human_review_inbox',
+    limit: preview.limit,
+    preview_candidate_count: candidates.length,
+    planned_review_records: records,
+    existing_review_record_count_before: before.review_records,
+    records_to_insert_count: recordsToInsert.length,
+    inserted_count: insertedRows.length,
+    inserted_records: insertedRows.map(row => ({
+      id: row.id,
+      item_id: row.metadata?.item_id || null,
+      title: row.title || row.metadata?.title || null,
+      type: row.opportunity_type,
+      source: row.source_type,
+      status: row.status,
+      not_listing_quality_low: row.metadata?.not_listing_quality_low === true,
+      not_execution_candidate: row.metadata?.not_execution_candidate === true,
+      requires_human_review: row.metadata?.requires_human_review === true,
+    })),
+    verification: {
+      internal_review_records_exist: matchingRows.length >= candidates.length && candidates.length > 0,
+      matching_review_record_count: matchingRows.length,
+      normal_listing_quality_low_opportunity_count_before: before.listing_quality_low_opportunities,
+      normal_listing_quality_low_opportunity_count_after: after.listing_quality_low_opportunities,
+      normal_opportunity_created: after.listing_quality_low_opportunities > before.listing_quality_low_opportunities,
+      packet_count_before: before.listing_quality_packets,
+      packet_count_after: after.listing_quality_packets,
+      packet_created: after.listing_quality_packets > before.listing_quality_packets,
+      approval_request_count_before: before.execution_requests,
+      approval_request_count_after: after.execution_requests,
+      approval_created: after.execution_requests > before.execution_requests,
+      execution_state_updated: false,
+    },
+    recommended_next_action: writeRequested
+      ? 'Internal human-review records created or already present. These are not listing_quality_low opportunities and are not execution candidates; do not create packets, approvals, or marketplace writes without a later explicit human-approved phase.'
+      : 'Dry-run only. Re-run with --write to create internal human-review records; do not create opportunities, packets, approvals, or marketplace writes in dry-run.',
+    safety: {
+      cached_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      actual_network_call: false,
+      actual_database_write: writeRequested && insertedRows.length > 0,
+      database_write_scope: writeRequested ? 'opportunity_inbox internal review records only' : null,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      opportunity_created: false,
+      normal_opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+    source: 'phase_13k_borderline_human_review_inbox_v1',
+  };
+}
+
 async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -5491,6 +5641,7 @@ module.exports = {
   auditEbayListingQualityScore,
   previewEbayListingQualityOpportunities,
   previewEbayListingQualityBorderlineImprovements,
+  writeEbayListingQualityBorderlineInbox,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
