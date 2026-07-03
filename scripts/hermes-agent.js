@@ -89,6 +89,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-promoted-opportunities [--limit=20]',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-opportunity-detail --id=<OPPORTUNITY_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-opportunity-action --id=<OPPORTUNITY_ID> --action=<approve_for_packet|reject> --actor=<USER> --reason=... [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-promoted-packet-preview --opportunity-id=<OPPORTUNITY_ID>',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -129,6 +130,7 @@ function printUsage() {
     'Phase 13M Borderline Promotion Eligibility: read-only check for future safe internal opportunity promotion; no creation.',
     'Phase 13O Borderline Review Promotion: default dry-run; --write creates one normal internal human-review opportunity only.',
     'Phase 13P Promoted Opportunity Human Gate: default dry-run; --write updates internal opportunity metadata/status only.',
+    'Phase 13Q Promoted Packet Preview: read-only packet-shaped preview only; no packet/approval/execution creation.',
   ].join('\n'));
 }
 
@@ -872,6 +874,16 @@ async function main() {
       dryRun: !write,
       write,
     });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-promoted-packet-preview') {
+    const { buildEbayListingQualityPromotedPacketPreview } = require('../src/services/hermesExecutionApproval');
+    const opportunityId = intArg('opportunity-id', intArg('id', null));
+    if (opportunityId == null) throw new Error('opportunity-id is required');
+    const result = await buildEbayListingQualityPromotedPacketPreview({ opportunityId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }

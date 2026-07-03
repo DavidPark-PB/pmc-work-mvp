@@ -5630,6 +5630,203 @@ async function actOnEbayListingQualityPromotedOpportunity({ id, action, actor = 
   };
 }
 
+
+function pickAllowedPromotedPlannedMutation(metadata = {}) {
+  const proposedFields = Array.isArray(metadata.proposed_mutation_fields) ? metadata.proposed_mutation_fields : [];
+  const allowedFields = Array.isArray(metadata.allowed_mutation_fields) ? metadata.allowed_mutation_fields : phase13JAllowedProposedFields(proposedFields);
+  const preview = metadata.proposed_mutation_preview && typeof metadata.proposed_mutation_preview === 'object'
+    ? metadata.proposed_mutation_preview
+    : {};
+  const planned = {};
+  if (allowedFields.includes('title') && typeof preview.title === 'string' && preview.title.trim()) planned.title = preview.title;
+  if (allowedFields.includes('description') && typeof preview.description === 'string' && preview.description.trim()) planned.description = preview.description;
+  if (allowedFields.includes('item_specifics')) {
+    const itemSpecifics = preview.item_specifics && typeof preview.item_specifics === 'object' && !Array.isArray(preview.item_specifics)
+      ? preview.item_specifics
+      : {};
+    planned.item_specifics = itemSpecifics;
+  }
+  return planned;
+}
+
+function buildPhase13QForbiddenFieldCheck(plannedMutation = {}, allowedFields = []) {
+  const forbiddenFields = objectHasForbiddenMarketplaceMutationFields(plannedMutation);
+  const payloadFields = Object.keys(plannedMutation || {});
+  const nonAllowedFields = payloadFields.filter(field => !allowedFields.includes(field));
+  return {
+    forbidden_fields_present: forbiddenFields.length > 0 || nonAllowedFields.length > 0,
+    forbidden_fields: forbiddenFields,
+    non_allowed_fields: nonAllowedFields,
+    allowed_mutation_fields: allowedFields,
+    payload_fields: payloadFields,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    shipping_changes: false,
+    payment_changes: false,
+    returns_changes: false,
+    listing_end_create_relist: false,
+    sku_remapping: false,
+  };
+}
+
+function buildPhase13QCachedEvidenceSnapshot(evidence = {}, score = {}) {
+  return {
+    source: 'cached_internal_data_only',
+    source_tables: evidence.source_tables || score.evidence_source || [],
+    item_id: evidence.item_id || score.item_id || null,
+    sku: evidence.sku || score.sku || null,
+    title: evidence.title || score.title || null,
+    description_present: Boolean(evidence.description),
+    description_length: evidence.description ? String(evidence.description).length : 0,
+    item_specifics: evidence.item_specifics || {},
+    item_specifics_count: Object.keys(evidence.item_specifics || {}).length,
+    images_count: (evidence.images || []).length,
+    policies_present: Boolean(evidence.policies),
+    listing_status: evidence.listing_detail?.listing_status || score.evidence_metrics?.listing_status || null,
+    listing_status_active: score.evidence_metrics?.listing_status_active === true,
+    last_enriched_at: evidence.listing_detail?.last_enriched_at || null,
+    limitations: evidence.limitations || [],
+    live_marketplace_state_fetched: false,
+    ebay_api_call_made: false,
+  };
+}
+
+async function buildEbayListingQualityPromotedPacketPreview({ opportunityId } = {}) {
+  const id = intOrNull(opportunityId);
+  if (id == null) throw new Error('opportunity-id is required');
+  const detail = await getEbayListingQualityPromotedOpportunityDetail({ id });
+  if (!detail.found) throw new Error(`promoted opportunity ${id} not found`);
+  const opportunity = detail.promoted_opportunity;
+  const metadata = opportunity.metadata || {};
+  const itemId = String(metadata.item_id || metadata.target_item_id || opportunity.item_id || '').trim();
+  const allowedFields = phase13JAllowedProposedFields(metadata.allowed_mutation_fields || metadata.proposed_mutation_fields || []);
+  const plannedMutation = pickAllowedPromotedPlannedMutation(metadata);
+  const forbiddenFieldCheck = buildPhase13QForbiddenFieldCheck(plannedMutation, allowedFields);
+  const evidence = itemId ? await loadPhase13GScoringEvidenceByItemId(itemId) : {};
+  const score = scoreCachedListingQualityEvidence(evidence);
+  const cachedEvidenceSnapshot = buildPhase13QCachedEvidenceSnapshot(evidence, score);
+  const packetShape = {
+    id: null,
+    request_id: null,
+    opportunity_id: id,
+    source_review_id: metadata.source_review_id || opportunity.source_review_id || null,
+    status: 'packet_preview_only',
+    confirmation_status: 'not_created',
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    item_id: itemId || null,
+    planned_mutation: plannedMutation,
+    before_snapshot: {
+      title: evidence.title || null,
+      description: evidence.description || null,
+      item_specifics: evidence.item_specifics || {},
+      cached_evidence_snapshot: cachedEvidenceSnapshot,
+    },
+    rollback_snapshot: {
+      title: evidence.title || null,
+      description: evidence.description || null,
+      item_specifics: evidence.item_specifics || {},
+      available: Boolean(itemId && evidence.title && evidence.item_specifics && Object.keys(evidence.item_specifics || {}).length >= 0),
+      source: 'phase_13q_cached_evidence_preview',
+    },
+    packet_hash: null,
+  };
+  const rollbackSnapshot = prepareEbayListingQualityRollbackSnapshot({ packet: packetShape });
+  const blockers = [];
+  if (opportunity.human_review_status !== 'approved_for_packet') blockers.push('human_review_status_not_approved_for_packet');
+  if (opportunity.not_execution_candidate !== true) blockers.push('not_execution_candidate_not_true');
+  if (metadata.not_listing_quality_low !== true) blockers.push('not_listing_quality_low_not_true');
+  if (!itemId) blockers.push('item_id_missing');
+  if (!allowedFields.length) blockers.push('allowed_mutation_fields_missing');
+  if (!Object.prototype.hasOwnProperty.call(plannedMutation, 'item_specifics') && allowedFields.includes('item_specifics')) blockers.push('planned_item_specifics_missing');
+  if (forbiddenFieldCheck.forbidden_fields_present) blockers.push('forbidden_or_non_allowed_fields_present');
+  if (plannedMutation.title && !allowedFields.includes('title')) blockers.push('title_not_allowed');
+  if (plannedMutation.description && !allowedFields.includes('description')) blockers.push('description_not_allowed');
+  if (Object.keys(plannedMutation).some(field => ['price', 'quantity', 'qty', 'inventory', 'stock', 'shipping', 'payment', 'returns', 'end', 'create', 'relist'].includes(field))) blockers.push('forbidden_top_level_mutation_field_present');
+  const before = {
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  const after = {
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  return {
+    read_only: true,
+    dry_run: true,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    preview_type: 'promoted_borderline_packet_preview',
+    opportunity_id: id,
+    source_review_id: metadata.source_review_id || opportunity.source_review_id || null,
+    item_id: itemId || null,
+    target_item_id: itemId || null,
+    human_review_status: opportunity.human_review_status || null,
+    packet_would_be_created: false,
+    packet_created: false,
+    approval_created: false,
+    execution_request_created: false,
+    packet_shape: packetShape,
+    planned_mutation: plannedMutation,
+    planned_mutation_fields: Object.keys(plannedMutation),
+    allowed_mutation_fields: allowedFields,
+    forbidden_field_check: forbiddenFieldCheck,
+    cached_evidence_snapshot: cachedEvidenceSnapshot,
+    rollback_snapshot: rollbackSnapshot,
+    safety_gates: {
+      human_review_approved_for_packet: opportunity.human_review_status === 'approved_for_packet',
+      still_not_execution_candidate: opportunity.still_not_execution_candidate === true || metadata.still_not_execution_candidate === true,
+      not_execution_candidate: opportunity.not_execution_candidate === true,
+      packet_preview_only: true,
+      packet_would_be_created: false,
+      no_ebay_call: true,
+      no_get_item_call: true,
+      no_revise_fixed_price_item_call: true,
+      no_marketplace_write: true,
+      no_packet_created: true,
+      no_approval_created: true,
+      no_execution_request_created: true,
+      no_execution_state_change: true,
+      allowed_fields_only: forbiddenFieldCheck.non_allowed_fields.length === 0,
+      forbidden_fields_absent: forbiddenFieldCheck.forbidden_fields.length === 0,
+      no_price_inventory_quantity_fields: true,
+      no_shipping_payment_returns_fields: true,
+      no_end_create_relist_fields: true,
+    },
+    blockers: [...new Set(blockers)],
+    verification: {
+      packet_count_before: before.listing_quality_packets,
+      packet_count_after: after.listing_quality_packets,
+      packet_created: after.listing_quality_packets > before.listing_quality_packets,
+      approval_request_count_before: before.execution_requests,
+      approval_request_count_after: after.execution_requests,
+      approval_created: after.execution_requests > before.execution_requests,
+      execution_request_created: after.execution_requests > before.execution_requests,
+      execution_state_updated: false,
+    },
+    recommended_next_action: 'Packet preview only. Do not create packet, approval request, execution request, execution-state change, or marketplace write until a later explicit phase.',
+    safety: {
+      cached_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      packet_created: false,
+      approval_created: false,
+      execution_request_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+    source: 'phase_13q_promoted_packet_preview_v1',
+  };
+}
+
 async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -6398,6 +6595,7 @@ module.exports = {
   listEbayListingQualityPromotedOpportunities,
   getEbayListingQualityPromotedOpportunityDetail,
   actOnEbayListingQualityPromotedOpportunity,
+  buildEbayListingQualityPromotedPacketPreview,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
