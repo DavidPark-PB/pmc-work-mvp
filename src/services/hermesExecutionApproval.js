@@ -4223,6 +4223,194 @@ async function buildEbayListingQualitySeedSignalDominanceAudit({ limit = 100 } =
   };
 }
 
+const PHASE14E_ALLOWED_SCORE_CLASSIFICATIONS = [
+  'listing_quality_only_possible',
+  'listing_quality_issue_with_price_inventory_context',
+];
+
+const PHASE14E_EXCLUDED_SCORE_CLASSIFICATIONS = [
+  'already_executed_excluded',
+  'insufficient_listing_evidence',
+  'price_inventory_dominant_no_listing_action',
+  'no_listing_quality_issue',
+];
+
+const PHASE14E_ISSUE_SEVERITY_WEIGHTS = {
+  title_too_short: 15,
+  title_too_long: 15,
+  missing_brand_specific: 13,
+  missing_type_specific: 13,
+  missing_country_specific: 11,
+  item_specifics_sparse: 12,
+  description_missing: 14,
+  image_count_low: 8,
+};
+
+function scorePhase14EListingQualityAuditRow(row = {}) {
+  const issueSignals = normalizeSignalTypes(row.listing_quality_issue_signals || []);
+  const warnings = [...new Set(row.warnings || [])].sort();
+  const proposedFields = [...new Set(row.proposed_safe_listing_mutation_fields || [])].sort();
+  const evidenceGaps = [...new Set(row.evidence_gaps || [])].sort();
+  const forbiddenFields = [...new Set(row.mutation_scope?.forbidden_mutation_fields || [])].sort();
+  const hardBlockers = [...new Set([
+    ...(row.blockers || []),
+    ...forbiddenFields.map(field => `forbidden_mutation_field_${field}`),
+  ])].sort();
+  const safeFieldSet = ['description', 'item_specifics', 'title'];
+  const hasUnsafeProposedField = proposedFields.some(field => !safeFieldSet.includes(field));
+  if (hasUnsafeProposedField) hardBlockers.push('unsafe_proposed_mutation_field');
+
+  const issueSeverityScore = issueSignals.reduce((sum, type) => sum + (PHASE14E_ISSUE_SEVERITY_WEIGHTS[type] || 5), 0);
+  const issueCountScore = issueSignals.length * 3;
+  const evidenceCompletenessScore = Math.max(0, 20 - (evidenceGaps.length * 4));
+  const safeMutationScopeScore = proposedFields.length > 0 && !hasUnsafeProposedField && forbiddenFields.length === 0 ? 10 + (proposedFields.length * 2) : 0;
+  const priceInventoryWarningPenalty = (row.price_inventory_stock_signal_types || []).length > 0 ? 5 : 0;
+  const warningPenalty = warnings.length * 2;
+  const hardBlockerPenalty = hardBlockers.length > 0 ? 100 : 0;
+  const rawScore = issueSeverityScore + issueCountScore + evidenceCompletenessScore + safeMutationScopeScore - priceInventoryWarningPenalty - warningPenalty - hardBlockerPenalty;
+  const score = Math.max(0, rawScore);
+
+  return {
+    sku: row.sku,
+    item_id: row.item_id,
+    title: row.title,
+    classification: row.classification,
+    score,
+    score_breakdown: {
+      issue_signal_count: issueSignals.length,
+      issue_count_score: issueCountScore,
+      issue_severity_score: issueSeverityScore,
+      issue_severity_weights: issueSignals.reduce((acc, type) => {
+        acc[type] = PHASE14E_ISSUE_SEVERITY_WEIGHTS[type] || 5;
+        return acc;
+      }, {}),
+      evidence_completeness_score: evidenceCompletenessScore,
+      evidence_gap_count: evidenceGaps.length,
+      safe_mutation_scope_score: safeMutationScopeScore,
+      price_inventory_stock_warning_penalty: priceInventoryWarningPenalty,
+      warning_penalty: warningPenalty,
+      hard_blocker_penalty: hardBlockerPenalty,
+      formula: 'issue_severity + issue_count + evidence_completeness + safe_mutation_scope - price_inventory_warning_penalty - warning_penalty - hard_blocker_penalty',
+    },
+    issue_signals: issueSignals,
+    evidence_gaps: evidenceGaps,
+    warnings,
+    blockers: [...new Set(hardBlockers)].sort(),
+    price_inventory_stock_signal_types: normalizeSignalTypes(row.price_inventory_stock_signal_types || []),
+    proposed_safe_listing_mutation_fields: proposedFields,
+    mutation_scope: {
+      ...(row.mutation_scope || {}),
+      allowed_listing_fields_only: proposedFields.every(field => safeFieldSet.includes(field)),
+      hard_blocked_for_forbidden_scope: hardBlockers.some(blocker => /^forbidden_mutation_field_|unsafe_proposed_mutation_field/.test(blocker)),
+    },
+    recommended_next_safe_action: hardBlockers.length > 0
+      ? 'Keep out of shortlist; row has a hard blocker or unsafe proposed mutation scope.'
+      : 'Eligible for a later explicit read-only shortlist review only; do not create opportunities or execution artifacts in Phase 14E.',
+  };
+}
+
+async function buildEbayListingQualitySeedScoringPreview({ limit = 100, top = 20 } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, intOrNull(limit) || 100));
+  const safeTop = Math.min(safeLimit, Math.min(50, Math.max(1, intOrNull(top) || 20)));
+  const audit = await buildEbayListingQualitySeedSignalDominanceAudit({ limit: safeLimit });
+  const auditRows = audit.audit_rows || [];
+  const eligibleRows = auditRows.filter(row => PHASE14E_ALLOWED_SCORE_CLASSIFICATIONS.includes(row.classification));
+  const excludedRows = auditRows.filter(row => PHASE14E_EXCLUDED_SCORE_CLASSIFICATIONS.includes(row.classification));
+  const scoredRows = eligibleRows.map(scorePhase14EListingQualityAuditRow);
+  const shortlistRows = scoredRows
+    .filter(row => row.blockers.length === 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if ((b.issue_signals || []).length !== (a.issue_signals || []).length) return (b.issue_signals || []).length - (a.issue_signals || []).length;
+      return String(a.item_id || '').localeCompare(String(b.item_id || ''));
+    })
+    .slice(0, safeTop)
+    .map((row, index) => ({ rank: index + 1, ...row }));
+
+  const countBy = (rows, field) => rows.reduce((acc, row) => {
+    const key = row[field] || 'unknown';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  return {
+    read_only: true,
+    phase: '14E',
+    marketplace: 'ebay',
+    operation: 'listing_quality_seed_scoring_preview',
+    limit: safeLimit,
+    top: safeTop,
+    source_audit: {
+      phase: audit.phase,
+      operation: audit.operation,
+      audited_seed_count: audit.scanned_counts?.audited_seed_count || 0,
+      source: audit.source,
+    },
+    scanned_counts: {
+      audit_row_count: auditRows.length,
+      eligible_for_scoring_count: eligibleRows.length,
+      excluded_from_scoring_count: excludedRows.length,
+      scored_row_count: scoredRows.length,
+      shortlist_row_count: shortlistRows.length,
+      audit_classification_counts: countBy(auditRows, 'classification'),
+      scored_classification_counts: countBy(scoredRows, 'classification'),
+      excluded_classification_counts: countBy(excludedRows, 'classification'),
+      rows_with_price_inventory_stock_warning_context: scoredRows.filter(row => row.price_inventory_stock_signal_types.length > 0).length,
+      rows_hard_blocked_for_forbidden_scope: scoredRows.filter(row => row.mutation_scope?.hard_blocked_for_forbidden_scope === true).length,
+    },
+    excluded_executed_item_ids: audit.excluded_executed_item_ids || [],
+    excluded_records: audit.excluded_records || {
+      request_ids: [4],
+      packet_ids: [3],
+      approval_ids: [15],
+    },
+    scored_row_count: scoredRows.length,
+    shortlist_rows: shortlistRows,
+    excluded_rows_summary: excludedRows.map(row => ({
+      sku: row.sku,
+      item_id: row.item_id,
+      title: row.title,
+      classification: row.classification,
+      blockers: row.blockers || [],
+      recommended_next_safe_action: row.recommended_next_safe_action,
+    })),
+    issue_signals: [...new Set(scoredRows.flatMap(row => row.issue_signals || []))].sort(),
+    warnings: [...new Set(scoredRows.flatMap(row => row.warnings || []))].sort(),
+    blockers: [...new Set(scoredRows.flatMap(row => row.blockers || []))].sort(),
+    proposed_safe_listing_mutation_fields: [...new Set(shortlistRows.flatMap(row => row.proposed_safe_listing_mutation_fields || []))].sort(),
+    recommended_next_safe_action: shortlistRows.length > 0
+      ? 'Review shortlist rows in a later explicit read-only packet/opportunity preview phase; Phase 14E creates no opportunities, packets, approvals, requests, live candidates, DB writes, or marketplace writes.'
+      : 'No rows are shortlist-ready after deterministic scoring; continue read-only evidence refinement and preserve executed-item exclusions.',
+    safety: {
+      read_only: true,
+      scoring_preview_only: true,
+      deterministic_scoring_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_api_call: false,
+      ai_calls: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      database_write_performed: false,
+      marketplace_write_performed: false,
+      opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_request_created: false,
+      live_candidate_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      title_changes: false,
+      description_changes: false,
+    },
+    source: 'phase_14e_seed_scoring_preview_v1',
+  };
+}
+
+
 
 
 function phase13AuditBucket(candidate) {
@@ -10435,6 +10623,7 @@ module.exports = {
   buildEbayListingQualityFreshCandidateSourcePlan,
   buildEbayListingQualityCandidateSeedPreview,
   buildEbayListingQualitySeedSignalDominanceAudit,
+  buildEbayListingQualitySeedScoringPreview,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
   buildEbayListingQualityEvidenceRefreshPlan,

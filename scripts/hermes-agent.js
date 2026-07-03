@@ -73,6 +73,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-fresh-candidate-source-plan [--limit=100]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-seed-preview [--limit=100]',
     '  npm run hermes:agent -- ebay-listing-quality-seed-signal-dominance-audit [--limit=100]',
+    '  npm run hermes:agent -- ebay-listing-quality-seed-scoring-preview [--limit=100] [--top=20]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-source-audit [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
     '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-plan [--limit=50]',
@@ -163,6 +164,7 @@ function printUsage() {
     'Phase 14B Fresh Candidate Source Planner: read-only internal/local source discovery; no GetItem, AI, DB writes, candidates, packets, approvals, requests, or marketplace writes.',
     'Phase 14C Candidate Seed Preview: read-only deterministic seed preview from internal catalog/listing evidence; no DB writes, AI, GetItem, or marketplace writes.',
     'Phase 14D Seed Signal Dominance Audit: read-only audit separating listing-quality issues from price/inventory/stock context; no candidates or writes.',
+    'Phase 14E Seed Scoring Preview: read-only deterministic listing-quality scoring/shortlist preview; no opportunities, packets, approvals, requests, DB writes, AI, or marketplace writes.',
   ].join('\n'));
 }
 
@@ -713,6 +715,16 @@ async function main() {
     const { buildEbayListingQualitySeedSignalDominanceAudit } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayListingQualitySeedSignalDominanceAudit({
       limit: intArg('limit', 100),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-seed-scoring-preview') {
+    const { buildEbayListingQualitySeedScoringPreview } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayListingQualitySeedScoringPreview({
+      limit: intArg('limit', 100),
+      top: intArg('top', 20),
     });
     console.log(JSON.stringify(result, null, 2));
     return;
