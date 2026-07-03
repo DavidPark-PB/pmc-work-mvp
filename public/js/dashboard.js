@@ -6210,14 +6210,19 @@ async function shippingSyncOrders() {
 }
 
 // 주문 데이터 캐시 (검색 필터용) — must be declared before any function that reads it
+// _shippingOrders = 기본 화면 표시용 (배송 대기 주문만)
+// _shippingOrdersAll = 검색용 (SHIPPED 포함 전체 — 사장님 요청 2026-07-03)
 var _shippingOrders = [];
+var _shippingOrdersAll = [];
 
 async function shippingLoadRecent() {
   const tableEl = document.getElementById('shippingOrderTable');
   const countEl = document.getElementById('shippingOrderCount');
 
   try {
-    const resp = await fetch('/api/orders/recent?limit=200&status=NEW');
+    // 사장님 요청 2026-07-03: SHIPPED 로 넘긴 주문도 검색되게. status 필터 제거하고
+    // limit 확대 (200 → 500) — SHIPPED 포함 최근 주문 캐시. 기본 화면은 대기만 유지.
+    const resp = await fetch('/api/orders/recent?limit=500');
     const data = await resp.json();
 
     if (!data.success || !data.orders || data.orders.length === 0) {
@@ -6232,6 +6237,7 @@ async function shippingLoadRecent() {
       link.href = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(data.sheetUrl || '')}`;
     }
 
+    _shippingOrdersAll = data.orders;   // 검색용 전체
     _shippingOrders = data.orders.filter(o => {
       const s = (o.status || o['상태'] || '').toString().toUpperCase();
       return s === 'NEW' || s === 'AWAITING_SHIPMENT' || s === 'AWAITING SHIPMENT';
@@ -6239,14 +6245,14 @@ async function shippingLoadRecent() {
 
     // 검색바 + 테이블
     let html = `<div style="margin-bottom:10px;display:flex;align-items:center;gap:8px">
-      <input id="shippingSearch" type="text" placeholder="주문번호, 구매자, 국가 검색..." oninput="shippingFilter()"
-        style="flex:1;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;max-width:320px">
+      <input id="shippingSearch" type="text" placeholder="주문번호, 구매자, 국가 검색... (SHIPPED 포함 전체 검색)" oninput="shippingFilter()"
+        style="flex:1;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;max-width:380px">
       <span style="font-size:11px;color:#888" id="shippingFilterCount"></span>
     </div>`;
 
     html += shippingRenderTable(_shippingOrders);
     tableEl.innerHTML = html;
-    countEl.textContent = `배송 대기 주문 ${_shippingOrders.length}건`;
+    countEl.textContent = `배송 대기 주문 ${_shippingOrders.length}건 (검색 시 SHIPPED 포함 ${_shippingOrdersAll.length}건 대상)`;
   } catch (err) {
     tableEl.innerHTML = `<p style="color:#c62828;text-align:center;padding:20px">로딩 실패: ${esc(err.message)}</p>`;
   }
@@ -6382,20 +6388,30 @@ function shippingToggleAddr(rowIdx) {
 
 function shippingFilter() {
   const q = (document.getElementById('shippingSearch').value || '').toLowerCase().trim();
-  const rows = document.querySelectorAll('#shippingTbody tr');
-  let shown = 0;
-  rows.forEach(row => {
-    const searchData = row.getAttribute('data-search') || '';
-    if (!q || searchData.includes(q)) {
-      row.style.display = '';
-      shown++;
-    } else {
-      row.style.display = 'none';
-    }
-  });
+
+  // 사장님 요청 2026-07-03: 검색어 있으면 SHIPPED 포함 전체 목록에서 재렌더, 없으면 대기 주문만.
+  const tbody = document.getElementById('shippingTbody');
+  if (!tbody) return;
+
+  const source = q ? _shippingOrdersAll : _shippingOrders;
+  const matched = q
+    ? source.filter(o => {
+        const orderNo = String(o.orderNo || o['주문번호'] || '').toLowerCase();
+        const buyer = String(o.buyerName || o['구매자명'] || '').toLowerCase();
+        const country = String(o.countryCode || o.country || o['국가'] || '').toLowerCase();
+        const city = String(o.city || o.City || '').toLowerCase();
+        const title = String(o.title || o['상품명'] || '').toLowerCase();
+        const street = String(o.street || o.Street || '').toLowerCase();
+        const tracking = String(o.trackingNumber || o.tracking_no || '').toLowerCase();
+        return [orderNo, buyer, country, city, title, street, tracking].some(v => v.includes(q));
+      })
+    : source;
+
+  tbody.innerHTML = matched.map(o => shippingRenderRow(o)).join('');
+
   const el = document.getElementById('shippingFilterCount');
   if (el) {
-    el.textContent = q ? `${shown}건 검색됨` : '';
+    el.textContent = q ? `${matched.length}건 검색됨 (전체 ${_shippingOrdersAll.length}건 대상, SHIPPED 포함)` : '';
   }
 }
 
