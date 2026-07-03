@@ -71,6 +71,8 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-next-candidate [--limit=10]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-source-audit [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
+    '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-plan [--limit=50]',
+    '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-preview [--limit=20] [--dry-run]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -100,6 +102,7 @@ function printUsage() {
     'Phase 12H eBay Live Runbook: read-only operator checklist; does not execute live marketplace changes.',
     'Phase 13A eBay Next Candidate: read-only selector; no packet, approval, DB, or marketplace writes.',
     'Phase 13B Candidate Source Audit/Rescan: read-only by default; no opportunity, packet, approval, DB, or marketplace writes.',
+    'Phase 13C Evidence Refresh Planner: read-only planner/preview; no eBay write, packet, approval, opportunity, DB, or execution-state writes.',
   ].join('\n'));
 }
 
@@ -632,6 +635,26 @@ async function main() {
   if (cmd === 'ebay-listing-quality-candidate-rescan') {
     const { rescanEbayListingQualityCandidates } = require('../src/services/hermesExecutionApproval');
     const result = await rescanEbayListingQualityCandidates({
+      limit: intArg('limit', 20),
+      dryRun: true,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-evidence-refresh-plan') {
+    const { buildEbayListingQualityEvidenceRefreshPlan } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayListingQualityEvidenceRefreshPlan({
+      limit: intArg('limit', 50),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-evidence-refresh-preview') {
+    const { previewEbayListingQualityEvidenceRefresh } = require('../src/services/hermesExecutionApproval');
+    const result = await previewEbayListingQualityEvidenceRefresh({
       limit: intArg('limit', 20),
       dryRun: true,
     });
