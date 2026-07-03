@@ -70,6 +70,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-live-runbook --packet-id=<PACKET_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-next-candidate [--limit=10]',
     '  npm run hermes:agent -- ebay-listing-quality-controlled-expansion-plan [--limit=50]',
+    '  npm run hermes:agent -- ebay-listing-quality-fresh-candidate-source-plan [--limit=100]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-source-audit [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
     '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-plan [--limit=50]',
@@ -157,6 +158,7 @@ function printUsage() {
     'Phase 13X Promoted Item Specifics Finalization Gate: blocks placeholder item_specifics and previews operator JSON only.',
     'Phase 13Y Promoted Final Item Specifics Packet: creates superseding internal request/packet from operator JSON only.',
     'Phase 14A Controlled Expansion Planner: read-only planner; excludes executed items and creates no packets, approvals, requests, DB writes, AI calls, or marketplace writes.',
+    'Phase 14B Fresh Candidate Source Planner: read-only internal/local source discovery; no GetItem, AI, DB writes, candidates, packets, approvals, requests, or marketplace writes.',
   ].join('\n'));
 }
 
@@ -680,6 +682,15 @@ async function main() {
     const { buildEbayListingQualityControlledExpansionPlan } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayListingQualityControlledExpansionPlan({
       limit: intArg('limit', 50),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-fresh-candidate-source-plan') {
+    const { buildEbayListingQualityFreshCandidateSourcePlan } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayListingQualityFreshCandidateSourcePlan({
+      limit: intArg('limit', 100),
     });
     console.log(JSON.stringify(result, null, 2));
     return;

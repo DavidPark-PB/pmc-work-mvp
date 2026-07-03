@@ -3485,6 +3485,320 @@ async function buildEbayListingQualityControlledExpansionPlan({ limit = 50 } = {
 }
 
 
+function phase14BSignalsFromContext(context = {}) {
+  return phase13SignalDominance(context?.signals || []);
+}
+
+function classifyPhase14BFreshCandidateSource({ source, executedItemIds, executedRequestIds } = {}) {
+  const blockers = [];
+  const itemId = source.item_id ? String(source.item_id) : null;
+  const requestId = intOrNull(source.request_id);
+  const signalSummary = source.signal_summary || {};
+  const evidenceGaps = source.evidence_gaps || [];
+  const sourceType = source.source_type;
+
+  if (itemId && executedItemIds.has(itemId)) blockers.push('item_already_executed_or_hard_excluded');
+  if (requestId != null && executedRequestIds.has(requestId)) blockers.push('request_already_executed_or_result_present');
+  if (requestId === 4) blockers.push('request_id_4_excluded');
+  if (source.packet_id === 3) blockers.push('packet_id_3_excluded');
+  if (source.approval_id === 15) blockers.push('approval_id_15_excluded');
+  if (!itemId) blockers.push('item_id_missing');
+  if (signalSummary.price_inventory_signals_dominate === true || (signalSummary.price_signal_types || []).length || (signalSummary.inventory_signal_types || []).length) {
+    blockers.push('price_or_inventory_signal_present');
+  }
+  if (signalSummary.listing_quality_low !== true) blockers.push('listing_quality_signal_missing');
+  if (evidenceGaps.length) blockers.push('cached_evidence_incomplete');
+  if (source.opportunity_status && !['new', 'reviewing', 'approved'].includes(source.opportunity_status)) blockers.push(`opportunity_status_${source.opportunity_status}_not_active`);
+  if (source.request_status && ['cancelled', 'rejected', 'failed', 'executed'].includes(source.request_status)) blockers.push(`request_status_${source.request_status}_not_selectable`);
+
+  let classification = 'candidate_source_ready_for_evidence_review';
+  if (blockers.some(name => /already_executed|hard_excluded|request_id_4|packet_id_3|approval_id_15/.test(name))) {
+    classification = 'candidate_source_already_executed';
+  } else if (!itemId) {
+    classification = 'candidate_source_missing_item_id';
+  } else if (blockers.includes('price_or_inventory_signal_present')) {
+    classification = 'candidate_source_price_or_inventory_related';
+  } else if (signalSummary.listing_quality_low !== true) {
+    classification = 'candidate_source_missing_listing_quality_signal';
+  } else if (evidenceGaps.length) {
+    classification = 'candidate_source_needs_evidence_refresh';
+  } else if (!source.sku || !source.title_present) {
+    classification = 'candidate_source_insufficient_data';
+  }
+
+  const recommended = {
+    candidate_source_ready_for_evidence_review: 'Review cached listing-quality evidence only; do not create an opportunity, packet, approval, execution request, or marketplace write in Phase 14B.',
+    candidate_source_needs_evidence_refresh: 'Consider a later explicit read-only evidence refresh phase; do not call GetItem in Phase 14B.',
+    candidate_source_missing_item_id: 'Resolve item_id from internal/local data in a future read-only discovery phase before reconsidering.',
+    candidate_source_missing_listing_quality_signal: 'Leave unselected until cached/context signals show listing_quality_low.',
+    candidate_source_already_executed: 'Exclude from the fresh candidate cycle; do not reuse prior live execution records.',
+    candidate_source_price_or_inventory_related: 'Leave unselected for listing-quality expansion because price/inventory/stock signals are outside Phase 14B scope.',
+    candidate_source_insufficient_data: 'Collect/complete internal cached data in a future read-only phase before reconsidering.',
+  };
+
+  return {
+    ...source,
+    classification,
+    blockers: [...new Set(blockers)].sort(),
+    recommended_next_safe_action: recommended[classification],
+  };
+}
+
+async function buildEbayListingQualityFreshCandidateSourcePlan({ limit = 100 } = {}) {
+  const safeLimit = Math.min(200, Math.max(1, intOrNull(limit) || 100));
+  const db = getClient();
+  const [requestsResult, opportunitiesResult, eventsResult, activeRows] = await Promise.all([
+    db.from(REQUEST_TABLE).select('*').order('id', { ascending: false }).limit(Math.max(safeLimit, 100)),
+    db.from(OPPORTUNITY_TABLE).select('*').order('id', { ascending: false }).limit(Math.max(safeLimit, 100)),
+    db.from(EVENT_TABLE).select('id,request_id,event_type,payload,created_at').in('event_type', MARKETPLACE_EXECUTION_EVENT_TYPES).order('id', { ascending: false }).limit(500),
+    loadPhase13ActiveEbayListingRows({ limit: safeLimit }),
+  ]);
+  if (requestsResult.error) throw requestsResult.error;
+  if (opportunitiesResult.error) throw opportunitiesResult.error;
+  if (eventsResult.error) throw eventsResult.error;
+
+  const requests = requestsResult.data || [];
+  const opportunities = opportunitiesResult.data || [];
+  const events = eventsResult.data || [];
+  const completedEvents = events.filter(event => event.event_type === 'marketplace_execution_completed');
+  const hardExcludedItemIds = new Set(['202551129453', '206315990948']);
+  const executedRequestIds = new Set(requests
+    .filter(request => request.executed_at != null || request.execution_result != null || request.id === 4)
+    .map(request => request.id)
+    .filter(id => id != null));
+  const executedItemIds = new Set([
+    ...hardExcludedItemIds,
+    ...candidateEventItemIds(completedEvents),
+    ...phase14AExecutedRequestItemIds(requests),
+  ].map(value => String(value)));
+
+  const sourceRows = [];
+  const seenSourceKeys = new Set();
+  const pushSource = source => {
+    const key = `${source.source_type}:${source.request_id || ''}:${source.opportunity_id || ''}:${source.sku || ''}:${source.item_id || ''}`;
+    if (seenSourceKeys.has(key)) return;
+    seenSourceKeys.add(key);
+    sourceRows.push(source);
+  };
+
+  for (const request of requests) {
+    const evidence = await loadCachedEbayListingEvidence({ sku: request.sku });
+    const itemId = firstNonEmpty(evidence.item_id, request?.metadata?.item_id, request?.metadata?.listing_id, request?.metadata?.target_item_id, request?.requested_action?.target_item_id, request?.execution_result?.target_item_id);
+    const signalSummary = phase13SignalDominance([
+      ...(request?.metadata?.source_signals || []),
+      ...(request?.requested_action?.source_signals || []),
+      ...(request?.requested_action?.action_plan?.source_signals || []),
+    ]);
+    pushSource({
+      source_type: 'execution_request',
+      request_id: request.id,
+      opportunity_id: request.opportunity_id || null,
+      sku: request.sku || null,
+      item_id: itemId || null,
+      listing_id: itemId || null,
+      request_status: request.status || null,
+      opportunity_status: null,
+      title_present: Boolean(evidence.title),
+      source_tables: evidence.source_tables || [],
+      signal_summary: signalSummary,
+      evidence_gaps: evidenceRefreshMissingFields(evidence),
+      evidence_summary: {
+        cached_internal_data_only: true,
+        title_present: Boolean(evidence.title),
+        description_present: Boolean(evidence.description),
+        item_specifics_count: Object.keys(evidence.item_specifics || {}).length,
+        image_count: (evidence.images || []).length,
+        policies_present: Boolean(evidence.policies),
+        limitations: evidence.limitations || [],
+        live_marketplace_state_fetched: false,
+        ebay_api_call_made: false,
+      },
+    });
+  }
+
+  for (const opportunity of opportunities) {
+    const metadata = opportunity.metadata || {};
+    const sku = firstNonEmpty(opportunity.sku, metadata.sku, metadata.item_id, metadata.listing_id, metadata.ebay_item_id);
+    const evidence = await loadCachedEbayListingEvidence({ sku });
+    const itemId = firstNonEmpty(evidence.item_id, metadata.item_id, metadata.listing_id, metadata.ebay_item_id);
+    const signalSummary = phase13SignalDominance([
+      ...(metadata.source_signals || []),
+      ...(opportunity.source_signals || []),
+    ]);
+    const recommendationTypes = normalizeSignalTypes([...(metadata.source_recommendations || []), ...(opportunity.source_recommendations || [])]);
+    if (recommendationTypes.includes('listing_quality_review')) signalSummary.listing_quality_low = true;
+    pushSource({
+      source_type: 'opportunity',
+      request_id: null,
+      opportunity_id: opportunity.id,
+      sku: sku || null,
+      item_id: itemId || null,
+      listing_id: itemId || null,
+      request_status: null,
+      opportunity_status: opportunity.status || null,
+      title_present: Boolean(evidence.title),
+      source_tables: evidence.source_tables || [],
+      signal_summary: signalSummary,
+      evidence_gaps: evidenceRefreshMissingFields(evidence),
+      evidence_summary: {
+        cached_internal_data_only: true,
+        title_present: Boolean(evidence.title),
+        description_present: Boolean(evidence.description),
+        item_specifics_count: Object.keys(evidence.item_specifics || {}).length,
+        image_count: (evidence.images || []).length,
+        policies_present: Boolean(evidence.policies),
+        limitations: evidence.limitations || [],
+        live_marketplace_state_fetched: false,
+        ebay_api_call_made: false,
+      },
+    });
+  }
+
+  for (const row of activeRows) {
+    const evidence = await loadCachedEbayListingEvidence({ sku: row.sku });
+    let context = null;
+    let contextError = null;
+    try {
+      const { buildSkuContext } = require('./skuContextBuilder');
+      context = await buildSkuContext({ sku: row.sku, readOnly: true, skipConnector: true });
+    } catch (e) {
+      contextError = e.message;
+    }
+    const signalSummary = phase14BSignalsFromContext(context || {});
+    const itemId = firstNonEmpty(evidence.item_id, row.item_id);
+    pushSource({
+      source_type: row.source_table === 'listing_details' ? 'cached_listing_detail' : 'cached_product_listing',
+      request_id: null,
+      opportunity_id: null,
+      sku: row.sku || null,
+      item_id: itemId || null,
+      listing_id: itemId || null,
+      request_status: null,
+      opportunity_status: null,
+      listing_status: row.status || null,
+      title_present: Boolean(evidence.title || row.title),
+      source_tables: evidence.source_tables || [row.source_table].filter(Boolean),
+      signal_summary: signalSummary,
+      evidence_gaps: evidenceRefreshMissingFields(evidence),
+      evidence_summary: {
+        cached_internal_data_only: true,
+        title_present: Boolean(evidence.title || row.title),
+        description_present: Boolean(evidence.description),
+        item_specifics_count: Object.keys(evidence.item_specifics || {}).length,
+        image_count: (evidence.images || []).length,
+        policies_present: Boolean(evidence.policies),
+        limitations: evidence.limitations || [],
+        context_error: contextError,
+        live_marketplace_state_fetched: false,
+        ebay_api_call_made: false,
+      },
+    });
+  }
+
+  const classified = sourceRows
+    .map(source => classifyPhase14BFreshCandidateSource({ source, executedItemIds, executedRequestIds }))
+    .sort((a, b) => {
+      const order = [
+        'candidate_source_ready_for_evidence_review',
+        'candidate_source_needs_evidence_refresh',
+        'candidate_source_missing_item_id',
+        'candidate_source_missing_listing_quality_signal',
+        'candidate_source_price_or_inventory_related',
+        'candidate_source_insufficient_data',
+        'candidate_source_already_executed',
+      ];
+      return order.indexOf(a.classification) - order.indexOf(b.classification) || String(a.sku || '').localeCompare(String(b.sku || ''));
+    });
+  const candidateSourceRows = classified.slice(0, safeLimit).map((source, index) => ({
+    row: index + 1,
+    classification: source.classification,
+    source_type: source.source_type,
+    request_id: source.request_id,
+    opportunity_id: source.opportunity_id,
+    sku: source.sku,
+    item_id: source.item_id,
+    listing_id: source.listing_id,
+    request_status: source.request_status,
+    opportunity_status: source.opportunity_status,
+    listing_status: source.listing_status || null,
+    source_tables: source.source_tables || [],
+    signal_summary: source.signal_summary,
+    evidence_gaps: source.evidence_gaps,
+    evidence_summary: source.evidence_summary,
+    blockers: source.blockers,
+    recommended_next_safe_action: source.recommended_next_safe_action,
+  }));
+  const countBy = (rows, field) => rows.reduce((acc, row) => {
+    const key = row[field] || 'unknown';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  return {
+    read_only: true,
+    phase: '14B',
+    marketplace: 'ebay',
+    operation: 'listing_quality_fresh_candidate_source_plan',
+    limit: safeLimit,
+    scanned_counts_by_source_type: countBy(sourceRows, 'source_type'),
+    returned_counts_by_source_type: countBy(candidateSourceRows, 'source_type'),
+    scanned_counts: {
+      request_count: requests.length,
+      opportunity_count: opportunities.length,
+      cached_listing_row_count: activeRows.length,
+      raw_source_count: sourceRows.length,
+      returned_source_count: candidateSourceRows.length,
+      marketplace_execution_event_count: events.length,
+      marketplace_execution_completed_event_count: completedEvents.length,
+      executed_request_count: executedRequestIds.size,
+      classification_counts: countBy(classified, 'classification'),
+      returned_classification_counts: countBy(candidateSourceRows, 'classification'),
+    },
+    excluded_executed_item_ids: [...executedItemIds].sort(),
+    excluded_records: {
+      request_ids: [4, ...[...executedRequestIds].filter(id => id !== 4)].sort((a, b) => a - b),
+      packet_ids: [3],
+      approval_ids: [15],
+      any_marketplace_execution_completed_event_excluded: true,
+      any_request_with_executed_at_excluded: true,
+      any_request_with_execution_result_excluded: true,
+    },
+    candidate_source_rows: candidateSourceRows,
+    evidence_gaps: [...new Set(candidateSourceRows.flatMap(row => row.evidence_gaps || []))].sort(),
+    blockers: [...new Set(candidateSourceRows.flatMap(row => row.blockers || []))].sort(),
+    recommended_next_safe_action: candidateSourceRows.some(row => row.classification === 'candidate_source_ready_for_evidence_review')
+      ? 'Review ready candidate sources using cached evidence only; do not create opportunities, packets, approvals, execution requests, live candidates, or marketplace writes in Phase 14B.'
+      : candidateSourceRows.some(row => row.classification === 'candidate_source_needs_evidence_refresh')
+        ? 'Plan a later explicitly approved read-only evidence refresh phase. Do not call GetItem in Phase 14B.'
+        : 'No fresh candidate source is actionable. Continue read-only internal discovery and keep executed items excluded.',
+    safety: {
+      read_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_api_call: false,
+      ai_calls: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      database_write_performed: false,
+      marketplace_write_performed: false,
+      opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_request_created: false,
+      live_candidate_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      title_changes: false,
+      description_changes: false,
+    },
+    source: 'phase_14b_fresh_candidate_source_plan_v1',
+  };
+}
+
+
 
 function phase13AuditBucket(candidate) {
   const blockers = [...(candidate.exclusion_blockers || []), ...(candidate.candidate_blockers || [])];
@@ -9693,6 +10007,7 @@ module.exports = {
   buildEbayListingQualityLiveRunbook,
   selectNextEbayListingQualityCandidate,
   buildEbayListingQualityControlledExpansionPlan,
+  buildEbayListingQualityFreshCandidateSourcePlan,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
   buildEbayListingQualityEvidenceRefreshPlan,
