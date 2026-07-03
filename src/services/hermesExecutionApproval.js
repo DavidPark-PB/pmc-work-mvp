@@ -6541,6 +6541,14 @@ function normalizePhase13TPromotedApprovalRow(row = {}) {
     planned_mutation: approval.planned_mutation || {},
     planned_mutation_fields: approval.planned_mutation_fields || Object.keys(approval.planned_mutation || {}),
     approval_status: approval.approval_status || metadata.approval_status || row.status || null,
+    approved_by_actor: approval.approved_by_actor || metadata.approved_by_actor || null,
+    approval_reason: approval.approval_reason || metadata.approval_reason || null,
+    approved_at: approval.approved_at || metadata.approved_at || null,
+    rejected_by_actor: approval.rejected_by_actor || metadata.rejected_by_actor || null,
+    rejection_reason: approval.rejection_reason || metadata.rejection_reason || null,
+    rejected_at: approval.rejected_at || metadata.rejected_at || null,
+    final_operator_approval: approval.final_operator_approval === true || metadata.final_operator_approval === true,
+    still_not_execution_candidate: approval.still_not_execution_candidate === true || metadata.still_not_execution_candidate === true || approval.not_execution_candidate === true || metadata.not_execution_candidate === true,
     not_execution_candidate: approval.not_execution_candidate === true || metadata.not_execution_candidate === true,
     requires_final_operator_approval: approval.requires_final_operator_approval === true || metadata.requires_final_operator_approval === true,
     execution_request_id: approval.execution_request_id || null,
@@ -6687,23 +6695,35 @@ function validatePhase13TPromotedApprovalCreation({ packetRow, packet, normalize
   };
 }
 
-async function getEbayListingQualityPromotedApprovalDetail({ packetId } = {}) {
-  const id = intOrNull(packetId);
-  if (id == null) throw new Error('packet-id is required');
-  const rows = await listPhase13TPromotedApprovalRows({ packetId: id, limit: 50 });
+async function getEbayListingQualityPromotedApprovalDetail({ packetId = null, approvalId = null } = {}) {
+  const pId = intOrNull(packetId);
+  const aId = intOrNull(approvalId);
+  if (pId == null && aId == null) throw new Error('packet-id or approval-id is required');
+  const rows = aId != null
+    ? await safeSelectRows(
+      OPPORTUNITY_TABLE,
+      'id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at',
+      q => q.eq('id', aId).eq('opportunity_type', 'listing_quality_update_approval_request').limit(1)
+    )
+    : await listPhase13TPromotedApprovalRows({ packetId: pId, limit: 50 });
   const approvals = rows.map(normalizePhase13TPromotedApprovalRow);
   return {
     read_only: true,
     marketplace: 'ebay',
     operation: 'listing_quality_update',
-    packet_id: id,
+    packet_id: pId || approvals[0]?.packet_artifact_id || null,
+    approval_id: aId || approvals[0]?.id || null,
     found: approvals.length > 0,
     count: approvals.length,
     approvals,
     promoted_approval: approvals[0] || null,
     verification: {
-      exactly_one_approval_for_packet: approvals.length === 1,
+      exactly_one_approval_for_packet: pId != null ? approvals.length === 1 : null,
       approval_status: approvals[0]?.approval_status || null,
+      final_operator_approval: approvals[0]?.final_operator_approval === true,
+      approved_by_actor: approvals[0]?.approved_by_actor || null,
+      approval_reason: approvals[0]?.approval_reason || null,
+      approved_at: approvals[0]?.approved_at || null,
       packet_artifact_id: approvals[0]?.packet_artifact_id || null,
       opportunity_id: approvals[0]?.opportunity_id || null,
       source_review_id: approvals[0]?.source_review_id || null,
@@ -6713,6 +6733,7 @@ async function getEbayListingQualityPromotedApprovalDetail({ packetId } = {}) {
         ? JSON.stringify(approvals[0].planned_mutation_fields || []) === JSON.stringify(['item_specifics'])
         : null,
       not_execution_candidate: approvals[0]?.not_execution_candidate === true,
+      still_not_execution_candidate: approvals[0]?.still_not_execution_candidate === true,
       requires_final_operator_approval: approvals[0]?.requires_final_operator_approval === true,
       execution_request_id: approvals[0]?.execution_request_id || null,
     },
@@ -6897,6 +6918,283 @@ async function createEbayListingQualityPromotedApproval({ packetId, dryRun = tru
     safety: phase13TPromotedApprovalSafety({ databaseWrite: true }),
     recommended_next_action: 'Internal promoted approval request created only. Do not create execution requests or marketplace writes until a later explicit phase.',
     source: 'phase_13t_promoted_approval_request_v1',
+  };
+}
+
+
+function validatePhase13UPromotedApprovalAction({ approvalRow, approval, packetRow, packet, normalizedPacket, action, actor, reason, executionRequestsForOpportunity = [], dryRun = true } = {}) {
+  const blockers = [];
+  const normalizedAction = trimOrNull(action, 30);
+  const plannedMutation = approval?.planned_mutation || {};
+  const plannedFields = Object.keys(plannedMutation || {});
+  const forbiddenFields = objectHasForbiddenMarketplaceMutationFields(plannedMutation);
+  if (!['approve', 'reject'].includes(normalizedAction)) blockers.push('action_not_approve_or_reject');
+  if (!approvalRow) blockers.push('approval_artifact_missing');
+  if (approvalRow && approvalRow.opportunity_type !== 'listing_quality_update_approval_request') blockers.push('approval_opportunity_type_not_listing_quality_update_approval_request');
+  if (approvalRow && approvalRow.source_type !== 'phase_13t_promoted_approval_request') blockers.push('approval_source_type_not_phase_13t_promoted_approval_request');
+  if ((approval?.approval_status || approvalRow?.metadata?.approval_status || approvalRow?.status) !== 'pending') blockers.push('approval_status_not_pending');
+  if (!packetRow) blockers.push('packet_artifact_missing');
+  if (packetRow && packetRow.id !== 14) blockers.push('packet_artifact_id_not_14');
+  if (normalizedPacket?.confirmation_status !== 'confirmed') blockers.push('packet_confirmation_status_not_confirmed');
+  if (plannedFields.length !== 1 || plannedFields[0] !== 'item_specifics') blockers.push('planned_mutation_not_item_specifics_only');
+  if (forbiddenFields.length) blockers.push('forbidden_marketplace_mutation_fields_present');
+  if ((approval?.target_item_id || approval?.item_id) !== '206315990948') blockers.push('target_item_id_not_206315990948');
+  if (approval?.execution_request_id != null) blockers.push('approval_execution_request_id_present');
+  if (normalizedPacket?.execution_request_id != null) blockers.push('packet_execution_request_id_present');
+  if (executionRequestsForOpportunity.length > 0) blockers.push('execution_request_exists_for_source_opportunity');
+  if (dryRun === false && !actor) blockers.push('actor_required');
+  if (dryRun === false && !reason) blockers.push('reason_required');
+  return {
+    action: normalizedAction,
+    blockers: [...new Set(blockers)],
+    planned_mutation_fields: plannedFields,
+    forbidden_fields: forbiddenFields,
+    planned_mutation_item_specifics_only: plannedFields.length === 1 && plannedFields[0] === 'item_specifics',
+  };
+}
+
+async function actOnEbayListingQualityPromotedApproval({ approvalId, action, actor = null, reason = null, dryRun = true, write = false } = {}) {
+  const id = intOrNull(approvalId);
+  if (id == null) throw new Error('approval-id is required');
+  const writeRequested = write === true || dryRun === false;
+  const approvalActor = trimOrNull(actor, 100);
+  const approvalReason = trimOrNull(reason, 1000);
+  const approvalRows = await safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at',
+    q => q.eq('id', id).eq('opportunity_type', 'listing_quality_update_approval_request').limit(1)
+  );
+  const approvalRow = approvalRows[0] || null;
+  const currentApproval = approvalRow ? normalizePhase13TPromotedApprovalRow(approvalRow) : null;
+  const approval = approvalRow?.metadata?.approval_request || {};
+  const packetArtifactId = intOrNull(approval?.packet_artifact_id || approvalRow?.metadata?.packet_artifact_id);
+  const packetRows = packetArtifactId != null
+    ? await safeSelectRows(
+      OPPORTUNITY_TABLE,
+      'id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at',
+      q => q.eq('id', packetArtifactId).eq('opportunity_type', 'listing_quality_update_packet').limit(1)
+    )
+    : [];
+  const packetRow = packetRows[0] || null;
+  const normalizedPacket = packetRow ? normalizePhase13RPromotedPacketRow(packetRow) : null;
+  const packet = packetRow?.metadata?.packet || {};
+  const sourceOpportunityId = currentApproval?.opportunity_id || approval?.opportunity_id || normalizedPacket?.opportunity_id || null;
+  const beforeRequests = sourceOpportunityId != null
+    ? await safeSelectRows(REQUEST_TABLE, 'id,opportunity_id,status,execution_type,final_approval_status,executed_at,execution_result,created_at', q => q.eq('opportunity_id', sourceOpportunityId).limit(50))
+    : [];
+  const validation = validatePhase13UPromotedApprovalAction({
+    approvalRow,
+    approval,
+    packetRow,
+    packet,
+    normalizedPacket,
+    action,
+    actor: approvalActor,
+    reason: approvalReason,
+    executionRequestsForOpportunity: beforeRequests,
+    dryRun: !writeRequested,
+  });
+  const actedAt = new Date().toISOString();
+  const isApprove = validation.action === 'approve';
+  const nextApprovalStatus = isApprove ? 'approved' : 'rejected';
+  const actionSnapshot = {
+    approval_artifact_id: id,
+    action: validation.action,
+    actor: approvalActor,
+    reason: approvalReason,
+    acted_at: actedAt,
+    packet_artifact_id: packetArtifactId,
+    opportunity_id: sourceOpportunityId,
+    source_review_id: currentApproval?.source_review_id || approval?.source_review_id || null,
+    target_item_id: currentApproval?.target_item_id || approval?.target_item_id || null,
+    planned_mutation: approval?.planned_mutation || {},
+    planned_mutation_hash: sha256Json(approval?.planned_mutation || {}),
+    packet_confirmation_status: normalizedPacket?.confirmation_status || null,
+    execution_request_count_for_source_opportunity: beforeRequests.length,
+    final_operator_approval: isApprove,
+    still_not_execution_candidate: true,
+    safety: {
+      no_ebay_call: true,
+      no_get_item_call: true,
+      no_revise_fixed_price_item_call: true,
+      no_marketplace_write: true,
+      no_execution_request_created: true,
+      no_execution_state_change: true,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+    policy_version: 'phase-13u-promoted-final-approval-v1',
+  };
+  const nextApprovalRequest = {
+    ...approval,
+    approval_status: nextApprovalStatus,
+    approved_by_actor: isApprove ? approvalActor : null,
+    approval_reason: isApprove ? approvalReason : null,
+    approved_at: isApprove ? actedAt : null,
+    rejected_by_actor: isApprove ? null : approvalActor,
+    rejection_reason: isApprove ? null : approvalReason,
+    rejected_at: isApprove ? null : actedAt,
+    final_operator_approval: isApprove,
+    final_operator_approval_snapshot: actionSnapshot,
+    still_not_execution_candidate: true,
+    not_execution_candidate: true,
+    execution_request_id: null,
+    request_id: null,
+  };
+  const nextMetadata = {
+    ...(approvalRow?.metadata || {}),
+    phase_13u_promoted_final_approval: true,
+    approval_status: nextApprovalStatus,
+    approved_by_actor: isApprove ? approvalActor : null,
+    approval_reason: isApprove ? approvalReason : null,
+    approved_at: isApprove ? actedAt : null,
+    rejected_by_actor: isApprove ? null : approvalActor,
+    rejection_reason: isApprove ? null : approvalReason,
+    rejected_at: isApprove ? null : actedAt,
+    final_operator_approval: isApprove,
+    final_operator_approval_snapshot: actionSnapshot,
+    still_not_execution_candidate: true,
+    not_execution_candidate: true,
+    execution_request_created: false,
+    execution_state_changed: false,
+    marketplace_write_performed: false,
+    approval_request: nextApprovalRequest,
+    safety_boundary: {
+      ...((approvalRow?.metadata || {}).safety_boundary || {}),
+      no_ebay_call: true,
+      no_get_item_call: true,
+      no_revise_fixed_price_item_call: true,
+      no_marketplace_write: true,
+      no_execution_request_created: true,
+      no_execution_state_change: true,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+  };
+
+  if (validation.blockers.length) {
+    if (writeRequested) throw new Error(`promoted approval action blocked: ${validation.blockers.join(', ')}`);
+    return {
+      read_only: true,
+      dry_run: true,
+      write_requested: false,
+      marketplace: 'ebay',
+      operation: 'listing_quality_update',
+      approval_id: id,
+      action: validation.action,
+      updated: false,
+      blocked: true,
+      blockers: validation.blockers,
+      before_approval: currentApproval,
+      action_preview: actionSnapshot,
+      verification: {
+        approval_exists: Boolean(approvalRow),
+        source_type: approvalRow?.source_type || null,
+        approval_status: currentApproval?.approval_status || null,
+        packet_artifact_id: packetArtifactId,
+        packet_exists: Boolean(packetRow),
+        packet_confirmation_status: normalizedPacket?.confirmation_status || null,
+        planned_mutation_fields: validation.planned_mutation_fields,
+        planned_mutation_item_specifics_only: validation.planned_mutation_item_specifics_only,
+        forbidden_fields: validation.forbidden_fields,
+        target_item_id: currentApproval?.target_item_id || approval?.target_item_id || null,
+        execution_request_count_for_source_opportunity_before: beforeRequests.length,
+      },
+      safety: phase13TPromotedApprovalSafety({ databaseWrite: false }),
+      source: 'phase_13u_promoted_final_approval_v1',
+    };
+  }
+
+  if (!writeRequested) {
+    return {
+      read_only: true,
+      dry_run: true,
+      write_requested: false,
+      marketplace: 'ebay',
+      operation: 'listing_quality_update',
+      approval_id: id,
+      action: validation.action,
+      updated: false,
+      blocked: false,
+      blockers: [],
+      before_approval: currentApproval,
+      after_preview: normalizePhase13TPromotedApprovalRow({ ...approvalRow, status: nextApprovalStatus === 'approved' ? 'approval_approved' : 'approval_rejected', metadata: nextMetadata, updated_at: actedAt }),
+      action_preview: actionSnapshot,
+      verification: {
+        approval_exists: true,
+        source_type_valid: approvalRow.source_type === 'phase_13t_promoted_approval_request',
+        approval_status_pending: currentApproval.approval_status === 'pending',
+        packet_artifact_id: packetArtifactId,
+        packet_exists: Boolean(packetRow),
+        packet_confirmation_status: normalizedPacket.confirmation_status,
+        packet_remains_confirmed: normalizedPacket.confirmation_status === 'confirmed',
+        planned_mutation_fields: validation.planned_mutation_fields,
+        planned_mutation_item_specifics_only: validation.planned_mutation_item_specifics_only,
+        forbidden_fields_absent: validation.forbidden_fields.length === 0,
+        target_item_id: currentApproval.target_item_id,
+        target_item_id_valid: currentApproval.target_item_id === '206315990948',
+        execution_request_count_for_source_opportunity_before: beforeRequests.length,
+        execution_request_count_for_source_opportunity_after: beforeRequests.length,
+      },
+      safety: phase13TPromotedApprovalSafety({ databaseWrite: false }),
+      recommended_next_action: 'Dry-run only. Re-run with --write to update the internal approval artifact; do not create execution requests or marketplace writes.',
+      source: 'phase_13u_promoted_final_approval_v1',
+    };
+  }
+
+  const db = getClient();
+  const { data: updated, error } = await db
+    .from(OPPORTUNITY_TABLE)
+    .update({ status: nextApprovalStatus === 'approved' ? 'approval_approved' : 'approval_rejected', metadata: nextMetadata, updated_at: actedAt })
+    .eq('id', id)
+    .eq('opportunity_type', 'listing_quality_update_approval_request')
+    .eq('source_type', 'phase_13t_promoted_approval_request')
+    .select('id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at')
+    .single();
+  if (error) throw error;
+  const after = normalizePhase13TPromotedApprovalRow(updated);
+  const afterRequests = sourceOpportunityId != null
+    ? await safeSelectRows(REQUEST_TABLE, 'id,opportunity_id,status,execution_type,final_approval_status,executed_at,execution_result,created_at', q => q.eq('opportunity_id', sourceOpportunityId).limit(50))
+    : [];
+  return {
+    read_only: false,
+    dry_run: false,
+    write_requested: true,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    approval_id: id,
+    action: validation.action,
+    updated: true,
+    blocked: false,
+    blockers: [],
+    before_approval: currentApproval,
+    after_approval: after,
+    action_snapshot: actionSnapshot,
+    verification: {
+      approval_id: after.id,
+      approval_status: after.approval_status,
+      approved_by_actor: after.approved_by_actor,
+      approval_reason: after.approval_reason,
+      approved_at: after.approved_at,
+      final_operator_approval: after.final_operator_approval === true,
+      still_not_execution_candidate: after.still_not_execution_candidate === true,
+      not_execution_candidate: after.not_execution_candidate === true,
+      packet_artifact_id: after.packet_artifact_id,
+      packet_remains_confirmed: normalizedPacket.confirmation_status === 'confirmed',
+      planned_mutation_fields: after.planned_mutation_fields,
+      planned_mutation_item_specifics_only: JSON.stringify(after.planned_mutation_fields || []) === JSON.stringify(['item_specifics']),
+      execution_request_count_for_source_opportunity_before: beforeRequests.length,
+      execution_request_count_for_source_opportunity_after: afterRequests.length,
+      execution_request_created: afterRequests.length > beforeRequests.length,
+      execution_state_updated: false,
+    },
+    safety: phase13TPromotedApprovalSafety({ databaseWrite: true }),
+    recommended_next_action: 'Internal promoted final approval recorded only. Do not create execution requests or marketplace writes until a later explicit phase.',
+    source: 'phase_13u_promoted_final_approval_v1',
   };
 }
 
@@ -7674,6 +7972,7 @@ module.exports = {
   confirmEbayListingQualityPromotedPacket,
   createEbayListingQualityPromotedApproval,
   getEbayListingQualityPromotedApprovalDetail,
+  actOnEbayListingQualityPromotedApproval,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
