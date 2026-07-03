@@ -8345,10 +8345,13 @@ function validatePhase13WPromotedLiveTransportBoundary({ approval, request, lega
   const plannedFields = legacyPacket ? Object.keys(legacyPacket.planned_mutation || {}) : [];
   if (!approval) blockers.push('approval_artifact_missing');
   if (approval?.id !== 15) blockers.push('approval_id_not_15');
+  const isFinalPhase13Y = request?.metadata?.phase13y_promoted_final_item_specifics_packet === true || legacyPacket?.safety_flags?.phase13y_promoted_final_item_specifics_packet === true;
+  const expectedRequestId = isFinalPhase13Y ? 4 : 3;
+  const expectedPacketId = isFinalPhase13Y ? 3 : 2;
   if (!request) blockers.push('bridge_request_missing');
-  if (request?.id !== 3) blockers.push('request_id_not_3');
+  if (request && request.id !== expectedRequestId) blockers.push(`request_id_not_${expectedRequestId}`);
   if (!legacyPacket) blockers.push('legacy_packet_missing');
-  if (legacyPacket?.id !== 2) blockers.push('packet_id_not_2');
+  if (legacyPacket && legacyPacket.id !== expectedPacketId) blockers.push(`packet_id_not_${expectedPacketId}`);
   if ((legacyPacket?.item_id || approval?.target_item_id) !== '206315990948') blockers.push('target_item_id_not_206315990948');
   if ((request?.metadata?.operation || request?.requested_action?.operation || approval?.operation) !== 'listing_quality_update') blockers.push('operation_not_listing_quality_update');
   if (plannedFields.length !== 1 || plannedFields[0] !== 'item_specifics') blockers.push('planned_mutation_not_item_specifics_only');
@@ -8376,6 +8379,141 @@ function validatePhase13WPromotedLiveTransportBoundary({ approval, request, lega
   };
 }
 
+
+function buildPhase13YLiveExecutionBlockers({ approval, packet, request, payload, rollbackSnapshot, itemSpecificsAudit, previousMarketplaceExecutionEventCount } = {}) {
+  const summary = payload?.payload_summary || {};
+  const payloadFields = Array.isArray(summary.payload_fields) ? summary.payload_fields : [];
+  const plannedFields = Object.keys(packet?.planned_mutation || {});
+  const blockers = [];
+  if (approval?.id !== 15) blockers.push('approval_id_not_15');
+  if (request?.id !== 4) blockers.push('request_id_not_4');
+  if (packet?.id !== 3) blockers.push('packet_id_not_3');
+  if (String(packet?.item_id || '') !== '206315990948') blockers.push('target_item_id_not_206315990948');
+  if ((request?.metadata?.operation || request?.requested_action?.operation || approval?.operation) !== 'listing_quality_update') blockers.push('operation_not_listing_quality_update');
+  if (packet?.status !== 'packet_recorded') blockers.push('packet_status_not_packet_recorded');
+  if (packet?.confirmation_status !== 'confirmed') blockers.push('packet_confirmation_status_not_confirmed');
+  if (request?.final_approval_status !== 'approved') blockers.push('request_final_approval_not_approved');
+  if (!rollbackSnapshot || rollbackSnapshot.available !== true) blockers.push('rollback_snapshot_missing');
+  if (request?.executed_at != null) blockers.push('request_executed_at_present');
+  if (request?.execution_result != null) blockers.push('request_execution_result_present');
+  if (request?.metadata?.external_action_executed !== false) blockers.push('metadata_external_action_executed_not_false');
+  if (request?.metadata?.marketplace_execution_approved !== false) blockers.push('metadata_marketplace_execution_approved_not_false');
+  if ((previousMarketplaceExecutionEventCount || 0) > 0) blockers.push('previous_marketplace_execution_event_exists');
+  if (plannedFields.length !== 1 || plannedFields[0] !== 'item_specifics') blockers.push('planned_mutation_not_item_specifics_only');
+  if (payloadFields.length !== 1 || payloadFields[0] !== 'ItemSpecifics') blockers.push('payload_not_item_specifics_only');
+  if (summary.updates_item_specifics !== true) blockers.push('payload_does_not_update_item_specifics');
+  if (summary.updates_title === true) blockers.push('payload_updates_title_not_allowed');
+  if (summary.updates_description === true) blockers.push('payload_updates_description_not_allowed');
+  if (summary.forbidden_fields_present === true) blockers.push('payload_forbidden_fields_present');
+  if (Array.isArray(summary.forbidden_fields) && summary.forbidden_fields.length) blockers.push('payload_forbidden_fields_present');
+  if (Array.isArray(summary.non_allowed_fields) && summary.non_allowed_fields.length) blockers.push('payload_non_allowed_fields_present');
+  if (itemSpecificsAudit?.blocked === true) blockers.push(...(itemSpecificsAudit.blockers || ['item_specifics_audit_blocked']));
+  if (request?.metadata?.phase13y_promoted_final_item_specifics_packet !== true) blockers.push('request_not_phase13y_final_item_specifics_packet');
+  if (packet?.safety_flags?.phase13y_promoted_final_item_specifics_packet !== true) blockers.push('packet_not_phase13y_final_item_specifics_packet');
+  return [...new Set(blockers)];
+}
+
+async function persistPhase13YPromotedLiveExecutionResult({ packet, request, payload, transportResult } = {}) {
+  const parsed = transportResult?.parsed_response || {};
+  const success = parsed.success === true;
+  const timestamp = parsed.timestamp || new Date().toISOString();
+  const rollbackSnapshot = prepareEbayListingQualityRollbackSnapshot({ packet });
+  const executionResult = {
+    packet_id: packet.id,
+    request_id: request.id,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    api_operation: 'ReviseFixedPriceItem',
+    target_item_id: packet.item_id,
+    payload: payload.payload,
+    payload_summary: payload.payload_summary,
+    rollback_snapshot: rollbackSnapshot,
+    raw_response: transportResult.raw_response || null,
+    parsed_response: parsed,
+    success,
+    ack: parsed.ack || null,
+    correlation_id: parsed.correlation_id || null,
+    response_timestamp: parsed.timestamp || null,
+    actual_ebay_call: transportResult.actual_ebay_call === true,
+    actual_network_call: transportResult.actual_network_call === true,
+    marketplace_write_performed: transportResult.marketplace_write_performed === true,
+    listing_changed: transportResult.marketplace_write_performed === true,
+    revise_fixed_price_item_called: transportResult.actual_ebay_call === true,
+    live_transport_called: transportResult.actual_ebay_call === true,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    title_changes: false,
+    description_changes: false,
+    item_specifics_changes: true,
+    item_specifics_only: true,
+    recorded_at: new Date().toISOString(),
+    source: 'phase_13y_promoted_live_single_sku_item_specifics_execution_v1',
+  };
+  const eventType = success ? 'marketplace_execution_completed' : 'marketplace_execution_failed';
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType,
+    actor: 'operator',
+    payload: executionResult,
+  });
+
+  let updatedRequest = request;
+  if (success) {
+    const db = getClient();
+    const metadata = {
+      ...(request.metadata || {}),
+      external_action_executed: true,
+      marketplace_execution_approved: true,
+      marketplace_execution_packet_id: packet.id,
+      marketplace_execution_event_id: event.id,
+      marketplace_execution_completed_at: timestamp,
+      marketplace_execution_scope: 'phase_13y_single_sku_item_specifics_only',
+      actual_ebay_call: true,
+      actual_network_call: true,
+      live_transport_called: true,
+      revise_fixed_price_item_called: true,
+      marketplace_write_performed: true,
+      listing_changed: true,
+      marketplace_execution_price_changes: false,
+      marketplace_execution_inventory_changes: false,
+      marketplace_execution_quantity_changes: false,
+      marketplace_execution_title_changes: false,
+      marketplace_execution_description_changes: false,
+      marketplace_execution_item_specifics_changes: true,
+    };
+    const { data, error } = await db
+      .from(REQUEST_TABLE)
+      .update({
+        status: 'executed',
+        executed_at: timestamp,
+        execution_result: executionResult,
+        metadata,
+      })
+      .eq('id', request.id)
+      .is('executed_at', null)
+      .is('execution_result', null)
+      .select('*')
+      .single();
+    if (error) throw error;
+    updatedRequest = data;
+  }
+
+  return {
+    execution_recorded: true,
+    execution_success: success,
+    event,
+    updated_request: updatedRequest,
+    execution_result: executionResult,
+    executed_at: success ? updatedRequest.executed_at : null,
+    execution_result_updated: success,
+    executed_at_updated: success,
+    note: success
+      ? 'eBay response parsed as success/warning; executed_at and execution_result were recorded after the confirmed promoted item_specifics response.'
+      : 'eBay response was not success; marketplace failure event recorded, but executed_at was not set.',
+  };
+}
+
 async function callEbayListingQualityPromotedLiveTransportBoundary({ approvalId, dryRun = true, write = false } = {}) {
   const id = intOrNull(approvalId);
   if (id == null) throw new Error('approval-id is required');
@@ -8394,24 +8532,39 @@ async function callEbayListingQualityPromotedLiveTransportBoundary({ approvalId,
     ? buildEbayListingQualityRevisePayload({ packet: legacyPacket, request, intent })
     : null;
   const rollbackSnapshot = legacyPacket ? prepareEbayListingQualityRollbackSnapshot({ packet: legacyPacket }) : null;
+  const selectedMarketplaceEventCount = request?.id != null ? await countMarketplaceExecutionEvents(request.id) : context.marketplaceEventCount;
   const validation = validatePhase13WPromotedLiveTransportBoundary({
     approval,
     request,
     legacyPacket,
     payload,
-    marketplaceEventCount: context.marketplaceEventCount,
+    marketplaceEventCount: selectedMarketplaceEventCount,
+  });
+  const rollbackAvailable = rollbackSnapshot?.available === true;
+  const itemSpecificsAudit = validation.item_specifics_audit || auditPhase13XItemSpecificsValue(legacyPacket?.planned_mutation?.item_specifics || {});
+  const phase13YBlockers = buildPhase13YLiveExecutionBlockers({
+    approval,
+    request,
+    packet: legacyPacket,
+    payload,
+    rollbackSnapshot,
+    itemSpecificsAudit,
+    previousMarketplaceExecutionEventCount: selectedMarketplaceEventCount,
   });
   const readinessBlockers = [...validation.blockers];
   const liveBlockers = [];
+  const liveAttempt = writeRequested && liveEnvEnabled;
   if (writeRequested && !liveEnvEnabled) {
     liveBlockers.push('live_ebay_execution_disabled');
     liveBlockers.push('live_ebay_execution_env_disabled');
   }
-  if (writeRequested) liveBlockers.push('phase_13w_live_execution_not_permitted');
+  if (writeRequested && !liveAttempt) liveBlockers.push('live_execution_not_attempted');
+  if (liveAttempt) liveBlockers.push(...phase13YBlockers);
   const blockers = isDryRun ? readinessBlockers : [...new Set([...readinessBlockers, ...liveBlockers])];
-  const payloadReady = readinessBlockers.length === 0 && Boolean(payload?.payload?.Item?.ItemID);
+  const payloadReady = readinessBlockers.length === 0 && phase13YBlockers.length === 0 && rollbackAvailable && Boolean(payload?.payload?.Item?.ItemID);
   const blocked = blockers.length > 0;
-  return {
+  const ebayApiModulePath = resolveExistingEbayApiModulePath();
+  const baseResult = {
     read_only: true,
     dry_run: isDryRun,
     write_requested: writeRequested,
@@ -8451,8 +8604,8 @@ async function callEbayListingQualityPromotedLiveTransportBoundary({ approvalId,
     } : null,
     validation: {
       approval_id_exact: approval?.id === 15,
-      request_id_exact: request?.id === 3,
-      packet_id_exact: legacyPacket?.id === 2,
+      request_id_exact: request?.id === (request?.metadata?.phase13y_promoted_final_item_specifics_packet === true ? 4 : 3),
+      packet_id_exact: legacyPacket?.id === (legacyPacket?.safety_flags?.phase13y_promoted_final_item_specifics_packet === true ? 3 : 2),
       target_item_id_exact: (legacyPacket?.item_id || approval?.target_item_id) === '206315990948',
       operation_listing_quality_update: (request?.metadata?.operation || request?.requested_action?.operation || approval?.operation) === 'listing_quality_update',
       planned_mutation_fields: validation.planned_mutation_fields,
@@ -8494,7 +8647,69 @@ async function callEbayListingQualityPromotedLiveTransportBoundary({ approvalId,
     note: isDryRun
       ? 'Dry-run boundary validation only. Payload was built, but no eBay/GetItem/ReviseFixedPriceItem/live transport/database write occurred.'
       : 'Disabled write boundary validation only. Live execution is blocked in Phase 13W and no eBay/live transport/database write occurred.',
+    phase13y_live_execution_blockers: phase13YBlockers,
+    previous_marketplace_execution_event_count_before_call: selectedMarketplaceEventCount,
+    existing_ebay_api_module_path: ebayApiModulePath ? 'src/api/ebayAPI.js' : null,
     source: 'phase_13w_promoted_live_transport_boundary_v1',
+  };
+
+  if (!liveAttempt || blocked || !payloadReady) return baseResult;
+
+  const transportResult = await callEbayListingQualityLiveTransport({
+    packet: legacyPacket,
+    request,
+    payload,
+    dryRun: false,
+    writeRequested: true,
+    liveEnabled: true,
+    ebayApiModulePath,
+  });
+  const liveBase = {
+    ...baseResult,
+    ...transportResult,
+    actual_ebay_call: transportResult.actual_ebay_call === true,
+    actual_network_call: transportResult.actual_network_call === true,
+    marketplace_write_performed: transportResult.marketplace_write_performed === true,
+    live_transport_called: transportResult.actual_ebay_call === true,
+    revise_fixed_price_item_called: transportResult.actual_ebay_call === true,
+    listing_changed: transportResult.marketplace_write_performed === true,
+    note: transportResult.actual_ebay_call === true
+      ? 'Promoted live transport executed approved packet 3/request 4 against eBay; only ItemSpecifics was included in the payload.'
+      : baseResult.note,
+    previous_marketplace_execution_event_count_before_call: selectedMarketplaceEventCount,
+    existing_ebay_api_module_path: ebayApiModulePath ? 'src/api/ebayAPI.js' : null,
+  };
+  if (transportResult.blocked || transportResult.actual_ebay_call !== true) return liveBase;
+
+  const persistence = await persistPhase13YPromotedLiveExecutionResult({
+    packet: legacyPacket,
+    request,
+    payload,
+    transportResult,
+  });
+  return {
+    ...liveBase,
+    actual_database_write: true,
+    execution_recorded: persistence.execution_recorded,
+    execution_success: persistence.execution_success,
+    event: persistence.event,
+    executed_at: persistence.executed_at,
+    execution_result_updated: persistence.execution_result_updated,
+    executed_at_updated: persistence.executed_at_updated,
+    execution_result: persistence.execution_result,
+    persistence_note: persistence.note,
+    safety: {
+      ...(liveBase.safety || {}),
+      database_writes: true,
+      execution_result_updated: persistence.execution_result_updated,
+      executed_at_updated: persistence.executed_at_updated,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      title_changes: false,
+      description_changes: false,
+      item_specifics_changes: true,
+    },
   };
 }
 
