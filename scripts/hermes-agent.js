@@ -100,6 +100,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-promoted-approval-action --approval-id=<APPROVAL_ARTIFACT_ID> --action=<approve|reject> --actor=<USER> --reason=... [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-create-promoted-execution-bridge --approval-id=<APPROVAL_ARTIFACT_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-live-readiness --approval-id=<APPROVAL_ARTIFACT_ID>',
+    '  npm run hermes:agent -- ebay-listing-quality-promoted-live-transport --approval-id=<APPROVAL_ARTIFACT_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-live-runbook --approval-id=<APPROVAL_ARTIFACT_ID>',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
@@ -147,6 +148,7 @@ function printUsage() {
     'Phase 13T Promoted Approval Request: default dry-run; --write creates one internal approval request only.',
     'Phase 13U Promoted Final Approval: default dry-run; --write updates internal approval metadata/status only.',
     'Phase 13V Promoted Execution Bridge Readiness: default dry-run; --write creates internal bridge request/packet only.',
+    'Phase 13W Promoted Live Transport Boundary: validates promoted payload/boundary only; no eBay execution.',
   ].join('\n'));
 }
 
@@ -1016,6 +1018,20 @@ async function main() {
     const approvalId = intArg('approval-id', intArg('id', null));
     if (approvalId == null) throw new Error('approval-id is required');
     const result = await buildEbayListingQualityPromotedLiveRunbook({ approvalId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-promoted-live-transport') {
+    const { callEbayListingQualityPromotedLiveTransportBoundary } = require('../src/services/hermesExecutionApproval');
+    const approvalId = intArg('approval-id', intArg('id', null));
+    if (approvalId == null) throw new Error('approval-id is required');
+    const write = hasFlag('write');
+    const result = await callEbayListingQualityPromotedLiveTransportBoundary({
+      approvalId,
+      dryRun: !write,
+      write,
+    });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
