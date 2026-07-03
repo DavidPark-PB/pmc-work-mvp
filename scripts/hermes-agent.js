@@ -94,6 +94,8 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-promoted-packet-detail --opportunity-id=<OPPORTUNITY_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-packet-detail --packet-id=<PACKET_ARTIFACT_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-confirm-promoted-packet --packet-id=<PACKET_ARTIFACT_ID> --actor=<USER> --reason=... [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-create-promoted-approval --packet-id=<PACKET_ARTIFACT_ID> [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-promoted-approval-detail --packet-id=<PACKET_ARTIFACT_ID>',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -137,6 +139,7 @@ function printUsage() {
     'Phase 13Q Promoted Packet Preview: read-only packet-shaped preview only; no packet/approval/execution creation.',
     'Phase 13R Promoted Packet Creation: default dry-run; --write creates one internal non-executable packet artifact only.',
     'Phase 13S Promoted Packet Confirmation: default dry-run; --write updates internal packet confirmation metadata/status only.',
+    'Phase 13T Promoted Approval Request: default dry-run; --write creates one internal approval request only.',
   ].join('\n'));
 }
 
@@ -932,6 +935,30 @@ async function main() {
       dryRun: !write,
       write,
     });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-create-promoted-approval') {
+    const { createEbayListingQualityPromotedApproval } = require('../src/services/hermesExecutionApproval');
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (packetId == null) throw new Error('packet-id is required');
+    const write = hasFlag('write');
+    const result = await createEbayListingQualityPromotedApproval({
+      packetId,
+      dryRun: !write,
+      write,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-promoted-approval-detail') {
+    const { getEbayListingQualityPromotedApprovalDetail } = require('../src/services/hermesExecutionApproval');
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (packetId == null) throw new Error('packet-id is required');
+    const result = await getEbayListingQualityPromotedApprovalDetail({ packetId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
