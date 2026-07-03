@@ -90,6 +90,8 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-promoted-opportunity-detail --id=<OPPORTUNITY_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-opportunity-action --id=<OPPORTUNITY_ID> --action=<approve_for_packet|reject> --actor=<USER> --reason=... [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-packet-preview --opportunity-id=<OPPORTUNITY_ID>',
+    '  npm run hermes:agent -- ebay-listing-quality-create-promoted-packet --opportunity-id=<OPPORTUNITY_ID> [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-promoted-packet-detail --opportunity-id=<OPPORTUNITY_ID>',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -131,6 +133,7 @@ function printUsage() {
     'Phase 13O Borderline Review Promotion: default dry-run; --write creates one normal internal human-review opportunity only.',
     'Phase 13P Promoted Opportunity Human Gate: default dry-run; --write updates internal opportunity metadata/status only.',
     'Phase 13Q Promoted Packet Preview: read-only packet-shaped preview only; no packet/approval/execution creation.',
+    'Phase 13R Promoted Packet Creation: default dry-run; --write creates one internal non-executable packet artifact only.',
   ].join('\n'));
 }
 
@@ -884,6 +887,31 @@ async function main() {
     const opportunityId = intArg('opportunity-id', intArg('id', null));
     if (opportunityId == null) throw new Error('opportunity-id is required');
     const result = await buildEbayListingQualityPromotedPacketPreview({ opportunityId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-create-promoted-packet') {
+    const { createEbayListingQualityPromotedPacket } = require('../src/services/hermesExecutionApproval');
+    const opportunityId = intArg('opportunity-id', intArg('id', null));
+    if (opportunityId == null) throw new Error('opportunity-id is required');
+    const write = hasFlag('write');
+    const result = await createEbayListingQualityPromotedPacket({
+      opportunityId,
+      dryRun: !write,
+      write,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-promoted-packet-detail') {
+    const { getEbayListingQualityPromotedPacketDetail } = require('../src/services/hermesExecutionApproval');
+    const opportunityId = intArg('opportunity-id', null);
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (opportunityId == null && packetId == null) throw new Error('opportunity-id or packet-id is required');
+    const result = await getEbayListingQualityPromotedPacketDetail({ opportunityId, packetId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
