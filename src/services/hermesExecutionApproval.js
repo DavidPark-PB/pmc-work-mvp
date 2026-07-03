@@ -5258,6 +5258,205 @@ async function scanEbayListingQualityBorderlinePromotionCandidates({ limit = 20 
   };
 }
 
+
+async function listPhase13OPromotedOpportunitiesForReview({ reviewId } = {}) {
+  const id = intOrNull(reviewId);
+  if (id == null) return [];
+  const rows = await safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at',
+    q => q.eq('opportunity_type', 'listing_quality_improvement').eq('source_type', 'phase_13_borderline_review_promotion').order('created_at', { ascending: true }).limit(200)
+  );
+  return (rows || []).filter(row => intOrNull(row?.metadata?.source_review_id) === id);
+}
+
+function normalizePhase13OPromotedOpportunity(row = {}) {
+  const metadata = row.metadata || {};
+  return {
+    id: row.id,
+    opportunity_type: row.opportunity_type,
+    source: row.source_type,
+    status: row.status,
+    title: row.title || metadata.title || null,
+    item_id: metadata.item_id || metadata.target_item_id || null,
+    sku: metadata.sku || null,
+    source_review_id: metadata.source_review_id ?? null,
+    not_listing_quality_low: metadata.not_listing_quality_low === true,
+    requires_human_approval: metadata.requires_human_approval === true,
+    not_execution_candidate: metadata.not_execution_candidate === true,
+    proposed_mutation_fields: metadata.proposed_mutation_fields || [],
+    allowed_mutation_fields: metadata.allowed_mutation_fields || [],
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+  };
+}
+
+function buildPhase13OPromotedOpportunityRecord({ review, assessment } = {}) {
+  const proposedFields = assessment?.proposed_mutation_fields || review?.proposed_mutation_fields || [];
+  const allowedFields = assessment?.allowed_mutation_fields || phase13JAllowedProposedFields(proposedFields);
+  return {
+    opportunity_type: 'listing_quality_improvement',
+    source_type: 'phase_13_borderline_review_promotion',
+    input_channel: 'api',
+    source_name: 'phase_13o_borderline_review_promotion',
+    title: trimOrNull(review?.title || assessment?.title, 255),
+    category: 'ebay_listing_quality',
+    priority: 'normal',
+    status: 'reviewing',
+    notes: 'Promoted from an eligible shortlisted borderline review for human review only. No packet, approval, execution-state change, or marketplace write was created in Phase 13O.',
+    metadata: {
+      type: 'listing_quality_improvement',
+      source: 'phase_13_borderline_review_promotion',
+      phase: '13O',
+      source_review_id: review?.id ?? assessment?.review_id ?? null,
+      source_review_type: review?.type || 'listing_quality_borderline_review',
+      source_review_source: review?.source || 'phase_13j_borderline_preview',
+      item_id: assessment?.item_id || review?.item_id || null,
+      target_item_id: assessment?.item_id || review?.item_id || null,
+      sku: review?.sku || assessment?.item_id || null,
+      title: review?.title || assessment?.title || null,
+      score: assessment?.score ?? review?.score ?? null,
+      review_status: review?.review_status || null,
+      detected_gaps: assessment?.detected_gaps || review?.detected_gaps || [],
+      proposed_mutation_fields: proposedFields,
+      allowed_mutation_fields: allowedFields,
+      proposed_mutation_preview: proposedFields.includes('item_specifics')
+        ? { item_specifics: { required_human_review: true } }
+        : {},
+      not_listing_quality_low: true,
+      requires_human_review: true,
+      requires_human_approval: true,
+      not_execution_candidate: true,
+      promotion_eligible: assessment?.eligible_for_promotion === true,
+      promotion_blockers: assessment?.blockers || [],
+      evidence_source: assessment?.evidence_source || review?.evidence_source || [],
+      evidence_metrics: assessment?.evidence_metrics || {},
+      forbidden_field_check: {
+        ...(assessment?.forbidden_field_check || {}),
+        price_changes: false,
+        inventory_changes: false,
+        quantity_changes: false,
+      },
+      safety_boundary: {
+        cached_evidence_only: true,
+        no_ebay_call: true,
+        no_get_item_call: true,
+        no_marketplace_write: true,
+        no_packet_created: true,
+        no_approval_created: true,
+        no_execution_state_change: true,
+        price_changes: false,
+        inventory_changes: false,
+        quantity_changes: false,
+        listing_changed: false,
+      },
+      recommended_next_action: 'Human review only. A later explicit phase may create packet/approval scaffolding; do not execute marketplace writes from this opportunity.',
+    },
+  };
+}
+
+async function promoteEbayListingQualityBorderlineReview({ id, dryRun = true, write = false } = {}) {
+  const reviewId = intOrNull(id);
+  if (reviewId == null) throw new Error('id is required');
+  const writeRequested = write === true && dryRun === false;
+  const before = {
+    promoted_opportunities: (await listPhase13OPromotedOpportunitiesForReview({ reviewId })).length,
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+
+  const check = await checkEbayListingQualityBorderlinePromotionEligibility({ id: reviewId });
+  const review = check.review;
+  const assessment = check.assessment;
+  const existingRows = await listPhase13OPromotedOpportunitiesForReview({ reviewId });
+  const plannedOpportunity = buildPhase13OPromotedOpportunityRecord({ review, assessment });
+  const blockers = [...(assessment?.blockers || [])];
+  if (!check.eligible_for_promotion) blockers.push('promotion_check_not_eligible');
+  const uniqueBlockers = [...new Set(blockers)];
+
+  let inserted = null;
+  let existing = existingRows[0] || null;
+  if (writeRequested && !existing && uniqueBlockers.length === 0) {
+    const db = getClient();
+    const { data, error } = await db
+      .from(OPPORTUNITY_TABLE)
+      .insert(plannedOpportunity)
+      .select('id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at')
+      .single();
+    if (error) throw error;
+    inserted = data;
+    existing = data;
+  }
+
+  const afterRows = await listPhase13OPromotedOpportunitiesForReview({ reviewId });
+  const after = {
+    promoted_opportunities: afterRows.length,
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  const existingOrCreated = existing || afterRows[0] || null;
+  return {
+    read_only: !writeRequested,
+    dry_run: !writeRequested,
+    write_requested: writeRequested,
+    marketplace: 'ebay',
+    operation: 'listing_quality_promote_borderline_review',
+    id: reviewId,
+    eligible_for_promotion: check.eligible_for_promotion,
+    blockers: uniqueBlockers,
+    source_review: review,
+    assessment,
+    planned_opportunity: plannedOpportunity,
+    created: Boolean(inserted),
+    idempotent_existing: Boolean(existingRows.length && !inserted),
+    promoted_opportunity_id: existingOrCreated?.id || null,
+    promoted_opportunity: existingOrCreated ? normalizePhase13OPromotedOpportunity(existingOrCreated) : null,
+    existing_promoted_opportunity_count_before: before.promoted_opportunities,
+    promoted_opportunity_count_after: after.promoted_opportunities,
+    verification: {
+      exactly_one_promoted_opportunity_for_review: after.promoted_opportunities === 1,
+      promoted_opportunity_count_before: before.promoted_opportunities,
+      promoted_opportunity_count_after: after.promoted_opportunities,
+      duplicate_created: after.promoted_opportunities > Math.max(1, before.promoted_opportunities),
+      normal_opportunity_created: Boolean(inserted),
+      created_exactly_one_normal_internal_opportunity: Boolean(inserted) && after.promoted_opportunities === 1,
+      packet_count_before: before.listing_quality_packets,
+      packet_count_after: after.listing_quality_packets,
+      packet_created: after.listing_quality_packets > before.listing_quality_packets,
+      approval_request_count_before: before.execution_requests,
+      approval_request_count_after: after.execution_requests,
+      approval_created: after.execution_requests > before.execution_requests,
+      execution_state_updated: false,
+    },
+    recommended_next_action: inserted
+      ? 'Promoted to one normal internal human-review opportunity only. Do not create packet, approval, execution-state change, or marketplace write until a later explicit phase.'
+      : (existingOrCreated
+          ? 'Already promoted; returned the existing promoted opportunity. Do not create packet, approval, execution-state change, or marketplace write until a later explicit phase.'
+          : (uniqueBlockers.length
+              ? 'Promotion blocked by eligibility gates. No opportunity, packet, approval, execution-state change, or marketplace write was created.'
+              : 'Dry-run only. Re-run with --write to create exactly one normal internal human-review opportunity.')),
+    safety: {
+      cached_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      actual_network_call: false,
+      actual_database_write: Boolean(inserted),
+      database_write_scope: inserted ? 'opportunity_inbox normal internal human-review opportunity only' : null,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      normal_opportunity_created: Boolean(inserted),
+      packet_created: after.listing_quality_packets > before.listing_quality_packets,
+      approval_created: after.execution_requests > before.execution_requests,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      listing_changed: false,
+    },
+    source: 'phase_13o_borderline_review_promotion_v1',
+  };
+}
+
 async function callEbayListingQualityLiveTransportBoundary({ packetId, dryRun = true, writeRequested = false, liveEnabled = false } = {}) {
   const packet = await getEbayListingQualityPacket({ packetId });
   const request = await getExecutionRequest({ requestId: packet.request_id });
@@ -6022,6 +6221,7 @@ module.exports = {
   actOnEbayListingQualityBorderlineReview,
   checkEbayListingQualityBorderlinePromotionEligibility,
   scanEbayListingQualityBorderlinePromotionCandidates,
+  promoteEbayListingQualityBorderlineReview,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,
