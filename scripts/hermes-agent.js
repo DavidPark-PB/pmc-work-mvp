@@ -83,6 +83,8 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-borderline-reviews [--limit=20]',
     '  npm run hermes:agent -- ebay-listing-quality-borderline-review-detail --id=<REVIEW_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-borderline-review-action --id=<REVIEW_ID> --action=<shortlist|reject> --actor=<USER> --reason=... [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-borderline-promotion-check --id=<REVIEW_ID>',
+    '  npm run hermes:agent -- ebay-listing-quality-borderline-promotion-candidates [--limit=20]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -120,6 +122,7 @@ function printUsage() {
     'Phase 13J Borderline Improvement Preview: cached evidence only; previews minor human-review candidates without writes.',
     'Phase 13K Borderline Human Review Inbox: optional internal review-record write only; no opportunity/packet/approval/marketplace write.',
     'Phase 13L Borderline Review Decision Gate: read reviews and optionally update internal review metadata/status only.',
+    'Phase 13M Borderline Promotion Eligibility: read-only check for future safe internal opportunity promotion; no creation.',
   ].join('\n'));
 }
 
@@ -792,6 +795,25 @@ async function main() {
       reason: arg('reason', null),
       dryRun: !write,
       write,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-borderline-promotion-check') {
+    const { checkEbayListingQualityBorderlinePromotionEligibility } = require('../src/services/hermesExecutionApproval');
+    const reviewId = intArg('id', null);
+    if (reviewId == null) throw new Error('id is required');
+    const result = await checkEbayListingQualityBorderlinePromotionEligibility({ id: reviewId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-borderline-promotion-candidates') {
+    const { scanEbayListingQualityBorderlinePromotionCandidates } = require('../src/services/hermesExecutionApproval');
+    const result = await scanEbayListingQualityBorderlinePromotionCandidates({
+      limit: intArg('limit', 20),
     });
     console.log(JSON.stringify(result, null, 2));
     return;
