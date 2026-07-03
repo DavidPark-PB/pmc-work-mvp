@@ -99,6 +99,8 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-promoted-approval-detail --approval-id=<APPROVAL_ARTIFACT_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-approval-action --approval-id=<APPROVAL_ARTIFACT_ID> --action=<approve|reject> --actor=<USER> --reason=... [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-create-promoted-execution-bridge --approval-id=<APPROVAL_ARTIFACT_ID> [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-promoted-item-specifics-audit --approval-id=<APPROVAL_ARTIFACT_ID>',
+    "  npm run hermes:agent -- ebay-listing-quality-promoted-item-specifics-preview --approval-id=<APPROVAL_ARTIFACT_ID> --item-specifics-json='{}'",
     '  npm run hermes:agent -- ebay-listing-quality-promoted-live-readiness --approval-id=<APPROVAL_ARTIFACT_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-live-transport --approval-id=<APPROVAL_ARTIFACT_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-promoted-live-runbook --approval-id=<APPROVAL_ARTIFACT_ID>',
@@ -149,6 +151,7 @@ function printUsage() {
     'Phase 13U Promoted Final Approval: default dry-run; --write updates internal approval metadata/status only.',
     'Phase 13V Promoted Execution Bridge Readiness: default dry-run; --write creates internal bridge request/packet only.',
     'Phase 13W Promoted Live Transport Boundary: validates promoted payload/boundary only; no eBay execution.',
+    'Phase 13X Promoted Item Specifics Finalization Gate: blocks placeholder item_specifics and previews operator JSON only.',
   ].join('\n'));
 }
 
@@ -999,6 +1002,27 @@ async function main() {
       approvalId,
       dryRun: !write,
       write,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-promoted-item-specifics-audit') {
+    const { auditEbayListingQualityPromotedItemSpecifics } = require('../src/services/hermesExecutionApproval');
+    const approvalId = intArg('approval-id', intArg('id', null));
+    if (approvalId == null) throw new Error('approval-id is required');
+    const result = await auditEbayListingQualityPromotedItemSpecifics({ approvalId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-promoted-item-specifics-preview') {
+    const { previewEbayListingQualityPromotedItemSpecifics } = require('../src/services/hermesExecutionApproval');
+    const approvalId = intArg('approval-id', intArg('id', null));
+    if (approvalId == null) throw new Error('approval-id is required');
+    const result = await previewEbayListingQualityPromotedItemSpecifics({
+      approvalId,
+      itemSpecificsJson: arg('item-specifics-json', '{}'),
     });
     console.log(JSON.stringify(result, null, 2));
     return;
