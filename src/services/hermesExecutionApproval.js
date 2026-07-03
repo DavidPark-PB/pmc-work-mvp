@@ -3617,15 +3617,21 @@ async function buildEbayListingQualityEvidenceRefreshPlan({ limit = 50 } = {}) {
     const missingTitle = !evidence.title;
     const missingListingQualityEvidence = missingEvidenceFields.some(name => ['cached_description', 'cached_item_specifics', 'cached_images', 'cached_policies', 'listing_details'].includes(name))
       || qualityEvidence.listing_quality_evidence_missing;
-    const safeForReadOnlyRefresh = Boolean(itemId)
+    const inactiveOrNonEbayListing = !row.sku || ['ended', 'deleted', 'inactive', 'sold_out'].includes(String(row.status || '').toLowerCase());
+    const enoughIdentityForReadOnlyFetch = Boolean(itemId && row.sku);
+    const evidenceRefreshCandidate = enoughIdentityForReadOnlyFetch
+      && !inactiveOrNonEbayListing
       && !excludedAlreadyExecuted
+      && missingListingQualityEvidence;
+    const executionCandidate = evidenceRefreshCandidate
+      && signalSummary.listing_quality_low
       && !signalSummary.price_inventory_signals_dominate;
-    const priorityScore = (safeForReadOnlyRefresh ? 100 : 0)
+    const priorityScore = (evidenceRefreshCandidate ? 100 : 0)
       + (missingListingQualityEvidence ? 30 : 0)
       + (missingTitle ? 20 : 0)
       + (missingItemId ? 10 : 0)
       - (excludedAlreadyExecuted ? 200 : 0)
-      - (signalSummary.price_inventory_signals_dominate ? 40 : 0);
+      - (inactiveOrNonEbayListing ? 100 : 0);
 
     planned.push({
       sku: row.sku,
@@ -3633,16 +3639,20 @@ async function buildEbayListingQualityEvidenceRefreshPlan({ limit = 50 } = {}) {
       listing_id: itemId || null,
       status: row.status || null,
       source_table: row.source_table,
-      active_ebay_capable: Boolean(row.sku && (itemId || row.source_table === 'ebay_products')),
+      active_ebay_capable: Boolean(row.sku && (itemId || row.source_table === 'ebay_products') && !inactiveOrNonEbayListing),
+      enough_identity_for_read_only_fetch: enoughIdentityForReadOnlyFetch,
+      inactive_or_non_ebay_listing: inactiveOrNonEbayListing,
       missing_cached_item_id: missingItemId,
       missing_cached_title_evidence: missingTitle,
       missing_listing_quality_evidence: missingListingQualityEvidence,
       missing_evidence_fields: missingEvidenceFields,
       excluded_already_executed: Boolean(excludedAlreadyExecuted),
-      excluded_price_inventory_signals_dominate: signalSummary.price_inventory_signals_dominate,
+      excluded_price_inventory_signals_dominate: false,
+      price_inventory_signals_present: signalSummary.price_inventory_signals_dominate,
       signal_summary: signalSummary,
       cached_evidence_summary: {
         source_tables: evidence.source_tables || [],
+        title: evidence.title || null,
         title_present: Boolean(evidence.title),
         title_length: String(evidence.title || '').trim().length,
         description_present: Boolean(evidence.description),
@@ -3652,8 +3662,10 @@ async function buildEbayListingQualityEvidenceRefreshPlan({ limit = 50 } = {}) {
         limitations: evidence.limitations || [],
         context_error: contextError,
       },
-      safe_candidate_for_read_only_evidence_refresh: safeForReadOnlyRefresh,
-      refresh_plan: safeForReadOnlyRefresh ? {
+      evidence_refresh_candidate: evidenceRefreshCandidate,
+      execution_candidate: executionCandidate,
+      safe_candidate_for_read_only_evidence_refresh: evidenceRefreshCandidate,
+      refresh_plan: evidenceRefreshCandidate ? {
         mode: 'read_only_preview_only',
         existing_auth_logic_reused: true,
         new_auth_logic_created: false,
@@ -3662,14 +3674,19 @@ async function buildEbayListingQualityEvidenceRefreshPlan({ limit = 50 } = {}) {
         would_write_db: false,
         would_modify_listing: false,
       } : null,
-      reason: safeForReadOnlyRefresh
-        ? 'active listing has cached item id and can be safely considered for read-only evidence refresh planning'
-        : 'not safe for refresh planning until blockers are resolved',
+      reason: evidenceRefreshCandidate
+        ? 'active listing has cached item id and missing listing-quality evidence; inventory/dead-stock/no-recent-sales signals do not block read-only evidence refresh'
+        : 'not safe for refresh planning until identity, active-listing, already-executed, or evidence-gap blockers are resolved',
+      execution_candidate_reason: executionCandidate
+        ? 'listing_quality_low signal exists and no price/inventory signal dominance blocks execution-candidate selection'
+        : 'evidence refresh candidate is not an execution candidate; listing-quality opportunity selection remains separate',
     });
   }
-  planned.sort((a, b) => (b.safe_candidate_for_read_only_evidence_refresh - a.safe_candidate_for_read_only_evidence_refresh)
+  planned.sort((a, b) => (b.evidence_refresh_candidate - a.evidence_refresh_candidate)
     || ((b.missing_listing_quality_evidence ? 1 : 0) - (a.missing_listing_quality_evidence ? 1 : 0))
     || String(a.sku || '').localeCompare(String(b.sku || '')));
+  const evidenceRefreshCandidates = planned.filter(row => row.evidence_refresh_candidate);
+  const executionCandidates = planned.filter(row => row.execution_candidate);
 
   return {
     read_only: true,
@@ -3682,14 +3699,19 @@ async function buildEbayListingQualityEvidenceRefreshPlan({ limit = 50 } = {}) {
       listings_missing_cached_title_evidence: planned.filter(row => row.missing_cached_title_evidence).length,
       listings_missing_listing_quality_evidence: planned.filter(row => row.missing_listing_quality_evidence).length,
       listings_excluded_already_executed: planned.filter(row => row.excluded_already_executed).length,
-      listings_excluded_price_inventory_signals_dominate: planned.filter(row => row.excluded_price_inventory_signals_dominate).length,
-      safe_candidates_for_read_only_evidence_refresh: planned.filter(row => row.safe_candidate_for_read_only_evidence_refresh).length,
+      listings_with_price_inventory_signals: planned.filter(row => row.price_inventory_signals_present).length,
+      listings_excluded_price_inventory_signals_dominate: 0,
+      evidence_refresh_candidates: evidenceRefreshCandidates.length,
+      execution_candidates: executionCandidates.length,
+      safe_candidates_for_read_only_evidence_refresh: evidenceRefreshCandidates.length,
     },
     completed_marketplace_item_ids: [...executedItemIds].sort(),
     listings: planned.slice(0, safeLimit),
-    safe_candidates_for_read_only_evidence_refresh: planned.filter(row => row.safe_candidate_for_read_only_evidence_refresh).slice(0, safeLimit),
-    recommended_next_command: 'npm run hermes:agent -- ebay-listing-quality-evidence-refresh-preview --limit=20 --dry-run',
-    recommended_next_action: 'Review the safe read-only refresh candidates, then run the dry-run evidence refresh preview. Do not create opportunities, packets, approvals, DB writes, or marketplace writes in Phase 13C.',
+    evidence_refresh_candidates: evidenceRefreshCandidates.slice(0, safeLimit),
+    execution_candidates: executionCandidates.slice(0, safeLimit),
+    safe_candidates_for_read_only_evidence_refresh: evidenceRefreshCandidates.slice(0, safeLimit),
+    recommended_next_command: 'npm run hermes:agent -- ebay-listing-quality-evidence-refresh-sample --limit=5 --dry-run',
+    recommended_next_action: 'Review evidence_refresh_candidates, then run the dry-run sample. Do not treat evidence refresh candidates as execution candidates; do not create opportunities, packets, approvals, DB writes, or marketplace writes in Phase 13D.',
     safety: {
       read_only: true,
       actual_ebay_call: false,
@@ -3704,7 +3726,71 @@ async function buildEbayListingQualityEvidenceRefreshPlan({ limit = 50 } = {}) {
       price_changes: false,
       inventory_changes: false,
     },
-    source: 'phase_13c_listing_evidence_refresh_plan_v1',
+    source: 'phase_13d_listing_evidence_refresh_plan_v2',
+  };
+}
+
+
+async function sampleEbayListingQualityEvidenceRefresh({ limit = 5, dryRun = true } = {}) {
+  const safeLimit = Math.min(5, Math.max(1, intOrNull(limit) || 5));
+  const plan = await buildEbayListingQualityEvidenceRefreshPlan({ limit: Math.max(50, safeLimit) });
+  const samples = (plan.evidence_refresh_candidates || []).slice(0, safeLimit).map((candidate, index) => ({
+    rank: index + 1,
+    sku: candidate.sku,
+    item_id: candidate.item_id,
+    listing_id: candidate.listing_id,
+    title: candidate.cached_evidence_summary?.title_present ? candidate.cached_evidence_summary.title : undefined,
+    title_present: candidate.cached_evidence_summary?.title_present === true,
+    title_length: candidate.cached_evidence_summary?.title_length || 0,
+    current_evidence_gaps: candidate.missing_evidence_fields || [],
+    signal_summary: candidate.signal_summary || {},
+    inventory_signals_do_not_block_refresh: true,
+    read_only_get_item_fetch_plan: {
+      prepared: true,
+      max_items_for_this_command: safeLimit,
+      existing_api_module: 'src/api/ebayAPI.js',
+      existing_auth_logic_reused: true,
+      new_auth_logic_created: false,
+      read_operation: 'Trading API GetItem or existing read-only listing enrichment path in a later explicitly authorized fetch/cache phase',
+      would_include: ['ItemID', 'Title', 'Description', 'ItemSpecifics', 'PictureDetails', 'ListingDetails', 'ReturnPolicy', 'ShippingDetails', 'PaymentMethods'],
+      would_call_ebay_now: false,
+      would_write_db_now: false,
+      would_create_opportunity: false,
+      would_create_packet: false,
+      would_create_approval: false,
+      would_modify_listing: false,
+    },
+    sample_preview_only: true,
+  }));
+
+  return {
+    read_only: true,
+    dry_run: dryRun !== false,
+    marketplace: 'ebay',
+    operation: 'listing_quality_evidence_refresh_sample',
+    limit: safeLimit,
+    source_plan_summary: plan.totals,
+    sample_count: samples.length,
+    samples,
+    blocker: samples.length === 0 ? 'no_evidence_refresh_candidates' : null,
+    recommended_next_action: samples.length
+      ? 'Use this sample as an operator checklist for a later explicit read-only fetch/cache phase. Phase 13D performs no eBay fetch and no DB write.'
+      : 'No evidence refresh candidates found. Do not fake evidence or create opportunities.',
+    safety: {
+      read_only: true,
+      actual_ebay_call: false,
+      actual_network_call: false,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      revise_fixed_price_item_called: false,
+      opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+    },
+    source: 'phase_13d_listing_evidence_refresh_sample_v1',
   };
 }
 
@@ -3758,7 +3844,7 @@ async function previewEbayListingQualityEvidenceRefresh({ limit = 20, dryRun = t
       price_changes: false,
       inventory_changes: false,
     },
-    source: 'phase_13c_listing_evidence_refresh_preview_v1',
+    source: 'phase_13d_listing_evidence_refresh_preview_v2',
   };
 }
 
@@ -4511,6 +4597,7 @@ module.exports = {
   rescanEbayListingQualityCandidates,
   buildEbayListingQualityEvidenceRefreshPlan,
   previewEbayListingQualityEvidenceRefresh,
+  sampleEbayListingQualityEvidenceRefresh,
   callEbayListingQualityLiveTransportBoundary,
   callEbayListingQualityBoundary,
   mockCallEbayListingQualityPacket,

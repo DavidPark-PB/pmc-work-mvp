@@ -73,6 +73,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
     '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-plan [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-preview [--limit=20] [--dry-run]',
+    '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-sample [--limit=5] [--dry-run]',
     '  npm run hermes:agent -- execution-events --id=<REQUEST_ID> [--limit=20]',
     '',
     'Hermes agents are read-only unless explicitly documented otherwise.',
@@ -103,6 +104,7 @@ function printUsage() {
     'Phase 13A eBay Next Candidate: read-only selector; no packet, approval, DB, or marketplace writes.',
     'Phase 13B Candidate Source Audit/Rescan: read-only by default; no opportunity, packet, approval, DB, or marketplace writes.',
     'Phase 13C Evidence Refresh Planner: read-only planner/preview; no eBay write, packet, approval, opportunity, DB, or execution-state writes.',
+    'Phase 13D Evidence Refresh Eligibility: read-only planner/sample; inventory signals do not block evidence refresh; no DB or marketplace writes.',
   ].join('\n'));
 }
 
@@ -656,6 +658,17 @@ async function main() {
     const { previewEbayListingQualityEvidenceRefresh } = require('../src/services/hermesExecutionApproval');
     const result = await previewEbayListingQualityEvidenceRefresh({
       limit: intArg('limit', 20),
+      dryRun: true,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+
+  if (cmd === 'ebay-listing-quality-evidence-refresh-sample') {
+    const { sampleEbayListingQualityEvidenceRefresh } = require('../src/services/hermesExecutionApproval');
+    const result = await sampleEbayListingQualityEvidenceRefresh({
+      limit: intArg('limit', 5),
       dryRun: true,
     });
     console.log(JSON.stringify(result, null, 2));
