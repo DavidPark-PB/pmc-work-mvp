@@ -6627,6 +6627,410 @@ async function getEbayListingQualitySeedFinalMutationDetail({ opportunityId } = 
   };
 }
 
+function phase14OSeedFinalApprovalSafety({ databaseWrite = false, approvalCreated = false } = {}) {
+  return {
+    cached_evidence_only: true,
+    actual_database_write: databaseWrite === true,
+    database_write_scope: databaseWrite === true ? 'opportunity_inbox one internal Phase 14O approval request artifact only' : null,
+    approval_created: approvalCreated === true,
+    execution_request_created: false,
+    live_candidate_created: false,
+    execution_state_updated: false,
+    execution_state_changed: false,
+    marketplace_write_performed: false,
+    actual_ebay_call: false,
+    get_item_called: false,
+    actual_network_call: false,
+    revise_fixed_price_item_called: false,
+    ebay_write_api_called: false,
+    listing_changed: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    title_changes: false,
+    description_changes: false,
+    item_specifics_changes: false,
+    ai_called: false,
+    ai_calls: false,
+  };
+}
+
+async function listPhase14OSeedFinalApprovalRows({ packetId, requestId = null, limit = 20 } = {}) {
+  const pId = intOrNull(packetId);
+  if (pId == null) throw new Error('packet-id is required');
+  const safeLimit = Math.min(100, Math.max(1, intOrNull(limit) || 20));
+  const metadataFilter = {
+    packet_artifact_id: pId,
+  };
+  const rId = intOrNull(requestId);
+  if (rId != null) metadataFilter.request_id = rId;
+  return await safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at',
+    q => q
+      .eq('opportunity_type', 'listing_quality_update_approval_request')
+      .eq('source_type', 'phase_14o_seed_final_approval_request')
+      .contains('metadata', metadataFilter)
+      .order('created_at', { ascending: true })
+      .limit(safeLimit)
+  );
+}
+
+function normalizePhase14OSeedFinalApprovalRow(row = {}) {
+  const metadata = row.metadata || {};
+  return {
+    id: row.id,
+    opportunity_type: row.opportunity_type,
+    source_type: row.source_type,
+    status: row.status,
+    title: row.title,
+    approval_status: metadata.approval_status || null,
+    packet_artifact_id: metadata.packet_artifact_id || null,
+    request_id: metadata.request_id || null,
+    opportunity_id: metadata.opportunity_id || null,
+    source_review_id: metadata.source_review_id || null,
+    sku: metadata.sku || null,
+    target_item_id: metadata.target_item_id || null,
+    marketplace: metadata.marketplace || null,
+    operation: metadata.operation || null,
+    planned_mutation_fields: metadata.planned_mutation_fields || [],
+    requires_final_operator_approval: metadata.requires_final_operator_approval === true,
+    not_execution_candidate: metadata.not_execution_candidate === true,
+    execution_request_id: metadata.execution_request_id || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    metadata,
+  };
+}
+
+async function loadPhase14OPacketContext({ packetId } = {}) {
+  const pId = intOrNull(packetId);
+  if (pId == null) throw new Error('packet-id is required');
+  const packetRows = await safeSelectRows(EBAY_LISTING_QUALITY_PACKET_TABLE, '*', q => q.eq('id', pId).limit(1));
+  const packet = packetRows[0] || null;
+  const requestId = intOrNull(packet?.request_id);
+  const requestRows = requestId != null
+    ? await safeSelectRows(REQUEST_TABLE, '*', q => q.eq('id', requestId).limit(1))
+    : [];
+  const request = requestRows[0] || null;
+  const opportunityId = intOrNull(request?.metadata?.source_seed_promoted_opportunity_id || request?.opportunity_id);
+  const existingApprovals = await listPhase14OSeedFinalApprovalRows({ packetId: pId, requestId: requestId || null, limit: 50 });
+  const executionRequestsForOpportunity = opportunityId != null
+    ? await safeSelectRows(
+      REQUEST_TABLE,
+      'id,opportunity_id,status,execution_type,metadata,executed_at,execution_result,created_at',
+      q => q.eq('opportunity_id', opportunityId).neq('id', requestId || -1).limit(50)
+    )
+    : [];
+  const executionRequestsForRequest = requestId != null
+    ? await safeSelectRows(
+      REQUEST_TABLE,
+      'id,opportunity_id,status,execution_type,metadata,executed_at,execution_result,created_at',
+      q => q.eq('id', requestId).not('metadata', 'cs', '{"phase14n_seed_final_mutation_packet":true}').limit(50)
+    )
+    : [];
+  const completedEventsForRequest = requestId != null
+    ? await safeSelectRows(EVENT_TABLE, 'id,request_id,event_type,payload,created_at', q => q.eq('request_id', requestId).eq('event_type', 'marketplace_execution_completed').limit(50))
+    : [];
+  const itemId = String(packet?.item_id || request?.metadata?.target_item_id || '').trim();
+  const completedEventsForItem = itemId
+    ? await safeSelectRows(EVENT_TABLE, 'id,request_id,event_type,payload,created_at', q => q.eq('event_type', 'marketplace_execution_completed').contains('payload', { item_id: itemId }).limit(50))
+    : [];
+  const completedEventsForTargetItem = itemId
+    ? await safeSelectRows(EVENT_TABLE, 'id,request_id,event_type,payload,created_at', q => q.eq('event_type', 'marketplace_execution_completed').contains('payload', { target_item_id: itemId }).limit(50))
+    : [];
+  const marketplaceCompletedEvents = [...completedEventsForRequest, ...completedEventsForItem, ...completedEventsForTargetItem]
+    .filter((event, index, arr) => arr.findIndex(other => other.id === event.id) === index);
+  return {
+    packet_id: pId,
+    packet,
+    request_id: requestId,
+    request,
+    opportunity_id: opportunityId,
+    existing_approvals: existingApprovals,
+    execution_requests_for_opportunity: executionRequestsForOpportunity,
+    execution_requests_for_request: executionRequestsForRequest,
+    marketplace_completed_events: marketplaceCompletedEvents,
+  };
+}
+
+function validatePhase14OSeedFinalApprovalCreation(context = {}) {
+  const packet = context.packet || null;
+  const request = context.request || null;
+  const plannedMutation = packet?.planned_mutation || {};
+  const plannedFields = Object.keys(plannedMutation || {});
+  const forbiddenFields = objectHasForbiddenMarketplaceMutationFields(plannedMutation);
+  const blockers = [];
+  if (!packet) blockers.push('packet_id_4_missing');
+  if (packet && packet.id !== 4) blockers.push('packet_id_not_4');
+  if (packet && packet.safety_flags?.source !== 'phase_14n_seed_final_mutation_packet') blockers.push('packet_source_not_phase_14n_seed_final_mutation_packet');
+  if (packet && packet.safety_flags?.phase14n_seed_final_mutation_packet !== true) blockers.push('packet_phase14n_flag_missing');
+  if (packet && packet.status !== 'packet_recorded') blockers.push('packet_status_not_packet_recorded');
+  if (packet && packet.confirmation_status !== 'confirmed') blockers.push('packet_confirmation_status_not_confirmed');
+  if (!request) blockers.push('request_id_5_missing');
+  if (request && request.id !== 5) blockers.push('request_id_not_5');
+  if (request && request.executed_at != null) blockers.push('request_executed_at_present');
+  if (request && request.execution_result != null) blockers.push('request_execution_result_present');
+  if (plannedFields.length !== 2 || plannedFields[0] !== 'title' || plannedFields[1] !== 'item_specifics') blockers.push('planned_mutation_fields_not_exactly_title_and_item_specifics');
+  if (Object.prototype.hasOwnProperty.call(plannedMutation, 'description')) blockers.push('description_mutation_present');
+  if (forbiddenFields.length) blockers.push('price_inventory_quantity_or_forbidden_mutation_present');
+  if (String(packet?.item_id || request?.metadata?.target_item_id || '') !== '206288370789') blockers.push('target_item_id_not_206288370789');
+  if (context.existing_approvals?.length > 1) blockers.push('duplicate_phase14o_approval_requests_exist');
+  if (context.execution_requests_for_opportunity?.length > 0) blockers.push('execution_request_exists_for_opportunity_id_36');
+  if (context.execution_requests_for_request?.length > 0) blockers.push('execution_request_exists_for_request_id_5');
+  if (context.marketplace_completed_events?.length > 0) blockers.push('marketplace_execution_completed_event_exists');
+  return {
+    blockers: [...new Set(blockers)],
+    planned_mutation_fields: plannedFields,
+    forbidden_fields: forbiddenFields,
+  };
+}
+
+function buildPhase14OSeedFinalApprovalRecord({ packet, request, createdAt } = {}) {
+  const plannedFields = Object.keys(packet?.planned_mutation || {});
+  const metadata = {
+    phase: '14O',
+    source: 'phase_14o_seed_final_approval_request',
+    packet_artifact_id: packet.id,
+    request_id: request.id,
+    opportunity_id: 36,
+    source_review_id: request.metadata?.source_review_id || 19,
+    sku: request.metadata?.sku || 'PMC-24141',
+    target_item_id: packet.item_id || request.metadata?.target_item_id || '206288370789',
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    planned_mutation_fields: plannedFields,
+    approval_status: 'pending',
+    requires_final_operator_approval: true,
+    not_execution_candidate: true,
+    execution_request_id: null,
+    final_mutation_hash: request.metadata?.final_mutation_hash || null,
+    planned_mutation: packet.planned_mutation || {},
+    phase14o_seed_final_approval_request: true,
+    no_final_approval_recorded: true,
+    execution_request_created: false,
+    execution_state_updated: false,
+    marketplace_write_performed: false,
+    actual_ebay_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    description_changes: false,
+    created_at: createdAt,
+  };
+  return {
+    opportunity_type: 'listing_quality_update_approval_request',
+    source_type: 'phase_14o_seed_final_approval_request',
+    input_channel: 'api',
+    source_name: 'phase_14o_seed_final_approval_request',
+    title: 'eBay seed final mutation approval request for packet 4',
+    category: 'ebay_listing_quality',
+    priority: 'normal',
+    status: 'approval_pending',
+    notes: 'Phase 14O internal approval request only. Not final approval, not an execution request, and not a marketplace action.',
+    metadata,
+  };
+}
+
+function phase14OBaseOutput({ packetId, requestId = null, approval = null, created = false, idempotentExisting = false, blocked = false, blockers = [], verification = {}, actualDatabaseWrite = false } = {}) {
+  return {
+    operation: 'listing_quality_create_seed_final_approval',
+    packet_id: packetId,
+    request_id: requestId,
+    created,
+    idempotent_existing: idempotentExisting,
+    approval_id: approval?.id || null,
+    approval_status: approval?.approval_status || 'pending',
+    blocked,
+    blockers,
+    verification: {
+      exactly_one_approval_for_packet: verification.exactly_one_approval_for_packet === true,
+      packet_remains_confirmed: verification.packet_remains_confirmed === true,
+      execution_request_created: false,
+      execution_state_updated: false,
+      marketplace_write_performed: false,
+      actual_ebay_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      description_changes: false,
+      ...verification,
+    },
+    actual_database_write: actualDatabaseWrite,
+    actual_ebay_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    marketplace_write_performed: false,
+    safety: phase14OSeedFinalApprovalSafety({ databaseWrite: actualDatabaseWrite, approvalCreated: created }),
+    source: 'phase_14o_seed_final_approval_request_v1',
+  };
+}
+
+async function createEbayListingQualitySeedFinalApproval({ packetId, dryRun = true, write = false } = {}) {
+  const pId = intOrNull(packetId);
+  if (pId == null) throw new Error('packet-id is required');
+  const writeRequested = write === true || dryRun === false;
+  const context = await loadPhase14OPacketContext({ packetId: pId });
+  const existingApproval = context.existing_approvals.length === 1 ? normalizePhase14OSeedFinalApprovalRow(context.existing_approvals[0]) : null;
+  const validation = validatePhase14OSeedFinalApprovalCreation(context);
+  const createdAt = new Date().toISOString();
+  const record = context.packet && context.request ? buildPhase14OSeedFinalApprovalRecord({ packet: context.packet, request: context.request, createdAt }) : null;
+  const verificationBase = {
+    packet_exists: Boolean(context.packet),
+    request_exists: Boolean(context.request),
+    request_executed_at_is_null: context.request ? context.request.executed_at == null : null,
+    request_execution_result_is_null: context.request ? context.request.execution_result == null : null,
+    packet_remains_confirmed: context.packet?.confirmation_status === 'confirmed',
+    planned_mutation_fields: validation.planned_mutation_fields,
+    final_mutation_fields_exact_title_and_item_specifics: JSON.stringify(validation.planned_mutation_fields) === JSON.stringify(['title', 'item_specifics']),
+    no_description_mutation: !Object.prototype.hasOwnProperty.call(context.packet?.planned_mutation || {}, 'description'),
+    no_price_inventory_quantity_mutation: validation.forbidden_fields.length === 0,
+    target_item_id_exact: String(context.packet?.item_id || '') === '206288370789',
+    existing_approval_count_before: context.existing_approvals.length,
+    execution_request_count_for_opportunity: context.execution_requests_for_opportunity.length,
+    execution_request_count_for_request: context.execution_requests_for_request.length,
+    marketplace_execution_completed_event_count: context.marketplace_completed_events.length,
+  };
+
+  if (validation.blockers.length && !existingApproval) {
+    if (writeRequested) throw new Error(`seed final approval creation blocked: ${validation.blockers.join(', ')}`);
+    return {
+      read_only: true,
+      dry_run: true,
+      write_requested: false,
+      ...phase14OBaseOutput({
+        packetId: pId,
+        requestId: context.request_id,
+        blocked: true,
+        blockers: validation.blockers,
+        verification: { ...verificationBase, exactly_one_approval_for_packet: false },
+      }),
+      approval_preview: record,
+    };
+  }
+
+  if (!writeRequested) {
+    return {
+      read_only: true,
+      dry_run: true,
+      write_requested: false,
+      ...phase14OBaseOutput({
+        packetId: pId,
+        requestId: context.request_id,
+        approval: existingApproval,
+        idempotentExisting: Boolean(existingApproval),
+        verification: { ...verificationBase, exactly_one_approval_for_packet: context.existing_approvals.length === 1 },
+      }),
+      approval_preview: record,
+      existing_approval: existingApproval,
+      recommended_next_action: 'Dry-run only. Re-run with --write to create exactly one internal Phase 14O approval request artifact; do not create an execution request or marketplace action.',
+    };
+  }
+
+  if (existingApproval) {
+    const afterRows = await listPhase14OSeedFinalApprovalRows({ packetId: pId, requestId: context.request_id, limit: 50 });
+    return {
+      read_only: false,
+      dry_run: false,
+      write_requested: true,
+      ...phase14OBaseOutput({
+        packetId: pId,
+        requestId: context.request_id,
+        approval: existingApproval,
+        created: false,
+        idempotentExisting: true,
+        verification: {
+          ...verificationBase,
+          approval_count_after: afterRows.length,
+          exactly_one_approval_for_packet: afterRows.length === 1,
+        },
+      }),
+      approval: existingApproval,
+      recommended_next_action: 'Existing internal Phase 14O approval request returned idempotently. This is not final approval and not an execution request.',
+    };
+  }
+
+  const db = getClient();
+  const { data: inserted, error } = await db
+    .from(OPPORTUNITY_TABLE)
+    .insert(record)
+    .select('id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at')
+    .single();
+  if (error) throw error;
+  const approval = normalizePhase14OSeedFinalApprovalRow(inserted);
+  const afterRows = await listPhase14OSeedFinalApprovalRows({ packetId: pId, requestId: context.request_id, limit: 50 });
+  return {
+    read_only: false,
+    dry_run: false,
+    write_requested: true,
+    ...phase14OBaseOutput({
+      packetId: pId,
+      requestId: context.request_id,
+      approval,
+      created: true,
+      idempotentExisting: false,
+      verification: {
+        ...verificationBase,
+        approval_count_after: afterRows.length,
+        exactly_one_approval_for_packet: afterRows.length === 1,
+      },
+      actualDatabaseWrite: true,
+    }),
+    approval,
+    recommended_next_action: 'Internal Phase 14O approval request created only. This is not final approval, not an execution request, and not a marketplace action.',
+  };
+}
+
+async function getEbayListingQualitySeedFinalApprovalDetail({ packetId } = {}) {
+  const pId = intOrNull(packetId);
+  if (pId == null) throw new Error('packet-id is required');
+  const context = await loadPhase14OPacketContext({ packetId: pId });
+  const approvals = context.existing_approvals.map(normalizePhase14OSeedFinalApprovalRow);
+  const approval = approvals[0] || null;
+  return {
+    read_only: true,
+    operation: 'listing_quality_seed_final_approval_detail',
+    packet_id: pId,
+    request_id: context.request_id,
+    approval_id: approval?.id || null,
+    approval_status: approval?.approval_status || null,
+    found: approvals.length > 0,
+    count: approvals.length,
+    approvals,
+    approval,
+    verification: {
+      exactly_one_approval_for_packet: approvals.length === 1,
+      packet_remains_confirmed: context.packet?.confirmation_status === 'confirmed',
+      packet_id_exact: context.packet?.id === 4,
+      request_id_exact: context.request?.id === 5,
+      planned_mutation_fields: Object.keys(context.packet?.planned_mutation || {}),
+      final_mutation_fields_exact_title_and_item_specifics: JSON.stringify(Object.keys(context.packet?.planned_mutation || {})) === JSON.stringify(['title', 'item_specifics']),
+      no_description_mutation: !Object.prototype.hasOwnProperty.call(context.packet?.planned_mutation || {}, 'description'),
+      no_price_inventory_quantity_mutation: objectHasForbiddenMarketplaceMutationFields(context.packet?.planned_mutation || {}).length === 0,
+      execution_request_created: false,
+      execution_state_updated: false,
+      marketplace_write_performed: false,
+      actual_ebay_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      description_changes: false,
+    },
+    actual_ebay_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    marketplace_write_performed: false,
+    safety: phase14OSeedFinalApprovalSafety({ databaseWrite: false }),
+    source: 'phase_14o_seed_final_approval_detail_v1',
+  };
+}
+
 function phase14ISeedEvidenceCompletionSafety({ actualDatabaseWrite = false, actualReadOnlyEbayCall = false } = {}) {
   return {
     actual_database_write: actualDatabaseWrite,
@@ -12987,6 +13391,8 @@ module.exports = {
   previewEbayListingQualitySeedFinalMutation,
   createEbayListingQualitySeedFinalMutationPacket,
   getEbayListingQualitySeedFinalMutationDetail,
+  createEbayListingQualitySeedFinalApproval,
+  getEbayListingQualitySeedFinalApprovalDetail,
   completeEbayListingQualitySeedEvidence,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,

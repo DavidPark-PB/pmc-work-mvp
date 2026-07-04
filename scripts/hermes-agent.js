@@ -88,6 +88,8 @@ function printUsage() {
     "  npm run hermes:agent -- ebay-listing-quality-seed-final-mutation-preview --opportunity-id=<OPPORTUNITY_ID> --final-mutation-json='{}'",
     "  npm run hermes:agent -- ebay-listing-quality-create-seed-final-mutation-packet --opportunity-id=<OPPORTUNITY_ID> --final-mutation-json='{}' --actor=<USER> --reason=... [--dry-run|--write]",
     '  npm run hermes:agent -- ebay-listing-quality-seed-final-mutation-detail --opportunity-id=<OPPORTUNITY_ID>',
+    '  npm run hermes:agent -- ebay-listing-quality-create-seed-final-approval --packet-id=<PACKET_ID> [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-seed-final-approval-detail --packet-id=<PACKET_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-seed-evidence-complete --id=<REVIEW_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-source-audit [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
@@ -189,6 +191,7 @@ function printUsage() {
     'Phase 14L Seed Promoted Packet Preview: read-only packet-shaped preview only from cached evidence; no DB writes, eBay calls, packets, approvals, requests, live candidates, listing mutations, AI, or marketplace writes.',
     'Phase 14M Seed Final Mutation Preview Gate: read-only operator-supplied JSON preview only; blocks placeholders/forbidden fields and creates no packets, approvals, requests, DB writes, AI, or marketplace writes.',
     'Phase 14N Seed Final Mutation Packet: default dry-run; --write creates idempotent internal superseding request/packet artifacts only from operator JSON; no approvals, live candidates, AI, eBay calls, listing mutations, or marketplace writes.',
+    'Phase 14O Seed Final Approval Request: default dry-run; --write creates exactly one internal opportunity_inbox approval request artifact only; not final approval, not execution request, no AI/eBay/marketplace/listing writes.',
   ].join('\n'));
 }
 
@@ -911,6 +914,29 @@ async function main() {
     const opportunityId = intArg('opportunity-id', intArg('id', null));
     if (opportunityId == null) throw new Error('opportunity-id is required');
     const result = await getEbayListingQualitySeedFinalMutationDetail({ opportunityId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-create-seed-final-approval') {
+    const { createEbayListingQualitySeedFinalApproval } = require('../src/services/hermesExecutionApproval');
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (packetId == null) throw new Error('packet-id is required');
+    const write = hasFlag('write');
+    const result = await createEbayListingQualitySeedFinalApproval({
+      packetId,
+      dryRun: !write,
+      write,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-seed-final-approval-detail') {
+    const { getEbayListingQualitySeedFinalApprovalDetail } = require('../src/services/hermesExecutionApproval');
+    const packetId = intArg('packet-id', intArg('id', null));
+    if (packetId == null) throw new Error('packet-id is required');
+    const result = await getEbayListingQualitySeedFinalApprovalDetail({ packetId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
