@@ -9320,6 +9320,226 @@ async function buildEbayListingQualityImageUploadAuthFailureAudit({ itemId } = {
   };
 }
 
+
+async function phase14AELoadEbayTokenSourceData() {
+  const envAccessToken = process.env.EBAY_USER_TOKEN || null;
+  const envRefreshToken = process.env.EBAY_REFRESH_TOKEN || null;
+  let dbRow = null;
+  let dbReadError = null;
+  try {
+    const db = getClient();
+    const { data, error } = await db
+      .from('platform_tokens')
+      .select('access_token, refresh_token, expires_at, updated_at, metadata')
+      .eq('platform', 'ebay')
+      .maybeSingle();
+    if (error) dbReadError = error.message;
+    else dbRow = data || null;
+  } catch (e) {
+    dbReadError = e.message;
+  }
+  const selectedAccessToken = dbRow?.access_token || envAccessToken || null;
+  const selectedSource = dbRow?.access_token ? 'database_platform_tokens' : (envAccessToken ? 'environment_EBAY_USER_TOKEN' : 'missing');
+  return {
+    env_access_token_exists: Boolean(envAccessToken),
+    env_refresh_token_exists: Boolean(envRefreshToken),
+    database_token_exists: Boolean(dbRow?.access_token),
+    database_refresh_token_exists: Boolean(dbRow?.refresh_token),
+    selected_access_token_exists: Boolean(selectedAccessToken),
+    selected_token_source: selectedSource,
+    token_source_precedence: ['database_platform_tokens.access_token', 'environment_EBAY_USER_TOKEN'],
+    env_access_token_shape: classifyEbayToken(envAccessToken),
+    database_access_token_shape: classifyEbayToken(dbRow?.access_token || null),
+    selected_access_token_shape: classifyEbayToken(selectedAccessToken),
+    refresh_token_exists_if_detectable: Boolean(dbRow?.refresh_token || envRefreshToken),
+    selected_refresh_token_source: dbRow?.refresh_token ? 'database_platform_tokens' : (envRefreshToken ? 'environment_EBAY_REFRESH_TOKEN' : 'missing'),
+    database_expires_at: dbRow?.expires_at || null,
+    database_updated_at: dbRow?.updated_at || null,
+    database_metadata_present: Boolean(dbRow?.metadata),
+    database_token_read_error: dbReadError,
+    token_values_printed: false,
+    token_values_modified: false,
+  };
+}
+
+function detectEbayTokenEnvironment({ metadata, envEnvironment } = {}) {
+  const text = JSON.stringify(metadata || {}).toLowerCase();
+  if (/sandbox/.test(text) || String(envEnvironment || '').toUpperCase() === 'SANDBOX') return 'sandbox';
+  if (/production|prod/.test(text) || String(envEnvironment || '').toUpperCase() === 'PRODUCTION') return 'production';
+  return 'unknown';
+}
+
+async function buildEbayTokenSourceAudit({ operation = 'UploadSiteHostedPictures' } = {}) {
+  const requestedOperation = String(operation || 'UploadSiteHostedPictures');
+  const source = await phase14AELoadEbayTokenSourceData();
+  let dbMetadata = null;
+  try {
+    const db = getClient();
+    const { data } = await db
+      .from('platform_tokens')
+      .select('metadata')
+      .eq('platform', 'ebay')
+      .maybeSingle();
+    dbMetadata = data?.metadata || null;
+  } catch (_) {
+    dbMetadata = null;
+  }
+  const apiEndpointEnvironment = (process.env.EBAY_ENVIRONMENT || 'PRODUCTION').toUpperCase() === 'SANDBOX' ? 'sandbox' : 'production';
+  const tokenEnvironment = detectEbayTokenEnvironment({ metadata: dbMetadata, envEnvironment: process.env.EBAY_ENVIRONMENT });
+  const staleIndicators = [];
+  if (source.database_expires_at) {
+    const expiresAtMs = Date.parse(source.database_expires_at);
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) staleIndicators.push('database_access_token_expires_at_is_past');
+  }
+  if (source.selected_token_source === 'database_platform_tokens' && source.env_access_token_exists) staleIndicators.push('database_token_overrides_environment_token');
+  if (tokenEnvironment !== 'unknown' && tokenEnvironment !== apiEndpointEnvironment) staleIndicators.push('token_environment_mismatch_with_api_endpoint');
+  const readiness = await buildEbayTradingTokenReadiness({ operation: requestedOperation });
+  if (readiness.previous_error_21916984_present) staleIndicators.push('previous_21916984_invalid_iaf_token_error');
+  return {
+    read_only: true,
+    phase: '14AE',
+    operation: requestedOperation,
+    selected_token_source: source.selected_token_source,
+    token_source_precedence: source.token_source_precedence,
+    env_token_exists: source.env_access_token_exists,
+    database_token_exists: source.database_token_exists,
+    refresh_token_exists_if_detectable: source.refresh_token_exists_if_detectable,
+    selected_refresh_token_source: source.selected_refresh_token_source,
+    token_environment_if_detectable: tokenEnvironment,
+    api_endpoint_environment: apiEndpointEnvironment,
+    api_endpoint: apiEndpointEnvironment === 'production' ? 'https://api.ebay.com/ws/api.dll' : 'https://api.sandbox.ebay.com/ws/api.dll',
+    token_shape_only_never_value: {
+      selected_token: source.selected_access_token_shape,
+      environment_token: source.env_access_token_shape,
+      database_token: source.database_access_token_shape,
+    },
+    updated_at_if_available: source.database_updated_at,
+    expires_at_if_available: source.database_expires_at,
+    likely_mismatch_or_stale_token_indicators: staleIndicators,
+    recommended_operator_action: staleIndicators.includes('previous_21916984_invalid_iaf_token_error')
+      ? 'Refresh or rotate the selected eBay OAuth/IAF token in the existing secure token store/environment path, verify database-vs-env precedence and production/sandbox environment, then request a new explicit approval before any future UploadSiteHostedPictures attempt.'
+      : 'Verify token source precedence and expiration metadata; do not retry image upload until token/auth readiness is confirmed and separately approved.',
+    no_token_secrets_printed: true,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      actual_database_write: false,
+      token_values_printed: false,
+      token_values_modified: false,
+      ai_calls: false,
+    },
+    source: 'phase_14ae_ebay_token_source_audit_v1',
+  };
+}
+
+async function buildEbayTokenRefreshReadiness({ operation = 'UploadSiteHostedPictures' } = {}) {
+  const requestedOperation = String(operation || 'UploadSiteHostedPictures');
+  const source = await phase14AELoadEbayTokenSourceData();
+  const requiredKeys = {
+    EBAY_APP_ID: Boolean(process.env.EBAY_APP_ID),
+    EBAY_CERT_ID: Boolean(process.env.EBAY_CERT_ID),
+    refresh_token_available: source.refresh_token_exists_if_detectable,
+  };
+  const missingRequired = Object.entries(requiredKeys).filter(([, ok]) => ok !== true).map(([key]) => key);
+  const existingRefreshTokenPathExistsInCode = typeof EbayAPI === 'function'
+    && typeof EbayAPI.prototype.refreshAccessToken === 'function';
+  const existingTokenStoreWritePathExistsInCode = tokenStore && typeof tokenStore.saveToken === 'function';
+  const refreshCanBePerformedSafelyByExistingCode = existingRefreshTokenPathExistsInCode
+    && existingTokenStoreWritePathExistsInCode
+    && missingRequired.length === 0;
+  const manualOauthReauthRequired = !source.refresh_token_exists_if_detectable
+    || !process.env.EBAY_APP_ID
+    || !process.env.EBAY_CERT_ID;
+  return {
+    read_only: true,
+    phase: '14AE',
+    operation: requestedOperation,
+    existing_refresh_token_path_exists_in_code: existingRefreshTokenPathExistsInCode,
+    existing_token_store_write_path_exists_in_code: existingTokenStoreWritePathExistsInCode,
+    refresh_can_be_performed_safely_by_existing_code: refreshCanBePerformedSafelyByExistingCode,
+    manual_ebay_oauth_reauth_required: manualOauthReauthRequired,
+    required_env_config_key_status: requiredKeys,
+    missing_required_env_config_keys: missingRequired,
+    token_refresh_would_write_to_token_store: true,
+    token_refresh_would_modify_token_values: true,
+    explicit_operator_approval_required_before_refreshing: true,
+    selected_token_source: source.selected_token_source,
+    selected_refresh_token_source: source.selected_refresh_token_source,
+    no_token_secrets_printed: true,
+    recommended_operator_action: refreshCanBePerformedSafelyByExistingCode
+      ? 'Use a future explicitly approved token refresh/rotation phase to invoke the existing refresh path once; do not upload images in the token refresh phase.'
+      : 'Complete manual eBay OAuth re-auth or restore required app/refresh-token config through the secure token path before requesting a token refresh phase.',
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      actual_database_write: false,
+      token_values_printed: false,
+      token_values_modified: false,
+      token_refresh_performed: false,
+      ai_calls: false,
+    },
+    source: 'phase_14ae_ebay_token_refresh_readiness_v1',
+  };
+}
+
+async function buildEbayTokenRefreshApprovalChecklist({ operation = 'UploadSiteHostedPictures' } = {}) {
+  const requestedOperation = String(operation || 'UploadSiteHostedPictures');
+  const readiness = await buildEbayTokenRefreshReadiness({ operation: requestedOperation });
+  const exactApprovalText = [
+    'eBay token refresh/rotation approval for operation=UploadSiteHostedPictures auth only.',
+    'No image upload.',
+    'Do not call UploadSiteHostedPictures.',
+    'Do not call ReviseFixedPriceItem.',
+    'No listing changes.',
+    'Token secrets must not be printed.',
+    'Allow updating only the existing eBay token store/environment entry.',
+    'One token refresh/rotation attempt only.',
+  ].join('\n');
+  return {
+    read_only: true,
+    phase: '14AE',
+    operation: requestedOperation,
+    exact_operator_approval_text: exactApprovalText,
+    token_refresh_readiness: readiness,
+    allowed_scope: 'existing eBay token store/environment auth entry only',
+    forbidden_operations: ['UploadSiteHostedPictures', 'ReviseFixedPriceItem', 'listing_changes', 'marketplace_writes', 'token_secret_printing'],
+    one_token_refresh_rotation_attempt_only: true,
+    ready_for_future_explicit_token_refresh_approval: readiness.existing_refresh_token_path_exists_in_code === true,
+    no_token_secrets_printed: true,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      actual_database_write: false,
+      token_values_printed: false,
+      token_values_modified: false,
+      token_refresh_performed: false,
+      ai_calls: false,
+    },
+    source: 'phase_14ae_ebay_token_refresh_approval_checklist_v1',
+  };
+}
+
 async function buildEbayListingQualityImageUploadCorrectedReadiness({ itemId } = {}) {
   const result = await buildEbayListingQualityImageUploadResult({ itemId });
   const latest = result.duplicate_guard_status?.latest_upload || null;
@@ -16308,6 +16528,9 @@ module.exports = {
   buildEbayListingQualityImageUploadReapprovalChecklist,
   buildEbayTradingTokenReadiness,
   buildEbayListingQualityImageUploadAuthFailureAudit,
+  buildEbayTokenSourceAudit,
+  buildEbayTokenRefreshReadiness,
+  buildEbayTokenRefreshApprovalChecklist,
   completeEbayListingQualitySeedEvidence,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
