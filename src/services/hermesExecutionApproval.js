@@ -9655,6 +9655,151 @@ async function executeEbayTokenRefreshRotation({ operation = 'UploadSiteHostedPi
   };
 }
 
+
+async function buildEbayListingQualityImageUploadPostTokenRefreshReadiness({ itemId } = {}) {
+  const result = await buildEbayListingQualityImageUploadResult({ itemId });
+  const tokenSourceAudit = await buildEbayTokenSourceAudit({ operation: 'UploadSiteHostedPictures' });
+  const tokenReadiness = await buildEbayTradingTokenReadiness({ operation: 'UploadSiteHostedPictures' });
+  const expiresAtMs = parseTokenTimestampMs(tokenSourceAudit.expires_at_if_available);
+  const tokenRefreshSucceeded = tokenSourceAudit.selected_token_source === 'database_platform_tokens'
+    && tokenSourceAudit.token_environment_if_detectable === tokenSourceAudit.api_endpoint_environment
+    && Number.isFinite(expiresAtMs)
+    && expiresAtMs > Date.now();
+  const latest = result.duplicate_guard_status?.latest_upload || null;
+  const checks = {
+    token_refresh_succeeded: tokenRefreshSucceeded,
+    token_source_database_platform_tokens: tokenSourceAudit.selected_token_source === 'database_platform_tokens',
+    token_environment_matches_api_endpoint: tokenSourceAudit.token_environment_if_detectable === tokenSourceAudit.api_endpoint_environment,
+    previous_invalid_iaf_token_error_present: tokenReadiness.previous_invalid_iaf_token_error_present === true,
+    picture_url_available_false: !result.picture_url,
+    upload_succeeded_false: result.upload_succeeded === false,
+    listing_revise_performed_false: latest?.listing_revise_performed !== true,
+    new_upload_attempt_requires_explicit_approval: true,
+  };
+  const blockers = [];
+  for (const [key, ok] of Object.entries(checks)) {
+    if (ok !== true) blockers.push(key);
+  }
+  return {
+    read_only: true,
+    phase: '14AG',
+    item_id: result.item_id,
+    image_path: result.image_path,
+    candidate_sha256: result.candidate_sha256,
+    token_refresh_succeeded: tokenRefreshSucceeded,
+    token_source: tokenSourceAudit.selected_token_source,
+    token_environment: tokenSourceAudit.token_environment_if_detectable,
+    token_expires_at: tokenSourceAudit.expires_at_if_available,
+    previous_invalid_iaf_token_error_present: tokenReadiness.previous_invalid_iaf_token_error_present === true,
+    picture_url_available: Boolean(result.picture_url),
+    upload_succeeded: result.upload_succeeded === true,
+    listing_revise_performed: latest?.listing_revise_performed === true,
+    revise_fixed_price_item_called: latest?.revise_fixed_price_item_called === true,
+    new_upload_attempt_requires_explicit_approval: true,
+    ready_for_post_token_refresh_upload_reapproval: blockers.length === 0,
+    latest_upload_phase: latest?.phase || null,
+    latest_upload_ebay_ack: latest?.ebay_ack || null,
+    latest_upload_error_codes: Array.isArray(latest?.errors) ? latest.errors.map(error => error?.code).filter(Boolean) : [],
+    future_upload_command_placeholder: 'HERMES_EBAY_IMAGE_UPLOAD_ENABLED=true npm run hermes:agent -- ebay-listing-quality-image-upload-transport --item-id=206288370789 --write --approval-text="<exact post-token-refresh approval text>"',
+    token_source_audit: tokenSourceAudit,
+    checks,
+    blockers: [...new Set(blockers)],
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      actual_database_write: false,
+      token_values_printed: false,
+      token_values_modified: false,
+      ai_calls: false,
+    },
+    source: 'phase_14ag_post_token_refresh_upload_readiness_v1',
+  };
+}
+
+async function buildEbayListingQualityImageUploadPostTokenRefreshApprovalChecklist({ itemId } = {}) {
+  const readiness = await buildEbayListingQualityImageUploadPostTokenRefreshReadiness({ itemId });
+  const exactApprovalText = [
+    'Post-token-refresh eBay image upload transport approval.',
+    'item_id=206288370789 only.',
+    'image_path=/Users/parksungmin/Downloads/torune.jpeg only.',
+    'candidate_sha256=sha256:16883e4cb7af5ebb12b6948285742faff7d83bdd501600f5fee01428620a1f47 exact match only.',
+    'Allowed operation: UploadSiteHostedPictures only.',
+    'Forbidden operation: ReviseFixedPriceItem.',
+    'Forbidden changes: title, item_specifics, description, price, inventory, quantity, category, shipping, payment, returns.',
+    'One post-token-refresh upload attempt only.',
+    'Record returned PictureURL only.',
+    'No listing revise in the upload phase.',
+  ].join('\n');
+  const checks = {
+    readiness_passes: readiness.ready_for_post_token_refresh_upload_reapproval === true,
+    token_refresh_succeeded: readiness.token_refresh_succeeded === true,
+    picture_url_unavailable: readiness.picture_url_available === false,
+    upload_not_succeeded: readiness.upload_succeeded === false,
+    listing_revise_not_performed: readiness.listing_revise_performed === false,
+  };
+  const blockers = [...(readiness.blockers || [])];
+  for (const [key, ok] of Object.entries(checks)) {
+    if (ok !== true) blockers.push(key);
+  }
+  return {
+    read_only: true,
+    phase: '14AG',
+    item_id: readiness.item_id,
+    image_path: readiness.image_path,
+    candidate_sha256: readiness.candidate_sha256,
+    token_refresh_succeeded: readiness.token_refresh_succeeded,
+    token_source: readiness.token_source,
+    token_environment: readiness.token_environment,
+    token_expires_at: readiness.token_expires_at,
+    previous_invalid_iaf_token_error_present: readiness.previous_invalid_iaf_token_error_present,
+    exact_operator_approval_text: exactApprovalText,
+    allowed_operation: 'UploadSiteHostedPictures',
+    forbidden_operation: 'ReviseFixedPriceItem',
+    forbidden_changes: ['title', 'item_specifics', 'description', 'price', 'inventory', 'quantity', 'category', 'shipping', 'payment', 'returns'],
+    one_post_token_refresh_upload_attempt_only: true,
+    record_returned_picture_url_only: true,
+    no_listing_revise_in_upload_phase: true,
+    future_upload_command_placeholder: 'HERMES_EBAY_IMAGE_UPLOAD_ENABLED=true npm run hermes:agent -- ebay-listing-quality-image-upload-transport --item-id=206288370789 --write --approval-text="<exact post-token-refresh approval text>"',
+    future_upload_command_remains_blocked_until_exact_new_approval: true,
+    post_token_refresh_upload_readiness: readiness,
+    checks,
+    ready_for_explicit_user_post_token_refresh_upload_approval: blockers.length === 0,
+    blockers: [...new Set(blockers)],
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      actual_database_write: false,
+      title_changes: false,
+      item_specifics_changes: false,
+      description_changes: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      category_changes: false,
+      shipping_changes: false,
+      payment_changes: false,
+      returns_changes: false,
+      token_values_printed: false,
+      ai_calls: false,
+    },
+    source: 'phase_14ag_post_token_refresh_upload_approval_checklist_v1',
+  };
+}
+
 async function buildEbayListingQualityImageUploadCorrectedReadiness({ itemId } = {}) {
   const result = await buildEbayListingQualityImageUploadResult({ itemId });
   const latest = result.duplicate_guard_status?.latest_upload || null;
@@ -16647,6 +16792,8 @@ module.exports = {
   buildEbayTokenRefreshReadiness,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
+  buildEbayListingQualityImageUploadPostTokenRefreshReadiness,
+  buildEbayListingQualityImageUploadPostTokenRefreshApprovalChecklist,
   completeEbayListingQualitySeedEvidence,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
