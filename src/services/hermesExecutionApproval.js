@@ -5178,6 +5178,258 @@ async function scanEbayListingQualitySeedPromotionCandidates({ limit = 20 } = {}
   };
 }
 
+async function listPhase14JPromotedOpportunitiesForSeedReview({ reviewId, sku = null, itemId = null } = {}) {
+  const id = intOrNull(reviewId);
+  if (id == null) return [];
+  const rows = await safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at',
+    q => q.eq('opportunity_type', 'listing_quality_improvement').eq('source_type', 'phase_14_seed_review_promotion').order('created_at', { ascending: true }).limit(200)
+  );
+  return (rows || []).filter(row => {
+    const metadata = row.metadata || {};
+    const rowReviewId = intOrNull(metadata.source_review_id);
+    const rowSku = String(metadata.sku || '').trim();
+    const rowItemId = String(metadata.item_id || metadata.target_item_id || '').trim();
+    return rowReviewId === id
+      && (!sku || rowSku === String(sku))
+      && (!itemId || rowItemId === String(itemId));
+  });
+}
+
+function normalizePhase14JPromotedOpportunity(row = {}) {
+  const metadata = row.metadata || {};
+  return {
+    id: row.id,
+    opportunity_type: row.opportunity_type,
+    source: row.source_type,
+    status: row.status,
+    title: row.title || metadata.title || null,
+    item_id: metadata.item_id || metadata.target_item_id || null,
+    sku: metadata.sku || null,
+    source_review_id: metadata.source_review_id ?? null,
+    score: metadata.score ?? null,
+    requires_human_review: metadata.requires_human_review === true,
+    requires_human_approval: metadata.requires_human_approval === true,
+    not_execution_candidate: metadata.not_execution_candidate === true,
+    not_packet: metadata.not_packet === true,
+    not_approval: metadata.not_approval === true,
+    not_execution_request: metadata.not_execution_request === true,
+    not_live_candidate: metadata.not_live_candidate === true,
+    proposed_mutation_fields: metadata.proposed_mutation_fields || [],
+    allowed_mutation_fields: metadata.allowed_mutation_fields || [],
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+  };
+}
+
+function buildPhase14JPromotedOpportunityRecord({ review, eligibility } = {}) {
+  const allowedFields = eligibility?.allowed_mutation_fields || [];
+  const proposedFields = eligibility?.proposed_mutation_fields || allowedFields;
+  return {
+    opportunity_type: 'listing_quality_improvement',
+    source_type: 'phase_14_seed_review_promotion',
+    input_channel: 'api',
+    source_name: 'phase_14j_seed_review_promotion',
+    title: trimOrNull(review?.title || `Listing quality improvement for ${eligibility?.sku || review?.sku || 'seed review'}`, 255),
+    status: 'reviewing',
+    category: 'ebay_listing_quality',
+    priority: 'normal',
+    notes: 'Promoted from an eligible Phase 14 seed review for human review only. No packet, approval, execution request, live candidate, listing mutation, AI call, or marketplace write was created in Phase 14J.',
+    metadata: {
+      type: 'listing_quality_improvement',
+      source: 'phase_14_seed_review_promotion',
+      phase: '14J',
+      source_review_id: eligibility?.review_id ?? review?.id ?? null,
+      source_review_type: review?.type || 'listing_quality_seed_review',
+      source_review_source: review?.source || 'phase_14e_seed_scoring_preview',
+      sku: eligibility?.sku || review?.sku || null,
+      item_id: eligibility?.item_id || review?.item_id || null,
+      target_item_id: eligibility?.item_id || review?.item_id || null,
+      title: review?.title || null,
+      score: eligibility?.score ?? review?.score ?? null,
+      review_status: review?.review_status || null,
+      requires_human_review: true,
+      requires_human_approval: true,
+      not_execution_candidate: true,
+      not_packet: true,
+      not_approval: true,
+      not_execution_request: true,
+      not_live_candidate: true,
+      proposed_mutation_fields: proposedFields,
+      allowed_mutation_fields: allowedFields,
+      forbidden_mutation_fields: eligibility?.forbidden_mutation_fields || [],
+      promotion_eligible: eligibility?.eligible_for_promotion === true,
+      promotion_blockers: eligibility?.blockers || [],
+      hard_exclusion: eligibility?.hard_exclusion || null,
+      cached_evidence: eligibility?.cached_evidence || {},
+      idempotency_key_fields: {
+        source_type: 'phase_14_seed_review_promotion',
+        source_review_id: eligibility?.review_id ?? review?.id ?? null,
+        sku: eligibility?.sku || review?.sku || null,
+        item_id: eligibility?.item_id || review?.item_id || null,
+      },
+      forbidden_field_check: {
+        price_changes: false,
+        inventory_changes: false,
+        quantity_changes: false,
+        forbidden_fields_present: false,
+        forbidden_fields: [],
+      },
+      safety_boundary: {
+        cached_evidence_only: true,
+        no_ebay_call: true,
+        no_get_item_call: true,
+        no_revise_fixed_price_item_call: true,
+        no_ebay_write_api: true,
+        no_marketplace_write: true,
+        no_listing_mutation: true,
+        no_packet_created: true,
+        no_approval_created: true,
+        no_execution_request_created: true,
+        no_live_candidate_created: true,
+        no_ai_call: true,
+        price_changes: false,
+        inventory_changes: false,
+        quantity_changes: false,
+        listing_changed: false,
+      },
+      recommended_next_action: 'Human review only. A later explicit phase may decide whether packet/approval scaffolding is appropriate; do not execute marketplace writes from this opportunity.',
+    },
+  };
+}
+
+function phase14JPromotionSafety({ actualDatabaseWrite = false, normalOpportunityCreated = false } = {}) {
+  return {
+    actual_ebay_call: false,
+    get_item_called: false,
+    actual_network_call: false,
+    actual_database_write: actualDatabaseWrite,
+    database_write_scope: actualDatabaseWrite ? 'opportunity_inbox one normal internal human-review opportunity only' : null,
+    marketplace_write_performed: false,
+    revise_fixed_price_item_called: false,
+    ebay_write_api_called: false,
+    normal_opportunity_created: normalOpportunityCreated,
+    opportunity_created: normalOpportunityCreated,
+    packet_created: false,
+    approval_created: false,
+    execution_request_created: false,
+    live_candidate_created: false,
+    execution_state_changed: false,
+    listing_changed: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    title_changes: false,
+    description_changes: false,
+    item_specifics_changes: false,
+    ai_called: false,
+    ai_calls: false,
+  };
+}
+
+async function promoteEbayListingQualitySeedReview({ id, dryRun = true, write = false } = {}) {
+  const reviewId = intOrNull(id);
+  if (reviewId == null) throw new Error('id is required');
+  const writeRequested = write === true && dryRun === false;
+  const detail = await getEbayListingQualitySeedReviewDetail({ id: reviewId });
+  const review = detail.found ? detail.review : null;
+  const earlySku = review?.sku || review?.metadata?.sku || null;
+  const earlyItemId = String(review?.item_id || review?.metadata?.item_id || '').trim() || null;
+  const existingRowsBefore = await listPhase14JPromotedOpportunitiesForSeedReview({ reviewId, sku: earlySku, itemId: earlyItemId });
+  const existingBefore = existingRowsBefore[0] || null;
+  const eligibility = await checkEbayListingQualitySeedPromotionEligibility({ id: reviewId });
+  const blockers = [];
+  const before = {
+    promoted_opportunities: existingRowsBefore.length,
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+
+  if (!review) blockers.push('review_not_found');
+  if (review?.review_status !== 'shortlisted') blockers.push('review_status_not_shortlisted');
+  if (detail.hard_exclusion?.excluded === true || eligibility.hard_exclusion?.excluded === true) blockers.push('hard_exclusion_excluded');
+  if (eligibility.eligible_for_promotion !== true && !existingBefore) blockers.push('promotion_check_not_eligible');
+  if ((eligibility.blockers || []).length && !existingBefore) blockers.push(...eligibility.blockers);
+  if (existingRowsBefore.length > 1) blockers.push('duplicate_existing_promoted_opportunity_for_review');
+
+  const plannedOpportunity = review ? buildPhase14JPromotedOpportunityRecord({ review, eligibility }) : null;
+  const uniqueBlockers = [...new Set(blockers)];
+  let inserted = null;
+  let existing = existingBefore;
+  if (writeRequested && !existing && uniqueBlockers.length === 0) {
+    const db = getClient();
+    const { data, error } = await db
+      .from(OPPORTUNITY_TABLE)
+      .insert(plannedOpportunity)
+      .select('id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at')
+      .single();
+    if (error) throw error;
+    inserted = data;
+    existing = data;
+  }
+
+  const sku = eligibility.sku || earlySku;
+  const itemId = eligibility.item_id || earlyItemId;
+  const afterRows = await listPhase14JPromotedOpportunitiesForSeedReview({ reviewId, sku, itemId });
+  const after = {
+    promoted_opportunities: afterRows.length,
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  const existingOrCreated = existing || afterRows[0] || null;
+  const normalOpportunityCreated = Boolean(inserted);
+  return {
+    read_only: !writeRequested,
+    dry_run: !writeRequested,
+    write_requested: writeRequested,
+    marketplace: 'ebay',
+    operation: 'listing_quality_promote_seed_review',
+    review_id: reviewId,
+    eligible_for_promotion: existingBefore ? true : eligibility.eligible_for_promotion === true,
+    created: normalOpportunityCreated,
+    idempotent_existing: Boolean(existingRowsBefore.length && !inserted),
+    promoted_opportunity_id: existingOrCreated?.id || null,
+    blockers: uniqueBlockers,
+    source_review: review,
+    eligibility,
+    planned_opportunity: plannedOpportunity,
+    promoted_opportunity: existingOrCreated ? normalizePhase14JPromotedOpportunity(existingOrCreated) : null,
+    existing_promoted_opportunity_count_before: before.promoted_opportunities,
+    promoted_opportunity_count_after: after.promoted_opportunities,
+    verification: {
+      exactly_one_promoted_opportunity_for_review: after.promoted_opportunities === 1,
+      promoted_opportunity_count_before: before.promoted_opportunities,
+      promoted_opportunity_count_after: after.promoted_opportunities,
+      duplicate_created: after.promoted_opportunities > Math.max(1, before.promoted_opportunities),
+      normal_opportunity_created: normalOpportunityCreated,
+      packet_count_before: before.listing_quality_packets,
+      packet_count_after: after.listing_quality_packets,
+      packet_created: after.listing_quality_packets > before.listing_quality_packets,
+      approval_request_count_before: before.execution_requests,
+      approval_request_count_after: after.execution_requests,
+      approval_created: after.execution_requests > before.execution_requests,
+      execution_request_created: after.execution_requests > before.execution_requests,
+      live_candidate_created: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      ai_called: false,
+    },
+    recommended_next_action: inserted
+      ? 'Promoted to one normal internal human-review opportunity only. Do not create packet, approval, execution request, live candidate, listing mutation, AI call, or marketplace write until a later explicit phase.'
+      : (existingOrCreated
+          ? 'Already promoted; returned the existing promoted opportunity. Do not create packet, approval, execution request, live candidate, listing mutation, AI call, or marketplace write until a later explicit phase.'
+          : (uniqueBlockers.length
+              ? 'Promotion blocked by eligibility gates. No opportunity, packet, approval, execution request, live candidate, listing mutation, AI call, or marketplace write was created.'
+              : 'Dry-run only. Re-run with --write to create exactly one normal internal human-review opportunity.')),
+    safety: phase14JPromotionSafety({ actualDatabaseWrite: normalOpportunityCreated, normalOpportunityCreated }),
+    source: 'phase_14j_seed_review_promotion_v1',
+  };
+}
+
 function phase14ISeedEvidenceCompletionSafety({ actualDatabaseWrite = false, actualReadOnlyEbayCall = false } = {}) {
   return {
     actual_database_write: actualDatabaseWrite,
@@ -11530,6 +11782,7 @@ module.exports = {
   actOnEbayListingQualitySeedReview,
   checkEbayListingQualitySeedPromotionEligibility,
   scanEbayListingQualitySeedPromotionCandidates,
+  promoteEbayListingQualitySeedReview,
   completeEbayListingQualitySeedEvidence,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
