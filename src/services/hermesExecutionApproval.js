@@ -10473,6 +10473,195 @@ async function buildEbayListingQualityImageUploadApprovalChecklist({ itemId } = 
   };
 }
 
+
+function phase14ALRedactUploadXml(xml) {
+  return String(xml || '').replace(/<PictureData>[\s\S]*?<\/PictureData>/i, (match) => {
+    const value = (match.match(/<PictureData>([\s\S]*?)<\/PictureData>/i) || [])[1] || '';
+    return `<PictureData>[base64 omitted; length=${value.length}]</PictureData>`;
+  }).replace(/<eBayAuthToken>[\s\S]*?<\/eBayAuthToken>/i, '<eBayAuthToken>[OMITTED]</eBayAuthToken>');
+}
+
+function phase14ALBase64XmlSafety(base64) {
+  const value = String(base64 || '');
+  const xmlSpecialChars = [...value].filter(ch => ['&', '<', '>', '"', "'"].includes(ch));
+  return {
+    contains_only_base64_alphabet: /^[A-Za-z0-9+/=]*$/.test(value),
+    contains_xml_special_characters: xmlSpecialChars.length > 0,
+    xml_special_characters_found: [...new Set(xmlSpecialChars)],
+    xml_escaping_required_for_picture_data: false,
+    xml_escaping_may_alter_base64: xmlSpecialChars.length > 0,
+    note: xmlSpecialChars.length > 0
+      ? 'Unexpected XML-sensitive character found in base64 payload.'
+      : 'Standard base64 alphabet contains no XML markup characters; XML escaping PictureData is unnecessary and should not alter this payload.',
+  };
+}
+
+async function buildEbayImageUploadPayloadRoundtrip({ itemId } = {}) {
+  const targetItemId = trimOrNull(itemId, 80);
+  if (!targetItemId) throw new Error('item-id is required');
+  const readiness = await buildEbayListingQualityImageSanitizedUploadReadiness({ itemId: targetItemId });
+  const imagePath = readiness.sanitized_path;
+  const expectedSha = readiness.sanitized_sha256;
+  const blockers = [];
+  if (targetItemId !== '206288370789') blockers.push('phase_14al_item_id_not_seed_item');
+  if (!imagePath || !fs.existsSync(imagePath)) blockers.push('sanitized_image_missing');
+  let payload = null;
+  let originalBuffer = null;
+  let decodedBuffer = null;
+  let decodedSha = null;
+  let extractedPictureData = null;
+  let originalMagic = null;
+  let decodedMagic = null;
+  if (!blockers.length) {
+    payload = EbayAPI.buildUploadSiteHostedPicturesPayload({
+      imagePath,
+      pictureName: `hermes-${targetItemId}-sanitized-replacement-image`,
+      pictureSet: 'Supersize',
+    });
+    originalBuffer = fs.readFileSync(imagePath);
+    extractedPictureData = (payload.requestXml.match(/<PictureData>([\s\S]*?)<\/PictureData>/i) || [])[1] || '';
+    decodedBuffer = Buffer.from(extractedPictureData, 'base64');
+    decodedSha = `sha256:${crypto.createHash('sha256').update(decodedBuffer).digest('hex')}`;
+    originalMagic = originalBuffer.subarray(0, 12).toString('hex');
+    decodedMagic = decodedBuffer.subarray(0, 12).toString('hex');
+  }
+  const pass = blockers.length === 0
+    && decodedSha === expectedSha
+    && Buffer.compare(originalBuffer, decodedBuffer) === 0
+    && originalMagic === decodedMagic
+    && /^ffd8ff/i.test(decodedMagic || '');
+  return {
+    read_only: true,
+    phase: '14AL',
+    item_id: targetItemId,
+    image_path: imagePath || null,
+    expected_sanitized_sha256: expectedSha || null,
+    built_exact_intended_payload_locally: blockers.length === 0,
+    upload_site_hosted_pictures_called: false,
+    actual_ebay_call: false,
+    actual_network_call: false,
+    payload_transport: payload?.pictureDataTransport || 'PictureData',
+    picture_url_transport_used: false,
+    picture_data_base64_encoded: payload?.pictureDataBase64Encoded === true,
+    binary_file_length: originalBuffer?.length || null,
+    base64_length: payload?.base64Length || null,
+    payload_content_length: payload?.payloadContentLength || null,
+    original_magic_hex_prefix: originalMagic,
+    decoded_magic_hex_prefix: decodedMagic,
+    decoded_sha256: decodedSha,
+    decoded_payload_bytes_match_original_file_bytes: pass,
+    decoded_payload_sha256_matches_sanitized_image: decodedSha === expectedSha,
+    jpeg_magic_bytes_survive_roundtrip: /^ffd8ff/i.test(decodedMagic || '') && originalMagic === decodedMagic,
+    request_xml_shape_redacted: payload ? phase14ALRedactUploadXml(payload.requestXml) : null,
+    base64_xml_safety: payload ? phase14ALBase64XmlSafety(payload.pictureData) : null,
+    pass,
+    blockers: [...new Set(blockers)],
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      listing_revise_performed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      ai_calls: false,
+    },
+    source: 'phase_14al_payload_roundtrip_v1',
+  };
+}
+
+async function buildEbayImageUploadPayloadAudit({ itemId } = {}) {
+  const targetItemId = trimOrNull(itemId, 80);
+  if (!targetItemId) throw new Error('item-id is required');
+  const registry = phase14AAReadUploadResults();
+  const allRows = (registry.uploads || []).filter(row => String(row.item_id || '') === String(targetItemId));
+  const failures = allRows
+    .filter(row => row.ebay_ack === 'Failure' || row.marketplace_image_upload_failed === true || row.upload_succeeded === false)
+    .map(row => ({
+      phase: row.phase || null,
+      image_path: row.image_path || null,
+      candidate_sha256: row.candidate_sha256 || null,
+      ebay_ack: row.ebay_ack || null,
+      picture_url: row.picture_url || null,
+      upload_succeeded: row.upload_succeeded === true,
+      sanitized_upload_attempt: row.sanitized_upload_attempt === true,
+      post_token_refresh_upload_attempt: row.post_token_refresh_upload_attempt === true,
+      corrected_upload_attempt: row.corrected_upload_attempt === true,
+      error_codes: (row.errors || []).map(error => error?.code).filter(Boolean),
+      errors: row.errors || [],
+      timestamp: row.timestamp || row.recorded_at || null,
+    }));
+  const roundtrip = await buildEbayImageUploadPayloadRoundtrip({ itemId: targetItemId });
+  const latest21916550Failures = failures.filter(row => row.error_codes.includes('21916550'));
+  const original21916550 = latest21916550Failures.some(row => row.candidate_sha256 === 'sha256:16883e4cb7af5ebb12b6948285742faff7d83bdd501600f5fee01428620a1f47');
+  const sanitized21916550 = latest21916550Failures.some(row => row.candidate_sha256 === 'sha256:98542bad69eed4a599263d2b4d779f9a2a9c8f4e27fc606040c62fd48b0f1f5f');
+  const tokenRuledOut = failures.some(row => row.phase === '14AK' && row.error_codes.includes('21916550'))
+    && !failures.some(row => row.phase === '14AK' && row.error_codes.includes('21916984'));
+  const likelyPayloadIssue = roundtrip.pass
+    ? 'No local PictureData encoding corruption found: payload uses base64 PictureData, XML escaping does not alter the base64 alphabet, decoded payload bytes exactly match the sanitized JPEG, and JPEG magic bytes survive. The repeated 21916550 is more likely eBay Picture Services rejecting the image content/encoding profile or the PictureData transport for this image than Hermes embedding raw or corrupted bytes.'
+    : 'Local payload roundtrip failed; inspect PictureData extraction/base64 encoding before any future upload.';
+  const recommendedFix = roundtrip.pass
+    ? 'Keep the centralized safe base64 PictureData XML builder and do not retry live upload in this phase. Next remediation should create a materially different JPEG (fresh re-render/re-encode from pixels, different encoder/color profile/progressive settings) or test a disabled alternative strategy such as public HTTPS PictureURL/multipart EPS only after a new explicit approval.'
+    : 'Fix PictureData base64 construction/extraction until roundtrip passes, then require a new explicit approval before any upload.';
+  return {
+    read_only: true,
+    phase: '14AL',
+    item_id: targetItemId,
+    upload_site_hosted_pictures_called: false,
+    revise_fixed_price_item_called: false,
+    marketplace_write_performed: false,
+    listing_changed: false,
+    latest_image_upload_failures: failures.slice(-6),
+    both_21916550_failures_present: original21916550 && sanitized21916550,
+    original_image_21916550_failure_present: original21916550,
+    sanitized_baseline_21916550_failure_present: sanitized21916550,
+    token_auth_ruled_out_for_phase_14ak: tokenRuledOut,
+    payload_transport_findings: {
+      upload_site_hosted_pictures_used_picture_data: roundtrip.payload_transport === 'PictureData',
+      upload_site_hosted_pictures_used_picture_url: false,
+      picture_data_base64_encoded: roundtrip.picture_data_base64_encoded,
+      xml_escaping_may_alter_base64: roundtrip.base64_xml_safety?.xml_escaping_may_alter_base64 === true,
+      payload_content_length: roundtrip.payload_content_length,
+      binary_file_length: roundtrip.binary_file_length,
+      base64_length: roundtrip.base64_length,
+      detected_jpeg_magic_bytes_before_encoding: roundtrip.original_magic_hex_prefix,
+      decoded_payload_bytes_match_sanitized_file_bytes: roundtrip.decoded_payload_bytes_match_original_file_bytes,
+      decoded_payload_sha256_matches_sanitized_image: roundtrip.decoded_payload_sha256_matches_sanitized_image,
+      jpeg_magic_bytes_survive_roundtrip: roundtrip.jpeg_magic_bytes_survive_roundtrip,
+    },
+    current_request_xml_shape_secrets_omitted: roundtrip.request_xml_shape_redacted,
+    likely_payload_issue: likelyPayloadIssue,
+    recommended_fix: recommendedFix,
+    disabled_future_strategy: {
+      enabled: false,
+      reason: 'No live retry or alternate upload transport is approved in Phase 14AL.',
+      candidates: [
+        'Re-render/re-encode a materially different baseline JPEG from pixels and re-audit locally.',
+        'If eBay docs/support require it, test UploadSiteHostedPictures with PictureURL from a public HTTPS object instead of PictureData in a later explicitly approved phase.',
+        'If confirmed necessary, prototype multipart/EPS transport in a disabled local-only branch before approval.',
+      ],
+    },
+    local_payload_roundtrip: roundtrip,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      listing_revise_performed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      ai_calls: false,
+    },
+    source: 'phase_14al_payload_audit_v1',
+  };
+}
+
 async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = true, write = false, liveEnabled = false, operatorApprovalText = null } = {}) {
   const plan = await buildEbayListingQualityImageTransportPlan({ itemId });
   const candidate = {
@@ -17291,6 +17480,8 @@ module.exports = {
   buildEbayListingQualityImageSanitizedCandidateReadiness,
   buildEbayListingQualityImageSanitizedUploadReadiness,
   buildEbayListingQualityImageSanitizedUploadApprovalChecklist,
+  buildEbayImageUploadPayloadAudit,
+  buildEbayImageUploadPayloadRoundtrip,
   buildEbayListingQualityImageAwarePacketPlan,
   buildEbayListingQualityImageAwarePacketPreview,
   buildEbayListingQualityImageTransportPlan,

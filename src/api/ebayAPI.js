@@ -241,19 +241,62 @@ class EbayAPI {
   }
 
 
+  static escapeXml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  escapeXml(value) {
+    return EbayAPI.escapeXml(value);
+  }
+
+  static buildUploadSiteHostedPicturesPayload({ imagePath, pictureName, pictureSet = 'Supersize', includeRequesterCredentials = false } = {}) {
+    if (!imagePath) throw new Error('imagePath is required');
+    if (!fs.existsSync(imagePath)) throw new Error(`image file not found: ${imagePath}`);
+    const imageBuffer = fs.readFileSync(imagePath);
+    const pictureData = imageBuffer.toString('base64');
+    const requestBody = `
+  <PictureName>${EbayAPI.escapeXml(pictureName || 'hermes-replacement-image')}</PictureName>
+  <PictureSet>${EbayAPI.escapeXml(pictureSet || 'Supersize')}</PictureSet>
+  <PictureData>${pictureData}</PictureData>`;
+    const requesterCredentials = includeRequesterCredentials
+      ? `
+  <RequesterCredentials>
+    <eBayAuthToken>[OMITTED]</eBayAuthToken>
+  </RequesterCredentials>`
+      : '';
+    const requestXml = `<?xml version="1.0" encoding="utf-8"?>
+<UploadSiteHostedPicturesRequest xmlns="urn:ebay:apis:eBLBaseComponents">${requesterCredentials}
+  ${requestBody}
+</UploadSiteHostedPicturesRequest>`;
+    return {
+      requestBody,
+      requestXml,
+      pictureData,
+      binaryLength: imageBuffer.length,
+      base64Length: pictureData.length,
+      payloadContentLength: Buffer.byteLength(requestXml, 'utf8'),
+      pictureDataTransport: 'PictureData',
+      pictureUrlTransport: false,
+      pictureDataBase64Encoded: true,
+    };
+  }
+
   /**
    * UploadSiteHostedPictures — approved image transport helper.
    * Uses the existing Trading API auth/token path via callTradingAPI; no new auth logic.
    */
   async uploadSiteHostedPicture({ imagePath, pictureName, pictureSet = 'Supersize' } = {}) {
-    if (!imagePath) throw new Error('imagePath is required');
-    if (!fs.existsSync(imagePath)) throw new Error(`image file not found: ${imagePath}`);
-    const pictureData = fs.readFileSync(imagePath).toString('base64');
-    const requestBody = `
-  <PictureName>${this.escapeXml(pictureName || 'hermes-replacement-image')}</PictureName>
-  <PictureSet>${this.escapeXml(pictureSet || 'Supersize')}</PictureSet>
-  <PictureData>${pictureData}</PictureData>`;
-    const raw = await this.callTradingAPI('UploadSiteHostedPictures', requestBody);
+    const payload = EbayAPI.buildUploadSiteHostedPicturesPayload({
+      imagePath,
+      pictureName: pictureName || 'hermes-replacement-image',
+      pictureSet: pictureSet || 'Supersize',
+    });
+    const raw = await this.callTradingAPI('UploadSiteHostedPictures', payload.requestBody);
     const rawText = typeof raw === 'string' ? raw : JSON.stringify(raw || '');
     const textOf = (tag) => {
       const match = rawText.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));

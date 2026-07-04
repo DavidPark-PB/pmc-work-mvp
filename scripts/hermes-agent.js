@@ -1187,6 +1187,25 @@ async function main() {
   }
 
 
+
+  if (cmd === 'ebay-image-upload-payload-audit') {
+    const { buildEbayImageUploadPayloadAudit } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    if (!itemId) throw new Error('item-id is required');
+    const result = await buildEbayImageUploadPayloadAudit({ itemId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-image-upload-payload-roundtrip') {
+    const { buildEbayImageUploadPayloadRoundtrip } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    if (!itemId) throw new Error('item-id is required');
+    const result = await buildEbayImageUploadPayloadRoundtrip({ itemId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-listing-quality-image-upload-result') {
     const { buildEbayListingQualityImageUploadResult } = require('../src/services/hermesExecutionApproval');
     const itemId = arg('item-id', arg('id', null));
