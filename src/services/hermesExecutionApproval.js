@@ -4959,7 +4959,7 @@ function phase14HEnoughEvidenceForRollbackReview({ review, evidence, proposedFie
   if ((proposedFields || []).includes('title') && !evidence.title) return false;
   if ((proposedFields || []).includes('description') && !evidence.description) return false;
   if ((proposedFields || []).includes('item_specifics') && !sourceTables.has('listing_item_specifics')) return false;
-  if (review?.metadata?.evidence_summary?.evidence_gaps?.includes('cached_description') && (proposedFields || []).includes('description')) return false;
+  if (review?.metadata?.evidence_summary?.evidence_gaps?.includes('cached_description') && (proposedFields || []).includes('description') && !evidence.description) return false;
   return true;
 }
 
@@ -5072,7 +5072,13 @@ async function buildPhase14HSeedPromotionAssessment(review = null, { reviewId = 
   if (existingArtifacts.packets.length) blockers.push('existing_packet_for_review_or_item');
   if (existingArtifacts.requests.length) blockers.push('existing_approval_or_execution_request_for_review_or_item');
   if (!enoughEvidence) blockers.push('insufficient_cached_evidence_for_rollback_review');
-  if ((review.metadata?.evidence_summary?.evidence_gaps || []).length) warnings.push(...review.metadata.evidence_summary.evidence_gaps.map(gap => `source_review_evidence_gap:${gap}`));
+  const unresolvedSourceEvidenceGaps = (review.metadata?.evidence_summary?.evidence_gaps || []).filter(gap => {
+    if (gap === 'cached_description') return !evidence.description;
+    if (gap === 'cached_item_specifics') return !Object.keys(evidence.item_specifics || {}).length;
+    if (gap === 'cached_title') return !evidence.title;
+    return true;
+  });
+  if (unresolvedSourceEvidenceGaps.length) warnings.push(...unresolvedSourceEvidenceGaps.map(gap => `source_review_evidence_gap:${gap}`));
   if (!cachedEvidence.listing_status_active && cachedEvidence.sufficiently_reviewable) warnings.push('listing_status_not_active_but_cached_record_is_reviewable');
 
   const uniqueBlockers = [...new Set(blockers)];
@@ -5172,6 +5178,138 @@ async function scanEbayListingQualitySeedPromotionCandidates({ limit = 20 } = {}
   };
 }
 
+function phase14ISeedEvidenceCompletionSafety({ actualDatabaseWrite = false, actualReadOnlyEbayCall = false } = {}) {
+  return {
+    actual_database_write: actualDatabaseWrite,
+    actual_read_only_ebay_call: actualReadOnlyEbayCall,
+    get_item_called: actualReadOnlyEbayCall,
+    marketplace_write_performed: false,
+    revise_fixed_price_item_called: false,
+    ebay_write_api_called: false,
+    opportunity_created: false,
+    packet_created: false,
+    approval_created: false,
+    execution_request_created: false,
+    live_candidate_created: false,
+    listing_changed: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    title_changes: false,
+    description_changes: false,
+    item_specifics_changes: false,
+    ai_called: false,
+    ai_calls: false,
+  };
+}
+
+async function completeEbayListingQualitySeedEvidence({ id, dryRun = true, write = false } = {}) {
+  const reviewId = intOrNull(id);
+  if (reviewId == null) throw new Error('id is required');
+  const writeRequested = write === true && dryRun === false;
+  const detail = await getEbayListingQualitySeedReviewDetail({ id: reviewId });
+  const review = detail.found ? detail.review : null;
+  const phase14HBefore = await checkEbayListingQualitySeedPromotionEligibility({ id: reviewId });
+  const sku = review?.sku || review?.metadata?.sku || null;
+  const itemId = String(review?.item_id || review?.metadata?.item_id || '').trim();
+  const blockers = [];
+
+  if (!review) blockers.push('review_not_found');
+  if (review?.review_status !== 'shortlisted') blockers.push('review_status_not_shortlisted');
+  if (itemId !== '206288370789') blockers.push('target_item_id_not_206288370789');
+  if (detail.hard_exclusion?.excluded === true) blockers.push('hard_exclusion_excluded');
+  if (!(phase14HBefore.blockers || []).includes('insufficient_cached_evidence_for_rollback_review')) {
+    blockers.push('phase_14h_insufficient_cached_evidence_blocker_missing');
+  }
+
+  const baseResult = {
+    operation: 'listing_quality_seed_evidence_complete',
+    phase: '14I',
+    marketplace: 'ebay',
+    review_id: reviewId,
+    sku,
+    item_id: itemId || null,
+    dry_run: !writeRequested,
+    write_requested: writeRequested,
+    actual_read_only_ebay_call: false,
+    get_item_called: false,
+    actual_database_write: false,
+    description_present: false,
+    description_length: 0,
+    item_specifics_count: 0,
+    picture_count: 0,
+    listing_status: null,
+    cache_write_result: {},
+    phase_14h_before: {
+      eligible_for_promotion: phase14HBefore.eligible_for_promotion,
+      blockers: phase14HBefore.blockers || [],
+      warnings: phase14HBefore.warnings || [],
+      cached_evidence: phase14HBefore.cached_evidence || {},
+    },
+    blockers,
+    safety: phase14ISeedEvidenceCompletionSafety(),
+    source: 'phase_14i_seed_evidence_completion_v1',
+  };
+
+  if (blockers.length) {
+    return {
+      ...baseResult,
+      recommended_next_action: 'Blocked before GetItem. Do not fetch or write cache evidence until the selected shortlisted review and Phase 14H missing-evidence blocker are verified.',
+    };
+  }
+
+  const fetchedAt = new Date().toISOString();
+  const EbayAPI = require('../api/ebayAPI');
+  const ebay = new EbayAPI();
+  let evidence;
+  try {
+    const xml = await ebay.callTradingAPI('GetItem', buildGetItemRequestBody(itemId));
+    evidence = parseEbayGetItemEvidenceXml(xml, { sku, itemId, fetchedAt });
+  } catch (e) {
+    const errorInfo = classifyEbayReadOnlyFetchError(e);
+    return {
+      ...baseResult,
+      actual_read_only_ebay_call: true,
+      get_item_called: true,
+      fetch_success: false,
+      fetch_error: errorInfo,
+      safety: phase14ISeedEvidenceCompletionSafety({ actualReadOnlyEbayCall: true }),
+      recommended_next_action: errorInfo.error_type === 'rate_limit'
+        ? 'Temporary eBay rate/quota limit during read-only GetItem. Stop and retry later; no cache write was performed.'
+        : 'Read-only GetItem failed. No evidence was faked and no cache write was performed.',
+    };
+  }
+
+  let cacheWriteResult = {};
+  let actualDatabaseWrite = false;
+  if (writeRequested && evidence.success) {
+    cacheWriteResult = await writeInternalListingEvidenceCache({
+      candidate: { sku, item_id: itemId },
+      evidence,
+    });
+    actualDatabaseWrite = true;
+  }
+
+  return {
+    ...baseResult,
+    actual_read_only_ebay_call: true,
+    get_item_called: true,
+    actual_database_write: actualDatabaseWrite,
+    fetch_success: evidence.success,
+    ack: evidence.ack,
+    errors: evidence.errors || [],
+    description_present: evidence.description_present === true,
+    description_length: evidence.description_length || 0,
+    item_specifics_count: evidence.item_specifics_count || 0,
+    picture_count: evidence.picture_count || 0,
+    listing_status: evidence.listing_status || null,
+    cache_write_result: cacheWriteResult,
+    safety: phase14ISeedEvidenceCompletionSafety({ actualDatabaseWrite, actualReadOnlyEbayCall: true }),
+    recommended_next_action: writeRequested
+      ? 'Internal evidence cache upsert completed only for listing_details, listing_item_specifics, and listing_images. Re-run Phase 14H promotion check; do not create opportunities, packets, approvals, execution requests, live candidates, AI calls, or marketplace writes.'
+      : 'Dry-run fetched read-only GetItem evidence only. Re-run with --write to upsert internal evidence cache rows only if the evidence is acceptable.',
+  };
+}
 
 
 
@@ -11392,6 +11530,7 @@ module.exports = {
   actOnEbayListingQualitySeedReview,
   checkEbayListingQualitySeedPromotionEligibility,
   scanEbayListingQualitySeedPromotionCandidates,
+  completeEbayListingQualitySeedEvidence,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
   buildEbayListingQualityEvidenceRefreshPlan,
