@@ -92,6 +92,8 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-seed-final-approval-detail --packet-id=<PACKET_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-seed-final-approval-detail --approval-id=<APPROVAL_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-seed-final-approval-action --approval-id=<APPROVAL_ID> --action=<approve|reject> --actor=<USER> --reason=... [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-seed-live-readiness --approval-id=<APPROVAL_ID>',
+    '  npm run hermes:agent -- ebay-listing-quality-seed-live-runbook --approval-id=<APPROVAL_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-seed-evidence-complete --id=<REVIEW_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-source-audit [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
@@ -195,6 +197,7 @@ function printUsage() {
     'Phase 14N Seed Final Mutation Packet: default dry-run; --write creates idempotent internal superseding request/packet artifacts only from operator JSON; no approvals, live candidates, AI, eBay calls, listing mutations, or marketplace writes.',
     'Phase 14O Seed Final Approval Request: default dry-run; --write creates exactly one internal opportunity_inbox approval request artifact only; not final approval, not execution request, no AI/eBay/marketplace/listing writes.',
     'Phase 14P Seed Final Approval: default dry-run; --write updates only the internal Phase 14O approval artifact metadata/status; no execution request, execution state update, AI, eBay call, listing mutation, or marketplace write.',
+    'Phase 14Q Seed Live Readiness: read-only readiness/runbook for approval 37/request 5/packet 4; builds payload preview only, no DB writes, live transport, eBay calls, AI, or marketplace writes.',
   ].join('\n'));
 }
 
@@ -958,6 +961,24 @@ async function main() {
       dryRun: !write,
       write,
     });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-seed-live-readiness') {
+    const { buildEbayListingQualitySeedLiveReadiness } = require('../src/services/hermesExecutionApproval');
+    const approvalId = intArg('approval-id', intArg('id', null));
+    if (approvalId == null) throw new Error('approval-id is required');
+    const result = await buildEbayListingQualitySeedLiveReadiness({ approvalId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-seed-live-runbook') {
+    const { buildEbayListingQualitySeedLiveRunbook } = require('../src/services/hermesExecutionApproval');
+    const approvalId = intArg('approval-id', intArg('id', null));
+    if (approvalId == null) throw new Error('approval-id is required');
+    const result = await buildEbayListingQualitySeedLiveRunbook({ approvalId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
