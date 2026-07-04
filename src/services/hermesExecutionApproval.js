@@ -23,6 +23,8 @@ const {
   prepareEbayListingQualityRollbackSnapshot,
   mockCallEbayListingQualityRevise,
   executeEbayListingQualityRevision,
+  buildEbayImageTransportIntent,
+  callEbayImageTransportBoundary,
 } = require('../adapters/ebayListingQualityExecutionAdapter');
 
 const REQUEST_TABLE = 'hermes_execution_requests';
@@ -8904,6 +8906,170 @@ async function buildEbayListingQualityImageAwarePacketPreview({ itemId, create =
   };
 }
 
+
+async function buildEbayListingQualityImageTransportPlan({ itemId } = {}) {
+  const packetPlan = await buildEbayListingQualityImageAwarePacketPlan({ itemId });
+  const candidate = packetPlan.image_mutation_plan?.replacement_image_candidate || null;
+  const localCandidateIsNotPictureUrl = candidate?.image_path ? !/^https?:\/\//i.test(candidate.image_path) : true;
+  const candidatePolicyEligibility = Boolean(candidate?.format === 'jpeg'
+    && candidate?.meets_ebay_500px_longest_side_policy === true
+    && Number(candidate?.longest_side || 0) >= 500);
+  const uploadSiteHostedPicturesSupportExists = false;
+  const uploadSiteHostedPicturesBoundaryStubExists = true;
+  const hostedUrlSupportExists = true;
+  const supportedTransportStrategiesDetected = [
+    {
+      strategy: 'upload_site_hosted_pictures_boundary_stub',
+      supported_now: false,
+      boundary_stub_exists: uploadSiteHostedPicturesBoundaryStubExists,
+      future_api_operation: 'UploadSiteHostedPictures',
+      future_output_field: 'PictureURL',
+      disabled_in_phase_14y: true,
+    },
+    {
+      strategy: 'safe_hosted_picture_url',
+      supported_now: hostedUrlSupportExists,
+      required_future_input: 'https URL accepted by eBay PictureDetails.PictureURL',
+      future_output_field: 'PictureURL',
+      disabled_in_phase_14y: true,
+    },
+  ];
+  const blockers = [];
+  if (packetPlan.item_id !== '206288370789') blockers.push('item_id_not_phase_14_seed_item');
+  if (packetPlan.failed_source_request_id !== 5) blockers.push('failed_source_request_id_5_not_confirmed');
+  if (!packetPlan.failed_source_request_must_not_be_reused) blockers.push('request_id_5_reuse_guard_missing');
+  if (!candidate) blockers.push('replacement_image_candidate_missing');
+  if (candidate?.image_path && !fs.existsSync(candidate.image_path)) blockers.push('replacement_image_candidate_file_missing');
+  if (!candidatePolicyEligibility) blockers.push('replacement_image_candidate_not_policy_eligible');
+  if (!localCandidateIsNotPictureUrl) blockers.push('candidate_path_is_already_url');
+  if (!packetPlan.ready_for_new_request_packet_creation) blockers.push('image_aware_packet_plan_not_ready');
+  const intent = buildEbayImageTransportIntent({ itemId: packetPlan.item_id, candidate });
+  return {
+    read_only: true,
+    phase: '14Y',
+    item_id: packetPlan.item_id,
+    failed_source_request_id: 5,
+    failed_source_request_must_not_be_reused: true,
+    candidate_path: candidate?.image_path || null,
+    candidate_sha256: candidate?.sha256 || null,
+    candidate_width: candidate?.width || null,
+    candidate_height: candidate?.height || null,
+    candidate_longest_side: candidate?.longest_side || null,
+    candidate_policy_eligibility: candidatePolicyEligibility,
+    local_candidate_is_not_picture_url: localCandidateIsNotPictureUrl,
+    supported_transport_strategies_detected: supportedTransportStrategiesDetected,
+    recommended_transport_strategy: uploadSiteHostedPicturesSupportExists
+      ? 'future_gated_upload_site_hosted_pictures'
+      : 'safe_hosted_picture_url_until_upload_site_hosted_pictures_is_explicitly_enabled',
+    upload_site_hosted_pictures_support_exists: uploadSiteHostedPicturesSupportExists,
+    upload_site_hosted_pictures_boundary_stub_exists: uploadSiteHostedPicturesBoundaryStubExists,
+    hosted_url_support_exists: hostedUrlSupportExists,
+    transport_intent_preview: intent,
+    ready_for_transport_dry_run: blockers.length === 0 && intent.ready_for_transport_dry_run === true,
+    blockers: [...new Set([...blockers, ...(intent.blockers || [])])],
+    future_upload_safety_gates_required: {
+      explicit_operator_approval: true,
+      dedicated_environment_flag: 'HERMES_EBAY_IMAGE_UPLOAD_ENABLED=true',
+      exact_item_id_match: '206288370789',
+      exact_candidate_sha256_match: candidate?.sha256 || null,
+      request_id_5_must_not_be_reused: true,
+    },
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      actual_database_write: false,
+      internal_planning_artifact_write: false,
+      title_changes: false,
+      item_specifics_changes: false,
+      description_changes: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      category_changes: false,
+      shipping_changes: false,
+      payment_changes: false,
+      returns_changes: false,
+      ai_calls: false,
+    },
+    source: 'phase_14y_image_transport_plan_v1',
+  };
+}
+
+async function buildEbayListingQualityImageTransportDryRun({ itemId } = {}) {
+  const plan = await buildEbayListingQualityImageTransportPlan({ itemId });
+  const candidate = plan.transport_intent_preview
+    ? {
+        image_path: plan.candidate_path,
+        sha256: plan.candidate_sha256,
+        width: plan.candidate_width,
+        height: plan.candidate_height,
+        longest_side: plan.candidate_longest_side,
+        format: 'jpeg',
+        meets_ebay_500px_longest_side_policy: plan.candidate_policy_eligibility,
+      }
+    : null;
+  const intent = buildEbayImageTransportIntent({ itemId: plan.item_id, candidate });
+  const boundary = callEbayImageTransportBoundary({
+    intent,
+    dryRun: true,
+    writeRequested: false,
+    liveEnabled: false,
+  });
+  return {
+    read_only: true,
+    phase: '14Y',
+    dry_run: true,
+    item_id: plan.item_id,
+    failed_source_request_id: 5,
+    failed_source_request_must_not_be_reused: true,
+    future_transport_intent: intent,
+    expected_ebay_picture_upload_payload_shape: intent.expected_upload_payload_shape,
+    expected_safe_hosted_url_payload_shape: intent.alternative_hosted_url_payload_shape,
+    expected_future_output_field: 'PictureURL',
+    expected_future_output: boundary.expected_future_output,
+    transport_boundary: boundary,
+    no_network_call_made: true,
+    upload_site_hosted_pictures_called: false,
+    revise_fixed_price_item_called: false,
+    marketplace_write_performed: false,
+    image_uploaded: false,
+    ready_for_transport_dry_run: plan.ready_for_transport_dry_run === true && boundary.ready_for_transport_dry_run === true,
+    blockers: [...new Set([...(plan.blockers || []), ...(boundary.blockers || [])])],
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      actual_database_write: false,
+      internal_planning_artifact_write: false,
+      title_changes: false,
+      item_specifics_changes: false,
+      description_changes: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      category_changes: false,
+      shipping_changes: false,
+      payment_changes: false,
+      returns_changes: false,
+      ai_calls: false,
+    },
+    source: 'phase_14y_image_transport_dry_run_v1',
+  };
+}
+
 async function buildEbayListingQualitySeedLiveApprovalChecklist({ approvalId } = {}) {
   const id = intOrNull(approvalId);
   if (id == null) throw new Error('approval-id is required');
@@ -15436,6 +15602,8 @@ module.exports = {
   buildEbayListingQualityImageCandidateReadiness,
   buildEbayListingQualityImageAwarePacketPlan,
   buildEbayListingQualityImageAwarePacketPreview,
+  buildEbayListingQualityImageTransportPlan,
+  buildEbayListingQualityImageTransportDryRun,
   completeEbayListingQualitySeedEvidence,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
