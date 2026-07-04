@@ -4883,6 +4883,296 @@ async function actOnEbayListingQualitySeedReview({ id, action, actor = null, rea
 }
 
 
+function phase14HSeedPromotionSafety() {
+  return {
+    cached_evidence_only: true,
+    actual_database_write: false,
+    marketplace_write_performed: false,
+    ebay_write_performed: false,
+    marketplace_api_call: false,
+    actual_ebay_call: false,
+    actual_network_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    opportunity_created: false,
+    normal_opportunity_created: false,
+    packet_created: false,
+    approval_created: false,
+    execution_request_created: false,
+    live_candidate_created: false,
+    execution_state_changed: false,
+    listing_changed: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    title_changes: false,
+    description_changes: false,
+    item_specifics_changes: false,
+    ai_called: false,
+    ai_calls: false,
+  };
+}
+
+const PHASE14H_ALLOWED_MUTATION_FIELDS = new Set(['title', 'description', 'item_specifics']);
+const PHASE14H_FORBIDDEN_MUTATION_FIELDS = new Set(['price', 'inventory', 'quantity', 'images', 'shipping', 'category']);
+
+function normalizePhase14HMutationFields(fields = []) {
+  return [...new Set((Array.isArray(fields) ? fields : [])
+    .map(field => String(field || '').trim().toLowerCase())
+    .filter(Boolean))];
+}
+
+function phase14HReviewMutationFields(review = {}) {
+  const metadata = review.metadata || {};
+  return normalizePhase14HMutationFields(
+    review.proposed_mutation_fields
+      || metadata.proposed_mutation_fields
+      || review.proposed_safe_mutation_fields
+      || metadata.proposed_safe_mutation_fields
+      || []
+  );
+}
+
+function phase14HCachedEvidenceSnapshot(evidence = {}, score = {}) {
+  return {
+    cached_listing_evidence_exists: Boolean(evidence.listing_detail || (evidence.source_tables || []).length || evidence.title || evidence.item_id),
+    source_tables: evidence.source_tables || [],
+    item_id: evidence.item_id || null,
+    sku: evidence.sku || null,
+    title_present: Boolean(evidence.title),
+    description_present: Boolean(evidence.description),
+    item_specifics_count: Object.keys(evidence.item_specifics || {}).length,
+    images_count: (evidence.images || []).length || Number(evidence.listing_detail?.image_count || 0) || 0,
+    listing_status: score.evidence_metrics?.listing_status || evidence.listing_detail?.listing_status || evidence.ebay_product?.status || null,
+    listing_status_active: score.evidence_metrics?.listing_status_active === true,
+    sufficiently_reviewable: Boolean(evidence.listing_detail && (evidence.title || evidence.item_id)),
+    limitations: evidence.limitations || [],
+    live_marketplace_state_fetched: false,
+    ebay_api_call_made: false,
+  };
+}
+
+function phase14HEnoughEvidenceForRollbackReview({ review, evidence, proposedFields } = {}) {
+  const sourceTables = new Set(evidence?.source_tables || []);
+  if (!evidence?.listing_detail && !sourceTables.has('listing_details')) return false;
+  if (!evidence?.title) return false;
+  if ((proposedFields || []).includes('title') && !evidence.title) return false;
+  if ((proposedFields || []).includes('description') && !evidence.description) return false;
+  if ((proposedFields || []).includes('item_specifics') && !sourceTables.has('listing_item_specifics')) return false;
+  if (review?.metadata?.evidence_summary?.evidence_gaps?.includes('cached_description') && (proposedFields || []).includes('description')) return false;
+  return true;
+}
+
+function phase14HMatchesReviewOrItem(row = {}, { reviewId, itemId, sku } = {}) {
+  const metadata = row.metadata || {};
+  const packet = metadata.packet || {};
+  const candidates = [
+    metadata.source_review_id,
+    metadata.seed_review_id,
+    metadata.review_id,
+    packet.source_review_id,
+  ].map(v => intOrNull(v)).filter(v => v != null);
+  if (candidates.includes(intOrNull(reviewId))) return true;
+  const itemCandidates = [
+    metadata.item_id,
+    metadata.target_item_id,
+    metadata.ebay_item_id,
+    metadata.listing_id,
+    packet.item_id,
+    packet.target_item_id,
+    row.item_id,
+  ].map(v => String(v || '').trim()).filter(Boolean);
+  if (itemId && itemCandidates.includes(String(itemId))) return true;
+  const skuCandidates = [metadata.sku, row.sku].map(v => String(v || '').trim()).filter(Boolean);
+  return Boolean(sku && skuCandidates.includes(String(sku)));
+}
+
+async function findPhase14HExistingPromotionArtifacts({ reviewId, itemId, sku } = {}) {
+  const [opportunities, packets, requests] = await Promise.all([
+    safeSelectRows(
+      OPPORTUNITY_TABLE,
+      'id,opportunity_type,source_type,status,metadata,created_at,updated_at',
+      q => q.order('id', { ascending: false }).limit(500)
+    ),
+    safeSelectRows(
+      EBAY_LISTING_QUALITY_PACKET_TABLE,
+      'id,request_id,opportunity_id,status,metadata,created_at,updated_at',
+      q => q.order('id', { ascending: false }).limit(500)
+    ),
+    safeSelectRows(
+      REQUEST_TABLE,
+      'id,opportunity_id,sku,execution_type,status,metadata,created_at,updated_at',
+      q => q.order('id', { ascending: false }).limit(500)
+    ),
+  ]);
+  const matchingOpportunities = (opportunities || [])
+    .filter(row => row.id !== intOrNull(reviewId))
+    .filter(row => row.opportunity_type !== 'listing_quality_seed_review')
+    .filter(row => phase14HMatchesReviewOrItem(row, { reviewId, itemId, sku }));
+  const matchingPackets = (packets || []).filter(row => phase14HMatchesReviewOrItem(row, { reviewId, itemId, sku }));
+  const matchingRequests = (requests || []).filter(row => phase14HMatchesReviewOrItem(row, { reviewId, itemId, sku }));
+  return {
+    opportunities: matchingOpportunities.map(row => ({ id: row.id, opportunity_type: row.opportunity_type, source_type: row.source_type, status: row.status })),
+    packets: matchingPackets.map(row => ({ id: row.id, request_id: row.request_id, opportunity_id: row.opportunity_id, status: row.status })),
+    requests: matchingRequests.map(row => ({ id: row.id, opportunity_id: row.opportunity_id, status: row.status, execution_type: row.execution_type })),
+  };
+}
+
+async function buildPhase14HSeedPromotionAssessment(review = null, { reviewId = null } = {}) {
+  const id = intOrNull(review?.id ?? reviewId);
+  const blockers = [];
+  const warnings = [];
+  if (!review) {
+    blockers.push('review_not_found');
+    return {
+      review_id: id,
+      sku: null,
+      item_id: null,
+      score: null,
+      review_status: null,
+      eligible_for_promotion: false,
+      blockers,
+      warnings,
+      allowed_mutation_fields: [],
+      forbidden_mutation_fields: [],
+      proposed_mutation_fields: [],
+      hard_exclusion: null,
+      cached_evidence: phase14HCachedEvidenceSnapshot({}, {}),
+      existing_artifacts: { opportunities: [], packets: [], requests: [] },
+      recommended_next_action: 'Seed review not found. No opportunity, packet, approval, execution request, live candidate, database write, AI call, or marketplace write was performed.',
+    };
+  }
+
+  const sku = String(review.sku || review.metadata?.sku || '').trim();
+  const itemId = String(review.item_id || review.metadata?.item_id || '').trim();
+  const scoreValue = review.score ?? review.metadata?.score ?? null;
+  const proposedFields = phase14HReviewMutationFields(review);
+  const allowedFields = proposedFields.filter(field => PHASE14H_ALLOWED_MUTATION_FIELDS.has(field));
+  const forbiddenFields = proposedFields.filter(field => PHASE14H_FORBIDDEN_MUTATION_FIELDS.has(field) || !PHASE14H_ALLOWED_MUTATION_FIELDS.has(field));
+  const marketplaceExecutedItemIds = await getPhase14GMarketplaceExecutedItemIds();
+  const hardExclusion = isPhase14GHardExcludedReview({ review, marketplaceExecutedItemIds });
+  const evidence = itemId ? await loadPhase13GScoringEvidenceByItemId(itemId) : {};
+  const score = scoreCachedListingQualityEvidence(evidence);
+  const cachedEvidence = phase14HCachedEvidenceSnapshot(evidence, score);
+  const enoughEvidence = phase14HEnoughEvidenceForRollbackReview({ review, evidence, proposedFields });
+  const existingArtifacts = await findPhase14HExistingPromotionArtifacts({ reviewId: id, itemId, sku });
+
+  if (review.review_status !== 'shortlisted') blockers.push('review_status_not_shortlisted');
+  if (hardExclusion.excluded) blockers.push(...hardExclusion.reasons);
+  if (!itemId) blockers.push('item_id_missing');
+  if (!sku) blockers.push('sku_missing');
+  if (scoreValue == null) blockers.push('score_missing');
+  if (!cachedEvidence.cached_listing_evidence_exists) blockers.push('cached_listing_evidence_missing');
+  if (!cachedEvidence.listing_status_active && !cachedEvidence.sufficiently_reviewable) blockers.push('cached_listing_not_active_or_sufficiently_reviewable');
+  if (!proposedFields.length) blockers.push('proposed_mutation_fields_empty');
+  if (!allowedFields.length) blockers.push('no_allowed_mutation_fields');
+  if (forbiddenFields.length) blockers.push('forbidden_mutation_fields_present');
+  if (marketplaceExecutedItemIds.has(itemId)) blockers.push('previous_marketplace_execution_completed_event_exists');
+  if (existingArtifacts.opportunities.length) blockers.push('existing_opportunity_for_review_or_item');
+  if (existingArtifacts.packets.length) blockers.push('existing_packet_for_review_or_item');
+  if (existingArtifacts.requests.length) blockers.push('existing_approval_or_execution_request_for_review_or_item');
+  if (!enoughEvidence) blockers.push('insufficient_cached_evidence_for_rollback_review');
+  if ((review.metadata?.evidence_summary?.evidence_gaps || []).length) warnings.push(...review.metadata.evidence_summary.evidence_gaps.map(gap => `source_review_evidence_gap:${gap}`));
+  if (!cachedEvidence.listing_status_active && cachedEvidence.sufficiently_reviewable) warnings.push('listing_status_not_active_but_cached_record_is_reviewable');
+
+  const uniqueBlockers = [...new Set(blockers)];
+  const uniqueWarnings = [...new Set(warnings)];
+  const eligible = uniqueBlockers.length === 0;
+  return {
+    review_id: id,
+    sku: sku || null,
+    item_id: itemId || null,
+    score: scoreValue,
+    review_status: review.review_status || null,
+    eligible_for_promotion: eligible,
+    blockers: uniqueBlockers,
+    warnings: uniqueWarnings,
+    allowed_mutation_fields: [...new Set(allowedFields)],
+    forbidden_mutation_fields: [...new Set(forbiddenFields)],
+    proposed_mutation_fields: proposedFields,
+    cached_evidence: cachedEvidence,
+    hard_exclusion: hardExclusion,
+    previous_marketplace_execution_completed: marketplaceExecutedItemIds.has(itemId),
+    existing_artifacts: existingArtifacts,
+    enough_cached_evidence_for_rollback_review: enoughEvidence,
+    recommended_next_action: eligible
+      ? 'Eligible for a later explicit safe internal listing-quality opportunity promotion phase only. Phase 14H creates nothing and performs no writes.'
+      : 'Not eligible for promotion. Keep as internal seed review; do not create an opportunity, packet, approval, execution request, live candidate, database write, AI call, or marketplace write.',
+  };
+}
+
+async function checkEbayListingQualitySeedPromotionEligibility({ id } = {}) {
+  const reviewId = intOrNull(id);
+  if (reviewId == null) throw new Error('id is required');
+  const detail = await getEbayListingQualitySeedReviewDetail({ id: reviewId });
+  const assessment = await buildPhase14HSeedPromotionAssessment(detail.found ? detail.review : null, { reviewId });
+  return {
+    read_only: true,
+    phase: '14H',
+    marketplace: 'ebay',
+    operation: 'listing_quality_seed_promotion_check',
+    review_id: reviewId,
+    found: detail.found,
+    sku: assessment.sku,
+    item_id: assessment.item_id,
+    score: assessment.score,
+    review_status: assessment.review_status,
+    eligible_for_promotion: assessment.eligible_for_promotion,
+    blockers: assessment.blockers,
+    warnings: assessment.warnings,
+    allowed_mutation_fields: assessment.allowed_mutation_fields,
+    forbidden_mutation_fields: assessment.forbidden_mutation_fields,
+    proposed_mutation_fields: assessment.proposed_mutation_fields,
+    cached_evidence: assessment.cached_evidence,
+    hard_exclusion: assessment.hard_exclusion,
+    existing_artifacts: assessment.existing_artifacts,
+    enough_cached_evidence_for_rollback_review: assessment.enough_cached_evidence_for_rollback_review,
+    recommended_next_action: assessment.recommended_next_action,
+    safety: phase14HSeedPromotionSafety(),
+    source: 'phase_14h_seed_promotion_eligibility_check_v1',
+  };
+}
+
+async function scanEbayListingQualitySeedPromotionCandidates({ limit = 20 } = {}) {
+  const safeLimit = Math.min(100, Math.max(1, intOrNull(limit) || 20));
+  const rows = await listExistingPhase14FSeedReviewRows({ limit: safeLimit });
+  const reviews = (rows || []).map(row => ({ ...normalizePhase14FSeedReviewRow(row), notes: row.notes || null, metadata: row.metadata || {} }));
+  const assessments = [];
+  for (const review of reviews) {
+    assessments.push(await buildPhase14HSeedPromotionAssessment(review, { reviewId: review.id }));
+  }
+  const shortlisted = assessments.filter(row => row.review_status === 'shortlisted');
+  const eligible = shortlisted.filter(row => row.eligible_for_promotion);
+  const ineligibleShortlisted = shortlisted.filter(row => !row.eligible_for_promotion);
+  const blockersByType = {};
+  for (const assessment of assessments) {
+    for (const blocker of assessment.blockers || []) blockersByType[blocker] = (blockersByType[blocker] || 0) + 1;
+  }
+  const recommended = eligible[0] || null;
+  return {
+    read_only: true,
+    phase: '14H',
+    marketplace: 'ebay',
+    operation: 'listing_quality_seed_promotion_candidates',
+    limit: safeLimit,
+    scanned_count: assessments.length,
+    shortlisted_count: shortlisted.length,
+    eligible_promotion_count: eligible.length,
+    eligible_promotion_candidates: eligible,
+    ineligible_shortlisted_reviews: ineligibleShortlisted,
+    blockers_by_type: blockersByType,
+    recommended_next_review_id: recommended?.review_id || null,
+    recommended_next_review: recommended,
+    opportunity_created: false,
+    recommended_next_action: eligible.length
+      ? 'Eligible shortlisted seed review candidates found for a later explicit promotion phase only. Phase 14H creates no opportunity, packet, approval, execution request, live candidate, database write, AI call, or marketplace write.'
+      : 'No shortlisted seed review is eligible for promotion yet. Do not force promotion or create downstream artifacts.',
+    safety: phase14HSeedPromotionSafety(),
+    source: 'phase_14h_seed_promotion_candidate_scan_v1',
+  };
+}
+
+
 
 
 function phase13AuditBucket(candidate) {
@@ -11100,6 +11390,8 @@ module.exports = {
   listEbayListingQualitySeedReviewInbox,
   getEbayListingQualitySeedReviewDetail,
   actOnEbayListingQualitySeedReview,
+  checkEbayListingQualitySeedPromotionEligibility,
+  scanEbayListingQualitySeedPromotionCandidates,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
   buildEbayListingQualityEvidenceRefreshPlan,
