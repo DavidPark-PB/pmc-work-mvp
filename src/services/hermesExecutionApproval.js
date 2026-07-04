@@ -10068,7 +10068,25 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     'No listing revise in the upload phase.',
   ].join('\n');
   const normalizedApprovalText = String(operatorApprovalText || '').replace(/\r\n/g, '\n').trim();
+  const exactPostTokenRefreshApprovalText = [
+    'Post-token-refresh eBay image upload transport approval.',
+    'item_id=206288370789 only.',
+    'image_path=/Users/parksungmin/Downloads/torune.jpeg only.',
+    'candidate_sha256=sha256:16883e4cb7af5ebb12b6948285742faff7d83bdd501600f5fee01428620a1f47 exact match only.',
+    'Allowed operation: UploadSiteHostedPictures only.',
+    'Forbidden operation: ReviseFixedPriceItem.',
+    'Forbidden changes: title, item_specifics, description, price, inventory, quantity, category, shipping, payment, returns.',
+    'One post-token-refresh upload attempt only.',
+    'Record returned PictureURL only.',
+    'No listing revise in the upload phase.',
+  ].join('\n');
   const correctedReapprovalMatches = normalizedApprovalText === exactCorrectedReapprovalText;
+  const postTokenRefreshApprovalMatches = normalizedApprovalText === exactPostTokenRefreshApprovalText;
+  const postTokenRefreshReadiness = await buildEbayListingQualityImageUploadPostTokenRefreshReadiness({ itemId: plan.item_id });
+  const previousPostTokenRefreshUploadAttemptExists = phase14AAUploadRowsFor({
+    itemId: plan.item_id,
+    candidateSha256: plan.candidate_sha256,
+  }).some(row => row.post_token_refresh_upload_attempt === true || row.phase === '14AH');
   const latestUpload = duplicateGuard.latest_upload || null;
   const latestErrorText = Array.isArray(latestUpload?.errors)
     ? latestUpload.errors.map(error => error?.message || error?.long_message || error?.short_message || '').filter(Boolean).join('; ')
@@ -10080,6 +10098,10 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
   const correctedUploadReapprovalActive = correctedReapprovalMatches
     && previousAttemptWasLocalPreEbayException
     && duplicateGuard.previous_corrected_upload_attempt_exists !== true;
+  const postTokenRefreshUploadApprovalActive = postTokenRefreshApprovalMatches
+    && postTokenRefreshReadiness.ready_for_post_token_refresh_upload_reapproval === true
+    && previousPostTokenRefreshUploadAttemptExists !== true;
+  const activeUploadPhase = postTokenRefreshUploadApprovalActive ? '14AH' : (correctedUploadReapprovalActive ? '14AC' : '14AA');
   const blockers = [...(plan.blockers || []), ...(intent.blockers || [])];
   const exact = {
     item_id_exact: plan.item_id === '206288370789',
@@ -10099,14 +10121,16 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     if (liveEnabled !== true || !envUploadEnabled) blockers.push('hermes_ebay_image_upload_env_disabled');
   }
   if (duplicateGuard.previous_successful_upload_exists) blockers.push('duplicate_successful_image_upload_for_item_candidate');
-  if (duplicateGuard.previous_corrected_upload_attempt_exists) blockers.push('duplicate_corrected_image_upload_attempt_for_item_candidate');
-  if (duplicateGuard.previous_attempt_exists && !correctedUploadReapprovalActive) {
-    blockers.push(correctedReapprovalMatches ? 'duplicate_image_upload_attempt_for_item_candidate' : 'corrected_upload_exact_reapproval_required');
+  if (previousPostTokenRefreshUploadAttemptExists) blockers.push('duplicate_post_token_refresh_image_upload_attempt_for_item_candidate');
+  if (duplicateGuard.previous_corrected_upload_attempt_exists && !postTokenRefreshUploadApprovalActive) blockers.push('duplicate_corrected_image_upload_attempt_for_item_candidate');
+  if (duplicateGuard.previous_attempt_exists && !correctedUploadReapprovalActive && !postTokenRefreshUploadApprovalActive) {
+    if (postTokenRefreshApprovalMatches) blockers.push('post_token_refresh_upload_readiness_not_met');
+    else blockers.push(correctedReapprovalMatches ? 'duplicate_image_upload_attempt_for_item_candidate' : 'post_token_refresh_upload_exact_approval_required');
   }
 
   const base = {
     read_only: isDryRun,
-    phase: correctedUploadReapprovalActive ? '14AC' : '14AA',
+    phase: activeUploadPhase,
     item_id: plan.item_id,
     image_path: plan.candidate_path,
     candidate_sha256: plan.candidate_sha256,
@@ -10118,6 +10142,10 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     duplicate_guard: duplicateGuard,
     corrected_upload_reapproval_active: correctedUploadReapprovalActive,
     corrected_upload_reapproval_matches: correctedReapprovalMatches,
+    post_token_refresh_upload_approval_active: postTokenRefreshUploadApprovalActive,
+    post_token_refresh_upload_approval_matches: postTokenRefreshApprovalMatches,
+    previous_post_token_refresh_upload_attempt_exists: previousPostTokenRefreshUploadAttemptExists,
+    post_token_refresh_readiness: postTokenRefreshReadiness,
     previous_attempt_was_local_pre_ebay_exception: previousAttemptWasLocalPreEbayException,
     exact_gate_checks: exact,
     upload_attempt_count: isDryRun ? 0 : duplicateGuard.previous_attempt_count + 1,
@@ -10182,7 +10210,7 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
 
   const succeeded = uploadResponse?.success === true;
   const resultRecord = {
-    phase: correctedUploadReapprovalActive ? '14AC' : '14AA',
+    phase: activeUploadPhase,
     item_id: plan.item_id,
     image_path: plan.candidate_path,
     candidate_sha256: plan.candidate_sha256,
@@ -10195,6 +10223,8 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     upload_attempt_count: duplicateGuard.previous_attempt_count + 1,
     corrected_upload_attempt: correctedUploadReapprovalActive,
     corrected_reapproval_text_matched: correctedReapprovalMatches,
+    post_token_refresh_upload_attempt: postTokenRefreshUploadApprovalActive,
+    post_token_refresh_approval_text_matched: postTokenRefreshApprovalMatches,
     upload_attempted: true,
     upload_succeeded: succeeded,
     marketplace_image_upload_performed: succeeded,
@@ -10202,7 +10232,9 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     listing_revise_performed: false,
     revise_fixed_price_item_called: false,
     raw_response: uploadResponse?.raw_response || null,
-    source: correctedUploadReapprovalActive ? 'phase_14ac_corrected_upload_site_hosted_pictures_result' : 'phase_14aa_upload_site_hosted_pictures_result',
+    source: postTokenRefreshUploadApprovalActive
+      ? 'phase_14ah_post_token_refresh_upload_site_hosted_pictures_result'
+      : (correctedUploadReapprovalActive ? 'phase_14ac_corrected_upload_site_hosted_pictures_result' : 'phase_14aa_upload_site_hosted_pictures_result'),
   };
   const registry = phase14AAReadUploadResults();
   const updatedRegistry = phase14AAWriteUploadResults({
@@ -10241,9 +10273,11 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
       listing_revise_performed: false,
       revise_fixed_price_item_called: false,
     },
-    source: correctedUploadReapprovalActive
-      ? (succeeded ? 'phase_14ac_corrected_image_upload_transport_success_v1' : 'phase_14ac_corrected_image_upload_transport_failure_v1')
-      : (succeeded ? 'phase_14aa_image_upload_transport_success_v1' : 'phase_14aa_image_upload_transport_failure_v1'),
+    source: postTokenRefreshUploadApprovalActive
+      ? (succeeded ? 'phase_14ah_post_token_refresh_image_upload_transport_success_v1' : 'phase_14ah_post_token_refresh_image_upload_transport_failure_v1')
+      : (correctedUploadReapprovalActive
+        ? (succeeded ? 'phase_14ac_corrected_image_upload_transport_success_v1' : 'phase_14ac_corrected_image_upload_transport_failure_v1')
+        : (succeeded ? 'phase_14aa_image_upload_transport_success_v1' : 'phase_14aa_image_upload_transport_failure_v1')),
   };
 }
 
