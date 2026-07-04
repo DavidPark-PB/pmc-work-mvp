@@ -10809,6 +10809,148 @@ async function buildEbayListingQualityImageCompatibleVariantAudit({ itemId } = {
   };
 }
 
+
+function phase14ANExactCompatibleUploadApprovalText() {
+  return [
+    'Compatible eBay image upload transport approval after repeated 21916550 image data failures.',
+    'item_id=206288370789 only.',
+    'image_path=/Users/parksungmin/pmc-work-mvp/data/hermes-compatible-image-variants/206288370789-98542bad69eed4a5-srgb-white-800-q90-420-baseline.jpg only.',
+    'candidate_sha256=sha256:0c2a7b19e92af9e4762c879e6766864bac4c83c60e2f7ca6e8786abe234a6a6b exact match only.',
+    'Allowed operation: UploadSiteHostedPictures only.',
+    'Forbidden operation: ReviseFixedPriceItem.',
+    'Forbidden changes: title, item_specifics, description, price, inventory, quantity, category, shipping, payment, returns.',
+    'One compatible variant upload attempt only.',
+    'Record returned PictureURL only.',
+    'No listing revise in the upload phase.',
+  ].join('\n');
+}
+
+async function buildEbayListingQualityImageCompatibleUploadReadiness({ itemId } = {}) {
+  const targetItemId = trimOrNull(itemId, 80);
+  if (!targetItemId) throw new Error('item-id is required');
+  const audit = await buildEbayListingQualityImageCompatibleVariantAudit({ itemId: targetItemId });
+  const preferred = audit.preferred_candidate || null;
+  const expectedPath = '/Users/parksungmin/pmc-work-mvp/data/hermes-compatible-image-variants/206288370789-98542bad69eed4a5-srgb-white-800-q90-420-baseline.jpg';
+  const expectedSha = 'sha256:0c2a7b19e92af9e4762c879e6766864bac4c83c60e2f7ca6e8786abe234a6a6b';
+  const blockers = [...(audit.blockers || [])];
+  const rows = phase14AAUploadRowsFor({ itemId: targetItemId, candidateSha256: expectedSha });
+  const previousCompatibleAttemptExists = rows.some(row => row.compatible_variant_upload_attempt === true || row.phase === '14AO');
+  const checks = {
+    item_id_exact: targetItemId === '206288370789',
+    variant_audit_ready: audit.ready_for_new_upload_approval_checklist === true,
+    preferred_variant_exists: Boolean(preferred),
+    preferred_path_exact: preferred?.local_path === expectedPath,
+    preferred_sha256_exact: preferred?.sha256 === expectedSha,
+    preferred_file_exists: fs.existsSync(expectedPath),
+    preferred_dimensions_800x800: preferred?.width === 800 && preferred?.height === 800 && preferred?.longest_side === 800,
+    preferred_srgb: preferred?.color_space === 'srgb',
+    preferred_baseline_non_progressive: preferred?.baseline_jpeg_detected === true && preferred?.progressive !== true,
+    preferred_chroma_420: preferred?.chroma_subsampling === '4:2:0',
+    preferred_metadata_stripped: preferred?.metadata_stripped === true,
+    preferred_white_background: preferred?.white_background === true,
+    preferred_policy_eligible: preferred?.eligible_for_ebay_picture_policy === true,
+    original_failed_21916550: audit.original_failed_ebay_21916550 === true,
+    sanitized_failed_21916550: audit.sanitized_failed_ebay_21916550 === true,
+    token_auth_ruled_out: audit.token_auth_ruled_out === true,
+    payload_roundtrip_valid: audit.payload_roundtrip_valid === true,
+    picture_url_unavailable: audit.original_upload_result_summary?.picture_url_available === false,
+    no_previous_compatible_variant_upload_attempt: previousCompatibleAttemptExists !== true,
+  };
+  for (const [key, ok] of Object.entries(checks)) {
+    if (ok !== true) blockers.push(key);
+  }
+  return {
+    read_only: true,
+    phase: '14AN',
+    item_id: targetItemId,
+    preferred_candidate: preferred,
+    expected_image_path: expectedPath,
+    expected_candidate_sha256: expectedSha,
+    previous_compatible_variant_upload_attempt_exists: previousCompatibleAttemptExists,
+    exact_gate_checks: checks,
+    ready_for_compatible_variant_upload_reapproval: blockers.length === 0,
+    new_explicit_upload_approval_required: true,
+    future_allowed_operation: 'UploadSiteHostedPictures',
+    future_forbidden_operation: 'ReviseFixedPriceItem',
+    future_forbidden_changes: ['title', 'item_specifics', 'description', 'price', 'inventory', 'quantity', 'category', 'shipping', 'payment', 'returns'],
+    blockers: [...new Set(blockers)],
+    compatible_variant_audit: audit,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      listing_revise_performed: false,
+      execution_request_created: false,
+      packet_created: false,
+      image_uploaded: false,
+      title_changes: false,
+      item_specifics_changes: false,
+      description_changes: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      category_changes: false,
+      shipping_changes: false,
+      payment_changes: false,
+      returns_changes: false,
+      ai_calls: false,
+    },
+    source: 'phase_14an_compatible_upload_readiness_v1',
+  };
+}
+
+async function buildEbayListingQualityImageCompatibleUploadApprovalChecklist({ itemId } = {}) {
+  const readiness = await buildEbayListingQualityImageCompatibleUploadReadiness({ itemId });
+  const exactApprovalText = phase14ANExactCompatibleUploadApprovalText();
+  const blockers = [...(readiness.blockers || [])];
+  if (readiness.ready_for_compatible_variant_upload_reapproval !== true) blockers.push('compatible_variant_upload_readiness_not_met');
+  return {
+    read_only: true,
+    phase: '14AN',
+    item_id: readiness.item_id,
+    image_path: readiness.expected_image_path,
+    candidate_sha256: readiness.expected_candidate_sha256,
+    preferred_candidate: readiness.preferred_candidate,
+    exact_operator_approval_text: exactApprovalText,
+    allowed_operation: 'UploadSiteHostedPictures',
+    forbidden_operation: 'ReviseFixedPriceItem',
+    forbidden_changes: ['title', 'item_specifics', 'description', 'price', 'inventory', 'quantity', 'category', 'shipping', 'payment', 'returns'],
+    one_compatible_variant_upload_attempt_only: true,
+    record_returned_picture_url_only: true,
+    no_listing_revise_in_upload_phase: true,
+    ready_for_explicit_user_compatible_variant_upload_approval: blockers.length === 0,
+    blockers: [...new Set(blockers)],
+    compatible_upload_readiness: readiness,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      listing_revise_performed: false,
+      execution_request_created: false,
+      packet_created: false,
+      image_uploaded: false,
+      title_changes: false,
+      item_specifics_changes: false,
+      description_changes: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      category_changes: false,
+      shipping_changes: false,
+      payment_changes: false,
+      returns_changes: false,
+      ai_calls: false,
+    },
+    source: 'phase_14an_compatible_upload_approval_checklist_v1',
+  };
+}
+
 async function buildEbayImageUploadPayloadRoundtrip({ itemId } = {}) {
   const targetItemId = trimOrNull(itemId, 80);
   if (!targetItemId) throw new Error('item-id is required');
@@ -17797,6 +17939,8 @@ module.exports = {
   buildEbayImageUploadPayloadRoundtrip,
   generateEbayListingQualityImageCompatibleVariants,
   buildEbayListingQualityImageCompatibleVariantAudit,
+  buildEbayListingQualityImageCompatibleUploadReadiness,
+  buildEbayListingQualityImageCompatibleUploadApprovalChecklist,
   buildEbayListingQualityImageAwarePacketPlan,
   buildEbayListingQualityImageAwarePacketPreview,
   buildEbayListingQualityImageTransportPlan,
