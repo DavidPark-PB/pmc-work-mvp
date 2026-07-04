@@ -4411,6 +4411,270 @@ async function buildEbayListingQualitySeedScoringPreview({ limit = 100, top = 20
 }
 
 
+function buildPhase14FReviewFingerprint(row = {}) {
+  const payload = {
+    source_phase: '14E',
+    sku: row.sku || null,
+    item_id: row.item_id || null,
+    score: row.score ?? null,
+    issue_signals: row.issue_signals || [],
+    evidence_gaps: row.evidence_gaps || [],
+    proposed_safe_listing_mutation_fields: row.proposed_safe_listing_mutation_fields || [],
+    score_breakdown: row.score_breakdown || {},
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+function buildPhase14FSeedReviewRecord(row = {}, createdAt = new Date().toISOString()) {
+  const fingerprint = buildPhase14FReviewFingerprint(row);
+  return {
+    opportunity_type: 'listing_quality_seed_review',
+    source_type: 'phase_14e_seed_scoring_preview',
+    input_channel: 'api',
+    source_name: 'phase_14f_seed_human_review_inbox',
+    title: trimOrNull(row.title, 255),
+    category: 'ebay_listing_quality',
+    priority: row.score >= 95 ? 'high' : 'normal',
+    status: 'reviewing',
+    notes: 'Internal Phase 14F human review inbox record only; not an opportunity, packet, approval, execution request, live candidate, or marketplace mutation.',
+    metadata: {
+      type: 'listing_quality_seed_review',
+      source: 'phase_14e_seed_scoring_preview',
+      source_phase: '14E',
+      source_command: 'npm run hermes:agent -- ebay-listing-quality-seed-scoring-preview --limit=100 --top=20',
+      phase: '14F',
+      created_at: createdAt,
+      review_fingerprint: fingerprint,
+      not_execution_candidate: true,
+      not_marketplace_candidate: true,
+      not_live_candidate: true,
+      requires_human_review: true,
+      internal_review_record_only: true,
+      sku: row.sku || null,
+      item_id: row.item_id || null,
+      title: row.title || null,
+      score: row.score ?? null,
+      score_breakdown: row.score_breakdown || {},
+      detected_listing_quality_issue_signals: row.issue_signals || [],
+      evidence_summary: {
+        evidence_gaps: row.evidence_gaps || [],
+        evidence_gap_count: row.score_breakdown?.evidence_gap_count ?? (row.evidence_gaps || []).length,
+        evidence_completeness_score: row.score_breakdown?.evidence_completeness_score ?? null,
+        cached_internal_data_only: true,
+        live_marketplace_state_fetched: false,
+        ebay_api_call_made: false,
+      },
+      proposed_safe_mutation_fields: row.proposed_safe_listing_mutation_fields || [],
+      warning_context: row.warnings || [],
+      price_inventory_stock_signal_types: row.price_inventory_stock_signal_types || [],
+      excluded_forbidden_fields: row.mutation_scope?.forbidden_mutation_fields || [],
+      mutation_scope: row.mutation_scope || {},
+      rank: row.rank || null,
+      source_classification: row.classification || null,
+      recommended_next_safe_action: row.recommended_next_safe_action || null,
+      safety: {
+        marketplace_write_performed: false,
+        ebay_write_performed: false,
+        get_item_called: false,
+        revise_fixed_price_item_called: false,
+        packet_created: false,
+        approval_created: false,
+        execution_request_created: false,
+        live_candidate_created: false,
+        price_changes: false,
+        inventory_changes: false,
+        quantity_changes: false,
+        title_changes: false,
+        description_changes: false,
+        item_specifics_changes: false,
+      },
+    },
+  };
+}
+
+function normalizePhase14FSeedReviewRow(row = {}) {
+  const metadata = row.metadata || {};
+  return {
+    id: row.id,
+    type: row.opportunity_type,
+    source: row.source_type,
+    status: row.status,
+    title: row.title || metadata.title || null,
+    sku: metadata.sku || null,
+    item_id: metadata.item_id || null,
+    score: metadata.score ?? null,
+    score_breakdown: metadata.score_breakdown || {},
+    detected_listing_quality_issue_signals: metadata.detected_listing_quality_issue_signals || [],
+    evidence_summary: metadata.evidence_summary || {},
+    proposed_safe_mutation_fields: metadata.proposed_safe_mutation_fields || [],
+    warning_context: metadata.warning_context || [],
+    excluded_forbidden_fields: metadata.excluded_forbidden_fields || [],
+    source_phase: metadata.source_phase || null,
+    source_command: metadata.source_command || null,
+    review_fingerprint: metadata.review_fingerprint || null,
+    internal_review_record_only: metadata.internal_review_record_only === true,
+    not_execution_candidate: metadata.not_execution_candidate === true,
+    not_marketplace_candidate: metadata.not_marketplace_candidate === true,
+    created_at: row.created_at || metadata.created_at || null,
+    updated_at: row.updated_at || null,
+  };
+}
+
+async function listExistingPhase14FSeedReviewRows({ limit = 200 } = {}) {
+  const safeLimit = Math.min(500, Math.max(1, intOrNull(limit) || 200));
+  return safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,metadata,created_at,updated_at',
+    q => q.eq('opportunity_type', 'listing_quality_seed_review').eq('source_type', 'phase_14e_seed_scoring_preview').order('created_at', { ascending: false }).limit(safeLimit)
+  );
+}
+
+async function writeEbayListingQualitySeedReviewInbox({ limit = 20, dryRun = true, write = false } = {}) {
+  const safeLimit = Math.min(50, Math.max(1, intOrNull(limit) || 20));
+  const writeRequested = write === true && dryRun === false;
+  const scoringPreview = await buildEbayListingQualitySeedScoringPreview({ limit: 100, top: safeLimit });
+  const shortlistRows = (scoringPreview.shortlist_rows || []).filter(row => !['202551129453', '206315990948'].includes(String(row.item_id || '')));
+  const createdAt = new Date().toISOString();
+  const plannedRecords = shortlistRows.map(row => buildPhase14FSeedReviewRecord(row, createdAt));
+  const existingRows = await listExistingPhase14FSeedReviewRows({ limit: 500 });
+  const existingFingerprints = new Set((existingRows || []).map(row => String(row?.metadata?.review_fingerprint || '')).filter(Boolean));
+  const recordsToInsert = plannedRecords.filter(record => !existingFingerprints.has(String(record.metadata.review_fingerprint || '')));
+  const before = {
+    review_records: await countRows(OPPORTUNITY_TABLE, q => q.eq('opportunity_type', 'listing_quality_seed_review').eq('source_type', 'phase_14e_seed_scoring_preview')),
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  let insertedRows = [];
+  if (writeRequested && recordsToInsert.length) {
+    const db = getClient();
+    const { data, error } = await db.from(OPPORTUNITY_TABLE).insert(recordsToInsert).select('id,opportunity_type,source_type,title,status,metadata,created_at,updated_at');
+    if (error) throw error;
+    insertedRows = data || [];
+  }
+  const afterRows = await listExistingPhase14FSeedReviewRows({ limit: 500 });
+  const plannedFingerprints = new Set(plannedRecords.map(record => record.metadata.review_fingerprint));
+  const matchingRows = (afterRows || []).filter(row => plannedFingerprints.has(String(row?.metadata?.review_fingerprint || '')));
+  const after = {
+    review_records: await countRows(OPPORTUNITY_TABLE, q => q.eq('opportunity_type', 'listing_quality_seed_review').eq('source_type', 'phase_14e_seed_scoring_preview')),
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+  };
+  return {
+    read_only: !writeRequested,
+    dry_run: !writeRequested,
+    write_requested: writeRequested,
+    phase: '14F',
+    marketplace: 'ebay',
+    operation: 'listing_quality_seed_human_review_inbox',
+    limit: safeLimit,
+    source_preview: {
+      phase: scoringPreview.phase,
+      operation: scoringPreview.operation,
+      scored_row_count: scoringPreview.scored_row_count,
+      shortlist_row_count: scoringPreview.shortlist_rows?.length || 0,
+      source: scoringPreview.source,
+    },
+    planned_review_record_count: plannedRecords.length,
+    planned_review_records: plannedRecords,
+    existing_review_record_count_before: before.review_records,
+    records_to_insert_count: recordsToInsert.length,
+    inserted_count: insertedRows.length,
+    inserted_records: insertedRows.map(normalizePhase14FSeedReviewRow),
+    idempotency: {
+      key_fields: ['source_phase', 'sku', 'item_id', 'score', 'evidence_hash_or_fingerprint'],
+      fingerprint_algorithm: 'sha256(json(source_phase,sku,item_id,score,issue_signals,evidence_gaps,proposed_safe_listing_mutation_fields,score_breakdown))',
+      duplicate_review_records_skipped: plannedRecords.length - recordsToInsert.length,
+      safe_to_rerun_write: true,
+    },
+    verification: {
+      matching_review_record_count: matchingRows.length,
+      planned_records_present_after_write: matchingRows.length >= plannedRecords.length && plannedRecords.length > 0,
+      review_record_count_before: before.review_records,
+      review_record_count_after: after.review_records,
+      execution_request_count_before: before.execution_requests,
+      execution_request_count_after: after.execution_requests,
+      execution_request_created: after.execution_requests > before.execution_requests,
+      packet_count_before: before.listing_quality_packets,
+      packet_count_after: after.listing_quality_packets,
+      packet_created: after.listing_quality_packets > before.listing_quality_packets,
+      approval_created: false,
+      execution_state_updated: false,
+      excluded_executed_item_ids: scoringPreview.excluded_executed_item_ids || [],
+      hard_excluded_records_preserved: scoringPreview.excluded_records || {},
+    },
+    recommended_next_safe_action: writeRequested
+      ? 'Internal human-review inbox records are created or already present. Next phase may review these records only; do not create opportunities, packets, approvals, execution requests, live candidates, DB execution writes, or marketplace writes without explicit approval.'
+      : 'Dry-run only. Re-run with --write to create internal human-review inbox records; this will not create opportunities, packets, approvals, execution requests, live candidates, or marketplace writes.',
+    safety: {
+      internal_review_inbox_only: true,
+      allowed_database_write_scope: writeRequested ? 'opportunity_inbox rows with opportunity_type=listing_quality_seed_review only' : null,
+      actual_database_write: writeRequested && insertedRows.length > 0,
+      marketplace_write_performed: false,
+      ebay_write_performed: false,
+      actual_ebay_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_api_call: false,
+      ai_calls: false,
+      actual_network_call: false,
+      opportunity_created: false,
+      normal_opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_request_created: false,
+      live_candidate_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      title_changes: false,
+      description_changes: false,
+      item_specifics_changes: false,
+    },
+    source: 'phase_14f_seed_human_review_inbox_v1',
+  };
+}
+
+async function listEbayListingQualitySeedReviewInbox({ limit = 20 } = {}) {
+  const safeLimit = Math.min(100, Math.max(1, intOrNull(limit) || 20));
+  const rows = await listExistingPhase14FSeedReviewRows({ limit: safeLimit });
+  return {
+    read_only: true,
+    phase: '14F',
+    marketplace: 'ebay',
+    operation: 'listing_quality_seed_review_list',
+    limit: safeLimit,
+    count: rows.length,
+    reviews: rows.map(normalizePhase14FSeedReviewRow),
+    safety: {
+      internal_review_inbox_only: true,
+      actual_database_write: false,
+      marketplace_write_performed: false,
+      ebay_write_performed: false,
+      actual_ebay_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_api_call: false,
+      ai_calls: false,
+      actual_network_call: false,
+      opportunity_created: false,
+      packet_created: false,
+      approval_created: false,
+      execution_request_created: false,
+      live_candidate_created: false,
+      execution_state_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      title_changes: false,
+      description_changes: false,
+      item_specifics_changes: false,
+    },
+    source: 'phase_14f_seed_human_review_reader_v1',
+  };
+}
+
+
 
 
 function phase13AuditBucket(candidate) {
@@ -10624,6 +10888,8 @@ module.exports = {
   buildEbayListingQualityCandidateSeedPreview,
   buildEbayListingQualitySeedSignalDominanceAudit,
   buildEbayListingQualitySeedScoringPreview,
+  writeEbayListingQualitySeedReviewInbox,
+  listEbayListingQualitySeedReviewInbox,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
   buildEbayListingQualityEvidenceRefreshPlan,
