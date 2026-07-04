@@ -5880,6 +5880,283 @@ async function buildEbayListingQualitySeedPromotedPacketPreview({ opportunityId 
   };
 }
 
+const PHASE14M_ALLOWED_FINAL_MUTATION_FIELDS = ['title', 'description', 'item_specifics'];
+const PHASE14M_FORBIDDEN_FINAL_MUTATION_FIELDS = [
+  'price',
+  'inventory',
+  'quantity',
+  'stock',
+  'shipping',
+  'payment',
+  'returns',
+  'category',
+  'images',
+  'sku',
+  'item_id',
+  'create',
+  'end',
+  'relist',
+];
+const PHASE14M_PLACEHOLDER_TERMS = [
+  'required_human_review',
+  'internal_review',
+  'human_review',
+  'placeholder',
+  'todo',
+];
+
+function parsePhase14MFinalMutationJson(finalMutationJson = '{}') {
+  if (finalMutationJson == null || finalMutationJson === '') return { value: {}, parse_error: null };
+  if (typeof finalMutationJson === 'string') {
+    try {
+      const parsed = JSON.parse(finalMutationJson);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { value: {}, parse_error: 'final_mutation_json_must_be_object' };
+      }
+      return { value: parsed, parse_error: null };
+    } catch (e) {
+      return { value: {}, parse_error: 'final_mutation_json_invalid' };
+    }
+  }
+  if (typeof finalMutationJson !== 'object' || Array.isArray(finalMutationJson)) {
+    return { value: {}, parse_error: 'final_mutation_json_must_be_object' };
+  }
+  return { value: finalMutationJson, parse_error: null };
+}
+
+function phase14MToken(value) {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function phase14MContainsTerm(value, terms) {
+  const token = phase14MToken(value);
+  return terms.find(term => {
+    const termToken = phase14MToken(term);
+    return token === termToken || token.includes(termToken);
+  }) || null;
+}
+
+function auditPhase14MFinalMutation(rawMutation = {}) {
+  const blockers = [];
+  const findings = [];
+  const cleaned = {};
+  const source = rawMutation && typeof rawMutation === 'object' && !Array.isArray(rawMutation) ? rawMutation : {};
+  const entries = Object.entries(source);
+
+  if (!entries.length) blockers.push('operator_final_mutation_json_empty');
+
+  function pushFinding(blocker, finding) {
+    blockers.push(blocker);
+    findings.push(finding);
+  }
+
+  function walkForForbiddenAndPlaceholder(value, path = '') {
+    if (Array.isArray(value)) {
+      value.forEach((child, idx) => walkForForbiddenAndPlaceholder(child, `${path}[${idx}]`));
+      return;
+    }
+    if (!value || typeof value !== 'object') {
+      const matchedValue = phase14MContainsTerm(value, PHASE14M_PLACEHOLDER_TERMS);
+      if (matchedValue) pushFinding('placeholder_or_internal_value_present', { type: 'placeholder_value', path, value: String(value ?? ''), matched: matchedValue });
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      const next = path ? `${path}.${key}` : key;
+      const normalizedKey = phase14MToken(key);
+      const forbiddenKey = PHASE14M_FORBIDDEN_FINAL_MUTATION_FIELDS.find(field => normalizedKey === phase14MToken(field));
+      const placeholderKey = phase14MContainsTerm(key, PHASE14M_PLACEHOLDER_TERMS);
+      if (forbiddenKey) pushFinding('forbidden_fields_present', { type: 'forbidden_field', path: next, field: key, matched: forbiddenKey });
+      if (placeholderKey) pushFinding('placeholder_or_internal_value_present', { type: 'placeholder_field_name', path: next, field: key, matched: placeholderKey });
+      walkForForbiddenAndPlaceholder(child, next);
+    }
+  }
+
+  walkForForbiddenAndPlaceholder(source);
+
+  for (const [key, value] of entries) {
+    if (!PHASE14M_ALLOWED_FINAL_MUTATION_FIELDS.includes(key)) {
+      blockers.push(PHASE14M_FORBIDDEN_FINAL_MUTATION_FIELDS.includes(key) ? 'forbidden_fields_present' : 'unsupported_fields_present');
+      findings.push({ type: PHASE14M_FORBIDDEN_FINAL_MUTATION_FIELDS.includes(key) ? 'forbidden_top_level_field' : 'unsupported_top_level_field', field: key });
+      continue;
+    }
+    if (key === 'title') {
+      if (typeof value !== 'string') {
+        pushFinding('title_must_be_string', { type: 'invalid_title_type', field: key });
+      } else if (!value.trim()) {
+        pushFinding('empty_title', { type: 'empty_title', field: key });
+      } else {
+        cleaned.title = value.trim().slice(0, 80);
+      }
+    } else if (key === 'description') {
+      if (typeof value !== 'string') {
+        pushFinding('description_must_be_string', { type: 'invalid_description_type', field: key });
+      } else if (!value.trim()) {
+        pushFinding('empty_description', { type: 'empty_description', field: key });
+      } else {
+        cleaned.description = value.trim().slice(0, 10000);
+      }
+    } else if (key === 'item_specifics') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        pushFinding('item_specifics_must_be_object', { type: 'invalid_item_specifics_type', field: key });
+        continue;
+      }
+      const itemEntries = Object.entries(value);
+      if (!itemEntries.length) pushFinding('item_specifics_empty', { type: 'empty_item_specifics', field: key });
+      const cleanSpecifics = {};
+      let booleanOnlyCount = 0;
+      for (const [specificKey, specificValue] of itemEntries) {
+        const name = String(specificKey || '').trim();
+        const rawValue = Array.isArray(specificValue)
+          ? specificValue.map(v => String(v ?? '').trim()).filter(Boolean).join(', ')
+          : String(specificValue ?? '').trim();
+        if (!name) pushFinding('item_specifics_empty_field_name', { type: 'empty_item_specifics_field_name', field: specificKey });
+        if (!rawValue) pushFinding('item_specifics_empty_values_present', { type: 'empty_item_specifics_value', field: specificKey });
+        if (typeof specificValue === 'boolean' || /^(true|false)$/i.test(rawValue)) {
+          booleanOnlyCount += 1;
+          pushFinding('boolean_only_fake_item_specifics_present', { type: 'boolean_only_fake_item_specific', field: specificKey, value: rawValue });
+        }
+        if (name && rawValue && !(typeof specificValue === 'boolean' || /^(true|false)$/i.test(rawValue))) cleanSpecifics[name.slice(0, 200)] = rawValue.slice(0, 1000);
+      }
+      if (itemEntries.length > 0 && booleanOnlyCount === itemEntries.length) blockers.push('boolean_only_fake_item_specifics_object');
+      if (Object.keys(cleanSpecifics).length) cleaned.item_specifics = cleanSpecifics;
+    }
+  }
+
+  const allowedPresent = PHASE14M_ALLOWED_FINAL_MUTATION_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(source, field));
+  if (!allowedPresent.length) blockers.push('no_allowed_final_mutation_fields_present');
+  if (!Object.keys(cleaned).length && entries.length) blockers.push('no_valid_final_mutation_fields_after_audit');
+
+  return {
+    blocked: blockers.length > 0,
+    blockers: [...new Set(blockers)],
+    findings,
+    cleaned_mutation: blockers.length ? {} : cleaned,
+    raw_payload_fields: entries.map(([key]) => key),
+    allowed_payload_fields_present: allowedPresent,
+    forbidden_fields_present: findings.some(finding => /forbidden/.test(finding.type)) || blockers.includes('forbidden_fields_present'),
+    unsupported_fields_present: blockers.includes('unsupported_fields_present'),
+    placeholder_terms: PHASE14M_PLACEHOLDER_TERMS,
+    forbidden_fields: PHASE14M_FORBIDDEN_FINAL_MUTATION_FIELDS,
+  };
+}
+
+function phase14MPayloadSummary(finalMutation = {}, audit = {}) {
+  const payloadFields = Object.keys(finalMutation || {});
+  return {
+    updates_title: Object.prototype.hasOwnProperty.call(finalMutation, 'title'),
+    updates_description: Object.prototype.hasOwnProperty.call(finalMutation, 'description'),
+    updates_item_specifics: Object.prototype.hasOwnProperty.call(finalMutation, 'item_specifics'),
+    payload_fields: payloadFields,
+    forbidden_fields_present: audit.forbidden_fields_present === true,
+  };
+}
+
+async function previewEbayListingQualitySeedFinalMutation({ opportunityId, finalMutationJson = '{}' } = {}) {
+  const id = intOrNull(opportunityId);
+  if (id == null) throw new Error('opportunity-id is required');
+  const before = await phase14KBoundaryCounts();
+  const parsed = parsePhase14MFinalMutationJson(finalMutationJson);
+  const audit = auditPhase14MFinalMutation(parsed.value);
+  const phase14LPreview = await buildEbayListingQualitySeedPromotedPacketPreview({ opportunityId: id });
+  const detail = await getEbayListingQualitySeedPromotedOpportunityDetail({ id });
+  const opportunity = detail.promoted_opportunity || {};
+  const blockers = [...audit.blockers];
+  if (parsed.parse_error) blockers.push(parsed.parse_error);
+  if (!detail.found) blockers.push('seed_promoted_opportunity_not_found');
+  if (opportunity.source !== 'phase_14_seed_review_promotion') blockers.push('source_type_not_phase_14_seed_review_promotion');
+  if (opportunity.human_review_status !== 'approved_for_packet') blockers.push('human_review_status_not_approved_for_packet');
+  if ((phase14LPreview.blockers || []).length) blockers.push(...phase14LPreview.blockers.map(blocker => `phase14l_${blocker}`));
+  if (phase14LPreview.packet_created === true || phase14LPreview.packet_would_be_created === true) blockers.push('phase14l_packet_preview_not_read_only');
+  const blocked = blockers.length > 0;
+  const finalMutationPreview = blocked ? {} : audit.cleaned_mutation;
+  const payloadSummary = phase14MPayloadSummary(finalMutationPreview, audit);
+  const finalPacketShapePreview = {
+    id: null,
+    request_id: null,
+    opportunity_id: id,
+    source_review_id: phase14LPreview.source_review_id || null,
+    status: 'final_mutation_preview_only',
+    confirmation_status: 'not_created',
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    item_id: phase14LPreview.item_id || null,
+    target_item_id: phase14LPreview.target_item_id || phase14LPreview.item_id || null,
+    planned_mutation: finalMutationPreview,
+    rollback_snapshot: phase14LPreview.rollback_snapshot || null,
+    cached_evidence_snapshot: phase14LPreview.cached_evidence_snapshot || null,
+    payload_summary: payloadSummary,
+    operator_supplied_json_only: true,
+    guesses_from_title: false,
+  };
+  const after = await phase14KBoundaryCounts();
+  return {
+    read_only: true,
+    dry_run: true,
+    phase: '14M',
+    marketplace: 'ebay',
+    operation: 'listing_quality_seed_final_mutation_preview',
+    opportunity_id: id,
+    source_review_id: phase14LPreview.source_review_id || null,
+    sku: opportunity.sku || phase14LPreview.cached_evidence_snapshot?.sku || null,
+    item_id: phase14LPreview.item_id || null,
+    target_item_id: phase14LPreview.target_item_id || phase14LPreview.item_id || null,
+    human_review_status: opportunity.human_review_status || null,
+    operator_supplied_json_only: true,
+    guesses_from_title: false,
+    blocked,
+    blockers: [...new Set(blockers)],
+    audit,
+    final_mutation_preview: finalMutationPreview,
+    final_packet_shape_preview: finalPacketShapePreview,
+    payload_summary: payloadSummary,
+    rollback_snapshot: phase14LPreview.rollback_snapshot || null,
+    cached_evidence_snapshot: phase14LPreview.cached_evidence_snapshot || null,
+    phase14l_packet_preview: {
+      read_only: phase14LPreview.read_only === true,
+      preview_type: phase14LPreview.preview_type,
+      packet_would_be_created: phase14LPreview.packet_would_be_created === true,
+      packet_created: phase14LPreview.packet_created === true,
+      blockers: phase14LPreview.blockers || [],
+      planned_mutation_fields: phase14LPreview.planned_mutation_fields || [],
+      planned_mutation_contains_placeholders: JSON.stringify(phase14LPreview.planned_mutation || {}).includes('required_human_review'),
+    },
+    superseding_packet_required_for_write: true,
+    would_mutate_existing_packet: false,
+    packet_would_be_created: false,
+    packet_created: false,
+    approval_created: false,
+    execution_request_created: false,
+    live_candidate_created: false,
+    actual_database_write: false,
+    actual_ebay_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    ebay_write_api_called: false,
+    marketplace_write_performed: false,
+    verification: {
+      packet_count_before: before.packets,
+      packet_count_after: after.packets,
+      packet_created: after.packets > before.packets,
+      approval_request_count_before: before.approval_requests,
+      approval_request_count_after: after.approval_requests,
+      approval_created: after.approval_requests > before.approval_requests,
+      execution_request_count_before: before.execution_requests,
+      execution_request_count_after: after.execution_requests,
+      execution_request_created: after.execution_requests > before.execution_requests,
+      marketplace_execution_event_count_before: before.marketplace_execution_events,
+      marketplace_execution_event_count_after: after.marketplace_execution_events,
+      marketplace_execution_event_created: after.marketplace_execution_events > before.marketplace_execution_events,
+      actual_database_write: false,
+      actual_ebay_call: false,
+    },
+    safety: phase14LReadOnlySafety(),
+    recommended_next_action: blocked
+      ? 'Final mutation preview is blocked. Supply real operator-authored title, description, or item_specifics JSON only; do not create a packet from placeholders.'
+      : 'Final mutation preview only. A later explicit phase may create a superseding packet from these operator-supplied real values; do not mutate existing packets or execute marketplace writes.',
+    source: 'phase_14m_seed_final_mutation_preview_gate_v1',
+  };
+}
+
 function phase14ISeedEvidenceCompletionSafety({ actualDatabaseWrite = false, actualReadOnlyEbayCall = false } = {}) {
   return {
     actual_database_write: actualDatabaseWrite,
@@ -12237,6 +12514,7 @@ module.exports = {
   getEbayListingQualitySeedPromotedOpportunityDetail,
   actOnEbayListingQualitySeedPromotedOpportunity,
   buildEbayListingQualitySeedPromotedPacketPreview,
+  previewEbayListingQualitySeedFinalMutation,
   completeEbayListingQualitySeedEvidence,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
