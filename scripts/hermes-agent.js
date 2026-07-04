@@ -1193,6 +1193,20 @@ async function main() {
     return;
   }
 
+
+  if (cmd === 'ebay-token-refresh-rotate') {
+    const { executeEbayTokenRefreshRotation } = require('../src/services/hermesExecutionApproval');
+    const write = hasFlag('write');
+    const result = await executeEbayTokenRefreshRotation({
+      operation: arg('operation', 'UploadSiteHostedPictures'),
+      operatorApprovalText: arg('approval-text', null),
+      dryRun: !write,
+      write,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-listing-quality-image-upload-corrected-readiness') {
     const { buildEbayListingQualityImageUploadCorrectedReadiness } = require('../src/services/hermesExecutionApproval');
     const itemId = arg('item-id', arg('id', null));
