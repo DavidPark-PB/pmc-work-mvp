@@ -1040,6 +1040,38 @@ async function main() {
     return;
   }
 
+
+  if (cmd === 'ebay-listing-quality-image-candidate-validate') {
+    const { validateEbayListingQualityImageCandidate } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    const imagePath = arg('image-path', null);
+    if (!itemId) throw new Error('item-id is required');
+    if (!imagePath) throw new Error('image-path is required');
+    const result = await validateEbayListingQualityImageCandidate({ itemId, imagePath });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-image-candidate-register') {
+    const { registerEbayListingQualityImageCandidate } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    const imagePath = arg('image-path', null);
+    if (!itemId) throw new Error('item-id is required');
+    if (!imagePath) throw new Error('image-path is required');
+    const result = await registerEbayListingQualityImageCandidate({ itemId, imagePath });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-image-candidate-readiness') {
+    const { buildEbayListingQualityImageCandidateReadiness } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    if (!itemId) throw new Error('item-id is required');
+    const result = await buildEbayListingQualityImageCandidateReadiness({ itemId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-listing-quality-seed-live-approval-checklist') {
     const { buildEbayListingQualitySeedLiveApprovalChecklist } = require('../src/services/hermesExecutionApproval');
     const approvalId = intArg('approval-id', intArg('id', null));

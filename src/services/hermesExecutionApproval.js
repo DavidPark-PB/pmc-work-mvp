@@ -8,6 +8,8 @@
  */
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const { getClient } = require('../db/supabaseClient');
 const { buildHermesOpportunityActionPlan } = require('./opportunityInbox');
@@ -8360,6 +8362,269 @@ async function buildEbayListingQualityImageRemediationReadiness({ itemId } = {})
   };
 }
 
+
+const PHASE14W_IMAGE_CANDIDATE_REGISTRY_PATH = path.resolve(__dirname, '../../data/hermes-image-candidates.json');
+
+function phase14WImageCandidateRegistryPath() {
+  return PHASE14W_IMAGE_CANDIDATE_REGISTRY_PATH;
+}
+
+function phase14WReadImageCandidateRegistry() {
+  try {
+    if (!fs.existsSync(PHASE14W_IMAGE_CANDIDATE_REGISTRY_PATH)) return { version: 1, candidates: [] };
+    const parsed = JSON.parse(fs.readFileSync(PHASE14W_IMAGE_CANDIDATE_REGISTRY_PATH, 'utf8'));
+    return {
+      version: parsed.version || 1,
+      candidates: Array.isArray(parsed.candidates) ? parsed.candidates : [],
+    };
+  } catch (e) {
+    return { version: 1, candidates: [], read_error: e.message };
+  }
+}
+
+function phase14WWriteImageCandidateRegistry(registry) {
+  fs.mkdirSync(path.dirname(PHASE14W_IMAGE_CANDIDATE_REGISTRY_PATH), { recursive: true });
+  const payload = {
+    version: registry.version || 1,
+    updated_at: new Date().toISOString(),
+    candidates: Array.isArray(registry.candidates) ? registry.candidates : [],
+  };
+  fs.writeFileSync(PHASE14W_IMAGE_CANDIDATE_REGISTRY_PATH, `${JSON.stringify(payload, null, 2)}\n`);
+  return payload;
+}
+
+function phase14WParseJpegDimensions(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return null;
+  if (buffer[0] !== 0xff || buffer[1] !== 0xd8) return null;
+  let offset = 2;
+  while (offset < buffer.length - 9) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = buffer[offset + 1];
+    offset += 2;
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (offset + 2 > buffer.length) break;
+    const length = buffer.readUInt16BE(offset);
+    if (length < 2 || offset + length > buffer.length) break;
+    const sofMarkers = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+    if (sofMarkers.has(marker) && length >= 7) {
+      const height = buffer.readUInt16BE(offset + 3);
+      const width = buffer.readUInt16BE(offset + 5);
+      return { width, height, format: 'jpeg', parser: 'jpeg_sof' };
+    }
+    offset += length;
+  }
+  return null;
+}
+
+function phase14WInspectLocalImageCandidate({ imagePath } = {}) {
+  const candidatePath = String(imagePath || '').trim();
+  const blockers = [];
+  if (!candidatePath) blockers.push('image_path_required');
+  const exists = candidatePath ? fs.existsSync(candidatePath) : false;
+  if (candidatePath && !exists) blockers.push('image_path_not_found');
+  let stat = null;
+  let buffer = null;
+  let sha256 = null;
+  let magic = null;
+  let dimensions = null;
+  let format = null;
+  if (exists) {
+    stat = fs.statSync(candidatePath);
+    if (!stat.isFile()) blockers.push('image_path_not_file');
+    buffer = fs.readFileSync(candidatePath);
+    sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+    magic = buffer.subarray(0, 12).toString('hex');
+    const isJpeg = buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    if (isJpeg) {
+      format = 'jpeg';
+      dimensions = phase14WParseJpegDimensions(buffer);
+    }
+    if (!isJpeg) blockers.push('image_not_jpeg');
+    if (!dimensions) blockers.push('image_dimensions_unreadable');
+  }
+  const width = dimensions?.width || null;
+  const height = dimensions?.height || null;
+  const longestSide = width && height ? Math.max(width, height) : null;
+  if (longestSide != null && longestSide < 500) blockers.push('image_longest_side_below_500px');
+  return {
+    image_path: candidatePath || null,
+    exists,
+    file_name: candidatePath ? path.basename(candidatePath) : null,
+    file_size_bytes: stat?.size || null,
+    sha256: sha256 ? `sha256:${sha256}` : null,
+    magic_hex_prefix: magic,
+    format,
+    mime_type: format === 'jpeg' ? 'image/jpeg' : null,
+    width,
+    height,
+    longest_side: longestSide,
+    meets_ebay_500px_longest_side_policy: longestSide != null ? longestSide >= 500 : false,
+    blockers: [...new Set(blockers)],
+  };
+}
+
+async function validateEbayListingQualityImageCandidate({ itemId, imagePath } = {}) {
+  const targetItemId = trimOrNull(itemId, 80);
+  if (!targetItemId) throw new Error('item-id is required');
+  const image = phase14WInspectLocalImageCandidate({ imagePath });
+  const remediationReadiness = await buildEbayListingQualityImageRemediationReadiness({ itemId: targetItemId });
+  const blockers = [...image.blockers];
+  if (targetItemId !== '206288370789') blockers.push('phase_14w_item_id_not_seed_item');
+  return {
+    read_only: true,
+    phase: '14W',
+    item_id: targetItemId,
+    request_id_5_must_not_be_reused: true,
+    validation_passed: blockers.length === 0,
+    candidate: image,
+    blockers: [...new Set(blockers)],
+    policy: {
+      required_format: 'jpeg',
+      minimum_longest_side_px: 500,
+      candidate_longest_side_px: image.longest_side,
+      candidate_meets_policy: image.meets_ebay_500px_longest_side_policy === true,
+    },
+    image_policy_remediation_readiness_summary: {
+      image_issue_confirmed: remediationReadiness.image_issue_confirmed,
+      replacement_image_required: remediationReadiness.replacement_image_required,
+      future_live_retry_blocked_until_image_policy_resolved: remediationReadiness.future_live_retry_blocked_until_image_policy_resolved,
+      request_id_5_must_not_be_reused: remediationReadiness.request_id_5_must_not_be_reused,
+    },
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      execution_request_created: false,
+      actual_database_write: false,
+      internal_metadata_write: false,
+      image_uploaded: false,
+      image_modified: false,
+      ai_calls: false,
+    },
+    source: 'phase_14w_image_candidate_validate_v1',
+  };
+}
+
+async function registerEbayListingQualityImageCandidate({ itemId, imagePath } = {}) {
+  const validation = await validateEbayListingQualityImageCandidate({ itemId, imagePath });
+  const blockers = [...(validation.blockers || [])];
+  if (!validation.validation_passed) {
+    return {
+      ...validation,
+      read_only: false,
+      registered: false,
+      internal_metadata_write: false,
+      registration_blockers: blockers,
+      safety: {
+        ...(validation.safety || {}),
+        internal_metadata_write: false,
+        actual_database_write: false,
+      },
+      source: 'phase_14w_image_candidate_register_v1',
+    };
+  }
+  const registry = phase14WReadImageCandidateRegistry();
+  const candidate = {
+    item_id: validation.item_id,
+    image_path: validation.candidate.image_path,
+    file_name: validation.candidate.file_name,
+    file_size_bytes: validation.candidate.file_size_bytes,
+    sha256: validation.candidate.sha256,
+    format: validation.candidate.format,
+    mime_type: validation.candidate.mime_type,
+    width: validation.candidate.width,
+    height: validation.candidate.height,
+    longest_side: validation.candidate.longest_side,
+    meets_ebay_500px_longest_side_policy: validation.candidate.meets_ebay_500px_longest_side_policy,
+    replacement_for_failed_request_id: 5,
+    failed_request_must_not_be_reused: true,
+    marketplace_upload_performed: false,
+    marketplace_write_performed: false,
+    execution_request_created: false,
+    registered_at: new Date().toISOString(),
+    source: 'phase_14w_operator_supplied_replacement_image_candidate',
+  };
+  const remaining = (registry.candidates || []).filter(existing => !(existing.item_id === candidate.item_id && existing.sha256 === candidate.sha256));
+  const updated = phase14WWriteImageCandidateRegistry({
+    version: 1,
+    candidates: [...remaining, candidate],
+  });
+  return {
+    read_only: false,
+    phase: '14W',
+    item_id: validation.item_id,
+    registered: true,
+    internal_metadata_write: true,
+    registry_path: phase14WImageCandidateRegistryPath(),
+    candidate,
+    candidate_count_for_item: updated.candidates.filter(entry => entry.item_id === validation.item_id).length,
+    request_id_5_must_not_be_reused: true,
+    validation_summary: validation,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      execution_request_created: false,
+      actual_database_write: false,
+      internal_metadata_write: true,
+      image_uploaded: false,
+      image_modified: false,
+      ai_calls: false,
+    },
+    source: 'phase_14w_image_candidate_register_v1',
+  };
+}
+
+async function buildEbayListingQualityImageCandidateReadiness({ itemId } = {}) {
+  const targetItemId = trimOrNull(itemId, 80);
+  if (!targetItemId) throw new Error('item-id is required');
+  const registry = phase14WReadImageCandidateRegistry();
+  const candidates = (registry.candidates || []).filter(entry => entry.item_id === targetItemId);
+  const validCandidates = candidates.filter(entry => entry.meets_ebay_500px_longest_side_policy === true && entry.format === 'jpeg');
+  const remediationReadiness = await buildEbayListingQualityImageRemediationReadiness({ itemId: targetItemId });
+  return {
+    read_only: true,
+    phase: '14W',
+    item_id: targetItemId,
+    registry_path: phase14WImageCandidateRegistryPath(),
+    image_issue_confirmed: remediationReadiness.image_issue_confirmed,
+    replacement_image_required: remediationReadiness.replacement_image_required,
+    replacement_image_candidate_exists: validCandidates.length > 0,
+    replacement_image_candidate_count: validCandidates.length,
+    registered_candidates: candidates,
+    ready_for_future_new_request_packet_planning: remediationReadiness.image_issue_confirmed === true && validCandidates.length > 0,
+    future_live_retry_blocked_until_new_request_packet_and_explicit_approval: true,
+    request_id_5_must_not_be_reused: true,
+    next_safe_action: validCandidates.length > 0
+      ? 'A compliant internal replacement candidate is registered. Next phase may plan a new request/packet only; do not reuse request_id=5 and do not execute live without explicit approval.'
+      : 'No compliant internal replacement candidate is registered. Validate and register a compliant JPEG with longest side at least 500px before planning a new request/packet.',
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      execution_request_created: false,
+      actual_database_write: false,
+      internal_metadata_write: false,
+      image_uploaded: false,
+      image_modified: false,
+      ai_calls: false,
+    },
+    source: 'phase_14w_image_candidate_readiness_v1',
+  };
+}
+
 async function buildEbayListingQualitySeedLiveApprovalChecklist({ approvalId } = {}) {
   const id = intOrNull(approvalId);
   if (id == null) throw new Error('approval-id is required');
@@ -14887,6 +15152,9 @@ module.exports = {
   buildEbayListingQualityImagePolicyRemediationPlan,
   buildEbayListingQualityImagePolicyEvidence,
   buildEbayListingQualityImageRemediationReadiness,
+  validateEbayListingQualityImageCandidate,
+  registerEbayListingQualityImageCandidate,
+  buildEbayListingQualityImageCandidateReadiness,
   completeEbayListingQualitySeedEvidence,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
