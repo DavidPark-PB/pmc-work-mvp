@@ -7661,6 +7661,162 @@ async function callEbayListingQualitySeedLiveTransportBoundary({ approvalId, dry
   };
 }
 
+async function buildEbayListingQualitySeedLiveApprovalChecklist({ approvalId } = {}) {
+  const id = intOrNull(approvalId);
+  if (id == null) throw new Error('approval-id is required');
+  const exactUserApprovalText = [
+    '실제 eBay 단일 SKU listing quality update 실행 승인.',
+    'approval_id=37만 실행.',
+    'request_id=5만 실행.',
+    'packet_id=4만 실행.',
+    'item_id=206288370789만 실행.',
+    '허용 변경: title, item_specifics.',
+    '금지 변경: price, inventory, quantity, description, shipping, payment, returns, category, images.',
+    '1회만 실행.',
+    '실행 후 post-live audit 수행.',
+  ].join('\n');
+  const futureLiveCommand = 'HERMES_EBAY_LIVE_EXECUTION_ENABLED=true npm run hermes:agent -- ebay-listing-quality-seed-live-transport --approval-id=37 --write';
+  const envLiveEnabled = String(process.env.HERMES_EBAY_LIVE_EXECUTION_ENABLED || '').toLowerCase() === 'true';
+  const readiness = await buildEbayListingQualitySeedLiveReadiness({ approvalId: id });
+  const dryRunTransport = await callEbayListingQualitySeedLiveTransportBoundary({
+    approvalId: id,
+    dryRun: true,
+    write: false,
+    liveEnabled: false,
+  });
+  const disabledWriteTransport = await callEbayListingQualitySeedLiveTransportBoundary({
+    approvalId: id,
+    dryRun: false,
+    write: true,
+    liveEnabled: false,
+  });
+  const payload = readiness.payload_preview || {};
+  const item = payload.Item || {};
+  const payloadFields = readiness.payload_summary?.payload_fields || [];
+  const forbiddenPayloadKeys = ['Description', 'Price', 'Quantity', 'Inventory', 'Shipping', 'Payment', 'Returns', 'Category', 'Images', 'PictureDetails'];
+  const disabledWriteBlockers = disabledWriteTransport.blockers || [];
+  const checks = {
+    approval_id_37: readiness.approval_id === 37,
+    request_id_5: readiness.request_id === 5,
+    packet_id_4: readiness.packet_id === 4,
+    target_item_id_206288370789: String(readiness.target_item_id || '') === '206288370789',
+    approval_status_approved: readiness.checks?.approval_status_approved === true,
+    final_operator_approval_true: readiness.checks?.final_operator_approval === true,
+    request_final_approval_status_approved: readiness.checks?.request_final_approval_status_approved === true,
+    request_executed_at_is_null: readiness.checks?.request_executed_at_is_null === true,
+    request_execution_result_is_null: readiness.checks?.request_execution_result_is_null === true,
+    packet_confirmation_status_confirmed: readiness.checks?.packet_confirmed === true,
+    no_previous_marketplace_execution_completed_for_request_id_5: readiness.checks?.no_previous_marketplace_execution_event_for_request_id_5 === true,
+    no_previous_marketplace_execution_completed_for_item_id_206288370789: readiness.checks?.no_previous_marketplace_execution_event_for_item_id_206288370789 === true,
+    phase_14q_readiness_passes: readiness.ready_for_seed_live_path_review === true && (readiness.blockers || []).length === 0,
+    phase_14r_transport_dry_run_passes: dryRunTransport.ready_for_live_call === true && dryRunTransport.payload_ready === true && dryRunTransport.blocked === false && (dryRunTransport.blockers || []).length === 0,
+    disabled_write_remains_blocked_without_live_env: disabledWriteTransport.blocked === true
+      && disabledWriteBlockers.includes('live_ebay_execution_disabled')
+      && disabledWriteBlockers.includes('live_ebay_execution_env_disabled')
+      && disabledWriteBlockers.includes('phase_14r_live_execution_not_permitted'),
+    hermes_ebay_live_execution_env_not_enabled_for_phase_14s: envLiveEnabled === false,
+    payload_fields_exact_title_and_item_specifics: JSON.stringify(payloadFields) === JSON.stringify(['Title', 'ItemSpecifics']),
+    no_description_field: !Object.prototype.hasOwnProperty.call(item, 'Description') && readiness.payload_summary?.updates_description === false,
+    no_price_field: !Object.prototype.hasOwnProperty.call(item, 'Price'),
+    no_quantity_field: !Object.prototype.hasOwnProperty.call(item, 'Quantity'),
+    no_inventory_field: !Object.prototype.hasOwnProperty.call(item, 'Inventory'),
+    no_shipping_payment_returns_category_images_fields: !forbiddenPayloadKeys.some(key => Object.prototype.hasOwnProperty.call(item, key))
+      && readiness.checks?.no_shipping_payment_returns_category_image_fields === true,
+    rollback_snapshot_exists: readiness.checks?.rollback_snapshot_exists === true,
+    actual_ebay_call_false: readiness.actual_ebay_call === false && dryRunTransport.actual_ebay_call === false && disabledWriteTransport.actual_ebay_call === false,
+    revise_fixed_price_item_called_false: readiness.revise_fixed_price_item_called === false && dryRunTransport.revise_fixed_price_item_called === false && disabledWriteTransport.revise_fixed_price_item_called === false,
+    marketplace_write_performed_false: readiness.marketplace_write_performed === false && dryRunTransport.marketplace_write_performed === false && disabledWriteTransport.marketplace_write_performed === false,
+    actual_database_write_false: readiness.actual_database_write === false && dryRunTransport.actual_database_write === false && disabledWriteTransport.actual_database_write === false,
+    executed_at_updated_false: dryRunTransport.executed_at_updated === false && disabledWriteTransport.executed_at_updated === false,
+    execution_result_updated_false: dryRunTransport.execution_result_updated === false && disabledWriteTransport.execution_result_updated === false,
+    marketplace_execution_event_created_false: dryRunTransport.marketplace_execution_event_created === false && disabledWriteTransport.marketplace_execution_event_created === false,
+  };
+  const blockers = [];
+  for (const [key, ok] of Object.entries(checks)) {
+    if (ok !== true) blockers.push(key);
+  }
+
+  return {
+    read_only: true,
+    phase: '14S',
+    ready_for_explicit_user_live_approval: blockers.length === 0,
+    must_not_execute_in_this_phase: true,
+    approval_id: readiness.approval_id,
+    request_id: readiness.request_id,
+    packet_id: readiness.packet_id,
+    opportunity_id: readiness.opportunity_id,
+    source_review_id: readiness.source_review_id,
+    sku: readiness.sku,
+    item_id: readiness.target_item_id,
+    allowed_changes: ['title', 'item_specifics'],
+    forbidden_changes: ['price', 'inventory', 'quantity', 'description', 'shipping', 'payment', 'returns', 'category', 'images'],
+    exact_user_approval_text: exactUserApprovalText,
+    future_live_command_do_not_run: futureLiveCommand,
+    future_live_command_warning: 'DO NOT RUN in Phase 14S. Phase 14T actual live execution requires separate explicit user approval using the exact approval text.',
+    checks,
+    blockers,
+    payload_summary: {
+      updates_title: readiness.payload_summary?.updates_title === true,
+      updates_description: readiness.payload_summary?.updates_description === true,
+      updates_item_specifics: readiness.payload_summary?.updates_item_specifics === true,
+      payload_fields: payloadFields,
+      forbidden_fields_present: readiness.payload_summary?.forbidden_fields_present === true,
+      forbidden_fields: readiness.payload_summary?.forbidden_fields || [],
+      non_allowed_fields: readiness.payload_summary?.non_allowed_fields || [],
+    },
+    payload_preview: readiness.payload_preview || null,
+    phase_14q_readiness_summary: {
+      ready_for_seed_live_path_review: readiness.ready_for_seed_live_path_review,
+      ready_for_live_execution: readiness.ready_for_live_execution,
+      blockers: readiness.blockers || [],
+    },
+    phase_14r_transport_dry_run_summary: {
+      ready_for_live_call: dryRunTransport.ready_for_live_call,
+      would_call_ebay: dryRunTransport.would_call_ebay,
+      blocked: dryRunTransport.blocked,
+      blockers: dryRunTransport.blockers || [],
+      payload_ready: dryRunTransport.payload_ready,
+      actual_ebay_call: dryRunTransport.actual_ebay_call,
+      actual_database_write: dryRunTransport.actual_database_write,
+      live_transport_called: dryRunTransport.live_transport_called,
+    },
+    phase_14r_disabled_write_summary: {
+      ready_for_live_call: disabledWriteTransport.ready_for_live_call,
+      would_call_ebay: disabledWriteTransport.would_call_ebay,
+      blocked: disabledWriteTransport.blocked,
+      blockers: disabledWriteTransport.blockers || [],
+      payload_ready: disabledWriteTransport.payload_ready,
+      actual_ebay_call: disabledWriteTransport.actual_ebay_call,
+      actual_database_write: disabledWriteTransport.actual_database_write,
+      live_transport_called: disabledWriteTransport.live_transport_called,
+      executed_at_updated: disabledWriteTransport.executed_at_updated,
+      execution_result_updated: disabledWriteTransport.execution_result_updated,
+      marketplace_execution_event_created: disabledWriteTransport.marketplace_execution_event_created,
+    },
+    rollback_snapshot_summary: readiness.rollback_snapshot_summary,
+    next_phase: 'Phase 14T actual live execution only after explicit user approval.',
+    safety: {
+      actual_ebay_call: false,
+      get_item_called: false,
+      actual_network_call: false,
+      live_transport_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      actual_database_write: false,
+      executed_at_updated: false,
+      execution_result_updated: false,
+      marketplace_execution_event_created: false,
+      listing_changed: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      description_changes: false,
+      ai_called: false,
+    },
+    source: 'phase_14s_seed_live_approval_checklist_v1',
+  };
+}
+
 function phase14ISeedEvidenceCompletionSafety({ actualDatabaseWrite = false, actualReadOnlyEbayCall = false } = {}) {
   return {
     actual_database_write: actualDatabaseWrite,
@@ -14027,6 +14183,7 @@ module.exports = {
   buildEbayListingQualitySeedLiveReadiness,
   buildEbayListingQualitySeedLiveRunbook,
   callEbayListingQualitySeedLiveTransportBoundary,
+  buildEbayListingQualitySeedLiveApprovalChecklist,
   completeEbayListingQualitySeedEvidence,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,

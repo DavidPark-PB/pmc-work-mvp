@@ -95,6 +95,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-seed-live-readiness --approval-id=<APPROVAL_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-seed-live-runbook --approval-id=<APPROVAL_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-seed-live-transport --approval-id=<APPROVAL_ID> [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-seed-live-approval-checklist --approval-id=<APPROVAL_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-seed-evidence-complete --id=<REVIEW_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-source-audit [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
@@ -200,6 +201,7 @@ function printUsage() {
     'Phase 14P Seed Final Approval: default dry-run; --write updates only the internal Phase 14O approval artifact metadata/status; no execution request, execution state update, AI, eBay call, listing mutation, or marketplace write.',
     'Phase 14Q Seed Live Readiness: read-only readiness/runbook for approval 37/request 5/packet 4; builds payload preview only, no DB writes, live transport, eBay calls, AI, or marketplace writes.',
     'Phase 14R Seed Live Transport Boundary: validates seed final payload and disabled live boundary only; no eBay execution, live transport, DB execution-state write, AI, or marketplace write.',
+    'Phase 14S Seed Live Approval Checklist: read-only final operator approval text/checklist only; no eBay execution, live transport, DB write, AI, or marketplace write.',
   ].join('\n'));
 }
 
@@ -996,6 +998,15 @@ async function main() {
       write,
       liveEnabled: String(process.env.HERMES_EBAY_LIVE_EXECUTION_ENABLED || '').toLowerCase() === 'true',
     });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-seed-live-approval-checklist') {
+    const { buildEbayListingQualitySeedLiveApprovalChecklist } = require('../src/services/hermesExecutionApproval');
+    const approvalId = intArg('approval-id', intArg('id', null));
+    if (approvalId == null) throw new Error('approval-id is required');
+    const result = await buildEbayListingQualitySeedLiveApprovalChecklist({ approvalId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
