@@ -4511,6 +4511,12 @@ function normalizePhase14FSeedReviewRow(row = {}) {
     excluded_forbidden_fields: metadata.excluded_forbidden_fields || [],
     source_phase: metadata.source_phase || null,
     source_command: metadata.source_command || null,
+    review_status: metadata.review_status || null,
+    review_action: metadata.review_action || null,
+    reviewed_by: metadata.reviewed_by || null,
+    reviewed_at: metadata.reviewed_at || null,
+    review_reason: metadata.review_reason || null,
+    phase_14g_decision_gate: metadata.phase_14g_decision_gate === true,
     review_fingerprint: metadata.review_fingerprint || null,
     internal_review_record_only: metadata.internal_review_record_only === true,
     not_execution_candidate: metadata.not_execution_candidate === true,
@@ -4656,6 +4662,7 @@ async function listEbayListingQualitySeedReviewInbox({ limit = 20 } = {}) {
       revise_fixed_price_item_called: false,
       marketplace_api_call: false,
       ai_calls: false,
+      ai_called: false,
       actual_network_call: false,
       opportunity_created: false,
       packet_created: false,
@@ -4663,6 +4670,7 @@ async function listEbayListingQualitySeedReviewInbox({ limit = 20 } = {}) {
       execution_request_created: false,
       live_candidate_created: false,
       execution_state_changed: false,
+      listing_changed: false,
       price_changes: false,
       inventory_changes: false,
       quantity_changes: false,
@@ -4671,6 +4679,206 @@ async function listEbayListingQualitySeedReviewInbox({ limit = 20 } = {}) {
       item_specifics_changes: false,
     },
     source: 'phase_14f_seed_human_review_reader_v1',
+  };
+}
+
+function phase14GSeedReviewSafetyFlags({ actualDatabaseWrite = false } = {}) {
+  return {
+    internal_review_state_only: true,
+    actual_database_write: actualDatabaseWrite,
+    allowed_database_write_scope: actualDatabaseWrite ? 'opportunity_inbox existing Phase 14F review row status/updated_at/metadata only' : null,
+    marketplace_write_performed: false,
+    ebay_write_performed: false,
+    marketplace_api_call: false,
+    actual_ebay_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    packet_created: false,
+    approval_created: false,
+    execution_request_created: false,
+    live_candidate_created: false,
+    listing_changed: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    title_changes: false,
+    description_changes: false,
+    item_specifics_changes: false,
+    ai_called: false,
+    ai_calls: false,
+  };
+}
+
+async function getPhase14GMarketplaceExecutedItemIds() {
+  const events = await safeSelectRows(
+    EVENT_TABLE,
+    'id,request_id,event_type,payload,created_at',
+    q => q.eq('event_type', 'marketplace_execution_completed').order('created_at', { ascending: false }).limit(500)
+  );
+  return candidateEventItemIds(events || []);
+}
+
+function isPhase14GHardExcludedReview({ review, marketplaceExecutedItemIds = [] } = {}) {
+  const itemId = String(review?.item_id || '').trim();
+  const executedIds = Array.from(marketplaceExecutedItemIds || []).map(v => String(v || '').trim()).filter(Boolean);
+  const hardExcludedItemIds = new Set(['202551129453', '206315990948', ...executedIds]);
+  const metadata = review?.metadata || {};
+  const hardExcludedIds = {
+    approval_id_15: String(metadata.approval_id || metadata.approvalId || '') === '15',
+    request_id_4: String(metadata.request_id || metadata.requestId || '') === '4',
+    packet_id_3: String(metadata.packet_id || metadata.packetId || '') === '3',
+  };
+  const reasons = [];
+  if (hardExcludedItemIds.has(itemId)) reasons.push('hard_excluded_or_marketplace_execution_completed_item_id');
+  if (hardExcludedIds.approval_id_15) reasons.push('hard_excluded_approval_id_15');
+  if (hardExcludedIds.request_id_4) reasons.push('hard_excluded_request_id_4');
+  if (hardExcludedIds.packet_id_3) reasons.push('hard_excluded_packet_id_3');
+  return {
+    excluded: reasons.length > 0,
+    reasons,
+    item_id: itemId || null,
+    hard_excluded_item_ids: [...hardExcludedItemIds],
+    hard_excluded_record_ids: {
+      approval_id: 15,
+      request_id: 4,
+      packet_id: 3,
+    },
+  };
+}
+
+async function getEbayListingQualitySeedReviewDetail({ id } = {}) {
+  const reviewId = intOrNull(id);
+  if (reviewId == null) throw new Error('id is required');
+  const rows = await safeSelectRows(
+    OPPORTUNITY_TABLE,
+    'id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at',
+    q => q.eq('id', reviewId).eq('opportunity_type', 'listing_quality_seed_review').eq('source_type', 'phase_14e_seed_scoring_preview').limit(1)
+  );
+  const row = rows[0] || null;
+  const review = row ? { ...normalizePhase14FSeedReviewRow(row), notes: row.notes || null, metadata: row.metadata || {} } : null;
+  const marketplaceExecutedItemIds = await getPhase14GMarketplaceExecutedItemIds();
+  const hardExclusion = review ? isPhase14GHardExcludedReview({ review, marketplaceExecutedItemIds }) : null;
+  return {
+    read_only: true,
+    phase: '14G',
+    marketplace: 'ebay',
+    operation: 'listing_quality_seed_review_detail',
+    id: reviewId,
+    found: Boolean(row),
+    review,
+    hard_exclusion: hardExclusion,
+    recommended_next_action: row
+      ? 'Review detail only. Use seed-review-action with --dry-run first; Phase 14G may update only internal review metadata/status and must not create packets, approvals, execution requests, live candidates, listing mutations, AI calls, or marketplace writes.'
+      : 'Phase 14F seed review record not found.',
+    safety: phase14GSeedReviewSafetyFlags({ actualDatabaseWrite: false }),
+    source: 'phase_14g_seed_review_detail_v1',
+  };
+}
+
+async function actOnEbayListingQualitySeedReview({ id, action, actor = null, reason = null, dryRun = true, write = false } = {}) {
+  const reviewId = intOrNull(id);
+  if (reviewId == null) throw new Error('id is required');
+  const normalizedAction = String(action || '').trim().toLowerCase();
+  if (!['shortlist', 'reject'].includes(normalizedAction)) throw new Error('action must be shortlist or reject');
+  const decisionActor = trimOrNull(actor, 100);
+  const decisionReason = trimOrNull(reason, 1000);
+  if (!decisionActor) throw new Error('actor is required');
+  if (!decisionReason) throw new Error('reason is required');
+  const writeRequested = write === true && dryRun === false;
+  const detail = await getEbayListingQualitySeedReviewDetail({ id: reviewId });
+  if (!detail.found) throw new Error(`seed review ${reviewId} not found`);
+  const current = detail.review;
+  if (detail.hard_exclusion?.excluded) {
+    throw new Error(`seed review ${reviewId} is hard-excluded: ${detail.hard_exclusion.reasons.join(', ')}`);
+  }
+  const before = {
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+    approvals: await countRows(REQUEST_TABLE),
+  };
+  const reviewedAt = new Date().toISOString();
+  const reviewStatus = normalizedAction === 'shortlist' ? 'shortlisted' : 'rejected';
+  const nextStatus = normalizedAction === 'reject' ? 'rejected' : 'reviewing';
+  const nextMetadata = {
+    ...(current.metadata || {}),
+    review_status: reviewStatus,
+    review_action: normalizedAction,
+    reviewed_by: decisionActor,
+    reviewed_at: reviewedAt,
+    review_reason: decisionReason,
+    phase_14g_decision_gate: true,
+    still_not_execution_candidate: true,
+    not_execution_candidate: true,
+    not_marketplace_candidate: true,
+    not_live_candidate: true,
+    not_packet: true,
+    not_approval: true,
+    not_execution_request: true,
+    internal_review_record_only: true,
+  };
+  let updated = null;
+  if (writeRequested) {
+    const db = getClient();
+    const { data, error } = await db
+      .from(OPPORTUNITY_TABLE)
+      .update({ status: nextStatus, metadata: nextMetadata, updated_at: reviewedAt })
+      .eq('id', reviewId)
+      .eq('opportunity_type', 'listing_quality_seed_review')
+      .eq('source_type', 'phase_14e_seed_scoring_preview')
+      .select('id,opportunity_type,source_type,title,status,notes,metadata,created_at,updated_at')
+      .single();
+    if (error) throw error;
+    updated = data;
+  }
+  const after = {
+    execution_requests: await countRows(REQUEST_TABLE),
+    listing_quality_packets: await countRows(EBAY_LISTING_QUALITY_PACKET_TABLE),
+    approvals: await countRows(REQUEST_TABLE),
+  };
+  return {
+    read_only: !writeRequested,
+    dry_run: !writeRequested,
+    write_requested: writeRequested,
+    phase: '14G',
+    marketplace: 'ebay',
+    operation: 'listing_quality_seed_review_action',
+    id: reviewId,
+    action: normalizedAction,
+    planned_decision: {
+      review_status: reviewStatus,
+      status: nextStatus,
+      reviewed_by: decisionActor,
+      reviewed_at: reviewedAt,
+      review_reason: decisionReason,
+      phase_14g_decision_gate: true,
+      still_not_execution_candidate: true,
+      not_live_candidate: true,
+      not_packet: true,
+      not_approval: true,
+      not_execution_request: true,
+    },
+    before_review: current,
+    updated_review: updated ? normalizePhase14FSeedReviewRow(updated) : null,
+    hard_exclusion: detail.hard_exclusion,
+    verification: {
+      packet_count_before: before.listing_quality_packets,
+      packet_count_after: after.listing_quality_packets,
+      packet_created: after.listing_quality_packets > before.listing_quality_packets,
+      approval_request_count_before: before.approvals,
+      approval_request_count_after: after.approvals,
+      approval_created: after.approvals > before.approvals,
+      execution_request_count_before: before.execution_requests,
+      execution_request_count_after: after.execution_requests,
+      execution_request_created: after.execution_requests > before.execution_requests,
+      live_candidate_created: false,
+      listing_changed: false,
+      execution_state_updated: false,
+    },
+    recommended_next_action: writeRequested
+      ? 'Internal Phase 14G review decision recorded only. This remains not an execution candidate, not a packet, not an approval, not an execution request, and not a live candidate.'
+      : 'Dry-run only. Re-run with --write to update only the existing internal Phase 14F review row metadata/status.',
+    safety: phase14GSeedReviewSafetyFlags({ actualDatabaseWrite: writeRequested }),
+    source: 'phase_14g_seed_review_decision_gate_v1',
   };
 }
 
@@ -10890,6 +11098,8 @@ module.exports = {
   buildEbayListingQualitySeedScoringPreview,
   writeEbayListingQualitySeedReviewInbox,
   listEbayListingQualitySeedReviewInbox,
+  getEbayListingQualitySeedReviewDetail,
+  actOnEbayListingQualitySeedReview,
   auditEbayListingQualityCandidateSources,
   rescanEbayListingQualityCandidates,
   buildEbayListingQualityEvidenceRefreshPlan,

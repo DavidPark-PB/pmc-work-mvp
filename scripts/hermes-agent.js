@@ -76,6 +76,8 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-seed-scoring-preview [--limit=100] [--top=20]',
     '  npm run hermes:agent -- ebay-listing-quality-seed-review-inbox [--limit=20] [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-seed-review-list [--limit=20]',
+    '  npm run hermes:agent -- ebay-listing-quality-seed-review-detail --id=<REVIEW_ID>',
+    '  npm run hermes:agent -- ebay-listing-quality-seed-review-action --id=<REVIEW_ID> --action=<shortlist|reject> --actor=<USER> --reason=... [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-source-audit [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
     '  npm run hermes:agent -- ebay-listing-quality-evidence-refresh-plan [--limit=50]',
@@ -168,6 +170,7 @@ function printUsage() {
     'Phase 14D Seed Signal Dominance Audit: read-only audit separating listing-quality issues from price/inventory/stock context; no candidates or writes.',
     'Phase 14E Seed Scoring Preview: read-only deterministic listing-quality scoring/shortlist preview; no opportunities, packets, approvals, requests, DB writes, AI, or marketplace writes.',
     'Phase 14F Seed Human Review Inbox: dry-run by default; --write creates internal review inbox records only with idempotent fingerprints; no opportunities, packets, approvals, requests, live candidates, listing mutations, AI, or marketplace writes.',
+    'Phase 14G Seed Review Decision Gate: read-only detail/action dry-run by default; --write updates existing internal seed review metadata/status only; no packets, approvals, requests, live candidates, listing mutations, AI, or marketplace writes.',
   ].join('\n'));
 }
 
@@ -749,6 +752,32 @@ async function main() {
     const { listEbayListingQualitySeedReviewInbox } = require('../src/services/hermesExecutionApproval');
     const result = await listEbayListingQualitySeedReviewInbox({
       limit: intArg('limit', 20),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-seed-review-detail') {
+    const { getEbayListingQualitySeedReviewDetail } = require('../src/services/hermesExecutionApproval');
+    const reviewId = intArg('id', null);
+    if (reviewId == null) throw new Error('id is required');
+    const result = await getEbayListingQualitySeedReviewDetail({ id: reviewId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-seed-review-action') {
+    const { actOnEbayListingQualitySeedReview } = require('../src/services/hermesExecutionApproval');
+    const reviewId = intArg('id', null);
+    if (reviewId == null) throw new Error('id is required');
+    const write = hasFlag('write');
+    const result = await actOnEbayListingQualitySeedReview({
+      id: reviewId,
+      action: arg('action', null),
+      actor: arg('actor', null),
+      reason: arg('reason', null),
+      dryRun: !write,
+      write,
     });
     console.log(JSON.stringify(result, null, 2));
     return;
