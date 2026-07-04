@@ -9108,16 +9108,20 @@ function phase14AAUploadDuplicateGuard({ itemId, candidateSha256 } = {}) {
   const rows = phase14AAUploadRowsFor({ itemId, candidateSha256 });
   const successful = rows.filter(row => row.upload_succeeded === true && row.picture_url);
   const attempted = rows.filter(row => row.upload_attempt_count >= 1 || row.upload_attempted === true);
+  const correctedAttempts = rows.filter(row => row.corrected_upload_attempt === true || row.phase === '14AC');
   return {
     registry_path: PHASE14AA_IMAGE_UPLOAD_RESULT_PATH,
     previous_attempt_count: attempted.length,
     previous_success_count: successful.length,
+    corrected_attempt_count: correctedAttempts.length,
     previous_attempt_exists: attempted.length > 0,
     previous_successful_upload_exists: successful.length > 0,
+    previous_corrected_upload_attempt_exists: correctedAttempts.length > 0,
     duplicate_blocker_active: attempted.length > 0,
     duplicate_success_blocker_active: successful.length > 0,
     latest_upload: rows[rows.length - 1] || null,
     latest_successful_upload: successful[successful.length - 1] || null,
+    latest_corrected_upload: correctedAttempts[correctedAttempts.length - 1] || null,
   };
 }
 
@@ -9128,7 +9132,7 @@ async function buildEbayListingQualityImageUploadResult({ itemId } = {}) {
   const succeeded = latest?.upload_succeeded === true && Boolean(latest.picture_url);
   return {
     read_only: true,
-    phase: '14AA',
+    phase: latest?.phase || '14AA',
     item_id: plan.item_id,
     candidate_sha256: plan.candidate_sha256,
     image_path: plan.candidate_path,
@@ -9414,6 +9418,31 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
   const isDryRun = dryRun !== false;
   const envUploadEnabled = String(process.env.HERMES_EBAY_IMAGE_UPLOAD_ENABLED || '').toLowerCase() === 'true';
   const duplicateGuard = phase14AAUploadDuplicateGuard({ itemId: plan.item_id, candidateSha256: plan.candidate_sha256 });
+  const exactCorrectedReapprovalText = [
+    'Corrected eBay image upload transport approval after local pre-eBay exception.',
+    'item_id=206288370789 only.',
+    'image_path=/Users/parksungmin/Downloads/torune.jpeg only.',
+    'candidate_sha256=sha256:16883e4cb7af5ebb12b6948285742faff7d83bdd501600f5fee01428620a1f47 exact match only.',
+    'Allowed operation: UploadSiteHostedPictures only.',
+    'Forbidden operation: ReviseFixedPriceItem.',
+    'Forbidden changes: title, item_specifics, description, price, inventory, quantity, category, shipping, payment, returns.',
+    'One corrected upload attempt only.',
+    'Record returned PictureURL only.',
+    'No listing revise in the upload phase.',
+  ].join('\n');
+  const normalizedApprovalText = String(operatorApprovalText || '').replace(/\r\n/g, '\n').trim();
+  const correctedReapprovalMatches = normalizedApprovalText === exactCorrectedReapprovalText;
+  const latestUpload = duplicateGuard.latest_upload || null;
+  const latestErrorText = Array.isArray(latestUpload?.errors)
+    ? latestUpload.errors.map(error => error?.message || error?.long_message || error?.short_message || '').filter(Boolean).join('; ')
+    : '';
+  const previousAttemptWasLocalPreEbayException = latestUpload?.ebay_ack === 'Exception'
+    && latestUpload?.raw_response == null
+    && latestUpload?.picture_url == null
+    && /EbayAPI is not defined/i.test(latestErrorText);
+  const correctedUploadReapprovalActive = correctedReapprovalMatches
+    && previousAttemptWasLocalPreEbayException
+    && duplicateGuard.previous_corrected_upload_attempt_exists !== true;
   const blockers = [...(plan.blockers || []), ...(intent.blockers || [])];
   const exact = {
     item_id_exact: plan.item_id === '206288370789',
@@ -9432,12 +9461,15 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     if (write !== true) blockers.push('explicit_cli_write_required');
     if (liveEnabled !== true || !envUploadEnabled) blockers.push('hermes_ebay_image_upload_env_disabled');
   }
-  if (duplicateGuard.previous_attempt_exists) blockers.push('duplicate_image_upload_attempt_for_item_candidate');
   if (duplicateGuard.previous_successful_upload_exists) blockers.push('duplicate_successful_image_upload_for_item_candidate');
+  if (duplicateGuard.previous_corrected_upload_attempt_exists) blockers.push('duplicate_corrected_image_upload_attempt_for_item_candidate');
+  if (duplicateGuard.previous_attempt_exists && !correctedUploadReapprovalActive) {
+    blockers.push(correctedReapprovalMatches ? 'duplicate_image_upload_attempt_for_item_candidate' : 'corrected_upload_exact_reapproval_required');
+  }
 
   const base = {
     read_only: isDryRun,
-    phase: '14AA',
+    phase: correctedUploadReapprovalActive ? '14AC' : '14AA',
     item_id: plan.item_id,
     image_path: plan.candidate_path,
     candidate_sha256: plan.candidate_sha256,
@@ -9447,8 +9479,11 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     planned_future_api_operation: 'UploadSiteHostedPictures',
     expected_future_output: 'PictureURL',
     duplicate_guard: duplicateGuard,
+    corrected_upload_reapproval_active: correctedUploadReapprovalActive,
+    corrected_upload_reapproval_matches: correctedReapprovalMatches,
+    previous_attempt_was_local_pre_ebay_exception: previousAttemptWasLocalPreEbayException,
     exact_gate_checks: exact,
-    upload_attempt_count: isDryRun ? 0 : 1,
+    upload_attempt_count: isDryRun ? 0 : duplicateGuard.previous_attempt_count + 1,
     revise_fixed_price_item_called: false,
     listing_revise_performed: false,
     listing_changed: false,
@@ -9510,7 +9545,7 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
 
   const succeeded = uploadResponse?.success === true;
   const resultRecord = {
-    phase: '14AA',
+    phase: correctedUploadReapprovalActive ? '14AC' : '14AA',
     item_id: plan.item_id,
     image_path: plan.candidate_path,
     candidate_sha256: plan.candidate_sha256,
@@ -9520,7 +9555,9 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     warnings: uploadResponse?.warnings || [],
     timestamp: uploadResponse?.timestamp || attemptedAt,
     recorded_at: new Date().toISOString(),
-    upload_attempt_count: 1,
+    upload_attempt_count: duplicateGuard.previous_attempt_count + 1,
+    corrected_upload_attempt: correctedUploadReapprovalActive,
+    corrected_reapproval_text_matched: correctedReapprovalMatches,
     upload_attempted: true,
     upload_succeeded: succeeded,
     marketplace_image_upload_performed: succeeded,
@@ -9528,7 +9565,7 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     listing_revise_performed: false,
     revise_fixed_price_item_called: false,
     raw_response: uploadResponse?.raw_response || null,
-    source: 'phase_14aa_upload_site_hosted_pictures_result',
+    source: correctedUploadReapprovalActive ? 'phase_14ac_corrected_upload_site_hosted_pictures_result' : 'phase_14aa_upload_site_hosted_pictures_result',
   };
   const registry = phase14AAReadUploadResults();
   const updatedRegistry = phase14AAWriteUploadResults({
@@ -9567,7 +9604,9 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
       listing_revise_performed: false,
       revise_fixed_price_item_called: false,
     },
-    source: succeeded ? 'phase_14aa_image_upload_transport_success_v1' : 'phase_14aa_image_upload_transport_failure_v1',
+    source: correctedUploadReapprovalActive
+      ? (succeeded ? 'phase_14ac_corrected_image_upload_transport_success_v1' : 'phase_14ac_corrected_image_upload_transport_failure_v1')
+      : (succeeded ? 'phase_14aa_image_upload_transport_success_v1' : 'phase_14aa_image_upload_transport_failure_v1'),
   };
 }
 
