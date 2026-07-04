@@ -84,6 +84,7 @@ function printUsage() {
     '  npm run hermes:agent -- ebay-listing-quality-seed-promoted-opportunities [--limit=20]',
     '  npm run hermes:agent -- ebay-listing-quality-seed-promoted-opportunity-detail --id=<OPPORTUNITY_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-seed-promoted-opportunity-action --id=<OPPORTUNITY_ID> --action=<approve_for_packet|reject> --actor=<USER> --reason=... [--dry-run|--write]',
+    '  npm run hermes:agent -- ebay-listing-quality-seed-promoted-packet-preview --opportunity-id=<OPPORTUNITY_ID>',
     '  npm run hermes:agent -- ebay-listing-quality-seed-evidence-complete --id=<REVIEW_ID> [--dry-run|--write]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-source-audit [--limit=50]',
     '  npm run hermes:agent -- ebay-listing-quality-candidate-rescan [--limit=20] [--dry-run]',
@@ -182,6 +183,7 @@ function printUsage() {
     'Phase 14I Seed Evidence Completion: read-only GetItem plus optional --write internal evidence-cache upserts only; no listing mutation, opportunity, packet, approval, request, live candidate, AI, or marketplace write.',
     'Phase 14J Seed Review Promotion: dry-run by default; --write creates at most one normal internal human-review opportunity only; no eBay calls, packets, approvals, requests, live candidates, listing mutations, AI, or marketplace writes.',
     'Phase 14K Seed Promoted Opportunity Human Gate: dry-run by default; --write updates only existing internal seed-promoted opportunity metadata/status; no eBay calls, packets, approvals, requests, live candidates, listing mutations, AI, or marketplace writes.',
+    'Phase 14L Seed Promoted Packet Preview: read-only packet-shaped preview only from cached evidence; no DB writes, eBay calls, packets, approvals, requests, live candidates, listing mutations, AI, or marketplace writes.',
   ].join('\n'));
 }
 
@@ -857,6 +859,15 @@ async function main() {
       dryRun: !write,
       write,
     });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-seed-promoted-packet-preview') {
+    const { buildEbayListingQualitySeedPromotedPacketPreview } = require('../src/services/hermesExecutionApproval');
+    const opportunityId = intArg('opportunity-id', intArg('id', null));
+    if (opportunityId == null) throw new Error('opportunity-id is required');
+    const result = await buildEbayListingQualitySeedPromotedPacketPreview({ opportunityId });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
