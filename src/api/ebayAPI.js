@@ -1,5 +1,6 @@
 require('../config');
 const axios = require('axios');
+const fs = require('fs');
 const tokenStore = require('../services/tokenStore');
 
 /**
@@ -237,6 +238,55 @@ class EbayAPI {
       // 네트워크 / DNS / timeout 등 — 본문 검증 못한 경우
       throw new Error(`eBay API Error: ${error.message}`);
     }
+  }
+
+
+  /**
+   * UploadSiteHostedPictures — approved image transport helper.
+   * Uses the existing Trading API auth/token path via callTradingAPI; no new auth logic.
+   */
+  async uploadSiteHostedPicture({ imagePath, pictureName, pictureSet = 'Supersize' } = {}) {
+    if (!imagePath) throw new Error('imagePath is required');
+    if (!fs.existsSync(imagePath)) throw new Error(`image file not found: ${imagePath}`);
+    const pictureData = fs.readFileSync(imagePath).toString('base64');
+    const requestBody = `
+  <PictureName>${this.escapeXml(pictureName || 'hermes-replacement-image')}</PictureName>
+  <PictureSet>${this.escapeXml(pictureSet || 'Supersize')}</PictureSet>
+  <PictureData>${pictureData}</PictureData>`;
+    const raw = await this.callTradingAPI('UploadSiteHostedPictures', requestBody);
+    const rawText = typeof raw === 'string' ? raw : JSON.stringify(raw || '');
+    const textOf = (tag) => {
+      const match = rawText.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+      return match ? match[1].trim() : null;
+    };
+    const allTextOf = (tag) => [...rawText.matchAll(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'gi'))]
+      .map(match => match[1].trim())
+      .filter(Boolean);
+    const errors = [...rawText.matchAll(/<Errors>([\s\S]*?)<\/Errors>/gi)].map(match => {
+      const block = match[1];
+      const read = (tag) => {
+        const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+        return m ? m[1].trim() : null;
+      };
+      return {
+        code: read('ErrorCode'),
+        severity: read('SeverityCode'),
+        short_message: read('ShortMessage'),
+        long_message: read('LongMessage'),
+      };
+    });
+    const pictureUrl = textOf('FullURL') || textOf('PictureURL') || textOf('URL');
+    return {
+      raw_response: rawText,
+      ack: textOf('Ack') || 'Unknown',
+      timestamp: textOf('Timestamp'),
+      picture_url: pictureUrl,
+      picture_urls: allTextOf('FullURL').concat(allTextOf('PictureURL')).filter(Boolean),
+      errors,
+      warnings: errors.filter(error => /warning/i.test(error.severity || '')),
+      success: ['Success', 'Warning'].includes(textOf('Ack') || '') && Boolean(pictureUrl),
+      api_operation: 'UploadSiteHostedPictures',
+    };
   }
 
   /**
