@@ -7410,6 +7410,8 @@ async function buildEbayListingQualitySeedLiveReadiness({ approvalId } = {}) {
     request_final_approval_status_approved: request?.final_approval_status === 'approved',
     request_executed_at_is_null: request ? request.executed_at == null : null,
     request_execution_result_is_null: request ? request.execution_result == null : null,
+    metadata_external_action_executed_false: request ? request.metadata?.external_action_executed === false : null,
+    metadata_marketplace_execution_approved_false: request ? request.metadata?.marketplace_execution_approved === false : null,
     target_item_id_exact: String(packet?.item_id || approval?.target_item_id || '') === '206288370789',
     operation_listing_quality_update: (request?.metadata?.operation || approval?.operation || payload?.operation || null) === 'listing_quality_update',
     planned_mutation_fields_exact: JSON.stringify(plannedFields) === JSON.stringify(['title', 'item_specifics']),
@@ -7447,6 +7449,8 @@ async function buildEbayListingQualitySeedLiveReadiness({ approvalId } = {}) {
   if (!checks.request_final_approval_status_approved) blockers.push('request_final_approval_status_not_approved');
   if (!checks.request_executed_at_is_null) blockers.push('request_executed_at_present');
   if (!checks.request_execution_result_is_null) blockers.push('request_execution_result_present');
+  if (!checks.metadata_external_action_executed_false) blockers.push('metadata_external_action_executed_not_false');
+  if (!checks.metadata_marketplace_execution_approved_false) blockers.push('metadata_marketplace_execution_approved_not_false');
   if (!checks.target_item_id_exact) blockers.push('target_item_id_not_206288370789');
   if (!checks.operation_listing_quality_update) blockers.push('operation_not_listing_quality_update');
   if (!checks.planned_mutation_fields_exact) blockers.push('planned_mutation_fields_not_title_and_item_specifics');
@@ -7574,6 +7578,161 @@ async function buildEbayListingQualitySeedLiveRunbook({ approvalId } = {}) {
   };
 }
 
+function buildPhase14TSeedLiveExecutionBlockers({ readiness, payload, request, packet, liveEnabled, envLiveEnabled, writeRequested } = {}) {
+  const payloadSummary = readiness?.payload_summary || payload?.payload_summary || {};
+  const item = payload?.payload?.Item || readiness?.payload_preview?.Item || {};
+  const payloadFields = Array.isArray(payloadSummary.payload_fields) ? payloadSummary.payload_fields : [];
+  const plannedFields = Object.keys(packet?.planned_mutation || readiness?.planned_mutation || {});
+  const nameValueList = item?.ItemSpecifics?.NameValueList || [];
+  const payloadItemSpecifics = Object.fromEntries((Array.isArray(nameValueList) ? nameValueList : []).map(entry => [entry.Name, entry.Value]));
+  const forbiddenPayloadKeys = [
+    'Description', 'StartPrice', 'Price', 'Quantity', 'Inventory', 'InventoryStatus',
+    'ShippingDetails', 'Shipping', 'PaymentMethods', 'Payment', 'ReturnPolicy', 'Returns',
+    'PrimaryCategory', 'SecondaryCategory', 'Category', 'PictureDetails', 'PictureURL', 'Images'
+  ];
+  const blockers = [];
+  if (writeRequested !== true) blockers.push('write_flag_required');
+  if (liveEnabled !== true) blockers.push('live_ebay_execution_disabled');
+  if (envLiveEnabled !== true) blockers.push('live_ebay_execution_env_disabled');
+  if (readiness?.approval_id !== 37) blockers.push('approval_id_not_37');
+  if (readiness?.request_id !== 5 || request?.id !== 5) blockers.push('request_id_not_5');
+  if (readiness?.packet_id !== 4 || packet?.id !== 4) blockers.push('packet_id_not_4');
+  if (String(readiness?.target_item_id || packet?.item_id || '') !== '206288370789') blockers.push('target_item_id_not_206288370789');
+  if (readiness?.checks?.approval_status_approved !== true) blockers.push('approval_status_not_approved');
+  if (readiness?.checks?.final_operator_approval !== true) blockers.push('final_operator_approval_not_true');
+  if (request?.final_approval_status !== 'approved') blockers.push('request_final_approval_status_not_approved');
+  if (request?.executed_at != null) blockers.push('request_executed_at_present');
+  if (request?.execution_result != null) blockers.push('request_execution_result_present');
+  if (request?.metadata?.external_action_executed !== false) blockers.push('metadata_external_action_executed_not_false');
+  if (request?.metadata?.marketplace_execution_approved !== false) blockers.push('metadata_marketplace_execution_approved_not_false');
+  if (packet?.confirmation_status !== 'confirmed') blockers.push('packet_confirmation_status_not_confirmed');
+  if (JSON.stringify(plannedFields) !== JSON.stringify(['title', 'item_specifics'])) blockers.push('planned_mutation_fields_not_title_and_item_specifics');
+  if (JSON.stringify(payloadFields) !== JSON.stringify(['Title', 'ItemSpecifics'])) blockers.push('payload_fields_not_title_and_item_specifics');
+  if (item.Title !== 'Torune Dolphin Sea Friend Food Picks 8pc Bento Lunch Decoration Picks') blockers.push('payload_title_not_expected_final_title');
+  if (payloadItemSpecifics.Brand !== 'Torune'
+    || payloadItemSpecifics.Type !== 'Food Pick'
+    || payloadItemSpecifics.Theme !== 'Dolphin Sea Friend'
+    || String(payloadItemSpecifics['Number in Pack'] || '') !== '8') blockers.push('payload_item_specifics_not_expected_final_values');
+  if (Object.prototype.hasOwnProperty.call(item, 'Description') || payloadSummary.updates_description === true) blockers.push('description_mutation_present');
+  if (forbiddenPayloadKeys.some(key => Object.prototype.hasOwnProperty.call(item, key))) blockers.push('forbidden_payload_field_present');
+  if (payloadSummary.forbidden_fields_present === true) blockers.push('payload_forbidden_fields_present');
+  if (Array.isArray(payloadSummary.forbidden_fields) && payloadSummary.forbidden_fields.length) blockers.push('payload_forbidden_fields_present');
+  if (Array.isArray(payloadSummary.non_allowed_fields) && payloadSummary.non_allowed_fields.length) blockers.push('payload_non_allowed_fields_present');
+  if ((readiness?.previous_marketplace_execution_event_count_for_request_id_5 || 0) > 0) blockers.push('previous_marketplace_execution_event_exists');
+  if ((readiness?.previous_marketplace_execution_event_count_for_item_id_206288370789 || 0) > 0) blockers.push('previous_marketplace_execution_event_exists');
+  if (readiness?.rollback_snapshot_summary?.available !== true) blockers.push('rollback_snapshot_missing');
+  if (readiness?.ready_for_seed_live_path_review !== true) blockers.push('phase_14s_checklist_ready_for_explicit_user_live_approval_not_true');
+  return [...new Set(blockers)];
+}
+
+async function persistPhase14TSeedLiveExecutionResult({ packet, request, payload, transportResult } = {}) {
+  const parsed = transportResult?.parsed_response || {};
+  const success = parsed.success === true;
+  const timestamp = parsed.timestamp || new Date().toISOString();
+  const rollbackSnapshot = prepareEbayListingQualityRollbackSnapshot({ packet });
+  const executionResult = {
+    packet_id: packet.id,
+    request_id: request.id,
+    marketplace: 'ebay',
+    operation: 'listing_quality_update',
+    api_operation: 'ReviseFixedPriceItem',
+    item_id: packet.item_id,
+    target_item_id: packet.item_id,
+    payload: payload.payload,
+    payload_summary: payload.payload_summary,
+    payload_fields: payload.payload_summary?.payload_fields || [],
+    rollback_snapshot: rollbackSnapshot,
+    raw_response: transportResult.raw_response || null,
+    parsed_response: parsed,
+    success,
+    ack: parsed.ack || null,
+    warnings: parsed.warnings || [],
+    errors: parsed.errors || [],
+    warnings_count: (parsed.warnings || []).length,
+    errors_count: (parsed.errors || []).length,
+    correlation_id: parsed.correlation_id || null,
+    response_timestamp: parsed.timestamp || null,
+    actual_ebay_call: transportResult.actual_ebay_call === true,
+    actual_network_call: transportResult.actual_network_call === true,
+    marketplace_write_performed: success && transportResult.marketplace_write_performed === true,
+    listing_changed: success && transportResult.marketplace_write_performed === true,
+    revise_fixed_price_item_called: transportResult.actual_ebay_call === true,
+    live_transport_called: transportResult.actual_ebay_call === true,
+    title_changes: true,
+    item_specifics_changes: true,
+    description_changes: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    shipping_changes: false,
+    payment_changes: false,
+    returns_changes: false,
+    category_changes: false,
+    image_changes: false,
+    recorded_at: new Date().toISOString(),
+    source: 'phase_14t_seed_live_single_sku_title_and_item_specifics_execution_v1',
+  };
+  const eventType = success ? 'marketplace_execution_completed' : 'marketplace_execution_failed';
+  const event = await recordExecutionEvent({
+    requestId: request.id,
+    eventType,
+    actor: 'operator',
+    payload: executionResult,
+  });
+
+  const db = getClient();
+  const metadata = {
+    ...(request.metadata || {}),
+    external_action_executed: true,
+    marketplace_execution_approved: true,
+    marketplace_execution_packet_id: packet.id,
+    marketplace_execution_event_id: event.id,
+    marketplace_execution_completed_at: success ? timestamp : null,
+    marketplace_execution_failed_at: success ? null : timestamp,
+    marketplace_execution_scope: 'phase_14t_seed_single_sku_title_and_item_specifics',
+    actual_ebay_call: true,
+    actual_network_call: true,
+    live_transport_called: true,
+    revise_fixed_price_item_called: true,
+    marketplace_write_performed: success && transportResult.marketplace_write_performed === true,
+    listing_changed: success && transportResult.marketplace_write_performed === true,
+    marketplace_execution_title_changes: true,
+    marketplace_execution_item_specifics_changes: true,
+    marketplace_execution_description_changes: false,
+    marketplace_execution_price_changes: false,
+    marketplace_execution_inventory_changes: false,
+    marketplace_execution_quantity_changes: false,
+  };
+  const { data, error } = await db
+    .from(REQUEST_TABLE)
+    .update({
+      status: success ? 'executed' : 'failed',
+      executed_at: timestamp,
+      execution_result: executionResult,
+      metadata,
+    })
+    .eq('id', request.id)
+    .is('executed_at', null)
+    .is('execution_result', null)
+    .select('*')
+    .single();
+  if (error) throw error;
+
+  return {
+    execution_recorded: true,
+    execution_success: success,
+    event,
+    updated_request: data,
+    execution_result: executionResult,
+    executed_at: data.executed_at,
+    execution_result_updated: true,
+    executed_at_updated: true,
+    note: success
+      ? 'eBay response parsed as success/warning; executed_at and execution_result were recorded after the confirmed Phase 14T response.'
+      : 'eBay response was not success; marketplace failure event, executed_at, and execution_result were recorded to block automatic retry.',
+  };
+}
+
 async function callEbayListingQualitySeedLiveTransportBoundary({ approvalId, dryRun = true, write = false, liveEnabled = false } = {}) {
   const id = intOrNull(approvalId);
   if (id == null) throw new Error('approval-id is required');
@@ -7581,10 +7740,24 @@ async function callEbayListingQualitySeedLiveTransportBoundary({ approvalId, dry
   const isDryRun = !writeRequested;
   const envLiveEnabled = String(process.env.HERMES_EBAY_LIVE_EXECUTION_ENABLED || '').toLowerCase() === 'true';
   const readiness = await buildEbayListingQualitySeedLiveReadiness({ approvalId: id });
+  const context = readiness.packet_id != null ? await loadPhase14OPacketContext({ packetId: readiness.packet_id }) : {};
+  const request = context.request || null;
+  const packet = context.packet || null;
+  const intent = packet && request ? buildEbayListingQualityExecutionIntent({ packet, request, dryRun: true }) : null;
+  const payload = packet && request ? buildEbayListingQualityRevisePayload({ packet, request, intent }) : null;
   const readinessBlockers = Array.isArray(readiness.blockers) ? readiness.blockers : [];
   const payloadSummary = readiness.payload_summary || {};
   const payloadPreview = readiness.payload_preview || null;
-  const payloadReady = readinessBlockers.length === 0
+  const phase14TBlockers = buildPhase14TSeedLiveExecutionBlockers({
+    readiness,
+    payload,
+    request,
+    packet,
+    liveEnabled: liveEnabled === true,
+    envLiveEnabled,
+    writeRequested,
+  });
+  const dryRunPayloadReady = readinessBlockers.length === 0
     && payloadPreview?.Item?.ItemID === '206288370789'
     && payloadPreview?.Item?.Title === 'Torune Dolphin Sea Friend Food Picks 8pc Bento Lunch Decoration Picks'
     && JSON.stringify(payloadSummary.payload_fields || []) === JSON.stringify(['Title', 'ItemSpecifics'])
@@ -7592,16 +7765,19 @@ async function callEbayListingQualitySeedLiveTransportBoundary({ approvalId, dry
     && payloadSummary.updates_description === false
     && payloadSummary.updates_item_specifics === true
     && payloadSummary.forbidden_fields_present === false;
+  const payloadReady = isDryRun ? dryRunPayloadReady : phase14TBlockers.length === 0;
   const liveBlockers = [];
   if (writeRequested) {
     if (liveEnabled !== true) liveBlockers.push('live_ebay_execution_disabled');
     if (envLiveEnabled !== true) liveBlockers.push('live_ebay_execution_env_disabled');
-    liveBlockers.push('phase_14r_live_execution_not_permitted');
+    if (phase14TBlockers.length) liveBlockers.push('phase_14r_live_execution_not_permitted');
+    liveBlockers.push(...phase14TBlockers);
   }
-  const blockers = [...new Set([...readinessBlockers, ...liveBlockers])];
+  const blockers = isDryRun ? readinessBlockers : [...new Set([...readinessBlockers, ...liveBlockers])];
   const blocked = blockers.length > 0;
-
-  return {
+  const ebayApiModulePath = resolveExistingEbayApiModulePath();
+  const baseResult = {
+    read_only: true,
     dry_run: isDryRun,
     write_requested: writeRequested,
     approval_id: readiness.approval_id,
@@ -7614,10 +7790,12 @@ async function callEbayListingQualitySeedLiveTransportBoundary({ approvalId, dry
     marketplace: 'ebay',
     operation: 'listing_quality_update',
     api_operation: 'ReviseFixedPriceItem',
+    phase_14t_seed_live_gate: true,
     ready_for_live_call: payloadReady,
     would_call_ebay: payloadReady,
     blocked,
     blockers,
+    phase14t_live_execution_blockers: isDryRun ? [] : phase14TBlockers,
     actual_ebay_call: false,
     actual_network_call: false,
     actual_database_write: false,
@@ -7629,6 +7807,7 @@ async function callEbayListingQualitySeedLiveTransportBoundary({ approvalId, dry
     execution_result_updated: false,
     marketplace_execution_event_created: false,
     payload_ready: payloadReady,
+    payload: payload?.payload || payloadPreview,
     payload_summary: {
       updates_title: payloadSummary.updates_title === true,
       updates_description: payloadSummary.updates_description === true,
@@ -7646,7 +7825,10 @@ async function callEbayListingQualitySeedLiveTransportBoundary({ approvalId, dry
     previous_marketplace_execution_event_count_for_item_id_206288370789: readiness.previous_marketplace_execution_event_count_for_item_id_206288370789 || 0,
     live_enabled: liveEnabled === true,
     env_live_enabled: envLiveEnabled,
-    phase_14r_live_execution_not_permitted: writeRequested,
+    phase_14r_live_execution_not_permitted: writeRequested && phase14TBlockers.length > 0,
+    existing_ebay_api_module_path: ebayApiModulePath ? 'src/api/ebayAPI.js' : null,
+    existing_ebay_api_auth_logic_reused: Boolean(ebayApiModulePath),
+    new_auth_logic_created: false,
     safety: {
       ...phase14QSeedLiveReadinessSafety(),
       read_only: true,
@@ -7654,12 +7836,75 @@ async function callEbayListingQualitySeedLiveTransportBoundary({ approvalId, dry
       actual_network_call: false,
       actual_database_write: false,
       marketplace_execution_event_created: false,
-      phase_14r_does_not_execute_ebay: true,
-      real_live_execution_requires_separate_user_approval: true,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      description_changes: false,
     },
-    source: 'phase_14r_seed_live_transport_boundary_v1',
+    source: 'phase_14t_seed_live_transport_gate_v1',
+  };
+
+  if (!writeRequested || blocked || !payloadReady) return baseResult;
+
+  const transportResult = await callEbayListingQualityLiveTransport({
+    packet,
+    request,
+    payload,
+    dryRun: false,
+    writeRequested: true,
+    liveEnabled: true,
+    ebayApiModulePath,
+  });
+  const liveBase = {
+    ...baseResult,
+    ...transportResult,
+    read_only: false,
+    actual_ebay_call: transportResult.actual_ebay_call === true,
+    actual_network_call: transportResult.actual_network_call === true,
+    marketplace_write_performed: transportResult.marketplace_write_performed === true,
+    live_transport_called: transportResult.actual_ebay_call === true,
+    revise_fixed_price_item_called: transportResult.actual_ebay_call === true,
+    listing_changed: transportResult.marketplace_write_performed === true,
+    source: 'phase_14t_seed_live_transport_execution_v1',
+  };
+  if (transportResult.blocked || transportResult.actual_ebay_call !== true) return liveBase;
+
+  const persistence = await persistPhase14TSeedLiveExecutionResult({
+    packet,
+    request,
+    payload,
+    transportResult,
+  });
+  return {
+    ...liveBase,
+    actual_database_write: true,
+    execution_recorded: persistence.execution_recorded,
+    execution_success: persistence.execution_success,
+    event: persistence.event,
+    event_id: persistence.event?.id || null,
+    event_type: persistence.event?.event_type || null,
+    executed_at: persistence.executed_at,
+    execution_result_updated: persistence.execution_result_updated,
+    executed_at_updated: persistence.executed_at_updated,
+    marketplace_execution_event_created: true,
+    execution_result: persistence.execution_result,
+    persistence_note: persistence.note,
+    safety: {
+      ...(liveBase.safety || {}),
+      database_writes: true,
+      execution_result_updated: persistence.execution_result_updated,
+      executed_at_updated: persistence.executed_at_updated,
+      marketplace_execution_event_created: true,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      title_changes: true,
+      description_changes: false,
+      item_specifics_changes: true,
+    },
   };
 }
+
 
 async function buildEbayListingQualitySeedLiveApprovalChecklist({ approvalId } = {}) {
   const id = intOrNull(approvalId);
