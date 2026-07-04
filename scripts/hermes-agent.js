@@ -1110,6 +1110,31 @@ async function main() {
     return;
   }
 
+
+  if (cmd === 'ebay-listing-quality-image-upload-approval-checklist') {
+    const { buildEbayListingQualityImageUploadApprovalChecklist } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    if (!itemId) throw new Error('item-id is required');
+    const result = await buildEbayListingQualityImageUploadApprovalChecklist({ itemId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-listing-quality-image-upload-transport') {
+    const { callEbayListingQualityImageUploadTransport } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    if (!itemId) throw new Error('item-id is required');
+    const result = await callEbayListingQualityImageUploadTransport({
+      itemId,
+      dryRun: !hasFlag('write'),
+      write: hasFlag('write'),
+      liveEnabled: String(process.env.HERMES_EBAY_IMAGE_UPLOAD_ENABLED || '').toLowerCase() === 'true',
+      operatorApprovalText: arg('approval-text', null),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-listing-quality-seed-live-approval-checklist') {
     const { buildEbayListingQualitySeedLiveApprovalChecklist } = require('../src/services/hermesExecutionApproval');
     const approvalId = intArg('approval-id', intArg('id', null));
