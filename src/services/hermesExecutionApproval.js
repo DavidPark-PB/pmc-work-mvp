@@ -10906,6 +10906,159 @@ async function buildEbayPublicPictureUrlPacketPreview({ itemId, create = false }
   };
 }
 
+function phase14AUExactPublicPictureUrlApprovalText() {
+  return [
+    'Actual eBay listing revise approval for public PictureURL packet.',
+    'request_id=6 only.',
+    'packet_id=5 only.',
+    'item_id=206288370789 only.',
+    'Allowed operation: ReviseFixedPriceItem only.',
+    'Allowed changes: title, item_specifics, images.',
+    'PictureDetails.PictureURL=https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/products/206288370789-98542bad69eed4a5-srgb-white-800-q90-420-baseline.jpg only.',
+    'Forbidden operation: UploadSiteHostedPictures.',
+    'Forbidden changes: description, price, inventory, quantity, category, shipping, payment, returns.',
+    'One live listing revise attempt only.',
+    'Record eBay response.',
+    'Do not push.',
+  ].join('\n');
+}
+
+function phase14AUAllowedForbiddenAudit(plannedMutation = {}) {
+  const expectedFields = ['title', 'item_specifics', 'images'];
+  const actualFields = Object.keys(plannedMutation || {});
+  const forbidden = ['description', 'price', 'inventory', 'quantity', 'category', 'shipping', 'payment', 'returns'];
+  const forbiddenPresent = forbidden.filter(field => Object.prototype.hasOwnProperty.call(plannedMutation || {}, field));
+  const nonAllowed = actualFields.filter(field => !expectedFields.includes(field));
+  const expectedSet = JSON.stringify([...actualFields].sort()) === JSON.stringify([...expectedFields].sort());
+  return {
+    planned_fields_exactly_title_item_specifics_images: expectedSet,
+    expected_planned_fields: expectedFields,
+    actual_planned_fields: actualFields,
+    forbidden_fields_absent: forbiddenPresent.length === 0 && nonAllowed.length === 0,
+    forbidden_fields_present: forbiddenPresent,
+    non_allowed_fields_present: nonAllowed,
+    checks: {
+      no_description: !Object.prototype.hasOwnProperty.call(plannedMutation || {}, 'description'),
+      no_price: !Object.prototype.hasOwnProperty.call(plannedMutation || {}, 'price'),
+      no_inventory: !Object.prototype.hasOwnProperty.call(plannedMutation || {}, 'inventory'),
+      no_quantity: !Object.prototype.hasOwnProperty.call(plannedMutation || {}, 'quantity'),
+      no_category: !Object.prototype.hasOwnProperty.call(plannedMutation || {}, 'category'),
+      no_shipping: !Object.prototype.hasOwnProperty.call(plannedMutation || {}, 'shipping'),
+      no_payment: !Object.prototype.hasOwnProperty.call(plannedMutation || {}, 'payment'),
+      no_returns: !Object.prototype.hasOwnProperty.call(plannedMutation || {}, 'returns'),
+    },
+  };
+}
+
+function phase14AUApprovalSafety() {
+  return {
+    actual_ebay_call: false,
+    actual_network_call: false,
+    upload_site_hosted_pictures_called: false,
+    revise_fixed_price_item_called: false,
+    marketplace_write_performed: false,
+    listing_changed: false,
+    listing_revise_performed: false,
+    image_uploaded: false,
+    execution_request_created: false,
+    packet_created: false,
+    actual_database_write: false,
+    token_values_printed: false,
+    token_values_modified: false,
+    live_execution_performed: false,
+    ai_calls: false,
+  };
+}
+
+async function buildEbayPublicPictureUrlFinalApprovalReadiness({ requestId } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('request-id is required');
+  const request = await getExecutionRequest({ requestId: id });
+  const packet = await getEbayListingQualityPacket({ packetId: 5 });
+  const plannedMutation = packet?.planned_mutation || request?.requested_action?.planned_mutation || {};
+  const images = plannedMutation.images || {};
+  const pictureUrls = Array.isArray(images?.PictureDetails?.PictureURL)
+    ? images.PictureDetails.PictureURL
+    : (images?.PictureDetails?.PictureURL ? [images.PictureDetails.PictureURL] : []);
+  const expectedUrl = 'https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/products/206288370789-98542bad69eed4a5-srgb-white-800-q90-420-baseline.jpg';
+  const audit = phase14AUAllowedForbiddenAudit(plannedMutation);
+  const blockers = [];
+  if (id !== 6) blockers.push('request_id_not_6');
+  if (!request || request.id !== 6) blockers.push('request_id_6_missing');
+  if (!packet || packet.id !== 5) blockers.push('packet_id_5_missing');
+  if (packet && packet.request_id !== 6) blockers.push('packet_request_id_not_6');
+  if (String(packet?.item_id || '') !== '206288370789') blockers.push('item_id_not_206288370789');
+  if (request?.status !== 'pending_approval') blockers.push('request_status_not_pending_approval');
+  if (packet?.status !== 'packet_recorded') blockers.push('packet_status_not_packet_recorded');
+  if (request?.executed_at) blockers.push('request_already_executed');
+  if (request?.execution_result) blockers.push('request_execution_result_already_present');
+  if (!audit.planned_fields_exactly_title_item_specifics_images) blockers.push('planned_fields_not_exactly_title_item_specifics_images');
+  if (!audit.forbidden_fields_absent) blockers.push('forbidden_fields_present');
+  if (pictureUrls.length !== 1 || pictureUrls[0] !== expectedUrl) blockers.push('picture_details_picture_url_not_exact');
+  if (request?.metadata?.marketplace_write_performed === true) blockers.push('marketplace_write_already_performed');
+  if (request?.metadata?.revise_fixed_price_item_called === true) blockers.push('revise_fixed_price_item_already_called');
+  if (request?.metadata?.upload_site_hosted_pictures_called === true) blockers.push('upload_site_hosted_pictures_already_called');
+  return {
+    read_only: true,
+    phase: '14AU',
+    request_id: request?.id || id,
+    packet_id: packet?.id || null,
+    item_id: packet?.item_id || request?.requested_action?.target_item_id || null,
+    request_status: request?.status || null,
+    packet_status: packet?.status || null,
+    confirmation_status: packet?.confirmation_status || null,
+    final_approval_status: request?.final_approval_status || null,
+    planned_fields_exactly: ['title', 'item_specifics', 'images'],
+    actual_planned_fields: audit.actual_planned_fields,
+    planned_fields_exact_match: audit.planned_fields_exactly_title_item_specifics_images,
+    title_mutation: plannedMutation.title || null,
+    item_specifics_mutation: plannedMutation.item_specifics || {},
+    picture_details_picture_url: pictureUrls[0] || null,
+    picture_details_picture_url_exact: pictureUrls.length === 1 && pictureUrls[0] === expectedUrl,
+    forbidden_fields_absent: audit.forbidden_fields_absent,
+    forbidden_field_audit: audit,
+    allowed_operation_for_future_live_phase: 'ReviseFixedPriceItem',
+    forbidden_operation: 'UploadSiteHostedPictures',
+    allowed_changes: ['title', 'item_specifics', 'images'],
+    forbidden_changes: ['description', 'price', 'inventory', 'quantity', 'category', 'shipping', 'payment', 'returns'],
+    one_live_listing_revise_attempt_only: true,
+    ready_for_explicit_operator_live_approval: blockers.length === 0,
+    blockers: [...new Set(blockers)],
+    future_live_execution_not_performed_in_this_phase: true,
+    safety: phase14AUApprovalSafety(),
+    source: 'phase_14au_public_picture_url_final_approval_readiness_v1',
+  };
+}
+
+async function buildEbayPublicPictureUrlFinalApprovalChecklist({ requestId } = {}) {
+  const readiness = await buildEbayPublicPictureUrlFinalApprovalReadiness({ requestId });
+  const exactApprovalText = phase14AUExactPublicPictureUrlApprovalText();
+  const blockers = [...(readiness.blockers || [])];
+  if (readiness.ready_for_explicit_operator_live_approval !== true) blockers.push('final_approval_readiness_not_met');
+  return {
+    read_only: true,
+    phase: '14AU',
+    request_id: readiness.request_id,
+    packet_id: readiness.packet_id,
+    item_id: readiness.item_id,
+    exact_operator_approval_text: exactApprovalText,
+    allowed_operation: 'ReviseFixedPriceItem',
+    forbidden_operation: 'UploadSiteHostedPictures',
+    allowed_changes: ['title', 'item_specifics', 'images'],
+    forbidden_changes: ['description', 'price', 'inventory', 'quantity', 'category', 'shipping', 'payment', 'returns'],
+    picture_details_picture_url: readiness.picture_details_picture_url,
+    one_live_listing_revise_attempt_only: true,
+    record_ebay_response_required: true,
+    do_not_push: true,
+    ready_for_explicit_operator_live_approval: blockers.length === 0,
+    blockers: [...new Set(blockers)],
+    readiness,
+    future_live_command_do_not_run_in_phase_14au: 'HERMES_EBAY_LIVE_EXECUTION_ENABLED=true npm run hermes:agent -- <future-public-picture-url-live-transport-command> --request-id=6 --write --approval-text="<exact approval text>"',
+    safety: phase14AUApprovalSafety(),
+    source: 'phase_14au_public_picture_url_final_approval_checklist_v1',
+  };
+}
+
 async function buildEbayTokenRefreshReadiness({ operation = 'UploadSiteHostedPictures' } = {}) {
   const requestedOperation = String(operation || 'UploadSiteHostedPictures');
   const source = await phase14AELoadEbayTokenSourceData();
@@ -19049,6 +19202,8 @@ module.exports = {
   buildEbayPictureUrlCandidateReadiness,
   buildEbayPublicPictureUrlPacketReadiness,
   buildEbayPublicPictureUrlPacketPreview,
+  buildEbayPublicPictureUrlFinalApprovalReadiness,
+  buildEbayPublicPictureUrlFinalApprovalChecklist,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,
