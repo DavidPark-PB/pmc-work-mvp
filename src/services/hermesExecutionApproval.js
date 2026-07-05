@@ -14524,6 +14524,187 @@ async function buildProfitInventoryActionableShortlist({ limit = 25, inputLimit 
   };
 }
 
+function phase17CCostValue(row = {}) {
+  const keys = ['cost_usd', 'cost', 'unit_cost', 'purchase_cost', 'supplier_cost', 'item_cost', 'landed_cost', 'average_cost', 'avg_cost'];
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(row, key)) {
+      const value = phase17AToNumber(row[key], null);
+      if (value != null) return { key, value };
+    }
+  }
+  const raw = row.raw || row.raw_data || row.metadata || {};
+  if (raw && typeof raw === 'object') {
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(raw, key)) {
+        const value = phase17AToNumber(raw[key], null);
+        if (value != null) return { key: `raw.${key}`, value };
+      }
+    }
+  }
+  return { key: null, value: null };
+}
+
+function phase17CIsTestOrSandbox(row = {}) {
+  return /(test|sample|mock|demo)/i.test(`${row.sku || ''} ${row.title || ''}`);
+}
+
+async function phase17CLoadCostRows(limit) {
+  const safeLimit = Math.max(1, Math.min(1000, intOrNull(limit) || 500));
+  const db = getClient();
+  const { data, error } = await db
+    .from('ebay_products')
+    .select('*')
+    .order('updated_at', { ascending: false })
+    .limit(safeLimit);
+  if (error) throw error;
+  return data || [];
+}
+
+function phase17CRowSummary(row = {}) {
+  const cost = phase17CCostValue(row);
+  return {
+    sku: String(row.sku || row.item_id || '').trim(),
+    item_id: String(row.item_id || '').trim(),
+    title: row.title || '',
+    listing_status: row.status || '',
+    current_price: phase17ARoundMoney(row.price_usd ?? row.price ?? 0),
+    cost: cost.value == null ? 0 : phase17ARoundMoney(cost.value),
+    cost_source_field: cost.key,
+    is_test_or_sandbox: phase17CIsTestOrSandbox(row),
+  };
+}
+
+function phase17CClassification(row = {}) {
+  const text = JSON.stringify(row).toLowerCase();
+  const summary = phase17CRowSummary(row);
+  if (summary.is_test_or_sandbox) return 'should_exclude_test_or_sandbox';
+  if (/purchase|po_|purchase_order|last_purchase|buy_cost/.test(text)) return 'can_infer_from_purchase_data';
+  if (/supplier|vendor|wholesale|source_url|sourcing/.test(text)) return 'can_infer_from_supplier_data';
+  if (/import|csv|upload|batch|sheet|spreadsheet/.test(text)) return 'can_infer_from_recent_import';
+  if (summary.sku && summary.item_id && summary.title && summary.current_price > 0) return 'needs_manual_cost_input';
+  return 'insufficient_data';
+}
+
+function phase17CSafety() {
+  return {
+    read_only: true,
+    cached_internal_data_only: true,
+    marketplace_write: false,
+    db_write: false,
+    ai_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    upload_site_hosted_pictures_called: false,
+    execution_request_created: false,
+    packet_created: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_changes: false,
+  };
+}
+
+async function buildProfitInventoryCostCoverageAudit({ limit = 500, enrichmentLimit = 20 } = {}) {
+  const safeLimit = Math.max(1, Math.min(1000, intOrNull(limit) || 500));
+  const rows = await phase17CLoadCostRows(safeLimit);
+  const scanned = rows.length;
+  const withCostRows = [];
+  const missingCostRows = [];
+  const zeroCostRows = [];
+
+  for (const row of rows) {
+    const cost = phase17CCostValue(row);
+    if (cost.value == null) {
+      missingCostRows.push(row);
+    } else if (cost.value > 0) {
+      withCostRows.push(row);
+    } else {
+      zeroCostRows.push(row);
+    }
+  }
+
+  const hygiene = await buildProfitInventoryOpportunityHygiene({ limit: Math.min(100, safeLimit) });
+  const missingCostBlocked = (hygiene.blocked_opportunities || [])
+    .filter(row => (row.blocked_reasons || []).includes('missing_or_zero_cost_for_margin_or_risk_decision'));
+  const affectedOpportunityTypes = missingCostBlocked.reduce((acc, row) => {
+    const type = row.opportunity_type || 'unknown';
+    acc[type] = (acc[type] || 0) + 1;
+    return acc;
+  }, {});
+  const candidateLimit = Math.max(1, Math.min(500, intOrNull(enrichmentLimit) || 20));
+  const enrichmentSourceRows = [...zeroCostRows, ...missingCostRows].slice(0, candidateLimit);
+  const enrichmentCandidates = enrichmentSourceRows.map((row, index) => ({
+    rank: index + 1,
+    ...phase17CRowSummary(row),
+    enrichment_classification: phase17CClassification(row),
+    recommended_next_action: phase17CClassification(row) === 'should_exclude_test_or_sandbox'
+      ? 'exclude_from_profit_inventory_execution'
+      : 'collect_cost_data',
+    requires_ai: false,
+    requires_marketplace_write: false,
+  }));
+  const coveragePct = scanned > 0 ? Math.round((withCostRows.length / scanned) * 10000) / 100 : 0;
+  const recommendationBlockedCount = missingCostBlocked.length;
+  const recommendationUnblockedCount = hygiene.actionable_count || 0;
+
+  return {
+    phase: '17C',
+    mode: 'read_only',
+    cost_coverage: {
+      scanned,
+      with_cost: withCostRows.length,
+      missing_cost: missingCostRows.length,
+      zero_cost: zeroCostRows.length,
+      coverage_pct: coveragePct,
+    },
+    recommendation_unblocked_count: recommendationUnblockedCount,
+    recommendation_blocked_count: recommendationBlockedCount,
+    profit_inventory_recommendations_blocked: recommendationBlockedCount > 0 && recommendationUnblockedCount === 0,
+    affected_opportunity_types: affectedOpportunityTypes,
+    top_skus_blocked_by_missing_cost: missingCostBlocked.slice(0, 25).map(row => ({
+      rank: row.rank,
+      sku: row.sku,
+      item_id: row.item_id,
+      title: row.title,
+      opportunity_type: row.opportunity_type,
+      current_price: row.current_price,
+      cost: row.cost,
+      blocked_reasons: row.blocked_reasons,
+    })),
+    enrichment_candidates: enrichmentCandidates,
+    next_step: recommendationBlockedCount > 0 ? 'cost_enrichment_required' : 'cost_coverage_sufficient_for_review',
+    marketplace_write: false,
+    db_write: false,
+    ai_call: false,
+    no_execution_requests_created: true,
+    no_packets_created: true,
+    no_ebay_call: true,
+    no_get_item_call: true,
+    no_revise_fixed_price_item_call: true,
+    no_price_inventory_listing_changes: true,
+    safety: phase17CSafety(),
+    source: 'phase_17c_profit_inventory_cost_coverage_audit_v1',
+  };
+}
+
+async function buildProfitInventoryCostEnrichmentPlan({ limit = 100, scanLimit = 500 } = {}) {
+  const safeLimit = Math.max(1, Math.min(500, intOrNull(limit) || 100));
+  const audit = await buildProfitInventoryCostCoverageAudit({
+    limit: Math.max(safeLimit, Math.min(1000, intOrNull(scanLimit) || 500)),
+    enrichmentLimit: safeLimit,
+  });
+  const classificationSummary = (audit.enrichment_candidates || []).reduce((acc, row) => {
+    const key = row.enrichment_classification || 'insufficient_data';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  return {
+    ...audit,
+    enrichment_limit: safeLimit,
+    enrichment_classification_summary: classificationSummary,
+    source: 'phase_17c_profit_inventory_cost_enrichment_plan_v1',
+  };
+}
+
 async function buildEbayPublicPictureUrlCandidateReviewChecklist({ itemId } = {}) {
   const detail = await buildEbayPublicPictureUrlCandidateDetail({ itemId });
   const checklist = [
@@ -23373,6 +23554,8 @@ module.exports = {
   buildProfitInventoryOpportunityPlan,
   buildProfitInventoryOpportunityHygiene,
   buildProfitInventoryActionableShortlist,
+  buildProfitInventoryCostCoverageAudit,
+  buildProfitInventoryCostEnrichmentPlan,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,

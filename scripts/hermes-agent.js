@@ -34,6 +34,8 @@ function printUsage() {
     '  npm run hermes:agent -- profit-inventory-opportunity-plan [--limit=50]',
     '  npm run hermes:agent -- profit-inventory-opportunity-hygiene [--limit=50]',
     '  npm run hermes:agent -- profit-inventory-actionable-shortlist [--limit=25]',
+    '  npm run hermes:agent -- profit-inventory-cost-coverage-audit [--limit=500]',
+    '  npm run hermes:agent -- profit-inventory-cost-enrichment-plan [--limit=100]',
     '  npm run hermes:agent -- market --sku=<SKU>',
     '  npm run hermes:agent -- opportunity --sku=<SKU> [--type=<TYPE>]',
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> [--type=<TYPE>] --dry-run',
@@ -233,6 +235,24 @@ async function main() {
     const { buildProfitInventoryActionableShortlist } = require('../src/services/hermesExecutionApproval');
     const result = await buildProfitInventoryActionableShortlist({
       limit: intArg('limit', 25),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'profit-inventory-cost-coverage-audit') {
+    const { buildProfitInventoryCostCoverageAudit } = require('../src/services/hermesExecutionApproval');
+    const result = await buildProfitInventoryCostCoverageAudit({
+      limit: intArg('limit', 500),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'profit-inventory-cost-enrichment-plan') {
+    const { buildProfitInventoryCostEnrichmentPlan } = require('../src/services/hermesExecutionApproval');
+    const result = await buildProfitInventoryCostEnrichmentPlan({
+      limit: intArg('limit', 100),
     });
     console.log(JSON.stringify(result, null, 2));
     return;
