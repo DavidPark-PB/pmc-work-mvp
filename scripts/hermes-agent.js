@@ -1518,6 +1518,33 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-mini-batch-image-intake-checklist') {
+    const { buildEbayPublicPictureUrlMiniBatchImageIntakeChecklist } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayPublicPictureUrlMiniBatchImageIntakeChecklist({
+      limit: arg('limit', 5),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-mini-batch-url-template') {
+    const { buildEbayPublicPictureUrlMiniBatchUrlTemplate } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayPublicPictureUrlMiniBatchUrlTemplate({
+      limit: arg('limit', 5),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-mini-batch-validate-urls') {
+    const { validateEbayPublicPictureUrlMiniBatchUrls } = require('../src/services/hermesExecutionApproval');
+    const result = await validateEbayPublicPictureUrlMiniBatchUrls({
+      urlMap: arg('url-map', '{}'),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-public-picture-url-candidate-shortlist') {
     const { buildEbayPublicPictureUrlCandidateShortlist } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayPublicPictureUrlCandidateShortlist({

@@ -12927,6 +12927,187 @@ async function buildEbayPublicPictureUrlMiniBatchPlan({ limit = 5 } = {}) {
   };
 }
 
+const PHASE16B_READY_LOW_RISK_ITEM_IDS = ['206332929888', '206371786121', '206387679082'];
+const PHASE16B_BLOCKED_HIGH_RISK_ITEM_IDS = ['206273302162', '206273302295'];
+
+function phase16BMiniBatchImageIntakeSafety() {
+  return {
+    read_only: true,
+    cached_internal_evidence_only: true,
+    actual_ebay_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    upload_site_hosted_pictures_called: false,
+    marketplace_write_performed: false,
+    database_write_performed: false,
+    execution_request_created: false,
+    packet_created: false,
+    ai_calls: false,
+  };
+}
+
+async function buildEbayPublicPictureUrlMiniBatchImageIntakeChecklist({ limit = 5 } = {}) {
+  const plan = await buildEbayPublicPictureUrlMiniBatchPlan({ limit });
+  const candidates = plan.candidates || [];
+  const readyCandidates = candidates
+    .filter(row => PHASE16B_READY_LOW_RISK_ITEM_IDS.includes(String(row.item_id || '')) && row.risk_level === 'low')
+    .map(row => ({
+      item_id: row.item_id,
+      title: row.title,
+      risk_level: row.risk_level,
+      recommended_allowed_changes: ['images'],
+      public_picture_url_needed: true,
+      ready_for_url_intake: true,
+      ready_for_human_review: row.ready_for_human_review === true,
+      ready_for_packet_creation: false,
+      checklist: [
+        'Operator must provide one public HTTPS image URL for this item before a future packet phase.',
+        'URL host must not be localhost/private/internal.',
+        'URL path should look like an image URL (.jpg, .jpeg, .png, or .webp).',
+        'Allowed changes remain images only.',
+        'Price, inventory, quantity, title, item specifics, description, category, shipping, payment, and returns remain blocked.',
+      ],
+    }));
+  const blockedCandidates = candidates
+    .filter(row => PHASE16B_BLOCKED_HIGH_RISK_ITEM_IDS.includes(String(row.item_id || '')))
+    .map(row => ({
+      item_id: row.item_id,
+      title: row.title,
+      risk_level: row.risk_level,
+      ready_for_url_intake: false,
+      ready_for_packet_creation: false,
+      blocked_until_cached_evidence_refreshed: true,
+      block_reason: 'High-risk candidate from Phase 16A: cached listing evidence is incomplete and must be refreshed/reviewed before packet creation.',
+    }));
+  return {
+    mini_batch_url_intake_ready: readyCandidates.length === PHASE16B_READY_LOW_RISK_ITEM_IDS.length,
+    ready_item_ids: PHASE16B_READY_LOW_RISK_ITEM_IDS,
+    blocked_item_ids: PHASE16B_BLOCKED_HIGH_RISK_ITEM_IDS,
+    ready_for_packet_creation: false,
+    marketplace_write: false,
+    read_only: true,
+    phase: '16B',
+    operation: 'public_picture_url_mini_batch_image_intake_checklist',
+    limit: Math.min(10, Math.max(1, intOrNull(limit) || 5)),
+    ready_candidates: readyCandidates,
+    blocked_candidates: blockedCandidates,
+    url_template: Object.fromEntries(PHASE16B_READY_LOW_RISK_ITEM_IDS.map(itemId => [itemId, ''])),
+    source_plan_summary: {
+      mini_batch_ready: plan.mini_batch_ready,
+      candidate_count: candidates.length,
+      excluded_request_ids: plan.excluded_request_ids,
+      excluded_packet_ids: plan.excluded_packet_ids,
+      excluded_item_ids: plan.excluded_item_ids,
+    },
+    no_writes_performed: true,
+    safety: phase16BMiniBatchImageIntakeSafety(),
+    source: 'phase_16b_public_picture_url_mini_batch_image_intake_checklist_v1',
+  };
+}
+
+async function buildEbayPublicPictureUrlMiniBatchUrlTemplate({ limit = 5 } = {}) {
+  const checklist = await buildEbayPublicPictureUrlMiniBatchImageIntakeChecklist({ limit });
+  return {
+    mini_batch_url_intake_ready: checklist.mini_batch_url_intake_ready,
+    ready_item_ids: checklist.ready_item_ids,
+    blocked_item_ids: checklist.blocked_item_ids,
+    ready_for_packet_creation: false,
+    marketplace_write: false,
+    url_map_template: Object.fromEntries(checklist.ready_item_ids.map(itemId => [itemId, ''])),
+    read_only: true,
+    phase: '16B',
+    operation: 'public_picture_url_mini_batch_url_template',
+    instructions: 'Fill each value with one public HTTPS image URL, then pass the JSON as --url-map to ebay-public-picture-url-mini-batch-validate-urls.',
+    no_writes_performed: true,
+    safety: phase16BMiniBatchImageIntakeSafety(),
+    source: 'phase_16b_public_picture_url_mini_batch_url_template_v1',
+  };
+}
+
+function phase16BParseUrlMap(urlMap) {
+  if (urlMap == null || urlMap === '') return {};
+  if (typeof urlMap === 'object' && !Array.isArray(urlMap)) return urlMap;
+  try {
+    const parsed = JSON.parse(String(urlMap));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('url-map must be a JSON object');
+    return parsed;
+  } catch (error) {
+    throw new Error(`Invalid url-map JSON: ${error.message || String(error)}`);
+  }
+}
+
+async function validateEbayPublicPictureUrlMiniBatchUrls({ urlMap = '{}' } = {}) {
+  const parsedUrlMap = phase16BParseUrlMap(urlMap);
+  const checklist = await buildEbayPublicPictureUrlMiniBatchImageIntakeChecklist({ limit: 5 });
+  const readySet = new Set(PHASE16B_READY_LOW_RISK_ITEM_IDS);
+  const blockedSet = new Set(PHASE16B_BLOCKED_HIGH_RISK_ITEM_IDS);
+  const entries = Object.entries(parsedUrlMap);
+  const validation_results = entries.map(([itemId, url]) => {
+    const normalizedItemId = String(itemId || '').trim();
+    const facts = phase15CUrlValidationFacts(url);
+    const itemApproved = readySet.has(normalizedItemId);
+    const itemBlocked = blockedSet.has(normalizedItemId);
+    const allowedChanges = ['images'];
+    const valid = itemApproved
+      && !itemBlocked
+      && facts.url_is_https === true
+      && facts.url_host_is_not_localhost_or_private === true
+      && facts.url_looks_like_image_url === true;
+    return {
+      item_id: normalizedItemId,
+      picture_url: facts.picture_url,
+      valid,
+      item_id_in_approved_low_risk_mini_batch: itemApproved,
+      item_id_blocked_high_risk: itemBlocked,
+      url_is_https: facts.url_is_https,
+      url_host_is_not_localhost_or_private: facts.url_host_is_not_localhost_or_private,
+      url_looks_like_image_url: facts.url_looks_like_image_url,
+      allowed_changes: allowedChanges,
+      change_scope_remains_images_only: allowedChanges.length === 1 && allowedChanges[0] === 'images',
+      ready_for_packet_creation: false,
+      marketplace_write: false,
+      url_host: facts.url_host,
+      url_pathname: facts.url_pathname,
+      url_parse_error: facts.url_parse_error,
+      blockers: [
+        ...(itemApproved ? [] : ['item_id_not_in_approved_low_risk_mini_batch']),
+        ...(itemBlocked ? ['item_id_blocked_until_cached_evidence_refreshed'] : []),
+        ...(facts.url_is_https ? [] : ['url_not_https']),
+        ...(facts.url_host_is_not_localhost_or_private ? [] : ['url_host_localhost_or_private_or_invalid']),
+        ...(facts.url_looks_like_image_url ? [] : ['url_does_not_look_like_image_url']),
+      ],
+    };
+  });
+  const missing_ready_item_ids = PHASE16B_READY_LOW_RISK_ITEM_IDS.filter(itemId => !Object.prototype.hasOwnProperty.call(parsedUrlMap, itemId));
+  const invalid_item_ids = validation_results.filter(row => !row.valid).map(row => row.item_id);
+  return {
+    mini_batch_url_intake_ready: checklist.mini_batch_url_intake_ready,
+    ready_item_ids: PHASE16B_READY_LOW_RISK_ITEM_IDS,
+    blocked_item_ids: PHASE16B_BLOCKED_HIGH_RISK_ITEM_IDS,
+    ready_for_packet_creation: false,
+    marketplace_write: false,
+    read_only: true,
+    phase: '16B',
+    operation: 'public_picture_url_mini_batch_validate_urls',
+    supplied_item_ids: entries.map(([itemId]) => String(itemId || '').trim()),
+    missing_ready_item_ids,
+    invalid_item_ids,
+    all_supplied_urls_valid: entries.length > 0 && invalid_item_ids.length === 0,
+    validation_results,
+    allowed_changes: ['images'],
+    url_validation_rules: [
+      'HTTPS only',
+      'not localhost/private',
+      'looks like image URL',
+      'item_id is in the approved low-risk mini-batch list',
+      'allowed_changes remains ["images"]',
+    ],
+    no_writes_performed: true,
+    safety: phase16BMiniBatchImageIntakeSafety(),
+    source: 'phase_16b_public_picture_url_mini_batch_validate_urls_v1',
+  };
+}
+
 async function buildEbayPublicPictureUrlCandidateReviewChecklist({ itemId } = {}) {
   const detail = await buildEbayPublicPictureUrlCandidateDetail({ itemId });
   const checklist = [
@@ -21756,6 +21937,9 @@ module.exports = {
   buildEbayPublicPictureUrlRolloutReadiness,
   buildEbayPublicPictureUrlNextCandidatePlan,
   buildEbayPublicPictureUrlMiniBatchPlan,
+  buildEbayPublicPictureUrlMiniBatchImageIntakeChecklist,
+  buildEbayPublicPictureUrlMiniBatchUrlTemplate,
+  validateEbayPublicPictureUrlMiniBatchUrls,
   buildEbayPublicPictureUrlCandidateShortlist,
   buildEbayPublicPictureUrlCandidateDetail,
   buildEbayPublicPictureUrlCandidateReviewChecklist,
