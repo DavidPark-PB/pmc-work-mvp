@@ -12612,6 +12612,9 @@ async function phase15BExecutedPublicPictureUrlState() {
     successful_phase14_request_id: 6,
     successful_phase14_packet_id: 5,
     successful_phase14_item_id: '206288370789',
+    successful_phase15_request_id: 7,
+    successful_phase15_packet_id: 7,
+    successful_phase15_item_id: '206284142714',
   };
 }
 
@@ -12624,13 +12627,13 @@ async function buildEbayPublicPictureUrlCandidateDetail({ itemId } = {}) {
   const evidenceScore = phase15BEvidenceScore(evidence);
   const risk = phase15BRiskSummary(evidence);
   const executedState = await phase15BExecutedPublicPictureUrlState();
-  const duplicateWithPhase14 = targetItemId === '206288370789';
-  const previousExecutedPublicPictureUrlRequest = executedState.executed_item_ids.includes(targetItemId);
+  const duplicateWithCompletedRollout = ['206288370789', '206284142714'].includes(targetItemId);
+  const previousExecutedPublicPictureUrlRequest = executedState.executed_item_ids.includes(targetItemId) || duplicateWithCompletedRollout;
   const recommendedAllowedChanges = [];
   if (issues.some(issue => /^title_/.test(issue.type))) recommendedAllowedChanges.push('title');
   if (issues.some(issue => /^item_specifics_/.test(issue.type))) recommendedAllowedChanges.push('item_specifics');
   if (imageNeed > 0) recommendedAllowedChanges.push('images');
-  const readyForHumanReview = !duplicateWithPhase14 && targetItemId !== '206288370789' && Boolean(evidence.item_id || targetItemId);
+  const readyForHumanReview = !duplicateWithCompletedRollout && Boolean(evidence.item_id || targetItemId);
   const currentListingSummary = {
     sku: evidence.sku || targetItemId,
     item_id: evidence.item_id || targetItemId,
@@ -12680,16 +12683,22 @@ async function buildEbayPublicPictureUrlCandidateDetail({ itemId } = {}) {
       cached_listing_evidence_score: evidenceScore,
       low_risk_of_accidental_price_inventory_category_description_change: risk.low_risk_of_accidental_price_inventory_category_description_change,
       no_previous_executed_public_picture_url_request: !previousExecutedPublicPictureUrlRequest,
-      no_duplicate_with_item_id_206288370789: !duplicateWithPhase14,
+      no_duplicate_with_item_id_206288370789: targetItemId !== '206288370789',
+      no_duplicate_with_item_id_206284142714: targetItemId !== '206284142714',
+      no_duplicate_with_completed_public_picture_url_rollouts: !duplicateWithCompletedRollout,
       no_duplicate_with_request_id_6_packet_id_5: targetItemId !== '206288370789',
+      no_duplicate_with_request_id_7_packet_id_7: targetItemId !== '206284142714',
     },
     duplicate_guard: {
       previous_executed_public_picture_url_request: previousExecutedPublicPictureUrlRequest,
-      duplicate_with_item_id_206288370789: duplicateWithPhase14,
+      duplicate_with_item_id_206288370789: targetItemId === '206288370789',
+      duplicate_with_item_id_206284142714: targetItemId === '206284142714',
+      duplicate_with_completed_public_picture_url_rollout: duplicateWithCompletedRollout,
       duplicate_with_request_id_6_packet_id_5: targetItemId === '206288370789',
-      excluded_request_ids: [6],
-      excluded_packet_ids: [5],
-      excluded_item_ids: ['206288370789'],
+      duplicate_with_request_id_7_packet_id_7: targetItemId === '206284142714',
+      excluded_request_ids: [6, 7],
+      excluded_packet_ids: [5, 7],
+      excluded_item_ids: ['206288370789', '206284142714'],
     },
     safety: {
       read_only: true,
@@ -12715,7 +12724,8 @@ async function buildEbayPublicPictureUrlCandidateShortlist({ limit = 10 } = {}) 
     details.push(await buildEbayPublicPictureUrlCandidateDetail({ itemId }));
   }
   const ranked = details
-    .filter(row => row.duplicate_guard.duplicate_with_item_id_206288370789 !== true)
+    .filter(row => row.duplicate_guard.duplicate_with_completed_public_picture_url_rollout !== true)
+    .filter(row => row.duplicate_guard.previous_executed_public_picture_url_request !== true)
     .map(row => {
       const factors = row.ranking_factors;
       const score = factors.listing_quality_issue_severity_score
@@ -12724,7 +12734,10 @@ async function buildEbayPublicPictureUrlCandidateShortlist({ limit = 10 } = {}) 
         + (factors.low_risk_of_accidental_price_inventory_category_description_change ? 50 : -80)
         + (factors.no_previous_executed_public_picture_url_request ? 20 : -100)
         + (factors.no_duplicate_with_item_id_206288370789 ? 10 : -100)
-        + (factors.no_duplicate_with_request_id_6_packet_id_5 ? 10 : -100);
+        + (factors.no_duplicate_with_item_id_206284142714 ? 10 : -100)
+        + (factors.no_duplicate_with_completed_public_picture_url_rollouts ? 10 : -100)
+        + (factors.no_duplicate_with_request_id_6_packet_id_5 ? 10 : -100)
+        + (factors.no_duplicate_with_request_id_7_packet_id_7 ? 10 : -100);
       return { ...row, rollout_rank_score: score };
     })
     .sort((a, b) => b.rollout_rank_score - a.rollout_rank_score || String(a.item_id).localeCompare(String(b.item_id)))
@@ -12751,10 +12764,12 @@ async function buildEbayPublicPictureUrlCandidateShortlist({ limit = 10 } = {}) 
     limit: safeLimit,
     input_candidate_item_ids: PHASE15B_CANDIDATE_ITEM_IDS,
     exclusions: {
-      excluded_request_ids: [6],
-      excluded_packet_ids: [5],
-      excluded_item_ids: ['206288370789'],
+      excluded_request_ids: [6, 7],
+      excluded_packet_ids: [5, 7],
+      excluded_item_ids: ['206288370789', '206284142714'],
+      no_duplicate_with_completed_public_picture_url_rollouts: true,
       no_duplicate_with_phase14_success_item: true,
+      no_duplicate_with_phase15_success_item: true,
       no_previous_executed_public_picture_url_request_required: true,
     },
     ranking_factors: [
@@ -12763,8 +12778,11 @@ async function buildEbayPublicPictureUrlCandidateShortlist({ limit = 10 } = {}) 
       'availability_of_cached_listing_evidence',
       'low_risk_of_accidental_price_inventory_category_description_change',
       'no_previous_executed_public_picture_url_request',
+      'no_duplicate_with_completed_public_picture_url_rollouts',
       'no_duplicate_with_item_id_206288370789',
+      'no_duplicate_with_item_id_206284142714',
       'no_duplicate_with_request_id_6_packet_id_5',
+      'no_duplicate_with_request_id_7_packet_id_7',
     ],
     ranked_candidates: ranked,
     selected_candidate: ranked[0] || null,
@@ -12784,6 +12802,128 @@ async function buildEbayPublicPictureUrlCandidateShortlist({ limit = 10 } = {}) 
       ai_calls: false,
     },
     source: 'phase_15b_public_picture_url_candidate_shortlist_v1',
+  };
+}
+
+function phase16APublicPictureUrlMiniBatchCandidate(row) {
+  const factors = row.ranking_factors || {};
+  const issueScore = Number(factors.listing_quality_issue_severity_score || 0);
+  const imageNeedScore = Number(factors.image_improvement_need_score || 0);
+  const evidenceScore = Number(factors.cached_listing_evidence_score || 0);
+  const lowRisk = factors.low_risk_of_accidental_price_inventory_category_description_change === true;
+  const noPreviousExecuted = factors.no_previous_executed_public_picture_url_request === true;
+  const readyForHumanReview = row.ready_for_human_review === true;
+  const imagesOnlySuitable = imageNeedScore > 0 && noPreviousExecuted && readyForHumanReview;
+  const riskLevel = lowRisk ? 'low' : (evidenceScore >= 35 ? 'medium' : 'high');
+  const score = issueScore
+    + (imageNeedScore * 2)
+    + (evidenceScore * 2)
+    + (lowRisk ? 50 : -40)
+    + (noPreviousExecuted ? 50 : -200)
+    + (imagesOnlySuitable ? 40 : -120)
+    + (readyForHumanReview ? 20 : -80);
+  const issueTypes = (row.listing_quality_issues || []).map(issue => issue.type).join(', ') || 'none';
+  const reasoning = [
+    `Rank score ${score}; listing quality severity score ${issueScore}; image need score ${imageNeedScore}; cached evidence score ${evidenceScore}.`,
+    lowRisk
+      ? 'Risk is low because cached listing evidence supports avoiding accidental non-image changes.'
+      : `Risk is ${riskLevel}; operator should review cached evidence before any future packet phase.`,
+    noPreviousExecuted
+      ? 'No previous executed public PictureURL request is recorded for this item.'
+      : 'Blocked from mini-batch because a previous executed public PictureURL request exists.',
+    imagesOnlySuitable
+      ? 'Candidate is suitable for an images-only public PictureURL review because image improvement is needed and non-image changes remain blocked.'
+      : 'Candidate is not images-only-ready without human review or additional cached evidence.',
+    `Listing quality issues observed from cached evidence: ${issueTypes}.`,
+  ].join(' ');
+  return {
+    item_id: row.item_id,
+    title: row.title,
+    mini_batch_rank_score: score,
+    recommended_allowed_changes: ['images'],
+    public_picture_url_needed: true,
+    ready_for_human_review: readyForHumanReview,
+    ready_for_packet_creation: false,
+    risk_level: riskLevel,
+    reasoning,
+    ranking_factors: {
+      listing_quality_issue_severity_score: issueScore,
+      image_improvement_need_score: imageNeedScore,
+      cached_listing_evidence_score: evidenceScore,
+      low_risk_of_accidental_non_image_changes: lowRisk,
+      no_previous_executed_public_picture_url_request: noPreviousExecuted,
+      candidate_suitable_for_images_only_update: imagesOnlySuitable,
+      human_review_readiness: readyForHumanReview,
+    },
+  };
+}
+
+async function buildEbayPublicPictureUrlMiniBatchPlan({ limit = 5 } = {}) {
+  const safeLimit = Math.min(10, Math.max(1, intOrNull(limit) || 5));
+  const details = [];
+  for (const itemId of PHASE15B_CANDIDATE_ITEM_IDS) {
+    details.push(await buildEbayPublicPictureUrlCandidateDetail({ itemId }));
+  }
+  const excludedRequestIds = [6, 7];
+  const excludedPacketIds = [5, 7];
+  const excludedItemIds = ['206288370789', '206284142714'];
+  const mapped = details
+    .filter(row => !excludedItemIds.includes(String(row.item_id || '')))
+    .filter(row => row.duplicate_guard?.previous_executed_public_picture_url_request !== true)
+    .map(phase16APublicPictureUrlMiniBatchCandidate)
+    .filter(row => row.ranking_factors.candidate_suitable_for_images_only_update === true)
+    .sort((a, b) => b.mini_batch_rank_score - a.mini_batch_rank_score || String(a.item_id).localeCompare(String(b.item_id)))
+    .slice(0, safeLimit)
+    .map((row, index) => ({
+      rank: index + 1,
+      item_id: row.item_id,
+      title: row.title,
+      recommended_allowed_changes: row.recommended_allowed_changes,
+      public_picture_url_needed: row.public_picture_url_needed,
+      ready_for_human_review: row.ready_for_human_review,
+      ready_for_packet_creation: row.ready_for_packet_creation,
+      risk_level: row.risk_level,
+      reasoning: row.reasoning,
+      ranking_factors: row.ranking_factors,
+      mini_batch_rank_score: row.mini_batch_rank_score,
+    }));
+  return {
+    mini_batch_ready: mapped.length > 0,
+    limit: safeLimit,
+    excluded_request_ids: excludedRequestIds,
+    excluded_packet_ids: excludedPacketIds,
+    excluded_item_ids: excludedItemIds,
+    candidates: mapped,
+    marketplace_write: false,
+    read_only: true,
+    phase: '16A',
+    operation: 'public_picture_url_mini_batch_plan',
+    ranking_factors: [
+      'listing_quality_issue_severity',
+      'image_improvement_need',
+      'cached_listing_evidence_availability',
+      'low_risk_of_accidental_non_image_changes',
+      'no_previous_executed_public_picture_url_request',
+      'candidate_suitable_for_images_only_update',
+      'human_review_readiness',
+    ],
+    no_writes_performed: true,
+    require_human_review_before_packet_creation: true,
+    ready_for_packet_creation: false,
+    safety: {
+      read_only: true,
+      cached_internal_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      database_write_performed: false,
+      execution_request_created: false,
+      packet_created: false,
+      ai_calls: false,
+    },
+    source: 'phase_16a_public_picture_url_mini_batch_plan_v1',
   };
 }
 
@@ -21615,6 +21755,7 @@ module.exports = {
   buildEbayPublicPictureUrlDuplicateGuard,
   buildEbayPublicPictureUrlRolloutReadiness,
   buildEbayPublicPictureUrlNextCandidatePlan,
+  buildEbayPublicPictureUrlMiniBatchPlan,
   buildEbayPublicPictureUrlCandidateShortlist,
   buildEbayPublicPictureUrlCandidateDetail,
   buildEbayPublicPictureUrlCandidateReviewChecklist,

@@ -1509,6 +1509,15 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-mini-batch-plan') {
+    const { buildEbayPublicPictureUrlMiniBatchPlan } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayPublicPictureUrlMiniBatchPlan({
+      limit: arg('limit', 5),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-public-picture-url-candidate-shortlist') {
     const { buildEbayPublicPictureUrlCandidateShortlist } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayPublicPictureUrlCandidateShortlist({
