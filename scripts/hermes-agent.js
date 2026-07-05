@@ -41,9 +41,11 @@ function printUsage() {
     '  npm run hermes:agent -- listing-profitability-input-export --listings=<CSV_FILE> --out=<CSV_FILE>',
     '  npm run hermes:agent -- listing-profitability-input-validate --file=<CSV_FILE>',
     '  npm run hermes:agent -- listing-profitability-calculate --file=<CSV_FILE>',
-    '  npm run hermes:agent -- listing-profitability-overlay-template --listings=<CSV_FILE> [--limit=200] --out=<CSV_FILE>',
+    '  npm run hermes:agent -- listing-profitability-overlay-template --listings=<CSV_FILE> [--limit=200] [--sort=quantity_sold_desc] --out=<CSV_FILE>',
     '  npm run hermes:agent -- listing-profitability-overlay-validate --file=<CSV_FILE>',
     '  npm run hermes:agent -- listing-profitability-calculate-overlay --listings=<CSV_FILE> --overlay=<CSV_FILE>',
+    '  npm run hermes:agent -- listing-profitability-calculate-overlay-filled --listings=<CSV_FILE> --overlay=<CSV_FILE>',
+    '  npm run hermes:agent -- listing-profitability-result-export --listings=<CSV_FILE> --overlay=<CSV_FILE> --out=<CSV_FILE>',
     '  npm run hermes:agent -- market --sku=<SKU>',
     '  npm run hermes:agent -- opportunity --sku=<SKU> [--type=<TYPE>]',
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> [--type=<TYPE>] --dry-run',
@@ -335,6 +337,7 @@ async function main() {
     const result = exportListingProfitabilityOverlayTemplate({
       listings,
       limit: intArg('limit', 200),
+      sort: arg('sort', null),
       out,
     });
     console.log(JSON.stringify(result, null, 2));
@@ -362,6 +365,33 @@ async function main() {
     }
     const { calculateListingProfitabilityOverlay } = require('../src/services/listingProfitabilityCalculator');
     const result = calculateListingProfitabilityOverlay({ listings, overlay });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'listing-profitability-calculate-overlay-filled') {
+    const listings = arg('listings', null);
+    const overlay = arg('overlay', null);
+    if (!listings || !overlay) {
+      printUsage();
+      throw new Error('listings and overlay are required');
+    }
+    const { calculateListingProfitabilityOverlayFilled } = require('../src/services/listingProfitabilityCalculator');
+    const result = calculateListingProfitabilityOverlayFilled({ listings, overlay });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'listing-profitability-result-export') {
+    const listings = arg('listings', null);
+    const overlay = arg('overlay', null);
+    const out = arg('out', null);
+    if (!listings || !overlay || !out) {
+      printUsage();
+      throw new Error('listings, overlay, and out are required');
+    }
+    const { exportListingProfitabilityResults } = require('../src/services/listingProfitabilityCalculator');
+    const result = exportListingProfitabilityResults({ listings, overlay, out });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
