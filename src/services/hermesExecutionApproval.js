@@ -11136,9 +11136,248 @@ function sanitizePhase14AVEbayResponse(parsed = {}) {
   };
 }
 
+async function phase15FPreviousLiveAttemptCount({ requestId }) {
+  const db = getClient();
+  const liveTypes = [
+    'phase_15f_public_picture_url_images_only_revise_started',
+    'phase_15f_public_picture_url_images_only_revise_completed',
+    'phase_15f_public_picture_url_images_only_revise_failed',
+    'marketplace_execution_started',
+    'marketplace_execution_completed',
+    'marketplace_execution_failed',
+    'request_executed',
+    'execution_completed',
+    'execution_failed',
+  ];
+  const { count, error } = await db
+    .from(EVENT_TABLE)
+    .select('*', { count: 'exact', head: true })
+    .eq('request_id', requestId)
+    .in('event_type', liveTypes);
+  if (error) throw error;
+  return count || 0;
+}
+
+async function executeEbayPublicPictureUrlImagesOnlyApprovedLiveRevise({ requestId, approvalText, dryRun = true, write = false, liveEnabled = false } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('request-id is required');
+  const exactApprovalText = phase15EExactPublicPictureUrlApprovalText();
+  const approvalTextMatches = String(approvalText || '') === exactApprovalText;
+  const readiness = await buildEbayPublicPictureUrlImagesOnlyFinalApprovalChecklist({ requestId: id });
+  const request = await getExecutionRequest({ requestId: id });
+  const packet = await getEbayListingQualityPacket({ packetId: 7 });
+  const previousLiveAttemptCount = await phase15FPreviousLiveAttemptCount({ requestId: id });
+  const plannedMutation = packet?.planned_mutation || {};
+  const requestBody = buildPhase14AVPublicPictureUrlReviseRequestBody(plannedMutation, '206284142714');
+  const isDryRun = dryRun !== false || write !== true;
+  const envLiveEnabled = String(process.env.HERMES_EBAY_LIVE_EXECUTION_ENABLED || '').toLowerCase() === 'true';
+  const blockers = [];
+  if (id !== 7) blockers.push('request_id_not_7');
+  if (packet?.id !== 7) blockers.push('packet_id_not_7');
+  if (String(packet?.item_id || '') !== '206284142714') blockers.push('item_id_not_206284142714');
+  if (readiness.ready_for_operator_approval !== true) blockers.push('readiness_not_met');
+  if (!approvalTextMatches) blockers.push('exact_operator_approval_text_missing_or_mismatch');
+  if (previousLiveAttemptCount > 0) blockers.push('previous_live_attempt_exists');
+  if (request?.executed_at != null) blockers.push('request_executed_at_present');
+  if (request?.execution_result != null) blockers.push('request_execution_result_present');
+  if (!isDryRun && liveEnabled !== true) blockers.push('live_execution_flag_not_enabled');
+  if (!isDryRun && envLiveEnabled !== true) blockers.push('live_execution_env_not_enabled');
+  const base = {
+    phase: '15F',
+    request_id: id,
+    packet_id: packet?.id || null,
+    item_id: packet?.item_id || null,
+    dry_run: isDryRun,
+    write_requested: write === true,
+    live_enabled: liveEnabled === true,
+    env_live_enabled: envLiveEnabled,
+    approval_text_matches: approvalTextMatches,
+    previous_live_attempt_count: previousLiveAttemptCount,
+    allowed_operation: 'ReviseFixedPriceItem',
+    forbidden_operation: 'UploadSiteHostedPictures',
+    planned_fields_exactly: ['images'],
+    picture_details_picture_url: readiness.picture_url,
+    request_body_xml_preview: requestBody,
+    readiness,
+    blockers: [...new Set(blockers)],
+    actual_ebay_call: false,
+    upload_site_hosted_pictures_called: false,
+    revise_fixed_price_item_called: false,
+    marketplace_write_performed: false,
+    listing_changed: false,
+    ai_calls: false,
+    source: 'phase_15f_public_picture_url_images_only_approved_live_revise_v1',
+  };
+  if (isDryRun || blockers.length) {
+    return {
+      ...base,
+      blocked: blockers.length > 0,
+      would_call_ebay: blockers.length === 0,
+      safety: {
+        actual_ebay_call: false,
+        actual_network_call: false,
+        get_item_called: false,
+        upload_site_hosted_pictures_called: false,
+        revise_fixed_price_item_called: false,
+        marketplace_write_performed: false,
+        listing_changed: false,
+        actual_database_write: false,
+        ai_calls: false,
+      },
+    };
+  }
+
+  const startedEvent = await recordExecutionEvent({
+    requestId: id,
+    eventType: 'phase_15f_public_picture_url_images_only_revise_started',
+    actor: 'operator',
+    payload: {
+      phase: '15F',
+      packet_id: 7,
+      item_id: '206284142714',
+      api_operation: 'ReviseFixedPriceItem',
+      allowed_changes: ['images'],
+      forbidden_operation: 'UploadSiteHostedPictures',
+      forbidden_changes: PHASE15C_SELECTED_CANDIDATE.blocked_changes,
+      picture_details_picture_url: readiness.picture_url,
+      one_live_revise_fixed_price_item_attempt_only: true,
+      approval_text_hash: sha256Text(exactApprovalText),
+      actual_ebay_call_starting: true,
+    },
+  });
+
+  let rawResponse;
+  let parsedResponse;
+  let thrownError = null;
+  try {
+    const ebay = new EbayAPI();
+    rawResponse = await ebay.callTradingAPI('ReviseFixedPriceItem', requestBody);
+    parsedResponse = parseEbayReviseFixedPriceItemResponse(rawResponse);
+  } catch (e) {
+    thrownError = e;
+    parsedResponse = {
+      success: false,
+      ack: 'Exception',
+      item_id: '206284142714',
+      correlation_id: null,
+      timestamp: new Date().toISOString(),
+      warnings: [],
+      errors: [{ message: e.message || String(e) }],
+    };
+  }
+  const sanitized = sanitizePhase14AVEbayResponse(parsedResponse);
+  const status = sanitized.success ? 'executed' : 'failed';
+  const completionEventType = sanitized.success
+    ? 'phase_15f_public_picture_url_images_only_revise_completed'
+    : 'phase_15f_public_picture_url_images_only_revise_failed';
+  const executionResult = {
+    phase: '15F',
+    request_id: id,
+    packet_id: 7,
+    item_id: '206284142714',
+    marketplace: 'ebay',
+    api_operation: 'ReviseFixedPriceItem',
+    operation: 'images_only_public_picture_url_update',
+    actual_ebay_call: true,
+    actual_network_call: true,
+    upload_site_hosted_pictures_called: false,
+    revise_fixed_price_item_called: true,
+    marketplace_write_performed: true,
+    listing_changed: sanitized.success,
+    title_changes: false,
+    item_specifics_changes: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    description_changes: false,
+    category_changes: false,
+    shipping_changes: false,
+    payment_changes: false,
+    returns_changes: false,
+    allowed_changes: ['images'],
+    picture_details_picture_url: readiness.picture_url,
+    ebay_response: sanitized,
+    error: thrownError ? { message: thrownError.message || String(thrownError) } : null,
+    recorded_at: new Date().toISOString(),
+  };
+  const db = getClient();
+  const { data: updatedRequest, error: updateError } = await db
+    .from(REQUEST_TABLE)
+    .update({
+      status,
+      executed_at: new Date().toISOString(),
+      execution_result: executionResult,
+      final_approval_status: 'approved',
+      final_approval_actor: 'operator',
+      final_approved_at: new Date().toISOString(),
+      final_approval_policy_version: 'phase_15e_public_picture_url_final_approval_v1',
+      final_approval_dry_run_hash: sha256Json({ request_id: 7, packet_id: 7, item_id: '206284142714', exact_approval_text: exactApprovalText }),
+      final_approval_snapshot: {
+        exact_approval_text: exactApprovalText,
+        exact_approval_text_hash: sha256Text(exactApprovalText),
+        readiness,
+      },
+      metadata: {
+        ...(request.metadata || {}),
+        phase_15f_live_attempted: true,
+        marketplace_write_performed: true,
+        revise_fixed_price_item_called: true,
+        upload_site_hosted_pictures_called: false,
+        listing_changed: sanitized.success,
+        phase_15f_status: status,
+        phase_15f_ebay_ack: sanitized.ack,
+      },
+    })
+    .eq('id', id)
+    .select('*')
+    .single();
+  if (updateError) throw updateError;
+  const completionEvent = await recordExecutionEvent({
+    requestId: id,
+    eventType: completionEventType,
+    actor: 'operator',
+    payload: executionResult,
+  });
+  return {
+    ...base,
+    dry_run: false,
+    blocked: false,
+    started_event: startedEvent,
+    completion_event: completionEvent,
+    updated_request_status: updatedRequest.status,
+    execution_result: executionResult,
+    ebay_response: sanitized,
+    actual_ebay_call: true,
+    actual_network_call: true,
+    upload_site_hosted_pictures_called: false,
+    revise_fixed_price_item_called: true,
+    marketplace_write_performed: true,
+    listing_changed: sanitized.success,
+    safety: {
+      actual_ebay_call: true,
+      actual_network_call: true,
+      get_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: true,
+      marketplace_write_performed: true,
+      listing_changed: sanitized.success,
+      title_changes: false,
+      item_specifics_changes: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      actual_database_write: true,
+      ai_calls: false,
+    },
+  };
+}
+
 async function executeEbayPublicPictureUrlApprovedLiveRevise({ requestId, approvalText, dryRun = true, write = false, liveEnabled = false } = {}) {
   const id = intOrNull(requestId);
   if (id == null) throw new Error('request-id is required');
+  if (id === 7) {
+    return executeEbayPublicPictureUrlImagesOnlyApprovedLiveRevise({ requestId, approvalText, dryRun, write, liveEnabled });
+  }
   const exactApprovalText = phase14AUExactPublicPictureUrlApprovalText();
   const approvalTextMatches = String(approvalText || '') === exactApprovalText;
   const readiness = await buildEbayPublicPictureUrlFinalApprovalReadiness({ requestId: id });
