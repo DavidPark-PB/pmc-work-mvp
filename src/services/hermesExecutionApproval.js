@@ -11681,9 +11681,145 @@ async function phase14AVLoadRequestPacketEvents({ requestId }) {
   return { request, packet, events: events || [] };
 }
 
+function phase15GListingUpdateEvidenceSummary(evidence) {
+  if (!evidence || evidence.ack !== 'Success') {
+    return {
+      listing_appears_updated: false,
+      item_id_matches: false,
+      picture_present: false,
+      requested_picture_url_retained: false,
+      picture_url_transformed_to_ebay_hosted: false,
+    };
+  }
+  const pictureUrls = evidence.picture_urls || [];
+  const requestedPictureUrl = 'https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/s-l1600.jpg';
+  const requestedPictureUrlRetained = pictureUrls.includes(requestedPictureUrl);
+  const pictureUrlTransformedToEbayHosted = pictureUrls.some(url => /^https:\/\/i\.ebayimg\.com\//i.test(String(url || '')));
+  const picturePresent = requestedPictureUrlRetained || pictureUrlTransformedToEbayHosted || pictureUrls.length > 0;
+  return {
+    listing_appears_updated: evidence.item_id === '206284142714' && picturePresent,
+    item_id_matches: evidence.item_id === '206284142714',
+    picture_present: picturePresent,
+    requested_picture_url_retained: requestedPictureUrlRetained,
+    picture_url_transformed_to_ebay_hosted: pictureUrlTransformedToEbayHosted,
+  };
+}
+
+async function phase15GLoadRequestPacketEvents({ requestId }) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('request-id is required');
+  const request = await getExecutionRequest({ requestId: id });
+  const packet = await getEbayListingQualityPacket({ packetId: 7 });
+  const db = getClient();
+  const { data: events, error } = await db
+    .from(EVENT_TABLE)
+    .select('id, event_type, actor, payload, created_at')
+    .eq('request_id', id)
+    .order('id', { ascending: true });
+  if (error) throw error;
+  return { request, packet, events: events || [] };
+}
+
+async function buildEbayPublicPictureUrlImagesOnlyPostLiveAudit({ requestId } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('request-id is required');
+  const { request, packet, events } = await phase15GLoadRequestPacketEvents({ requestId: id });
+  const startedEvent = events.find(event => event.id === 18)
+    || events.find(event => String(event.event_type || '').startsWith('phase_15f_public_picture_url_images_only_revise_st'));
+  const completionEvent = events.find(event => event.id === 19)
+    || events.find(event => String(event.event_type || '').startsWith('phase_15f_public_picture_url_images_only_revise_co'));
+  let getItemEvidence = null;
+  let getItemError = null;
+  try {
+    const ebay = new EbayAPI();
+    const raw = await ebay.callTradingAPI('GetItem', '<ItemID>206284142714</ItemID><DetailLevel>ReturnAll</DetailLevel><IncludeItemSpecifics>true</IncludeItemSpecifics>');
+    getItemEvidence = phase14AVParseGetItemEvidence(raw);
+  } catch (e) {
+    getItemError = e.message || String(e);
+  }
+  const executionResult = request?.execution_result || null;
+  const ebayAck = executionResult?.ebay_response?.ack || null;
+  const listingUpdateEvidence = phase15GListingUpdateEvidenceSummary(getItemEvidence);
+  const requestExecuted = request?.status === 'executed' && request?.executed_at != null && executionResult != null;
+  const packetTerminal = ['packet_recorded', 'executed', 'closed', 'confirmed'].includes(String(packet?.status || ''));
+  const ackAccepted = ['Warning', 'Success'].includes(String(ebayAck || ''));
+  const noForbiddenExecutionChanges = executionResult
+    && executionResult.title_changes === false
+    && executionResult.item_specifics_changes === false
+    && executionResult.price_changes === false
+    && executionResult.inventory_changes === false
+    && executionResult.quantity_changes === false
+    && executionResult.description_changes === false
+    && executionResult.category_changes === false
+    && executionResult.shipping_changes === false
+    && executionResult.payment_changes === false
+    && executionResult.returns_changes === false;
+  const reconciliationAlreadyComplete = requestExecuted
+    && Boolean(startedEvent)
+    && Boolean(completionEvent)
+    && ackAccepted
+    && noForbiddenExecutionChanges === true;
+  return {
+    read_only: true,
+    phase: '15G',
+    request_id: request?.id || id,
+    packet_id: packet?.id || null,
+    item_id: packet?.item_id || request?.metadata?.item_id || null,
+    request_status: request?.status || null,
+    packet_status: packet?.status || null,
+    packet_status_terminal_or_equivalent: packetTerminal,
+    started_event_id: startedEvent?.id || null,
+    started_event_exists: Boolean(startedEvent),
+    completion_event_id: completionEvent?.id || null,
+    completion_event_exists: Boolean(completionEvent),
+    execution_result_recorded: executionResult != null,
+    ebay_response_ack: ebayAck,
+    ebay_response_ack_success_or_warning: ackAccepted,
+    get_item_evidence: getItemEvidence,
+    get_item_error: getItemError,
+    listing_update_evidence: listingUpdateEvidence,
+    listing_image_appears_updated: listingUpdateEvidence.listing_appears_updated,
+    no_additional_live_revise_attempt_needed: reconciliationAlreadyComplete,
+    reconciliation_already_complete: reconciliationAlreadyComplete,
+    reconciliation_noop: reconciliationAlreadyComplete,
+    record_only_reconciliation_needed: !reconciliationAlreadyComplete,
+    no_marketplace_writes: true,
+    marketplace_write_performed_by_audit: false,
+    revise_fixed_price_item_called_by_audit: false,
+    upload_site_hosted_pictures_called_by_audit: false,
+    get_item_read_only_call_performed: getItemEvidence != null,
+    forbidden_change_audit: {
+      no_title_changes: executionResult?.title_changes === false,
+      no_item_specifics_changes: executionResult?.item_specifics_changes === false,
+      no_price_changes: executionResult?.price_changes === false,
+      no_inventory_changes: executionResult?.inventory_changes === false,
+      no_quantity_changes: executionResult?.quantity_changes === false,
+      no_description_changes: executionResult?.description_changes === false,
+      no_category_changes: executionResult?.category_changes === false,
+      no_shipping_changes: executionResult?.shipping_changes === false,
+      no_payment_changes: executionResult?.payment_changes === false,
+      no_returns_changes: executionResult?.returns_changes === false,
+    },
+    execution_result: executionResult,
+    events: events.map(event => ({ id: event.id, event_type: event.event_type, actor: event.actor, created_at: event.created_at })),
+    safety: {
+      actual_ebay_write_call: false,
+      get_item_read_only_call_performed: getItemEvidence != null,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      listing_changed_by_audit: false,
+      actual_database_write: false,
+      ai_calls: false,
+    },
+    source: 'phase_15g_public_picture_url_post_live_audit_v1',
+  };
+}
+
 async function buildEbayPublicPictureUrlPostLiveAudit({ requestId } = {}) {
   const id = intOrNull(requestId);
   if (id == null) throw new Error('request-id is required');
+  if (id === 7) return buildEbayPublicPictureUrlImagesOnlyPostLiveAudit({ requestId });
   const { request, packet, events } = await phase14AVLoadRequestPacketEvents({ requestId: id });
   const startedEvents = events.filter(event => event.event_type === 'phase_14av_public_picture_url_revise_started');
   let getItemEvidence = null;
