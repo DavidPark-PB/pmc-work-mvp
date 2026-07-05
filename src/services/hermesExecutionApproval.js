@@ -12364,6 +12364,189 @@ async function buildEbayPublicPictureUrlCandidateReviewChecklist({ itemId } = {}
   };
 }
 
+const PHASE15C_SELECTED_CANDIDATE = {
+  item_id: '206284142714',
+  title: 'Solo Leveling SL3E Card SEALED Store Promo Collection Set',
+  allowed_changes: ['images'],
+  blocked_changes: ['title', 'item_specifics', 'price', 'inventory', 'quantity', 'description', 'category', 'shipping', 'payment', 'returns'],
+};
+
+function phase15CSafety() {
+  return {
+    read_only: true,
+    cached_internal_evidence_only: true,
+    actual_ebay_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    upload_site_hosted_pictures_called: false,
+    marketplace_write_performed: false,
+    database_write_performed: false,
+    execution_request_created: false,
+    packet_created: false,
+    ai_calls: false,
+  };
+}
+
+function phase15CValidateSelectedItemId(itemId) {
+  const targetItemId = trimOrNull(itemId, 40);
+  if (!targetItemId) throw new Error('item-id is required');
+  return {
+    item_id: targetItemId,
+    item_id_matches_selected_candidate: targetItemId === PHASE15C_SELECTED_CANDIDATE.item_id,
+  };
+}
+
+function phase15CUrlValidationFacts(url) {
+  const pictureUrl = trimOrNull(url, 2000);
+  const facts = {
+    picture_url: pictureUrl,
+    url_is_https: false,
+    url_host_is_not_localhost_or_private: false,
+    url_looks_like_image_url: false,
+    url_parse_error: null,
+    url_host: null,
+    url_pathname: null,
+  };
+  if (!pictureUrl) {
+    facts.url_parse_error = 'url is required';
+    return facts;
+  }
+  try {
+    const parsed = new URL(pictureUrl);
+    const host = parsed.hostname.toLowerCase();
+    facts.url_host = host;
+    facts.url_pathname = parsed.pathname;
+    facts.url_is_https = parsed.protocol === 'https:';
+    const ipv4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    const isLocalhost = host === 'localhost' || host.endsWith('.localhost');
+    const isPrivateIpv4 = ipv4 ? (() => {
+      const [a, b] = ipv4.slice(1).map(v => parseInt(v, 10));
+      return a === 10
+        || a === 127
+        || a === 0
+        || (a === 169 && b === 254)
+        || (a === 172 && b >= 16 && b <= 31)
+        || (a === 192 && b === 168);
+    })() : false;
+    const isPrivateIpv6 = host === '::1'
+      || host === '[::1]'
+      || host.startsWith('fc')
+      || host.startsWith('fd')
+      || host.startsWith('fe80:');
+    facts.url_host_is_not_localhost_or_private = !isLocalhost && !isPrivateIpv4 && !isPrivateIpv6;
+    facts.url_looks_like_image_url = /\.(jpe?g|png|webp)(?:$|[?#])/i.test(parsed.pathname);
+  } catch (error) {
+    facts.url_parse_error = error.message || String(error);
+  }
+  return facts;
+}
+
+async function buildEbayPublicPictureUrlSelectedCandidate({ itemId } = {}) {
+  const itemCheck = phase15CValidateSelectedItemId(itemId);
+  const detail = await buildEbayPublicPictureUrlCandidateDetail({ itemId: itemCheck.item_id });
+  const allowedChanges = [...PHASE15C_SELECTED_CANDIDATE.allowed_changes];
+  const itemIdMatches = itemCheck.item_id_matches_selected_candidate;
+  return {
+    read_only: true,
+    phase: '15C',
+    operation: 'public_picture_url_selected_candidate',
+    selected: itemIdMatches,
+    item_id: itemCheck.item_id,
+    expected_item_id: PHASE15C_SELECTED_CANDIDATE.item_id,
+    item_id_matches_selected_candidate: itemIdMatches,
+    title: detail.title || PHASE15C_SELECTED_CANDIDATE.title,
+    allowed_changes: allowedChanges,
+    change_scope: 'images_only',
+    change_scope_remains_images_only: allowedChanges.length === 1 && allowedChanges[0] === 'images',
+    blocked_changes: PHASE15C_SELECTED_CANDIDATE.blocked_changes,
+    ready_for_image_url_intake: itemIdMatches && detail.ready_for_human_review === true,
+    ready_for_packet_creation: false,
+    marketplace_write: false,
+    no_writes_performed: true,
+    candidate_detail: detail,
+    safety: phase15CSafety(),
+    source: 'phase_15c_public_picture_url_selected_candidate_v1',
+  };
+}
+
+async function buildEbayPublicPictureUrlImageIntakeChecklist({ itemId } = {}) {
+  const selected = await buildEbayPublicPictureUrlSelectedCandidate({ itemId });
+  const checklist = [
+    `Phase 15C public PictureURL image intake checklist for item_id=${selected.item_id}`,
+    '',
+    'Candidate:',
+    `[ ] Selected candidate item_id matches ${PHASE15C_SELECTED_CANDIDATE.item_id}: ${selected.item_id_matches_selected_candidate}`,
+    `[ ] Title reviewed: ${selected.title || '(missing cached title)'}`,
+    '[ ] Allowed change scope is images only.',
+    '',
+    'Public URL intake:',
+    '[ ] Public image URL uses HTTPS.',
+    '[ ] URL host is not localhost/private/internal.',
+    '[ ] URL path looks like an image URL (.jpg, .jpeg, .png, or .webp).',
+    '[ ] Prefer converted sRGB baseline JPG for eBay public PictureURL packet readiness.',
+    '',
+    'Blocked changes:',
+    ...selected.blocked_changes.map(change => `[ ] Confirm ${change} remains unchanged`),
+    '',
+    'Safety:',
+    '[ ] Do not call eBay or GetItem in Phase 15C.',
+    '[ ] Do not call ReviseFixedPriceItem.',
+    '[ ] Do not call UploadSiteHostedPictures.',
+    '[ ] Do not create an execution request.',
+    '[ ] Do not create a packet.',
+    '[ ] Do not perform DB writes or marketplace writes.',
+    '[ ] Keep ready_for_packet_creation=false until a future explicit packet phase.',
+  ].join('\n');
+  return {
+    read_only: true,
+    phase: '15C',
+    operation: 'public_picture_url_image_intake_checklist',
+    item_id: selected.item_id,
+    selected_candidate: selected,
+    checklist,
+    allowed_changes: [...PHASE15C_SELECTED_CANDIDATE.allowed_changes],
+    ready_for_packet_creation: false,
+    marketplace_write: false,
+    no_writes_performed: true,
+    safety: phase15CSafety(),
+    source: 'phase_15c_public_picture_url_image_intake_checklist_v1',
+  };
+}
+
+async function validateEbayPublicPictureUrlSelectedCandidateUrl({ itemId, url } = {}) {
+  const selected = await buildEbayPublicPictureUrlSelectedCandidate({ itemId });
+  const urlFacts = phase15CUrlValidationFacts(url);
+  const allowedChanges = [...PHASE15C_SELECTED_CANDIDATE.allowed_changes];
+  const changeScopeImagesOnly = allowedChanges.length === 1 && allowedChanges[0] === 'images';
+  const valid = selected.item_id_matches_selected_candidate === true
+    && urlFacts.url_is_https === true
+    && urlFacts.url_host_is_not_localhost_or_private === true
+    && urlFacts.url_looks_like_image_url === true
+    && changeScopeImagesOnly === true;
+  return {
+    valid,
+    item_id: selected.item_id,
+    picture_url: urlFacts.picture_url,
+    url_is_https: urlFacts.url_is_https,
+    url_host_is_not_localhost_or_private: urlFacts.url_host_is_not_localhost_or_private,
+    url_looks_like_image_url: urlFacts.url_looks_like_image_url,
+    allowed_changes: allowedChanges,
+    ready_for_packet_creation: false,
+    marketplace_write: false,
+    phase: '15C',
+    operation: 'public_picture_url_validate_candidate_url',
+    item_id_matches_selected_candidate: selected.item_id_matches_selected_candidate,
+    change_scope_remains_images_only: changeScopeImagesOnly,
+    blocked_changes: PHASE15C_SELECTED_CANDIDATE.blocked_changes,
+    url_host: urlFacts.url_host,
+    url_pathname: urlFacts.url_pathname,
+    url_parse_error: urlFacts.url_parse_error,
+    no_writes_performed: true,
+    safety: phase15CSafety(),
+    source: 'phase_15c_public_picture_url_validate_candidate_url_v1',
+  };
+}
+
 async function buildEbayTokenRefreshReadiness({ operation = 'UploadSiteHostedPictures' } = {}) {
   const requestedOperation = String(operation || 'UploadSiteHostedPictures');
   const source = await phase14AELoadEbayTokenSourceData();
@@ -20522,6 +20705,9 @@ module.exports = {
   buildEbayPublicPictureUrlCandidateShortlist,
   buildEbayPublicPictureUrlCandidateDetail,
   buildEbayPublicPictureUrlCandidateReviewChecklist,
+  buildEbayPublicPictureUrlSelectedCandidate,
+  buildEbayPublicPictureUrlImageIntakeChecklist,
+  validateEbayPublicPictureUrlSelectedCandidateUrl,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,
