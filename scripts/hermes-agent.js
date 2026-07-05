@@ -1545,6 +1545,24 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-mini-batch-packet-preview') {
+    const { buildEbayPublicPictureUrlMiniBatchPacketPreview } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayPublicPictureUrlMiniBatchPacketPreview({
+      urlMap: arg('url-map', '{}'),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-mini-batch-create-packets') {
+    const { createEbayPublicPictureUrlMiniBatchPackets } = require('../src/services/hermesExecutionApproval');
+    const result = await createEbayPublicPictureUrlMiniBatchPackets({
+      urlMap: arg('url-map', '{}'),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-public-picture-url-candidate-shortlist') {
     const { buildEbayPublicPictureUrlCandidateShortlist } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayPublicPictureUrlCandidateShortlist({

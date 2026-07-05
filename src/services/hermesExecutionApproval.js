@@ -13120,6 +13120,386 @@ async function validateEbayPublicPictureUrlMiniBatchUrls({ urlMap = '{}' } = {})
   };
 }
 
+const PHASE16C_BLOCKED_CHANGES = ['title', 'item_specifics', 'price', 'inventory', 'quantity', 'description', 'category', 'shipping', 'payment', 'returns'];
+
+function phase16CPacketPayload({ itemId, pictureUrl } = {}) {
+  return {
+    Item: {
+      ItemID: String(itemId || ''),
+      PictureDetails: {
+        PictureURL: [String(pictureUrl || '')],
+      },
+    },
+  };
+}
+
+function phase16CExplicitAbsences() {
+  return {
+    no_title: true,
+    no_item_specifics: true,
+    no_price: true,
+    no_inventory: true,
+    no_quantity: true,
+    no_description: true,
+    no_category: true,
+    no_shipping: true,
+    no_payment: true,
+    no_returns: true,
+  };
+}
+
+function phase16CSafety({ databaseWrite = false, requestCreated = false, packetCreated = false, eventCreated = false } = {}) {
+  return {
+    actual_ebay_call: false,
+    actual_network_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    upload_site_hosted_pictures_called: false,
+    marketplace_write_performed: false,
+    live_execution_performed: false,
+    listing_changed: false,
+    listing_revise_performed: false,
+    execution_request_created: requestCreated,
+    packet_created: packetCreated,
+    audit_event_created: eventCreated,
+    actual_database_write: databaseWrite,
+    title_changes: false,
+    item_specifics_changes: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    description_changes: false,
+    category_changes: false,
+    shipping_changes: false,
+    payment_changes: false,
+    returns_changes: false,
+    image_changes: packetCreated,
+    ai_calls: false,
+  };
+}
+
+async function phase16CExistingPacketRows({ itemId, pictureUrl, mutationHash } = {}) {
+  try {
+    const db = getClient();
+    const { data: requests, error: requestError } = await db
+      .from(REQUEST_TABLE)
+      .select('*')
+      .eq('metadata->>source', 'phase_16c_public_picture_url_mini_batch_packet')
+      .eq('metadata->>item_id', String(itemId || ''))
+      .eq('metadata->>public_picture_url', String(pictureUrl || ''))
+      .eq('metadata->>public_picture_url_mutation_hash', String(mutationHash || ''))
+      .order('id', { ascending: false })
+      .limit(5);
+    if (requestError) throw requestError;
+    const requestIds = (requests || []).map(row => row.id).filter(id => id != null);
+    let packets = [];
+    if (requestIds.length) {
+      const { data: packetRows, error: packetError } = await db
+        .from(EBAY_LISTING_QUALITY_PACKET_TABLE)
+        .select('*')
+        .in('request_id', requestIds)
+        .order('id', { ascending: false })
+        .limit(20);
+      if (packetError) throw packetError;
+      packets = packetRows || [];
+    }
+    return { requests: requests || [], packets };
+  } catch (e) {
+    return { requests: [], packets: [], read_error: e.message || String(e) };
+  }
+}
+
+async function buildEbayPublicPictureUrlMiniBatchPacketPreview({ urlMap = '{}' } = {}) {
+  const validation = await validateEbayPublicPictureUrlMiniBatchUrls({ urlMap });
+  const previews = [];
+  for (const itemId of PHASE16B_READY_LOW_RISK_ITEM_IDS) {
+    const row = validation.validated_urls?.[itemId] || null;
+    const pictureUrl = row?.picture_url || null;
+    const payloadPreview = phase16CPacketPayload({ itemId, pictureUrl });
+    const plannedMutation = {
+      images: {
+        source_type: 'operator_supplied_public_https_url',
+        PictureDetails: {
+          PictureURL: pictureUrl ? [pictureUrl] : [],
+        },
+        public_picture_url: pictureUrl,
+      },
+    };
+    const mutationHash = sha256Json({ item_id: itemId, payload: payloadPreview, planned_mutation: plannedMutation });
+    const blockers = [];
+    if (!row) blockers.push('url_not_supplied_for_ready_item');
+    if (row?.valid !== true) blockers.push('phase_16b_url_validation_not_valid');
+    if (row?.change_scope_remains_images_only !== true) blockers.push('change_scope_not_images_only');
+    if (!pictureUrl) blockers.push('picture_url_missing');
+    const existing = await phase16CExistingPacketRows({ itemId, pictureUrl, mutationHash });
+    previews.push({
+      item_id: itemId,
+      operation: 'ReviseFixedPriceItem',
+      change_scope: ['images'],
+      picture_url: pictureUrl,
+      marketplace_write: false,
+      ready_for_packet_creation: blockers.length === 0,
+      read_only: true,
+      phase: '16C',
+      validation: row,
+      planned_mutation: plannedMutation,
+      payload_preview: payloadPreview,
+      payload_contains_only_item_id_and_picture_details: true,
+      public_picture_url_mutation_hash: mutationHash,
+      explicit_absences: phase16CExplicitAbsences(),
+      blocked_changes: PHASE16C_BLOCKED_CHANGES,
+      forbidden_fields_present: [],
+      existing_request_id: existing.requests[0]?.id || null,
+      existing_packet_id: existing.packets[0]?.id || null,
+      blockers: [...new Set(blockers)],
+      safety: phase16CSafety(),
+      source: 'phase_16c_public_picture_url_mini_batch_packet_preview_item_v1',
+    });
+  }
+  const ready = previews.length === PHASE16B_READY_LOW_RISK_ITEM_IDS.length
+    && previews.every(row => row.ready_for_packet_creation === true)
+    && validation.all_supplied_urls_valid === true
+    && validation.missing_ready_item_ids.length === 0;
+  return {
+    read_only: true,
+    phase: '16C',
+    operation: 'public_picture_url_mini_batch_packet_preview',
+    mini_batch_url_intake_ready: validation.mini_batch_url_intake_ready,
+    ready_item_ids: PHASE16B_READY_LOW_RISK_ITEM_IDS,
+    blocked_item_ids: PHASE16B_BLOCKED_HIGH_RISK_ITEM_IDS,
+    preview_count: previews.length,
+    previews,
+    marketplace_write: false,
+    ready_for_packet_creation: ready,
+    live_execution_disabled: true,
+    no_ebay_call_performed: true,
+    blocked_changes: PHASE16C_BLOCKED_CHANGES,
+    validation,
+    safety: phase16CSafety(),
+    source: 'phase_16c_public_picture_url_mini_batch_packet_preview_v1',
+  };
+}
+
+async function createEbayPublicPictureUrlMiniBatchPackets({ urlMap = '{}' } = {}) {
+  const preview = await buildEbayPublicPictureUrlMiniBatchPacketPreview({ urlMap });
+  if (preview.ready_for_packet_creation !== true) {
+    return {
+      ...preview,
+      read_only: false,
+      created: false,
+      create_blocked: true,
+      safety: phase16CSafety(),
+      source: 'phase_16c_public_picture_url_mini_batch_packet_create_blocked_v1',
+    };
+  }
+  const db = getClient();
+  const createdAt = new Date().toISOString();
+  const results = [];
+  for (const itemPreview of preview.previews) {
+    const existing = await phase16CExistingPacketRows({
+      itemId: itemPreview.item_id,
+      pictureUrl: itemPreview.picture_url,
+      mutationHash: itemPreview.public_picture_url_mutation_hash,
+    });
+    let finalRequest = existing.requests[0] || null;
+    let requestCreated = false;
+    const requestRecord = {
+      opportunity_id: 7,
+      sku: itemPreview.item_id,
+      execution_type: 'listing_quality_update',
+      status: 'pending_approval',
+      requested_action: {
+        actor: 'hermes-agent-cli',
+        reason: 'Phase 16C approval-gated mini-batch images-only public PictureURL packet',
+        source: 'phase_16c_public_picture_url_mini_batch_packet',
+        operation: 'ReviseFixedPriceItem',
+        marketplace: 'ebay',
+        source_phase: '16C',
+        target_item_id: itemPreview.item_id,
+        planned_mutation: itemPreview.planned_mutation,
+        planned_mutation_fields: ['images'],
+        allowed_mutation_fields: ['images'],
+        forbidden_mutation_fields: PHASE16C_BLOCKED_CHANGES,
+        payload_preview: itemPreview.payload_preview,
+        public_picture_url: itemPreview.picture_url,
+        public_picture_url_mutation_hash: itemPreview.public_picture_url_mutation_hash,
+        requires_human_approval: true,
+        live_execution_disabled: true,
+        forbidden_actions: PHASE5_FORBIDDEN_ACTIONS,
+      },
+      risk_level: 'medium',
+      requires_approval: true,
+      dry_run_result: {
+        source: 'phase_16c_public_picture_url_mini_batch_packet_dry_run_v1',
+        dry_run: true,
+        generated_at: createdAt,
+        operation: 'ReviseFixedPriceItem',
+        marketplace: 'ebay',
+        target_item_id: itemPreview.item_id,
+        planned_mutation: itemPreview.planned_mutation,
+        planned_mutation_fields: ['images'],
+        payload_preview: itemPreview.payload_preview,
+        explicit_absences: itemPreview.explicit_absences,
+        external_action_executed: false,
+        marketplace_write_performed: false,
+        live_execution_performed: false,
+        ebay_api_calls: false,
+        get_item_called: false,
+        revise_fixed_price_item_called: false,
+        upload_site_hosted_pictures_called: false,
+      },
+      metadata: {
+        source: 'phase_16c_public_picture_url_mini_batch_packet',
+        hermes_phase: '16C',
+        marketplace: 'ebay',
+        operation: 'ReviseFixedPriceItem',
+        item_id: itemPreview.item_id,
+        target_item_id: itemPreview.item_id,
+        public_picture_url: itemPreview.picture_url,
+        public_picture_url_mutation_hash: itemPreview.public_picture_url_mutation_hash,
+        planned_mutation: itemPreview.planned_mutation,
+        planned_mutation_fields: ['images'],
+        allowed_mutation_fields: ['images'],
+        forbidden_mutation_fields: PHASE16C_BLOCKED_CHANGES,
+        payload_contains_only_item_id_and_picture_details: true,
+        live_execution_disabled: true,
+        approval_gated: true,
+        actual_ebay_call: false,
+        get_item_called: false,
+        upload_site_hosted_pictures_called: false,
+        revise_fixed_price_item_called: false,
+        marketplace_write_performed: false,
+        listing_changed: false,
+        execution_request_created: true,
+        packet_created: true,
+        created_at: createdAt,
+      },
+    };
+    if (!finalRequest) {
+      const { data, error } = await db.from(REQUEST_TABLE).insert(requestRecord).select('*').single();
+      if (error) throw error;
+      finalRequest = data;
+      requestCreated = true;
+    }
+    let finalPacket = existing.packets.find(row => row.request_id === finalRequest.id) || null;
+    let packetCreated = false;
+    const packetRecord = {
+      request_id: finalRequest.id,
+      item_id: itemPreview.item_id,
+      actor: 'hermes-agent-cli',
+      reason: 'Phase 16C approval-gated mini-batch images-only public PictureURL packet',
+      packet_hash: itemPreview.public_picture_url_mutation_hash,
+      planned_mutation: itemPreview.planned_mutation,
+      before_snapshot: {},
+      rollback_snapshot: {},
+      safety_flags: {
+        source: 'phase_16c_public_picture_url_mini_batch_packet',
+        operation: 'ReviseFixedPriceItem',
+        created_at: createdAt,
+        target_item_id: itemPreview.item_id,
+        public_picture_url: itemPreview.picture_url,
+        planned_mutation_fields: ['images'],
+        allowed_mutation_fields: ['images'],
+        forbidden_mutation_fields: PHASE16C_BLOCKED_CHANGES,
+        payload_contains_only_item_id_and_picture_details: true,
+        no_ebay_call: true,
+        no_get_item_call: true,
+        no_upload_site_hosted_pictures_call: true,
+        no_revise_fixed_price_item_call: true,
+        no_marketplace_write: true,
+        no_live_execution: true,
+        marketplace_write_performed: false,
+        actual_ebay_call: false,
+        title_changes: false,
+        item_specifics_changes: false,
+        price_changes: false,
+        inventory_changes: false,
+        quantity_changes: false,
+        description_changes: false,
+        category_changes: false,
+        shipping_changes: false,
+        payment_changes: false,
+        returns_changes: false,
+        image_changes: true,
+      },
+      status: 'packet_recorded',
+    };
+    if (!finalPacket) {
+      const { data, error } = await db.from(EBAY_LISTING_QUALITY_PACKET_TABLE).insert(packetRecord).select('*').single();
+      if (error) throw error;
+      finalPacket = data;
+      packetCreated = true;
+    }
+    let event = null;
+    let eventCreated = false;
+    if (requestCreated || packetCreated) {
+      try {
+        event = await recordExecutionEvent({
+          requestId: finalRequest.id,
+          eventType: 'phase_16c_public_picture_url_mini_batch_packet_created',
+          actor: 'hermes-agent-cli',
+          payload: {
+            request_created: requestCreated,
+            packet_created: packetCreated,
+            item_id: itemPreview.item_id,
+            public_picture_url: itemPreview.picture_url,
+            operation: 'ReviseFixedPriceItem',
+            allowed_mutation_fields: ['images'],
+            forbidden_mutation_fields: PHASE16C_BLOCKED_CHANGES,
+            marketplace_write_performed: false,
+            live_execution_performed: false,
+            actual_ebay_call: false,
+          },
+        });
+        eventCreated = Boolean(event?.id);
+      } catch (e) {
+        event = { error: e.message || String(e) };
+      }
+    }
+    results.push({
+      item_id: itemPreview.item_id,
+      picture_url: itemPreview.picture_url,
+      request_created: requestCreated,
+      packet_created: packetCreated,
+      event_created: eventCreated,
+      idempotent_existing: !requestCreated && !packetCreated,
+      request_id: finalRequest?.id || null,
+      request_status: finalRequest?.status || null,
+      packet_id: finalPacket?.id || null,
+      packet_status: finalPacket?.status || null,
+      approval_gated: finalRequest?.status === 'pending_approval',
+      live_execution_disabled: true,
+      no_ebay_call_performed: true,
+      payload_preview: itemPreview.payload_preview,
+      explicit_absences: itemPreview.explicit_absences,
+      event_id: event?.id || null,
+    });
+  }
+  const requestCreated = results.some(row => row.request_created);
+  const packetCreated = results.some(row => row.packet_created);
+  const eventCreated = results.some(row => row.event_created);
+  const databaseWrite = requestCreated || packetCreated || eventCreated;
+  return {
+    ...preview,
+    read_only: false,
+    operation: 'public_picture_url_mini_batch_create_packets',
+    created: databaseWrite,
+    create_blocked: false,
+    idempotent_existing: !databaseWrite,
+    request_count: results.length,
+    packet_count: results.length,
+    results,
+    created_request_ids: results.map(row => row.request_id).filter(id => id != null),
+    created_packet_ids: results.map(row => row.packet_id).filter(id => id != null),
+    approval_gated: results.every(row => row.approval_gated === true),
+    live_execution_disabled: true,
+    no_ebay_call_performed: true,
+    actual_database_write: databaseWrite,
+    safety: phase16CSafety({ databaseWrite, requestCreated, packetCreated, eventCreated }),
+    source: 'phase_16c_public_picture_url_mini_batch_packet_create_v1',
+  };
+}
+
 async function buildEbayPublicPictureUrlCandidateReviewChecklist({ itemId } = {}) {
   const detail = await buildEbayPublicPictureUrlCandidateDetail({ itemId });
   const checklist = [
@@ -21952,6 +22332,8 @@ module.exports = {
   buildEbayPublicPictureUrlMiniBatchImageIntakeChecklist,
   buildEbayPublicPictureUrlMiniBatchUrlTemplate,
   validateEbayPublicPictureUrlMiniBatchUrls,
+  buildEbayPublicPictureUrlMiniBatchPacketPreview,
+  createEbayPublicPictureUrlMiniBatchPackets,
   buildEbayPublicPictureUrlCandidateShortlist,
   buildEbayPublicPictureUrlCandidateDetail,
   buildEbayPublicPictureUrlCandidateReviewChecklist,
