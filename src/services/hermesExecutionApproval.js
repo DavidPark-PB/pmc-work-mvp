@@ -14705,6 +14705,200 @@ async function buildProfitInventoryCostEnrichmentPlan({ limit = 100, scanLimit =
   };
 }
 
+const PHASE17D_COST_INPUT_COLUMNS = [
+  'sku',
+  'item_id',
+  'title',
+  'current_price',
+  'available_quantity',
+  'recent_sales',
+  'opportunity_type',
+  'current_cost',
+  'new_cost',
+  'cost_currency',
+  'cost_source',
+  'operator_note',
+];
+
+function phase17DCsvEscape(value) {
+  const text = value == null ? '' : String(value);
+  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function phase17DToCsv(columns, rows) {
+  return [
+    columns.join(','),
+    ...rows.map(row => columns.map(column => phase17DCsvEscape(row[column])).join(',')),
+  ].join('\n');
+}
+
+function phase17DEmptyValidation() {
+  return {
+    valid: false,
+    valid_rows: 0,
+    invalid_rows: 0,
+    blocked_rows: 0,
+    errors: [],
+  };
+}
+
+function phase17DSafety() {
+  return {
+    read_only: true,
+    local_csv_template_output_allowed: true,
+    marketplace_write: false,
+    db_write: false,
+    ai_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    upload_site_hosted_pictures_called: false,
+    execution_request_created: false,
+    packet_created: false,
+    price_changes: false,
+    inventory_changes: false,
+    listing_changes: false,
+  };
+}
+
+async function buildProfitInventoryCostInputTemplate({ limit = 100 } = {}) {
+  const safeLimit = Math.max(1, Math.min(500, intOrNull(limit) || 100));
+  const hygiene = await buildProfitInventoryOpportunityHygiene({ limit: Math.min(100, safeLimit) });
+  const templateRows = (hygiene.blocked_opportunities || [])
+    .filter(row => (row.blocked_reasons || []).includes('missing_or_zero_cost_for_margin_or_risk_decision'))
+    .filter(row => !phase17CIsTestOrSandbox(row))
+    .slice(0, safeLimit)
+    .map(row => ({
+      sku: row.sku || '',
+      item_id: row.item_id || '',
+      title: row.title || '',
+      current_price: row.current_price == null ? '' : row.current_price,
+      available_quantity: row.available_quantity == null ? '' : row.available_quantity,
+      recent_sales: row.recent_sales == null ? '' : row.recent_sales,
+      opportunity_type: row.opportunity_type || '',
+      current_cost: row.cost || 0,
+      new_cost: '',
+      cost_currency: 'USD',
+      cost_source: 'manual_operator_input',
+      operator_note: '',
+    }));
+
+  return {
+    phase: '17D',
+    mode: 'read_only',
+    columns: PHASE17D_COST_INPUT_COLUMNS,
+    template_rows: templateRows.length,
+    rows: templateRows,
+    csv: phase17DToCsv(PHASE17D_COST_INPUT_COLUMNS, templateRows),
+    validation: phase17DEmptyValidation(),
+    ready_for_cost_import: false,
+    marketplace_write: false,
+    db_write: false,
+    ai_call: false,
+    no_execution_requests_created: true,
+    no_packets_created: true,
+    no_ebay_call: true,
+    no_get_item_call: true,
+    no_revise_fixed_price_item_call: true,
+    no_price_inventory_listing_changes: true,
+    safety: phase17DSafety(),
+    source: 'phase_17d_profit_inventory_cost_input_template_v1',
+  };
+}
+
+function phase17DValidateRow(row, index, duplicateSkus) {
+  const errors = [];
+  const rowNumber = index + 2;
+  const sku = String(row.sku || '').trim();
+  const itemId = String(row.item_id || '').trim();
+  const title = String(row.title || '').trim();
+  const newCostRaw = String(row.new_cost || '').trim();
+  const newCost = phase17AToNumber(newCostRaw, null);
+  const currency = String(row.cost_currency || '').trim();
+
+  if (!sku) errors.push({ row: rowNumber, field: 'sku', code: 'missing_sku' });
+  if (!itemId) errors.push({ row: rowNumber, field: 'item_id', code: 'missing_item_id', sku });
+  if (newCostRaw === '' || newCost == null) {
+    errors.push({ row: rowNumber, field: 'new_cost', code: 'new_cost_not_numeric', sku });
+  } else if (newCost <= 0) {
+    errors.push({ row: rowNumber, field: 'new_cost', code: 'new_cost_must_be_greater_than_zero', sku, value: newCostRaw });
+  }
+  if (!currency) errors.push({ row: rowNumber, field: 'cost_currency', code: 'missing_cost_currency', sku });
+  if (sku && duplicateSkus.has(sku)) errors.push({ row: rowNumber, field: 'sku', code: 'duplicate_sku', sku });
+  if (phase17CIsTestOrSandbox({ sku, title })) errors.push({ row: rowNumber, field: 'sku', code: 'test_or_sandbox_row_blocked', sku });
+
+  return errors;
+}
+
+function validateProfitInventoryCostInput({ file } = {}) {
+  const filePath = String(file || '').trim();
+  if (!filePath) throw new Error('file is required');
+  const absolutePath = path.resolve(filePath);
+  const text = fs.readFileSync(absolutePath, 'utf8');
+  const Papa = require('papaparse');
+  const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+  const metaFields = parsed.meta?.fields || [];
+  const rows = parsed.data || [];
+  const errors = [];
+
+  for (const column of PHASE17D_COST_INPUT_COLUMNS) {
+    if (!metaFields.includes(column)) {
+      errors.push({ row: 1, field: column, code: 'missing_required_column' });
+    }
+  }
+  for (const parseError of parsed.errors || []) {
+    errors.push({ row: (parseError.row || 0) + 2, field: '', code: 'csv_parse_error', message: parseError.message });
+  }
+
+  const skuCounts = new Map();
+  for (const row of rows) {
+    const sku = String(row.sku || '').trim();
+    if (sku) skuCounts.set(sku, (skuCounts.get(sku) || 0) + 1);
+  }
+  const duplicateSkus = new Set([...skuCounts.entries()].filter(([, count]) => count > 1).map(([sku]) => sku));
+
+  const invalidRowIndexes = new Set();
+  const blockedRowIndexes = new Set();
+  rows.forEach((row, index) => {
+    const rowErrors = phase17DValidateRow(row, index, duplicateSkus);
+    for (const error of rowErrors) {
+      errors.push(error);
+      if (error.code === 'test_or_sandbox_row_blocked') blockedRowIndexes.add(index);
+      invalidRowIndexes.add(index);
+    }
+  });
+
+  const structurallyInvalid = metaFields.length === 0 || PHASE17D_COST_INPUT_COLUMNS.some(column => !metaFields.includes(column));
+  const validRows = structurallyInvalid ? 0 : rows.length - invalidRowIndexes.size;
+  const validation = {
+    valid: errors.length === 0 && rows.length > 0,
+    valid_rows: Math.max(0, validRows),
+    invalid_rows: structurallyInvalid ? rows.length : invalidRowIndexes.size,
+    blocked_rows: blockedRowIndexes.size,
+    errors,
+  };
+
+  return {
+    phase: '17D',
+    mode: 'read_only',
+    file: absolutePath,
+    template_rows: 0,
+    validation,
+    ready_for_cost_import: validation.valid && validation.valid_rows > 0,
+    marketplace_write: false,
+    db_write: false,
+    ai_call: false,
+    no_execution_requests_created: true,
+    no_packets_created: true,
+    no_ebay_call: true,
+    no_get_item_call: true,
+    no_revise_fixed_price_item_call: true,
+    no_price_inventory_listing_changes: true,
+    safety: phase17DSafety(),
+    source: 'phase_17d_profit_inventory_cost_input_validate_v1',
+  };
+}
+
 async function buildEbayPublicPictureUrlCandidateReviewChecklist({ itemId } = {}) {
   const detail = await buildEbayPublicPictureUrlCandidateDetail({ itemId });
   const checklist = [
@@ -23556,6 +23750,8 @@ module.exports = {
   buildProfitInventoryActionableShortlist,
   buildProfitInventoryCostCoverageAudit,
   buildProfitInventoryCostEnrichmentPlan,
+  buildProfitInventoryCostInputTemplate,
+  validateProfitInventoryCostInput,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,

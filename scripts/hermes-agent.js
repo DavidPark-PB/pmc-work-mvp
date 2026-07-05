@@ -36,6 +36,8 @@ function printUsage() {
     '  npm run hermes:agent -- profit-inventory-actionable-shortlist [--limit=25]',
     '  npm run hermes:agent -- profit-inventory-cost-coverage-audit [--limit=500]',
     '  npm run hermes:agent -- profit-inventory-cost-enrichment-plan [--limit=100]',
+    '  npm run hermes:agent -- profit-inventory-cost-input-template [--limit=100]',
+    '  npm run hermes:agent -- profit-inventory-cost-input-validate --file=<CSV_FILE>',
     '  npm run hermes:agent -- market --sku=<SKU>',
     '  npm run hermes:agent -- opportunity --sku=<SKU> [--type=<TYPE>]',
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> [--type=<TYPE>] --dry-run',
@@ -254,6 +256,27 @@ async function main() {
     const result = await buildProfitInventoryCostEnrichmentPlan({
       limit: intArg('limit', 100),
     });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'profit-inventory-cost-input-template') {
+    const { buildProfitInventoryCostInputTemplate } = require('../src/services/hermesExecutionApproval');
+    const result = await buildProfitInventoryCostInputTemplate({
+      limit: intArg('limit', 100),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'profit-inventory-cost-input-validate') {
+    const file = arg('file', null);
+    if (!file) {
+      printUsage();
+      throw new Error('file is required');
+    }
+    const { validateProfitInventoryCostInput } = require('../src/services/hermesExecutionApproval');
+    const result = validateProfitInventoryCostInput({ file });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
