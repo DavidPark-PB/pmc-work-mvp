@@ -1283,6 +1283,24 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-token-regression-audit') {
+    const { buildEbayTokenRegressionAudit } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayTokenRegressionAudit({
+      operation: arg('operation', 'UploadSiteHostedPictures'),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-token-current-health') {
+    const { buildEbayTokenCurrentHealth } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayTokenCurrentHealth({
+      operation: arg('operation', 'UploadSiteHostedPictures'),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-token-refresh-readiness') {
     const { buildEbayTokenRefreshReadiness } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayTokenRefreshReadiness({

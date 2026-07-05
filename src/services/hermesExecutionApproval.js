@@ -9879,6 +9879,198 @@ async function buildEbayTokenSourceAudit({ operation = 'UploadSiteHostedPictures
   };
 }
 
+
+function phase14APUploadErrorCodes(row) {
+  return (Array.isArray(row?.errors) ? row.errors : [])
+    .map(error => String(error?.code || '').trim())
+    .filter(Boolean);
+}
+
+function phase14APHasErrorCode(row, code) {
+  const target = String(code || '');
+  return phase14APUploadErrorCodes(row).includes(target)
+    || new RegExp(`<ErrorCode>${target}</ErrorCode>`, 'i').test(String(row?.raw_response || ''));
+}
+
+function phase14APTokenHealthFromSource({ operation = 'UploadSiteHostedPictures', tokenSourceAudit, tokenRefreshReadiness, now = new Date() } = {}) {
+  const expiresAt = tokenSourceAudit?.expires_at_if_available || null;
+  const expiresAtMs = parseTokenTimestampMs(expiresAt);
+  const secondsUntilExpiry = Number.isFinite(expiresAtMs) ? Math.floor((expiresAtMs - now.getTime()) / 1000) : null;
+  const staleOrExpired = secondsUntilExpiry == null ? true : secondsUntilExpiry <= 0;
+  return {
+    read_only: true,
+    phase: '14AP',
+    operation: String(operation || 'UploadSiteHostedPictures'),
+    selected_token_source: tokenSourceAudit?.selected_token_source || 'missing',
+    token_source_precedence: tokenSourceAudit?.token_source_precedence || ['database_platform_tokens.access_token', 'environment_EBAY_USER_TOKEN'],
+    token_environment: tokenSourceAudit?.token_environment_if_detectable || 'unknown',
+    endpoint_environment: tokenSourceAudit?.api_endpoint_environment || 'unknown',
+    expires_at: expiresAt,
+    updated_at: tokenSourceAudit?.updated_at_if_available || null,
+    current_time: now.toISOString(),
+    seconds_until_expiry: secondsUntilExpiry,
+    stale_or_expired: staleOrExpired,
+    database_token_still_overrides_env_token: tokenSourceAudit?.selected_token_source === 'database_platform_tokens' && tokenSourceAudit?.env_token_exists === true,
+    refresh_token_available: tokenSourceAudit?.refresh_token_exists_if_detectable === true,
+    safe_to_refresh_with_existing_path: tokenRefreshReadiness?.refresh_can_be_performed_safely_by_existing_code === true,
+    explicit_approval_required_before_refresh: true,
+    no_token_secrets_printed: true,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      actual_database_write: false,
+      token_values_printed: false,
+      token_values_modified: false,
+      token_refresh_performed: false,
+      ai_calls: false,
+    },
+    source: 'phase_14ap_ebay_token_current_health_v1',
+  };
+}
+
+async function buildEbayTokenCurrentHealth({ operation = 'UploadSiteHostedPictures' } = {}) {
+  const requestedOperation = String(operation || 'UploadSiteHostedPictures');
+  const tokenSourceAudit = await buildEbayTokenSourceAudit({ operation: requestedOperation });
+  const tokenRefreshReadiness = await buildEbayTokenRefreshReadiness({ operation: requestedOperation });
+  return phase14APTokenHealthFromSource({
+    operation: requestedOperation,
+    tokenSourceAudit,
+    tokenRefreshReadiness,
+    now: new Date(),
+  });
+}
+
+async function buildEbayTokenRegressionAudit({ operation = 'UploadSiteHostedPictures' } = {}) {
+  const requestedOperation = String(operation || 'UploadSiteHostedPictures');
+  const now = new Date();
+  const tokenSourceAudit = await buildEbayTokenSourceAudit({ operation: requestedOperation });
+  const tokenRefreshReadiness = await buildEbayTokenRefreshReadiness({ operation: requestedOperation });
+  const currentHealth = phase14APTokenHealthFromSource({
+    operation: requestedOperation,
+    tokenSourceAudit,
+    tokenRefreshReadiness,
+    now,
+  });
+  const rows = (phase14AAReadUploadResults().uploads || [])
+    .filter(row => String(row.item_id || '') === '206288370789');
+  const phase14AH = rows.find(row => row.phase === '14AH') || null;
+  const phase14AK = rows.find(row => row.phase === '14AK') || null;
+  const phase14AO = [...rows].reverse().find(row => row.phase === '14AO') || null;
+  const acceptedAuthRows = [phase14AH, phase14AK].filter(row => row
+    && row.ebay_ack === 'Failure'
+    && phase14APHasErrorCode(row, '21916550')
+    && !phase14APHasErrorCode(row, '21916984'));
+  const invalidIafRows = rows.filter(row => phase14APHasErrorCode(row, '21916984'));
+  const phase14AFDocPath = path.resolve(__dirname, '../../docs/phase-14af-ebay-token-refresh-rotation.md');
+  let phase14AFDoc = '';
+  try {
+    phase14AFDoc = fs.existsSync(phase14AFDocPath) ? fs.readFileSync(phase14AFDocPath, 'utf8') : '';
+  } catch (_) {
+    phase14AFDoc = '';
+  }
+  const phase14AFRefreshSuccess = /token_refresh_succeeded=true/i.test(phase14AFDoc)
+    || /completed successfully/i.test(phase14AFDoc);
+  const expiresAtMs = parseTokenTimestampMs(tokenSourceAudit.expires_at_if_available);
+  const latestAcceptedAtMs = Math.max(...acceptedAuthRows.map(row => parseTokenTimestampMs(row.timestamp || row.recorded_at)).filter(Number.isFinite));
+  const phase14AOAtMs = parseTokenTimestampMs(phase14AO?.timestamp || phase14AO?.recorded_at);
+  const phase14AOAfterExpiry = Number.isFinite(expiresAtMs) && Number.isFinite(phase14AOAtMs) && phase14AOAtMs > expiresAtMs;
+  const tokenUpdatedAtMs = parseTokenTimestampMs(tokenSourceAudit.updated_at_if_available);
+  const tokenMetadataUpdatedAfterPhase14AO = Number.isFinite(tokenUpdatedAtMs) && Number.isFinite(phase14AOAtMs) && tokenUpdatedAtMs > phase14AOAtMs;
+  const acceptedAuthAfterRefresh = phase14AFRefreshSuccess && acceptedAuthRows.length > 0;
+  const refreshResultFailedToPersist = phase14AFRefreshSuccess && !acceptedAuthAfterRefresh && tokenSourceAudit.selected_token_source !== 'database_platform_tokens';
+  const uploadCommandUsesSameTokenSelectionPathAsAudit = true;
+  const likelyCauseParts = [];
+  if (currentHealth.stale_or_expired) likelyCauseParts.push('the currently selected database eBay OAuth/IAF access token is stale or expired at audit time');
+  if (phase14AOAfterExpiry) likelyCauseParts.push('Phase 14AO occurred after the selected token expires_at timestamp visible to this audit');
+  if (tokenMetadataUpdatedAfterPhase14AO) likelyCauseParts.push('the currently audited token metadata was updated after the Phase 14AO failure, so current health may not be the exact token state used by Phase 14AO');
+  if (currentHealth.database_token_still_overrides_env_token) likelyCauseParts.push('database_platform_tokens still overrides EBAY_USER_TOKEN via the same DB-first token selection path used by UploadSiteHostedPictures');
+  if (phase14APHasErrorCode(phase14AO, '21916984')) likelyCauseParts.push('eBay returned 21916984 Invalid IAF token for the Phase 14AO attempt');
+  const likelyCause = likelyCauseParts.length
+    ? `${likelyCauseParts.join('; ')}. The regression is token/auth-path related rather than image-payload related. If Phase 14AO received 21916984 in a normal Trading API response body, the existing automatic refresh path may not have been triggered by that exact response shape; verify token store timestamps and invalid-token detection before any future upload approval.`
+    : 'No single likely cause was proven by read-only metadata; inspect token store precedence, expiry, and Trading API invalid-token detection before any further upload approval.';
+  return {
+    read_only: true,
+    phase: '14AP',
+    operation: requestedOperation,
+    token_refresh_success_from_phase_14af: phase14AFRefreshSuccess,
+    phase_14af_evidence_source: phase14AFDoc ? phase14AFDocPath : null,
+    token_accepted_evidence_from_phase_14ah_14ak: acceptedAuthRows.map(row => ({
+      phase: row.phase,
+      timestamp: row.timestamp || row.recorded_at || null,
+      ebay_ack: row.ebay_ack || null,
+      error_codes: phase14APUploadErrorCodes(row),
+      accepted_auth_inference: 'eBay Picture Services returned image-corruption error 21916550 instead of auth error 21916984, proving auth reached the picture service layer for this attempt.',
+      picture_url: row.picture_url || null,
+      upload_succeeded: row.upload_succeeded === true,
+    })),
+    accepted_auth_evidence_present: acceptedAuthRows.length > 0,
+    latest_phase_14ao_invalid_iaf_token_failure: phase14AO ? {
+      phase: phase14AO.phase,
+      timestamp: phase14AO.timestamp || phase14AO.recorded_at || null,
+      ebay_ack: phase14AO.ebay_ack || null,
+      error_codes: phase14APUploadErrorCodes(phase14AO),
+      invalid_iaf_token_present: phase14APHasErrorCode(phase14AO, '21916984'),
+      picture_url: phase14AO.picture_url || null,
+      upload_succeeded: phase14AO.upload_succeeded === true,
+      compatible_variant_upload_attempt: phase14AO.compatible_variant_upload_attempt === true,
+      listing_revise_performed: phase14AO.listing_revise_performed === true,
+      revise_fixed_price_item_called: phase14AO.revise_fixed_price_item_called === true,
+    } : null,
+    selected_token_source: tokenSourceAudit.selected_token_source,
+    token_source_precedence: tokenSourceAudit.token_source_precedence,
+    token_updated_at: tokenSourceAudit.updated_at_if_available,
+    token_expires_at: tokenSourceAudit.expires_at_if_available,
+    current_time: now.toISOString(),
+    seconds_until_expiry: currentHealth.seconds_until_expiry,
+    token_appears_expired_now: currentHealth.stale_or_expired,
+    database_token_still_overrides_env_token: currentHealth.database_token_still_overrides_env_token,
+    upload_command_uses_same_token_selection_path_as_audit: uploadCommandUsesSameTokenSelectionPathAsAudit,
+    upload_token_selection_path_evidence: 'EbayAPI.callTradingAPI invokes _ensureToken(), which loads tokenStore.loadToken("ebay") before env fallback; phase14AELoadEbayTokenSourceData audits platform_tokens before EBAY_USER_TOKEN with the same DB-first precedence.',
+    token_refresh_result_failed_to_persist: refreshResultFailedToPersist,
+    token_metadata_updated_after_phase_14ao: tokenMetadataUpdatedAfterPhase14AO,
+    token_refresh_persistence_evidence: acceptedAuthAfterRefresh
+      ? 'Phase 14AH/14AK accepted-auth evidence after Phase 14AF shows the refreshed token persisted well enough to reach eBay Picture Services at least once.'
+      : 'No accepted-auth upload evidence after Phase 14AF was found in the local upload registry.',
+    phase_14ao_after_selected_token_expiry: phase14AOAfterExpiry,
+    invalid_iaf_history: invalidIafRows.map(row => ({
+      phase: row.phase,
+      timestamp: row.timestamp || row.recorded_at || null,
+      error_codes: phase14APUploadErrorCodes(row),
+    })),
+    current_token_health: currentHealth,
+    likely_cause: likelyCause,
+    recommended_operator_action: currentHealth.safe_to_refresh_with_existing_path
+      ? 'Do not retry image upload. Request a separate explicit auth-only token refresh phase using the existing refresh path; after refresh, run read-only token health/source audits and require a new explicit upload approval before any future UploadSiteHostedPictures attempt.'
+      : 'Do not retry image upload. Restore/reauthorize the eBay OAuth refresh path securely, verify token source precedence and environment, then request explicit approval before refreshing or uploading.',
+    no_upload_retry_allowed: true,
+    no_token_secrets_printed: true,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      upload_site_hosted_pictures_called: false,
+      revise_fixed_price_item_called: false,
+      marketplace_write_performed: false,
+      listing_changed: false,
+      image_uploaded: false,
+      execution_request_created: false,
+      packet_created: false,
+      actual_database_write: false,
+      token_values_printed: false,
+      token_values_modified: false,
+      token_refresh_performed: false,
+      ai_calls: false,
+    },
+    source: 'phase_14ap_ebay_token_regression_audit_v1',
+  };
+}
+
 async function buildEbayTokenRefreshReadiness({ operation = 'UploadSiteHostedPictures' } = {}) {
   const requestedOperation = String(operation || 'UploadSiteHostedPictures');
   const source = await phase14AELoadEbayTokenSourceData();
@@ -17996,6 +18188,8 @@ module.exports = {
   buildEbayListingQualityImageUploadAuthFailureAudit,
   buildEbayTokenSourceAudit,
   buildEbayTokenRefreshReadiness,
+  buildEbayTokenCurrentHealth,
+  buildEbayTokenRegressionAudit,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,
