@@ -1384,6 +1384,49 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-approved-live-revise') {
+    const { executeEbayPublicPictureUrlApprovedLiveRevise } = require('../src/services/hermesExecutionApproval');
+    const requestId = arg('request-id', arg('id', null));
+    if (!requestId) throw new Error('request-id is required');
+    const write = hasFlag('write');
+    const result = await executeEbayPublicPictureUrlApprovedLiveRevise({
+      requestId,
+      approvalText: arg('approval-text', null),
+      dryRun: !write,
+      write,
+      liveEnabled: String(process.env.HERMES_EBAY_LIVE_EXECUTION_ENABLED || '').toLowerCase() === 'true',
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-post-live-audit') {
+    const { buildEbayPublicPictureUrlPostLiveAudit } = require('../src/services/hermesExecutionApproval');
+    const requestId = arg('request-id', arg('id', null));
+    if (!requestId) throw new Error('request-id is required');
+    const result = await buildEbayPublicPictureUrlPostLiveAudit({ requestId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-record-reconciliation-readiness') {
+    const { buildEbayPublicPictureUrlRecordReconciliationReadiness } = require('../src/services/hermesExecutionApproval');
+    const requestId = arg('request-id', arg('id', null));
+    if (!requestId) throw new Error('request-id is required');
+    const result = await buildEbayPublicPictureUrlRecordReconciliationReadiness({ requestId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-record-reconciliation-approval-checklist') {
+    const { buildEbayPublicPictureUrlRecordReconciliationApprovalChecklist } = require('../src/services/hermesExecutionApproval');
+    const requestId = arg('request-id', arg('id', null));
+    if (!requestId) throw new Error('request-id is required');
+    const result = await buildEbayPublicPictureUrlRecordReconciliationApprovalChecklist({ requestId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-token-refresh-readiness') {
     const { buildEbayTokenRefreshReadiness } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayTokenRefreshReadiness({
