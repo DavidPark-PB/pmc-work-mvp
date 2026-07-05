@@ -11874,6 +11874,94 @@ async function buildEbayPublicPictureUrlPostLiveAudit({ requestId } = {}) {
   };
 }
 
+async function buildEbayPublicPictureUrlRolloutCloseout({ requestId } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('request-id is required');
+  if (id !== 7) {
+    return buildEbayPublicPictureUrlFinalCloseout({ requestId });
+  }
+  const { request, packet, events } = await phase15GLoadRequestPacketEvents({ requestId: id });
+  const startedEvent = events.find(event => event.id === 18)
+    || events.find(event => String(event.event_type || '').startsWith('phase_15f_public_picture_url_images_only_revise_st'));
+  const completionEvent = events.find(event => event.id === 19)
+    || events.find(event => String(event.event_type || '').startsWith('phase_15f_public_picture_url_images_only_revise_co'));
+  const executionResult = request?.execution_result || null;
+  const packetTerminal = ['packet_recorded', 'executed', 'closed', 'confirmed'].includes(String(packet?.status || ''));
+  const ackAccepted = ['Warning', 'Success'].includes(String(executionResult?.ebay_response?.ack || ''));
+  const forbiddenChangeAudit = {
+    no_title_changes: executionResult?.title_changes === false,
+    no_item_specifics_changes: executionResult?.item_specifics_changes === false,
+    no_price_changes: executionResult?.price_changes === false,
+    no_inventory_changes: executionResult?.inventory_changes === false,
+    no_quantity_changes: executionResult?.quantity_changes === false,
+    no_description_changes: executionResult?.description_changes === false,
+    no_category_changes: executionResult?.category_changes === false,
+    no_shipping_changes: executionResult?.shipping_changes === false,
+    no_payment_changes: executionResult?.payment_changes === false,
+    no_returns_changes: executionResult?.returns_changes === false,
+  };
+  const forbiddenChangeAuditClean = Object.values(forbiddenChangeAudit).every(Boolean);
+  const requestExecuted = request?.status === 'executed' && request?.executed_at != null && executionResult != null;
+  const listingImageAppearsUpdated = executionResult?.listing_changed === true
+    && Array.isArray(executionResult?.allowed_changes)
+    && executionResult.allowed_changes.length === 1
+    && executionResult.allowed_changes[0] === 'images';
+  const reconciliationComplete = requestExecuted
+    && Boolean(startedEvent)
+    && Boolean(completionEvent)
+    && ackAccepted
+    && forbiddenChangeAuditClean;
+  const duplicateGuardActive = true;
+  const phase15Complete = reconciliationComplete && listingImageAppearsUpdated && duplicateGuardActive;
+  return {
+    request_id: request?.id || id,
+    packet_id: packet?.id || null,
+    item_id: packet?.item_id || request?.metadata?.item_id || null,
+    phase_15_complete: phase15Complete,
+    listing_image_appears_updated: listingImageAppearsUpdated,
+    reconciliation_complete: reconciliationComplete,
+    duplicate_guard_active: duplicateGuardActive,
+    no_further_live_action_required: phase15Complete,
+    read_only: true,
+    phase: '15H',
+    request_status: request?.status || null,
+    packet_status: packet?.status || null,
+    packet_status_terminal_or_equivalent: packetTerminal,
+    started_event_id: startedEvent?.id || null,
+    started_event_exists: Boolean(startedEvent),
+    completion_event_id: completionEvent?.id || null,
+    completion_event_exists: Boolean(completionEvent),
+    execution_result_recorded: executionResult != null,
+    ebay_response_ack: executionResult?.ebay_response?.ack || null,
+    ebay_response_ack_success_or_warning: ackAccepted,
+    record_only_reconciliation_needed: false,
+    no_additional_live_revise_attempt_needed: phase15Complete,
+    future_candidate_exclusions: {
+      excluded_request_ids: [6, 7],
+      excluded_packet_ids: [5, 7],
+      excluded_item_ids: ['206288370789', '206284142714'],
+      request_id_7_excluded: true,
+      packet_id_7_excluded: true,
+      item_id_206284142714_excluded: true,
+    },
+    forbidden_change_audit: forbiddenChangeAudit,
+    events: events.map(event => ({ id: event.id, event_type: event.event_type, actor: event.actor, created_at: event.created_at })),
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      live_execution_performed: false,
+      listing_changed_by_closeout: false,
+      actual_database_write: false,
+      ai_calls: false,
+    },
+    source: 'phase_15h_public_picture_url_rollout_closeout_v1',
+  };
+}
+
 async function buildEbayPublicPictureUrlRecordReconciliationReadiness({ requestId } = {}) {
   const audit = await buildEbayPublicPictureUrlPostLiveAudit({ requestId });
   const blockers = [];
@@ -12361,11 +12449,12 @@ function phase15AImprovementReasons(row = {}) {
 async function buildEbayPublicPictureUrlNextCandidatePlan({ limit = 10 } = {}) {
   const safeLimit = Math.min(50, Math.max(1, intOrNull(limit) || 10));
   const sourcePlan = await buildEbayListingQualityFreshCandidateSourcePlan({ limit: Math.max(50, safeLimit * 5) });
-  const excludedRequestIds = new Set([6]);
-  const excludedItemIds = new Set(['206288370789']);
+  const excludedRequestIds = new Set([6, 7]);
+  const excludedPacketIds = new Set([5, 7]);
+  const excludedItemIds = new Set(['206288370789', '206284142714']);
   const sourceRows = sourcePlan.candidate_source_rows || [];
   const candidateRows = sourceRows
-    .filter(row => !excludedRequestIds.has(intOrNull(row.request_id)) && !excludedItemIds.has(String(row.item_id || '')))
+    .filter(row => !excludedRequestIds.has(intOrNull(row.request_id)) && !excludedPacketIds.has(intOrNull(row.packet_id)) && !excludedItemIds.has(String(row.item_id || '')))
     .filter(row => String(row.item_id || '').trim())
     .map(row => ({
       ...row,
@@ -12393,9 +12482,12 @@ async function buildEbayPublicPictureUrlNextCandidatePlan({ limit = 10 } = {}) {
       returned_source_rows_before_phase15_filter: sourceRows.length,
     },
     exclusions: {
-      excluded_request_ids: [6],
-      excluded_item_ids: ['206288370789'],
-      exclude_already_executed_phase_14_success: true,
+      excluded_request_ids: [6, 7],
+      excluded_packet_ids: [5, 7],
+      excluded_item_ids: ['206288370789', '206284142714'],
+      exclude_phase_14_executed_item_id_206288370789: true,
+      exclude_phase_15_executed_item_id_206284142714: true,
+      exclude_already_executed_public_picture_url_successes: true,
       exclude_any_executed_request_or_execution_result_from_source_plan: true,
     },
     candidate_rows: candidateRows,
@@ -21518,6 +21610,7 @@ module.exports = {
   buildEbayPublicPictureUrlRecordReconciliationApprovalChecklist,
   buildEbayPublicPictureUrlRecordReconciliationWriteReadinessNoEbay,
   executeEbayPublicPictureUrlRecordReconciliation,
+  buildEbayPublicPictureUrlRolloutCloseout,
   buildEbayPublicPictureUrlFinalCloseout,
   buildEbayPublicPictureUrlDuplicateGuard,
   buildEbayPublicPictureUrlRolloutReadiness,
