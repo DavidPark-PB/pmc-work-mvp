@@ -1572,6 +1572,20 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-mini-batch-approved-live-revise') {
+    const { executeEbayPublicPictureUrlMiniBatchApprovedLiveRevise } = require('../src/services/hermesExecutionApproval');
+    const write = hasFlag('write');
+    const result = await executeEbayPublicPictureUrlMiniBatchApprovedLiveRevise({
+      requestIds: arg('request-ids', ''),
+      approvalText: arg('approval-text', null),
+      dryRun: !write,
+      write,
+      liveEnabled: String(process.env.HERMES_EBAY_LIVE_EXECUTION_ENABLED || '').toLowerCase() === 'true',
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-public-picture-url-candidate-shortlist') {
     const { buildEbayPublicPictureUrlCandidateShortlist } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayPublicPictureUrlCandidateShortlist({
