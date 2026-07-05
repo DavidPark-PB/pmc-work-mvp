@@ -32,6 +32,8 @@ function printUsage() {
   console.error([
     'Usage:',
     '  npm run hermes:agent -- profit-inventory-opportunity-plan [--limit=50]',
+    '  npm run hermes:agent -- profit-inventory-opportunity-hygiene [--limit=50]',
+    '  npm run hermes:agent -- profit-inventory-actionable-shortlist [--limit=25]',
     '  npm run hermes:agent -- market --sku=<SKU>',
     '  npm run hermes:agent -- opportunity --sku=<SKU> [--type=<TYPE>]',
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> [--type=<TYPE>] --dry-run',
@@ -213,6 +215,24 @@ async function main() {
     const { buildProfitInventoryOpportunityPlan } = require('../src/services/hermesExecutionApproval');
     const result = await buildProfitInventoryOpportunityPlan({
       limit: intArg('limit', 50),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'profit-inventory-opportunity-hygiene') {
+    const { buildProfitInventoryOpportunityHygiene } = require('../src/services/hermesExecutionApproval');
+    const result = await buildProfitInventoryOpportunityHygiene({
+      limit: intArg('limit', 50),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'profit-inventory-actionable-shortlist') {
+    const { buildProfitInventoryActionableShortlist } = require('../src/services/hermesExecutionApproval');
+    const result = await buildProfitInventoryActionableShortlist({
+      limit: intArg('limit', 25),
     });
     console.log(JSON.stringify(result, null, 2));
     return;

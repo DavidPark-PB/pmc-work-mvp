@@ -14257,6 +14257,7 @@ function phase17AOpportunityFromContext(context, sourceRow = {}) {
     sku: context?.sku || sourceRow.sku || sourceRow.item_id || '',
     item_id: context?.platforms?.ebay?.listing_id || String(sourceRow.item_id || ''),
     title: context?.platforms?.ebay?.title || sourceRow.title || '',
+    listing_status: context?.platforms?.ebay?.status || sourceRow.status || '',
     opportunity_type: opportunityType,
     signals: filteredSignals,
     current_price: phase17ARoundMoney(currentPrice),
@@ -14353,6 +14354,173 @@ async function buildProfitInventoryOpportunityPlan({ limit = 50 } = {}) {
       listing_changes: false,
     },
     source: 'phase_17a_profit_inventory_opportunity_plan_v1',
+  };
+}
+
+function phase17BClassifyOpportunity(opportunity) {
+  const sku = String(opportunity?.sku || '').trim();
+  const title = String(opportunity?.title || '').trim();
+  const itemId = String(opportunity?.item_id || '').trim();
+  const status = String(opportunity?.listing_status || '').trim().toLowerCase();
+  const type = String(opportunity?.opportunity_type || '').trim();
+  const price = phase17AToNumber(opportunity?.current_price, 0) || 0;
+  const cost = phase17AToNumber(opportunity?.cost, 0) || 0;
+  const signalTypes = (opportunity?.signals || []).map(signal => signal.type);
+  const reasons = [];
+
+  if (/\b(test|sample|mock|demo)\b/i.test(`${sku} ${title}`) || /(test|sample|mock|demo)/i.test(`${sku} ${title}`)) {
+    reasons.push('test_or_sandbox_record');
+  }
+  if (price >= 999 && /test|sample|mock|demo/i.test(`${sku} ${title}`)) {
+    reasons.push('suspicious_test_price');
+  }
+  if (!itemId) reasons.push('missing_item_id');
+  if (!title) reasons.push('missing_title');
+  if (status && !['active', 'in_stock', 'available'].includes(status)) {
+    reasons.push(`inactive_or_unknown_listing_status:${status}`);
+  }
+  if (!type || type === 'hold') reasons.push('missing_clear_opportunity_type');
+  if (opportunity?.requires_marketplace_write === true) reasons.push('requires_marketplace_write');
+
+  const costDependentTypes = new Set(['missing_cost', 'competitor_lower_price', 'price_attack', 'low_margin_risk']);
+  const marginOrRiskDecisionDependsOnCost = costDependentTypes.has(type)
+    || signalTypes.some(signalType => costDependentTypes.has(signalType));
+  if (marginOrRiskDecisionDependsOnCost && cost <= 0) {
+    reasons.push('missing_or_zero_cost_for_margin_or_risk_decision');
+  }
+
+  let classification = 'actionable';
+  if (reasons.some(reason => reason.includes('test_or_sandbox') || reason.includes('suspicious_test_price'))) {
+    classification = 'test_or_sandbox_blocked';
+  } else if (reasons.some(reason => reason.includes('missing_or_zero_cost'))) {
+    classification = 'missing_cost_blocked';
+  } else if (reasons.some(reason => reason === 'missing_item_id' || reason === 'missing_title' || reason.startsWith('inactive_or_unknown_listing_status'))) {
+    classification = 'missing_listing_evidence_blocked';
+  } else if (reasons.some(reason => reason === 'missing_clear_opportunity_type')) {
+    classification = 'data_quality_blocked';
+  } else if (['competitor_lower_price', 'price_attack', 'low_margin_risk'].includes(type)) {
+    classification = 'needs_human_review';
+  }
+
+  const canOperatorReviewSafely = classification === 'actionable' || classification === 'needs_human_review';
+  return {
+    classification,
+    blocked: classification !== 'actionable',
+    blocked_reasons: reasons,
+    can_operator_review_safely: canOperatorReviewSafely,
+    hygiene_notes: reasons.length > 0
+      ? reasons.join('; ')
+      : 'passed Phase 17B hygiene filters for read-only operator review',
+  };
+}
+
+function phase17BSummarizeBlockedReasons(rows) {
+  const summary = {};
+  for (const row of rows) {
+    for (const reason of row.blocked_reasons || []) {
+      summary[reason] = (summary[reason] || 0) + 1;
+    }
+  }
+  return summary;
+}
+
+function phase17BPublicOpportunity(opportunity, hygiene) {
+  return {
+    rank: opportunity.rank,
+    sku: opportunity.sku,
+    item_id: opportunity.item_id,
+    title: opportunity.title,
+    listing_status: opportunity.listing_status || '',
+    opportunity_type: opportunity.opportunity_type,
+    classification: hygiene.classification,
+    blocked_reasons: hygiene.blocked_reasons,
+    signals: opportunity.signals || [],
+    current_price: opportunity.current_price,
+    cost: opportunity.cost,
+    available_quantity: opportunity.available_quantity,
+    recent_sales: opportunity.recent_sales,
+    estimated_impact: opportunity.estimated_impact,
+    recommended_next_action: opportunity.recommended_next_action,
+    requires_ai: false,
+    requires_marketplace_write: false,
+    can_operator_review_safely: hygiene.can_operator_review_safely,
+    reasoning: `${opportunity.reasoning || ''} Hygiene: ${hygiene.hygiene_notes}.`.trim(),
+  };
+}
+
+async function buildProfitInventoryOpportunityHygiene({ limit = 50, shortlistLimit = null } = {}) {
+  const safeLimit = Math.max(1, Math.min(100, intOrNull(limit) || 50));
+  const plan = await buildProfitInventoryOpportunityPlan({ limit: safeLimit });
+  const actionable = [];
+  const blocked = [];
+
+  for (const opportunity of plan.opportunities || []) {
+    const hygiene = phase17BClassifyOpportunity(opportunity);
+    const publicOpportunity = phase17BPublicOpportunity(opportunity, hygiene);
+    if (hygiene.classification === 'actionable') {
+      actionable.push(publicOpportunity);
+    } else {
+      blocked.push(publicOpportunity);
+    }
+  }
+
+  const effectiveShortlistLimit = shortlistLimit == null
+    ? null
+    : Math.max(1, Math.min(100, intOrNull(shortlistLimit) || 25));
+  const actionableOpportunities = effectiveShortlistLimit == null
+    ? actionable
+    : actionable.slice(0, effectiveShortlistLimit).map((opportunity, index) => ({ ...opportunity, rank: index + 1 }));
+
+  return {
+    phase: '17B',
+    mode: 'read_only',
+    input_limit: safeLimit,
+    actionable_count: actionableOpportunities.length,
+    blocked_count: blocked.length,
+    blocked_reasons_summary: phase17BSummarizeBlockedReasons(blocked),
+    actionable_opportunities: actionableOpportunities,
+    blocked_opportunities: blocked,
+    marketplace_write: false,
+    db_write: false,
+    ai_call: false,
+    no_execution_requests_created: true,
+    no_packets_created: true,
+    no_ebay_call: true,
+    no_get_item_call: true,
+    no_revise_fixed_price_item_call: true,
+    no_price_inventory_listing_changes: true,
+    safety: {
+      read_only: true,
+      cached_internal_data_only: true,
+      marketplace_write: false,
+      db_write: false,
+      ai_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      execution_request_created: false,
+      packet_created: false,
+      price_changes: false,
+      inventory_changes: false,
+      listing_changes: false,
+    },
+    source: effectiveShortlistLimit == null
+      ? 'phase_17b_profit_inventory_opportunity_hygiene_v1'
+      : 'phase_17b_profit_inventory_actionable_shortlist_v1',
+  };
+}
+
+async function buildProfitInventoryActionableShortlist({ limit = 25, inputLimit = 50 } = {}) {
+  const safeLimit = Math.max(1, Math.min(100, intOrNull(limit) || 25));
+  const safeInputLimit = Math.max(safeLimit, Math.min(100, intOrNull(inputLimit) || 50));
+  const result = await buildProfitInventoryOpportunityHygiene({
+    limit: safeInputLimit,
+    shortlistLimit: safeLimit,
+  });
+  return {
+    ...result,
+    shortlist_limit: safeLimit,
+    source: 'phase_17b_profit_inventory_actionable_shortlist_v1',
   };
 }
 
@@ -23203,6 +23371,8 @@ module.exports = {
   createEbayPublicPictureUrlImagesOnlyPacket,
   buildEbayPublicPictureUrlImagesOnlyFinalApprovalChecklist,
   buildProfitInventoryOpportunityPlan,
+  buildProfitInventoryOpportunityHygiene,
+  buildProfitInventoryActionableShortlist,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,
