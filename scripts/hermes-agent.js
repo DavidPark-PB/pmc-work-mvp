@@ -1348,6 +1348,24 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-packet-readiness') {
+    const { buildEbayPublicPictureUrlPacketReadiness } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    if (!itemId) throw new Error('item-id is required');
+    const result = await buildEbayPublicPictureUrlPacketReadiness({ itemId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-packet-preview') {
+    const { buildEbayPublicPictureUrlPacketPreview } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    if (!itemId) throw new Error('item-id is required');
+    const result = await buildEbayPublicPictureUrlPacketPreview({ itemId, create: hasFlag('create') });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-token-refresh-readiness') {
     const { buildEbayTokenRefreshReadiness } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayTokenRefreshReadiness({
