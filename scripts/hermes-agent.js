@@ -31,6 +31,7 @@ function intArg(name, fallback = null) {
 function printUsage() {
   console.error([
     'Usage:',
+    '  npm run hermes:agent -- profit-inventory-opportunity-plan [--limit=50]',
     '  npm run hermes:agent -- market --sku=<SKU>',
     '  npm run hermes:agent -- opportunity --sku=<SKU> [--type=<TYPE>]',
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> [--type=<TYPE>] --dry-run',
@@ -207,6 +208,15 @@ function printUsage() {
 
 async function main() {
   const cmd = (process.argv[2] || '').toLowerCase();
+
+  if (cmd === 'profit-inventory-opportunity-plan') {
+    const { buildProfitInventoryOpportunityPlan } = require('../src/services/hermesExecutionApproval');
+    const result = await buildProfitInventoryOpportunityPlan({
+      limit: intArg('limit', 50),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
 
   if (cmd === 'market') {
     const sku = arg('sku', null);

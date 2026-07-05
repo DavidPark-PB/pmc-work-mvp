@@ -17,6 +17,7 @@ const sharp = require('sharp');
 
 const { getClient } = require('../db/supabaseClient');
 const { buildHermesOpportunityActionPlan } = require('./opportunityInbox');
+const { buildSkuContext } = require('./skuContextBuilder');
 const {
   buildEbayListingQualityExecutionIntent,
   buildEbayListingQualityResultRecord,
@@ -14129,6 +14130,232 @@ async function buildEbayPublicPictureUrlMiniBatchPostLiveAudit({ requestIds } = 
   };
 }
 
+function phase17AToNumber(value, fallback = null) {
+  const n = Number.parseFloat(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function phase17AToInteger(value, fallback = 0) {
+  const n = Number.parseInt(value, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function phase17ARoundMoney(value) {
+  const n = phase17AToNumber(value, 0) || 0;
+  return Math.round(n * 100) / 100;
+}
+
+function phase17ASignalPriority(type) {
+  const priority = {
+    dead_stock: 100,
+    no_recent_sales: 85,
+    stock_risk: 80,
+    missing_cost: 75,
+    competitor_lower_price: 70,
+    price_attack: 95,
+    low_margin_risk: 90,
+    overstock: 82,
+    slow_mover: 78,
+  };
+  return priority[type] || 10;
+}
+
+function phase17AOpportunityType(signals) {
+  const types = (signals || []).map(signal => signal.type);
+  const order = ['price_attack', 'low_margin_risk', 'dead_stock', 'overstock', 'no_recent_sales', 'slow_mover', 'stock_risk', 'missing_cost', 'competitor_lower_price'];
+  return order.find(type => types.includes(type)) || types[0] || 'hold';
+}
+
+function phase17AEstimatedImpact({ opportunityType, availableQuantity, currentPrice, recentSales, marginPct }) {
+  const inventoryValue = Math.max(0, availableQuantity) * Math.max(0, currentPrice);
+  if (['price_attack', 'low_margin_risk'].includes(opportunityType)) return 'high';
+  if (opportunityType === 'dead_stock' && inventoryValue >= 300) return 'high';
+  if (opportunityType === 'overstock' && inventoryValue >= 500) return 'high';
+  if (opportunityType === 'missing_cost' && currentPrice > 0) return 'medium';
+  if (opportunityType === 'stock_risk' && recentSales > 0) return 'medium';
+  if (marginPct != null && marginPct < 10) return 'medium';
+  return inventoryValue >= 100 ? 'medium' : 'low';
+}
+
+function phase17ANextAction(opportunityType) {
+  const map = {
+    dead_stock: 'review_inventory',
+    no_recent_sales: 'review_inventory',
+    stock_risk: 'review_inventory',
+    missing_cost: 'review_cost',
+    competitor_lower_price: 'review_price',
+    price_attack: 'review_price',
+    low_margin_risk: 'review_price',
+    overstock: 'review_inventory',
+    slow_mover: 'review_inventory',
+  };
+  return map[opportunityType] || 'hold';
+}
+
+function phase17AAdditionalSignals(context, sourceRow = {}) {
+  const signals = [];
+  const detectedAt = new Date().toISOString();
+  const price = phase17AToNumber(context?.pricing?.current_price || context?.platforms?.ebay?.price, 0) || 0;
+  const cost = phase17AToNumber(sourceRow.cost_usd ?? sourceRow.cost ?? sourceRow.unit_cost ?? sourceRow.purchase_cost ?? context?.pricing?.cost, null);
+  const available = phase17AToInteger(context?.inventory?.total_available ?? sourceRow.ebay_api_stock ?? sourceRow.stock, 0);
+  const recentSales = phase17AToInteger(context?.sales?.units_30d ?? sourceRow.sales_count_30d ?? 0, 0);
+  const totalSales = phase17AToInteger(sourceRow.sales_count ?? sourceRow.sold_quantity ?? context?.platforms?.ebay?.sold_quantity, 0);
+  if (cost != null && cost > 0 && price > 0) {
+    const marginPct = ((price - cost) / price) * 100;
+    if (marginPct < 10) {
+      signals.push({
+        type: 'low_margin_risk',
+        severity: marginPct < 0 ? 'critical' : 'warning',
+        value: {
+          current_price: phase17ARoundMoney(price),
+          cost: phase17ARoundMoney(cost),
+          estimated_margin_pct: Math.round(marginPct * 100) / 100,
+        },
+        detected_at: detectedAt,
+      });
+    }
+  }
+  if (available >= 10 && recentSales === 0) {
+    signals.push({
+      type: 'overstock',
+      severity: available >= 30 ? 'warning' : 'info',
+      value: { available_quantity: available, recent_sales: recentSales, window_days: 30 },
+      detected_at: detectedAt,
+    });
+  } else if (available > 0 && totalSales <= 1 && recentSales === 0) {
+    signals.push({
+      type: 'slow_mover',
+      severity: 'info',
+      value: { available_quantity: available, recent_sales: recentSales, total_sales: totalSales, window_days: 30 },
+      detected_at: detectedAt,
+    });
+  }
+  return signals;
+}
+
+function phase17AOpportunityFromContext(context, sourceRow = {}) {
+  const currentPrice = phase17AToNumber(context?.pricing?.current_price || context?.platforms?.ebay?.price, 0) || 0;
+  const cost = phase17AToNumber(sourceRow.cost_usd ?? sourceRow.cost ?? sourceRow.unit_cost ?? sourceRow.purchase_cost ?? context?.pricing?.cost, null);
+  const availableQuantity = phase17AToInteger(context?.inventory?.total_available ?? sourceRow.ebay_api_stock ?? sourceRow.stock, 0);
+  const recentSales = phase17AToInteger(context?.sales?.units_30d ?? 0, 0);
+  const signals = [...(context?.signals || []), ...phase17AAdditionalSignals(context, sourceRow)];
+  const actionableTypes = new Set(['dead_stock', 'no_recent_sales', 'stock_risk', 'missing_cost', 'competitor_lower_price', 'price_attack', 'low_margin_risk', 'overstock', 'slow_mover']);
+  const filteredSignals = signals.filter(signal => actionableTypes.has(signal.type));
+  const opportunityType = phase17AOpportunityType(filteredSignals);
+  const marginPct = cost != null && cost > 0 && currentPrice > 0 ? ((currentPrice - cost) / currentPrice) * 100 : null;
+  const estimatedImpact = phase17AEstimatedImpact({ opportunityType, availableQuantity, currentPrice, recentSales, marginPct });
+  const signalTypes = filteredSignals.map(signal => signal.type);
+  const reasoning = [
+    `Signals: ${signalTypes.join(', ') || 'none'}.`,
+    `Current price ${phase17ARoundMoney(currentPrice)}, cost ${cost == null ? 'unknown' : phase17ARoundMoney(cost)}, available quantity ${availableQuantity}, recent sales ${recentSales}.`,
+    opportunityType === 'missing_cost' ? 'Cost data is missing, so margin-sensitive actions require cost review before any pricing decision.' : null,
+    ['competitor_lower_price', 'price_attack'].includes(opportunityType) ? 'Competitor pressure exists; any price action requires human review and a later approval-gated phase.' : null,
+    ['dead_stock', 'no_recent_sales', 'overstock', 'slow_mover'].includes(opportunityType) ? 'Inventory is not moving quickly based on cached sales/inventory context; review inventory or merchandising before action.' : null,
+    opportunityType === 'stock_risk' ? 'Stock is low or unavailable; review inventory before any sales or pricing action.' : null,
+  ].filter(Boolean).join(' ');
+  return {
+    sku: context?.sku || sourceRow.sku || sourceRow.item_id || '',
+    item_id: context?.platforms?.ebay?.listing_id || String(sourceRow.item_id || ''),
+    title: context?.platforms?.ebay?.title || sourceRow.title || '',
+    opportunity_type: opportunityType,
+    signals: filteredSignals,
+    current_price: phase17ARoundMoney(currentPrice),
+    cost: cost == null ? 0 : phase17ARoundMoney(cost),
+    available_quantity: availableQuantity,
+    recent_sales: recentSales,
+    estimated_impact: estimatedImpact,
+    recommended_next_action: phase17ANextAction(opportunityType),
+    requires_ai: false,
+    requires_marketplace_write: false,
+    reasoning,
+    _score: filteredSignals.reduce((sum, signal) => sum + phase17ASignalPriority(signal.type), 0)
+      + (estimatedImpact === 'high' ? 40 : estimatedImpact === 'medium' ? 20 : 0)
+      + Math.min(50, Math.max(0, availableQuantity))
+      + Math.min(30, Math.max(0, currentPrice)),
+  };
+}
+
+async function phase17ALoadSeedRows(limit) {
+  const db = getClient();
+  const { data, error } = await db
+    .from('ebay_products')
+    .select('*')
+    .order('updated_at', { ascending: false })
+    .limit(Math.max(10, Math.min(200, limit * 4)));
+  if (error) throw error;
+  return data || [];
+}
+
+async function buildProfitInventoryOpportunityPlan({ limit = 50 } = {}) {
+  const safeLimit = Math.max(1, Math.min(100, intOrNull(limit) || 50));
+  const seedRows = await phase17ALoadSeedRows(safeLimit);
+  const sourceBySku = new Map();
+  for (const row of seedRows) {
+    const sku = String(row.sku || row.item_id || '').trim();
+    if (sku && !sourceBySku.has(sku)) sourceBySku.set(sku, row);
+  }
+  const opportunities = [];
+  for (const [sku, row] of sourceBySku.entries()) {
+    try {
+      const context = await buildSkuContext({ sku, readOnly: true, skipConnector: true });
+      const opportunity = phase17AOpportunityFromContext(context, row);
+      if (opportunity.signals.length > 0) opportunities.push(opportunity);
+    } catch (e) {
+      const fallbackContext = {
+        sku,
+        platforms: { ebay: { listing_id: String(row.item_id || ''), title: row.title || '', price: row.price_usd || row.price || 0 } },
+        inventory: { total_available: phase17AToInteger(row.ebay_api_stock ?? row.stock, 0) },
+        sales: { units_30d: 0, orders_30d: 0 },
+        pricing: { current_price: phase17AToNumber(row.price_usd ?? row.price, 0), estimated_margin_pct: null, needs_cost_data: true },
+        competitors: [],
+        signals: [],
+      };
+      const opportunity = phase17AOpportunityFromContext(fallbackContext, row);
+      opportunity.reasoning = `${opportunity.reasoning} Context fallback used because read-only SKU context build failed: ${e.message || String(e)}.`;
+      opportunities.push(opportunity);
+    }
+  }
+  const ranked = opportunities
+    .sort((a, b) => b._score - a._score || String(a.sku).localeCompare(String(b.sku)))
+    .slice(0, safeLimit)
+    .map((opportunity, index) => {
+      const { _score, ...publicOpportunity } = opportunity;
+      return { rank: index + 1, ...publicOpportunity };
+    });
+  return {
+    phase: '17A',
+    mode: 'read_only',
+    image_pipeline_expansion_paused: true,
+    limit: safeLimit,
+    opportunities: ranked,
+    marketplace_write: false,
+    db_write: false,
+    ai_call: false,
+    no_execution_requests_created: true,
+    no_packets_created: true,
+    no_ebay_call: true,
+    no_get_item_call: true,
+    no_revise_fixed_price_item_call: true,
+    no_price_inventory_listing_changes: true,
+    safety: {
+      read_only: true,
+      cached_internal_data_only: true,
+      marketplace_write: false,
+      db_write: false,
+      ai_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      execution_request_created: false,
+      packet_created: false,
+      price_changes: false,
+      inventory_changes: false,
+      listing_changes: false,
+    },
+    source: 'phase_17a_profit_inventory_opportunity_plan_v1',
+  };
+}
+
 async function buildEbayPublicPictureUrlCandidateReviewChecklist({ itemId } = {}) {
   const detail = await buildEbayPublicPictureUrlCandidateDetail({ itemId });
   const checklist = [
@@ -22975,6 +23202,7 @@ module.exports = {
   buildEbayPublicPictureUrlImagesOnlyPacketPreview,
   createEbayPublicPictureUrlImagesOnlyPacket,
   buildEbayPublicPictureUrlImagesOnlyFinalApprovalChecklist,
+  buildProfitInventoryOpportunityPlan,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,
