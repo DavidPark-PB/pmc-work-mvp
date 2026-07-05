@@ -11586,6 +11586,201 @@ async function buildEbayPublicPictureUrlRecordReconciliationApprovalChecklist({ 
   };
 }
 
+function phase14AVRecordReconciliationApprovalText() {
+  return [
+    'Record-only Hermes reconciliation approval for already-executed public PictureURL live revise.',
+    'request_id=6 only.',
+    'packet_id=5 only.',
+    'item_id=206288370789 only.',
+    'No eBay calls.',
+    'Do not call ReviseFixedPriceItem.',
+    'Do not call UploadSiteHostedPictures.',
+    'No marketplace writes.',
+    'Allowed internal DB writes only: mark request_id=6 executed, attach execution_result from post-live audit, create completion event.',
+    'Forbidden changes: listing fields, price, inventory, quantity, description, category, shipping, payment, returns.',
+    'One record-only reconciliation attempt only.',
+    'Do not push.',
+  ].join('\n');
+}
+
+async function buildEbayPublicPictureUrlRecordReconciliationWriteReadinessNoEbay({ requestId } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('request-id is required');
+  const { request, packet, events } = await phase14AVLoadRequestPacketEvents({ requestId: id });
+  const startedEvents = events.filter(event => event.event_type === 'phase_14av_public_picture_url_revise_started');
+  const completionEvents = events.filter(event => event.event_type === 'phase_14av_public_picture_url_revise_completed_record_only_reconciliation');
+  const expected = phase14AVExpectedEvidence();
+  const knownPostLiveAuditEvidence = {
+    ack: 'Success',
+    item_id: expected.item_id,
+    title: expected.title,
+    picture_urls: ['https://i.ebayimg.com/00/s/ODAwWDgwMA==/z/0KQAAeSwNlxqSbcV/$_1.JPG?set_id=8800005007'],
+    item_specifics: Object.entries(expected.item_specifics).map(([Name, Value]) => ({ Name, Value: [Value] })),
+    source: 'phase_14av_closeout_read_only_get_item_audit',
+    raw_response_stored: false,
+  };
+  const listingUpdateEvidence = phase14AVListingUpdateEvidenceSummary(knownPostLiveAuditEvidence);
+  const hermesDbUnreconciled = request?.status !== 'executed'
+    || request?.executed_at == null
+    || request?.execution_result == null;
+  const blockers = [];
+  if (id !== 6) blockers.push('request_id_not_6');
+  if (packet?.id !== 5) blockers.push('packet_id_not_5');
+  if (String(packet?.item_id || '') !== '206288370789') blockers.push('item_id_not_206288370789');
+  if (startedEvents.length !== 1) blockers.push('started_event_count_not_one');
+  if (completionEvents.length > 0) blockers.push('record_only_reconciliation_already_completed');
+  if (listingUpdateEvidence.listing_appears_updated !== true) blockers.push('known_post_live_audit_does_not_show_listing_updated');
+  if (hermesDbUnreconciled !== true) blockers.push('hermes_db_not_unreconciled');
+  return {
+    read_only: true,
+    phase: '14AV-record-reconciliation',
+    request_id: request?.id || id,
+    packet_id: packet?.id || null,
+    item_id: packet?.item_id || request?.metadata?.item_id || null,
+    current_db_status: request?.status || null,
+    executed_at: request?.executed_at || null,
+    execution_result_present: request?.execution_result != null,
+    existing_started_event_id: startedEvents[0]?.id || null,
+    existing_started_event_count: startedEvents.length,
+    existing_completion_event_count: completionEvents.length,
+    known_post_live_audit_evidence: knownPostLiveAuditEvidence,
+    listing_update_evidence: listingUpdateEvidence,
+    listing_appears_updated: listingUpdateEvidence.listing_appears_updated,
+    hermes_db_unreconciled: hermesDbUnreconciled,
+    ready_for_record_only_reconciliation_write: blockers.length === 0,
+    blockers: [...new Set(blockers)],
+    no_ebay_calls: true,
+    no_marketplace_writes: true,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      listing_changed_by_reconciliation: false,
+      actual_database_write: false,
+      ai_calls: false,
+    },
+    source: 'phase_14av_record_reconciliation_write_readiness_no_ebay_v1',
+  };
+}
+
+async function executeEbayPublicPictureUrlRecordReconciliation({ requestId, approvalText, dryRun = true, write = false } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('request-id is required');
+  const exactApprovalText = phase14AVRecordReconciliationApprovalText();
+  const approvalTextMatches = String(approvalText || '') === exactApprovalText;
+  const readiness = await buildEbayPublicPictureUrlRecordReconciliationWriteReadinessNoEbay({ requestId: id });
+  const blockers = [...(readiness.blockers || [])];
+  if (!approvalTextMatches) blockers.push('exact_record_reconciliation_approval_text_missing_or_mismatch');
+  const isDryRun = dryRun !== false || write !== true;
+  const executionResult = {
+    phase: '14AV-record-reconciliation',
+    request_id: 6,
+    packet_id: 5,
+    item_id: '206288370789',
+    marketplace: 'ebay',
+    operation: 'record_only_reconciliation_for_public_picture_url_live_revise',
+    reconciles_live_attempt_event_id: readiness.existing_started_event_id,
+    actual_ebay_call: false,
+    actual_network_call: false,
+    no_ebay_calls: true,
+    revise_fixed_price_item_called_by_reconciliation: false,
+    upload_site_hosted_pictures_called_by_reconciliation: false,
+    marketplace_write_performed_by_reconciliation: false,
+    listing_changed_by_reconciliation: false,
+    live_revise_already_attempted_before_reconciliation: true,
+    live_revise_attempt_result_source: 'phase_14av_closeout_post_live_audit',
+    listing_appears_updated: readiness.listing_appears_updated,
+    post_live_audit_evidence: readiness.known_post_live_audit_evidence,
+    listing_update_evidence: readiness.listing_update_evidence,
+    forbidden_changes: ['listing fields', 'price', 'inventory', 'quantity', 'description', 'category', 'shipping', 'payment', 'returns'],
+    allowed_internal_db_writes_only: [
+      'mark request_id=6 executed',
+      'attach execution_result from post-live audit',
+      'create completion event',
+    ],
+    approval_text_hash: sha256Text(exactApprovalText),
+    recorded_at: new Date().toISOString(),
+  };
+  const base = {
+    phase: '14AV-record-reconciliation',
+    request_id: id,
+    packet_id: readiness.packet_id,
+    item_id: readiness.item_id,
+    dry_run: isDryRun,
+    write_requested: write === true,
+    approval_text_matches: approvalTextMatches,
+    ready_for_record_only_reconciliation_write: readiness.ready_for_record_only_reconciliation_write === true && blockers.length === 0,
+    blockers: [...new Set(blockers)],
+    readiness,
+    execution_result_preview: executionResult,
+    no_ebay_calls: true,
+    no_marketplace_writes: true,
+    actual_ebay_call: false,
+    revise_fixed_price_item_called: false,
+    upload_site_hosted_pictures_called: false,
+    marketplace_write_performed: false,
+    source: 'phase_14av_record_reconciliation_execute_v1',
+  };
+  if (isDryRun || blockers.length) {
+    return {
+      ...base,
+      recorded: false,
+      blocked: blockers.length > 0,
+      safety: {
+        actual_ebay_call: false,
+        actual_network_call: false,
+        revise_fixed_price_item_called: false,
+        upload_site_hosted_pictures_called: false,
+        marketplace_write_performed: false,
+        listing_changed_by_reconciliation: false,
+        actual_database_write: false,
+        ai_calls: false,
+      },
+    };
+  }
+  const db = getClient();
+  const recordedAt = new Date().toISOString();
+  executionResult.recorded_at = recordedAt;
+  const { data: updatedRequest, error: updateError } = await db
+    .from(REQUEST_TABLE)
+    .update({
+      status: 'executed',
+      executed_at: recordedAt,
+      execution_result: executionResult,
+    })
+    .eq('id', 6)
+    .select('id,status,executed_at,execution_result')
+    .single();
+  if (updateError) throw updateError;
+  const completionEvent = await recordExecutionEvent({
+    requestId: 6,
+    eventType: 'phase_14av_public_picture_url_revise_completed_record_only_reconciliation',
+    actor: 'operator',
+    payload: executionResult,
+  });
+  return {
+    ...base,
+    dry_run: false,
+    recorded: true,
+    blocked: false,
+    updated_request: updatedRequest,
+    completion_event: completionEvent,
+    execution_result: executionResult,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      listing_changed_by_reconciliation: false,
+      actual_database_write: true,
+      ai_calls: false,
+    },
+  };
+}
+
 async function buildEbayTokenRefreshReadiness({ operation = 'UploadSiteHostedPictures' } = {}) {
   const requestedOperation = String(operation || 'UploadSiteHostedPictures');
   const source = await phase14AELoadEbayTokenSourceData();
@@ -19735,6 +19930,8 @@ module.exports = {
   buildEbayPublicPictureUrlPostLiveAudit,
   buildEbayPublicPictureUrlRecordReconciliationReadiness,
   buildEbayPublicPictureUrlRecordReconciliationApprovalChecklist,
+  buildEbayPublicPictureUrlRecordReconciliationWriteReadinessNoEbay,
+  executeEbayPublicPictureUrlRecordReconciliation,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,

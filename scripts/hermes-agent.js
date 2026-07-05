@@ -1427,6 +1427,21 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-record-reconciliation') {
+    const { executeEbayPublicPictureUrlRecordReconciliation } = require('../src/services/hermesExecutionApproval');
+    const requestId = arg('request-id', arg('id', null));
+    if (!requestId) throw new Error('request-id is required');
+    const write = hasFlag('write');
+    const result = await executeEbayPublicPictureUrlRecordReconciliation({
+      requestId,
+      approvalText: arg('approval-text', null),
+      dryRun: !write,
+      write,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-token-refresh-readiness') {
     const { buildEbayTokenRefreshReadiness } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayTokenRefreshReadiness({
