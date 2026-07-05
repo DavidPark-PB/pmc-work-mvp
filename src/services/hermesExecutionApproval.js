@@ -13500,6 +13500,167 @@ async function createEbayPublicPictureUrlMiniBatchPackets({ urlMap = '{}' } = {}
   };
 }
 
+function phase16DParseRequestIds(requestIds) {
+  const values = Array.isArray(requestIds) ? requestIds : String(requestIds || '').split(',');
+  return [...new Set(values.map(value => intOrNull(value)).filter(value => value != null))];
+}
+
+function phase16DApprovalSafety() {
+  return {
+    read_only: true,
+    actual_ebay_call: false,
+    actual_network_call: false,
+    get_item_called: false,
+    revise_fixed_price_item_called: false,
+    upload_site_hosted_pictures_called: false,
+    marketplace_write_performed: false,
+    live_execution_performed: false,
+    listing_changed: false,
+    packet_mutation_performed: false,
+    execution_request_created: false,
+    packet_created: false,
+    actual_database_write: false,
+    title_changes: false,
+    item_specifics_changes: false,
+    price_changes: false,
+    inventory_changes: false,
+    quantity_changes: false,
+    description_changes: false,
+    category_changes: false,
+    shipping_changes: false,
+    payment_changes: false,
+    returns_changes: false,
+    image_changes: false,
+    ai_calls: false,
+  };
+}
+
+function phase16DExactApprovalText(entries = []) {
+  const requestIds = entries.map(row => row.request_id).join(',');
+  const packetIds = entries.map(row => row.packet_id).join(',');
+  const itemIds = entries.map(row => row.item_id).join(',');
+  const pictureLines = entries.map(row => `PictureDetails.PictureURL for item_id=${row.item_id}: ${row.picture_url} only.`);
+  return [
+    'Actual eBay mini-batch listing revise approval for images-only public PictureURL packets.',
+    `request_id=${requestIds} only.`,
+    `packet_id=${packetIds} only.`,
+    `item_id=${itemIds} only.`,
+    `Batch size: ${entries.length}.`,
+    'Allowed operation: ReviseFixedPriceItem only.',
+    'Allowed changes: images only.',
+    ...pictureLines,
+    'No title changes.',
+    'No item_specifics changes.',
+    'No price, inventory, or quantity changes.',
+    'No description, category, shipping, payment, or returns changes.',
+    'Forbidden operation: UploadSiteHostedPictures.',
+    'One live ReviseFixedPriceItem attempt per request only.',
+    'Stop and report if any item fails; do not retry failed item automatically.',
+    'Record every eBay response.',
+    'Do not push.',
+  ].join('\n');
+}
+
+async function buildEbayPublicPictureUrlMiniBatchFinalApprovalChecklist({ requestIds } = {}) {
+  const ids = phase16DParseRequestIds(requestIds);
+  if (ids.length === 0) throw new Error('request-ids is required');
+  const db = getClient();
+  const { data: requests, error: requestError } = await db
+    .from(REQUEST_TABLE)
+    .select('*')
+    .in('id', ids)
+    .order('id', { ascending: true });
+  if (requestError) throw requestError;
+  const { data: packets, error: packetError } = await db
+    .from(EBAY_LISTING_QUALITY_PACKET_TABLE)
+    .select('*')
+    .in('request_id', ids)
+    .order('id', { ascending: true });
+  if (packetError) throw packetError;
+  const requestById = new Map((requests || []).map(row => [row.id, row]));
+  const packetByRequestId = new Map((packets || []).map(row => [row.request_id, row]));
+  const expectedRequestIds = [8, 9, 10];
+  const expectedPacketIds = [8, 9, 10];
+  const expectedItemIds = ['206332929888', '206371786121', '206387679082'];
+  const entries = ids.map(id => {
+    const request = requestById.get(id) || null;
+    const packet = packetByRequestId.get(id) || null;
+    const plannedMutation = packet?.planned_mutation || request?.requested_action?.planned_mutation || {};
+    const pictureUrls = Array.isArray(plannedMutation?.images?.PictureDetails?.PictureURL)
+      ? plannedMutation.images.PictureDetails.PictureURL
+      : (plannedMutation?.images?.PictureDetails?.PictureURL ? [plannedMutation.images.PictureDetails.PictureURL] : []);
+    const itemId = String(packet?.item_id || request?.metadata?.item_id || request?.requested_action?.target_item_id || '');
+    const pictureUrl = pictureUrls[0] || request?.metadata?.public_picture_url || request?.requested_action?.public_picture_url || null;
+    const payloadPreview = request?.requested_action?.payload_preview || request?.dry_run_result?.payload_preview || phase16CPacketPayload({ itemId, pictureUrl });
+    const forbiddenFieldsPresent = PHASE16C_BLOCKED_CHANGES.filter(field => {
+      if (field === 'item_specifics') return Boolean(payloadPreview?.Item?.ItemSpecifics);
+      if (field === 'price') return Boolean(payloadPreview?.Item?.StartPrice || payloadPreview?.Item?.Price);
+      if (field === 'inventory' || field === 'quantity') return Boolean(payloadPreview?.Item?.Quantity || payloadPreview?.InventoryStatus);
+      return Boolean(payloadPreview?.Item?.[field] || payloadPreview?.Item?.[field.charAt(0).toUpperCase() + field.slice(1)]);
+    });
+    const blockers = [];
+    if (!request) blockers.push('request_not_found');
+    if (!packet) blockers.push('packet_not_found');
+    if (!expectedRequestIds.includes(id)) blockers.push('request_id_not_in_phase_16c_batch');
+    if (!expectedPacketIds.includes(packet?.id)) blockers.push('packet_id_not_in_phase_16c_batch');
+    if (!expectedItemIds.includes(itemId)) blockers.push('item_id_not_in_phase_16c_batch');
+    if (request?.status !== 'pending_approval') blockers.push('request_not_pending_approval');
+    if (packet?.status !== 'packet_recorded') blockers.push('packet_not_recorded');
+    if (request?.executed_at != null || request?.execution_result != null) blockers.push('request_already_executed');
+    if (request?.metadata?.source !== 'phase_16c_public_picture_url_mini_batch_packet') blockers.push('request_not_phase_16c_source');
+    if (request?.metadata?.live_execution_disabled !== true) blockers.push('live_execution_not_disabled');
+    if (request?.metadata?.approval_gated !== true) blockers.push('request_not_approval_gated');
+    if ((request?.requested_action?.planned_mutation_fields || []).join(',') !== 'images') blockers.push('planned_mutation_fields_not_images_only');
+    if (pictureUrls.length !== 1 || !pictureUrl) blockers.push('picture_url_not_exactly_one');
+    if (forbiddenFieldsPresent.length > 0) blockers.push('forbidden_fields_present');
+    const ready = blockers.length === 0;
+    return {
+      request_id: id,
+      packet_id: packet?.id || null,
+      item_id: itemId || null,
+      operation: 'ReviseFixedPriceItem',
+      change_scope: ['images'],
+      picture_url: pictureUrl,
+      blocked_changes: PHASE16C_BLOCKED_CHANGES,
+      ready_for_operator_approval: ready,
+      live_execution_performed: false,
+      marketplace_write: false,
+      request_status: request?.status || null,
+      packet_status: packet?.status || null,
+      confirmation_status: packet?.confirmation_status || 'not_confirmed',
+      final_approval_status: request?.final_approval_status || 'not_requested',
+      payload_preview: payloadPreview,
+      explicit_absences: phase16CExplicitAbsences(),
+      forbidden_fields_present: forbiddenFieldsPresent,
+      packet_payload_is_images_only: forbiddenFieldsPresent.length === 0 && pictureUrls.length === 1,
+      no_packet_mutation_performed: true,
+      blockers,
+    };
+  });
+  const readyForOperatorApproval = entries.length === expectedRequestIds.length
+    && entries.every(row => row.ready_for_operator_approval === true)
+    && expectedRequestIds.every(id => ids.includes(id));
+  return {
+    read_only: true,
+    phase: '16D',
+    operation: 'public_picture_url_mini_batch_final_approval_checklist',
+    request_ids: ids,
+    expected_request_ids: expectedRequestIds,
+    expected_packet_ids: expectedPacketIds,
+    expected_item_ids: expectedItemIds,
+    batch_size: entries.length,
+    checklists: entries,
+    ready_for_operator_approval: readyForOperatorApproval,
+    exact_operator_approval_text: phase16DExactApprovalText(entries),
+    live_execution_performed: false,
+    marketplace_write: false,
+    no_packet_mutation_performed: true,
+    no_writes_performed: true,
+    safety: phase16DApprovalSafety(),
+    source: 'phase_16d_public_picture_url_mini_batch_final_approval_checklist_v1',
+  };
+}
+
 async function buildEbayPublicPictureUrlCandidateReviewChecklist({ itemId } = {}) {
   const detail = await buildEbayPublicPictureUrlCandidateDetail({ itemId });
   const checklist = [
@@ -22334,6 +22495,7 @@ module.exports = {
   validateEbayPublicPictureUrlMiniBatchUrls,
   buildEbayPublicPictureUrlMiniBatchPacketPreview,
   createEbayPublicPictureUrlMiniBatchPackets,
+  buildEbayPublicPictureUrlMiniBatchFinalApprovalChecklist,
   buildEbayPublicPictureUrlCandidateShortlist,
   buildEbayPublicPictureUrlCandidateDetail,
   buildEbayPublicPictureUrlCandidateReviewChecklist,

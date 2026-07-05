@@ -1563,6 +1563,15 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-mini-batch-final-approval-checklist') {
+    const { buildEbayPublicPictureUrlMiniBatchFinalApprovalChecklist } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayPublicPictureUrlMiniBatchFinalApprovalChecklist({
+      requestIds: arg('request-ids', ''),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-public-picture-url-candidate-shortlist') {
     const { buildEbayPublicPictureUrlCandidateShortlist } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayPublicPictureUrlCandidateShortlist({
