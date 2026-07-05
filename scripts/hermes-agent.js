@@ -1358,10 +1358,28 @@ async function main() {
   }
 
   if (cmd === 'ebay-public-picture-url-packet-preview') {
-    const { buildEbayPublicPictureUrlPacketPreview } = require('../src/services/hermesExecutionApproval');
     const itemId = arg('item-id', arg('id', null));
     if (!itemId) throw new Error('item-id is required');
+    const pictureUrl = arg('url', null);
+    if (pictureUrl) {
+      const { buildEbayPublicPictureUrlImagesOnlyPacketPreview } = require('../src/services/hermesExecutionApproval');
+      const result = await buildEbayPublicPictureUrlImagesOnlyPacketPreview({ itemId, url: pictureUrl });
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    const { buildEbayPublicPictureUrlPacketPreview } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayPublicPictureUrlPacketPreview({ itemId, create: hasFlag('create') });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-create-packet') {
+    const { createEbayPublicPictureUrlImagesOnlyPacket } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    const pictureUrl = arg('url', null);
+    if (!itemId) throw new Error('item-id is required');
+    if (!pictureUrl) throw new Error('url is required');
+    const result = await createEbayPublicPictureUrlImagesOnlyPacket({ itemId, url: pictureUrl });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
