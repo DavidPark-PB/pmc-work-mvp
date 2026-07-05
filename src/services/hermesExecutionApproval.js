@@ -11132,9 +11132,12 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
   const isDryRun = dryRun !== false;
   const envUploadEnabled = String(process.env.HERMES_EBAY_IMAGE_UPLOAD_ENABLED || '').toLowerCase() === 'true';
   const exactSanitizedApprovalText = phase14AJExactSanitizedUploadApprovalText();
+  const exactCompatibleApprovalText = phase14ANExactCompatibleUploadApprovalText();
   const normalizedApprovalText = String(operatorApprovalText || '').replace(/\r\n/g, '\n').trim();
   const sanitizedUploadApprovalMatches = normalizedApprovalText === exactSanitizedApprovalText;
+  const compatibleUploadApprovalMatches = normalizedApprovalText === exactCompatibleApprovalText;
   const sanitizedUploadReadiness = await buildEbayListingQualityImageSanitizedUploadReadiness({ itemId: plan.item_id });
+  const compatibleUploadReadiness = await buildEbayListingQualityImageCompatibleUploadReadiness({ itemId: plan.item_id });
   const sanitizedCandidate = sanitizedUploadApprovalMatches
     ? {
         image_path: sanitizedUploadReadiness.sanitized_path,
@@ -11146,11 +11149,23 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
         meets_ebay_500px_longest_side_policy: sanitizedUploadReadiness.sanitized_policy_eligibility,
       }
     : null;
-  const uploadCandidatePath = sanitizedCandidate?.image_path || plan.candidate_path;
-  const uploadCandidateSha256 = sanitizedCandidate?.sha256 || plan.candidate_sha256;
-  const uploadCandidateWidth = sanitizedCandidate?.width || plan.candidate_width;
-  const uploadCandidateHeight = sanitizedCandidate?.height || plan.candidate_height;
-  const uploadCandidateLongestSide = sanitizedCandidate?.longest_side || plan.candidate_longest_side;
+  const compatiblePreferred = compatibleUploadReadiness.preferred_candidate || null;
+  const compatibleCandidate = compatibleUploadApprovalMatches
+    ? {
+        image_path: compatibleUploadReadiness.expected_image_path,
+        sha256: compatibleUploadReadiness.expected_candidate_sha256,
+        width: compatiblePreferred?.width,
+        height: compatiblePreferred?.height,
+        longest_side: compatiblePreferred?.longest_side,
+        format: compatiblePreferred?.format || 'jpeg',
+        meets_ebay_500px_longest_side_policy: compatiblePreferred?.eligible_for_ebay_picture_policy === true,
+      }
+    : null;
+  const uploadCandidatePath = compatibleCandidate?.image_path || sanitizedCandidate?.image_path || plan.candidate_path;
+  const uploadCandidateSha256 = compatibleCandidate?.sha256 || sanitizedCandidate?.sha256 || plan.candidate_sha256;
+  const uploadCandidateWidth = compatibleCandidate?.width || sanitizedCandidate?.width || plan.candidate_width;
+  const uploadCandidateHeight = compatibleCandidate?.height || sanitizedCandidate?.height || plan.candidate_height;
+  const uploadCandidateLongestSide = compatibleCandidate?.longest_side || sanitizedCandidate?.longest_side || plan.candidate_longest_side;
   const duplicateGuard = phase14AAUploadDuplicateGuard({ itemId: plan.item_id, candidateSha256: uploadCandidateSha256 });
   const exactCorrectedReapprovalText = [
     'Corrected eBay image upload transport approval after local pre-eBay exception.',
@@ -11187,6 +11202,10 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     itemId: plan.item_id,
     candidateSha256: sanitizedUploadReadiness.sanitized_sha256,
   }).some(row => row.sanitized_upload_attempt === true || row.phase === '14AK');
+  const previousCompatibleVariantUploadAttemptExists = phase14AAUploadRowsFor({
+    itemId: plan.item_id,
+    candidateSha256: compatibleUploadReadiness.expected_candidate_sha256,
+  }).some(row => row.compatible_variant_upload_attempt === true || row.phase === '14AO');
   const latestUpload = duplicateGuard.latest_upload || null;
   const latestErrorText = Array.isArray(latestUpload?.errors)
     ? latestUpload.errors.map(error => error?.message || error?.long_message || error?.short_message || '').filter(Boolean).join('; ')
@@ -11204,17 +11223,26 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
   const sanitizedUploadApprovalActive = sanitizedUploadApprovalMatches
     && sanitizedUploadReadiness.ready_for_sanitized_upload_reapproval === true
     && previousSanitizedUploadAttemptExists !== true;
-  const activeUploadPhase = sanitizedUploadApprovalActive ? '14AK' : (postTokenRefreshUploadApprovalActive ? '14AH' : (correctedUploadReapprovalActive ? '14AC' : '14AA'));
+  const compatibleVariantUploadApprovalActive = compatibleUploadApprovalMatches
+    && compatibleUploadReadiness.ready_for_compatible_variant_upload_reapproval === true
+    && previousCompatibleVariantUploadAttemptExists !== true;
+  const activeUploadPhase = compatibleVariantUploadApprovalActive ? '14AO' : (sanitizedUploadApprovalActive ? '14AK' : (postTokenRefreshUploadApprovalActive ? '14AH' : (correctedUploadReapprovalActive ? '14AC' : '14AA')));
   const blockers = [...(plan.blockers || []), ...(intent.blockers || [])];
   const exact = {
     item_id_exact: plan.item_id === '206288370789',
-    image_path_exact: sanitizedUploadApprovalActive
-      ? uploadCandidatePath === '/Users/parksungmin/pmc-work-mvp/data/hermes-sanitized-images/206288370789-16883e4cb7af5ebb-baseline.jpg'
-      : plan.candidate_path === '/Users/parksungmin/Downloads/torune.jpeg',
-    candidate_sha256_exact: sanitizedUploadApprovalActive
-      ? uploadCandidateSha256 === 'sha256:98542bad69eed4a599263d2b4d779f9a2a9c8f4e27fc606040c62fd48b0f1f5f'
-      : plan.candidate_sha256 === 'sha256:16883e4cb7af5ebb12b6948285742faff7d83bdd501600f5fee01428620a1f47',
-    candidate_dimensions_exact_512x512: uploadCandidateWidth === 512 && uploadCandidateHeight === 512 && uploadCandidateLongestSide === 512,
+    image_path_exact: compatibleVariantUploadApprovalActive
+      ? uploadCandidatePath === '/Users/parksungmin/pmc-work-mvp/data/hermes-compatible-image-variants/206288370789-98542bad69eed4a5-srgb-white-800-q90-420-baseline.jpg'
+      : (sanitizedUploadApprovalActive
+        ? uploadCandidatePath === '/Users/parksungmin/pmc-work-mvp/data/hermes-sanitized-images/206288370789-16883e4cb7af5ebb-baseline.jpg'
+        : plan.candidate_path === '/Users/parksungmin/Downloads/torune.jpeg'),
+    candidate_sha256_exact: compatibleVariantUploadApprovalActive
+      ? uploadCandidateSha256 === 'sha256:0c2a7b19e92af9e4762c879e6766864bac4c83c60e2f7ca6e8786abe234a6a6b'
+      : (sanitizedUploadApprovalActive
+        ? uploadCandidateSha256 === 'sha256:98542bad69eed4a599263d2b4d779f9a2a9c8f4e27fc606040c62fd48b0f1f5f'
+        : plan.candidate_sha256 === 'sha256:16883e4cb7af5ebb12b6948285742faff7d83bdd501600f5fee01428620a1f47'),
+    candidate_dimensions_exact: compatibleVariantUploadApprovalActive
+      ? uploadCandidateWidth === 800 && uploadCandidateHeight === 800 && uploadCandidateLongestSide === 800
+      : uploadCandidateWidth === 512 && uploadCandidateHeight === 512 && uploadCandidateLongestSide === 512,
     operation_exact_upload_site_hosted_pictures: intent.api_operation === 'UploadSiteHostedPictures',
     revise_fixed_price_item_disabled: true,
     no_listing_mutation_fields: true,
@@ -11228,12 +11256,14 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     if (liveEnabled !== true || !envUploadEnabled) blockers.push('hermes_ebay_image_upload_env_disabled');
   }
   if (duplicateGuard.previous_successful_upload_exists) blockers.push('duplicate_successful_image_upload_for_item_candidate');
-  if (previousSanitizedUploadAttemptExists) blockers.push('duplicate_sanitized_image_upload_attempt_for_item_candidate');
-  if (!sanitizedUploadApprovalActive && previousPostTokenRefreshUploadAttemptExists) blockers.push('duplicate_post_token_refresh_image_upload_attempt_for_item_candidate');
-  if (duplicateGuard.previous_corrected_upload_attempt_exists && !postTokenRefreshUploadApprovalActive && !sanitizedUploadApprovalActive) blockers.push('duplicate_corrected_image_upload_attempt_for_item_candidate');
-  if (duplicateGuard.previous_attempt_exists && !correctedUploadReapprovalActive && !postTokenRefreshUploadApprovalActive && !sanitizedUploadApprovalActive) {
+  if (previousCompatibleVariantUploadAttemptExists) blockers.push('duplicate_compatible_variant_image_upload_attempt_for_item_candidate');
+  if (!compatibleVariantUploadApprovalActive && previousSanitizedUploadAttemptExists) blockers.push('duplicate_sanitized_image_upload_attempt_for_item_candidate');
+  if (!compatibleVariantUploadApprovalActive && !sanitizedUploadApprovalActive && previousPostTokenRefreshUploadAttemptExists) blockers.push('duplicate_post_token_refresh_image_upload_attempt_for_item_candidate');
+  if (duplicateGuard.previous_corrected_upload_attempt_exists && !postTokenRefreshUploadApprovalActive && !sanitizedUploadApprovalActive && !compatibleVariantUploadApprovalActive) blockers.push('duplicate_corrected_image_upload_attempt_for_item_candidate');
+  if (duplicateGuard.previous_attempt_exists && !correctedUploadReapprovalActive && !postTokenRefreshUploadApprovalActive && !sanitizedUploadApprovalActive && !compatibleVariantUploadApprovalActive) {
     if (postTokenRefreshApprovalMatches) blockers.push('post_token_refresh_upload_readiness_not_met');
     else if (sanitizedUploadApprovalMatches) blockers.push('sanitized_upload_readiness_not_met');
+    else if (compatibleUploadApprovalMatches) blockers.push('compatible_variant_upload_readiness_not_met');
     else blockers.push(correctedReapprovalMatches ? 'duplicate_image_upload_attempt_for_item_candidate' : 'post_token_refresh_upload_exact_approval_required');
   }
 
@@ -11259,6 +11289,10 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     sanitized_upload_approval_matches: sanitizedUploadApprovalMatches,
     previous_sanitized_upload_attempt_exists: previousSanitizedUploadAttemptExists,
     sanitized_upload_readiness: sanitizedUploadReadiness,
+    compatible_variant_upload_approval_active: compatibleVariantUploadApprovalActive,
+    compatible_variant_upload_approval_matches: compatibleUploadApprovalMatches,
+    previous_compatible_variant_upload_attempt_exists: previousCompatibleVariantUploadAttemptExists,
+    compatible_upload_readiness: compatibleUploadReadiness,
     previous_attempt_was_local_pre_ebay_exception: previousAttemptWasLocalPreEbayException,
     exact_gate_checks: exact,
     upload_attempt_count: isDryRun ? 0 : duplicateGuard.previous_attempt_count + 1,
@@ -11314,7 +11348,9 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     attemptedEbayCall = true;
     uploadResponse = await ebay.uploadSiteHostedPicture({
       imagePath: uploadCandidatePath,
-      pictureName: sanitizedUploadApprovalActive ? `hermes-${plan.item_id}-sanitized-replacement-image` : `hermes-${plan.item_id}-replacement-image`,
+      pictureName: compatibleVariantUploadApprovalActive
+        ? `hermes-${plan.item_id}-compatible-replacement-image`
+        : (sanitizedUploadApprovalActive ? `hermes-${plan.item_id}-sanitized-replacement-image` : `hermes-${plan.item_id}-replacement-image`),
       pictureSet: 'Supersize',
     });
   } catch (e) {
@@ -11340,6 +11376,8 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     post_token_refresh_approval_text_matched: postTokenRefreshApprovalMatches,
     sanitized_upload_attempt: sanitizedUploadApprovalActive,
     sanitized_upload_approval_text_matched: sanitizedUploadApprovalMatches,
+    compatible_variant_upload_attempt: compatibleVariantUploadApprovalActive,
+    compatible_variant_upload_approval_text_matched: compatibleUploadApprovalMatches,
     upload_attempted: true,
     upload_succeeded: succeeded,
     marketplace_image_upload_performed: succeeded,
@@ -11347,11 +11385,13 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
     listing_revise_performed: false,
     revise_fixed_price_item_called: false,
     raw_response: uploadResponse?.raw_response || null,
-    source: sanitizedUploadApprovalActive
-      ? 'phase_14ak_sanitized_upload_site_hosted_pictures_result'
-      : (postTokenRefreshUploadApprovalActive
-        ? 'phase_14ah_post_token_refresh_upload_site_hosted_pictures_result'
-        : (correctedUploadReapprovalActive ? 'phase_14ac_corrected_upload_site_hosted_pictures_result' : 'phase_14aa_upload_site_hosted_pictures_result')),
+    source: compatibleVariantUploadApprovalActive
+      ? 'phase_14ao_compatible_variant_upload_site_hosted_pictures_result'
+      : (sanitizedUploadApprovalActive
+        ? 'phase_14ak_sanitized_upload_site_hosted_pictures_result'
+        : (postTokenRefreshUploadApprovalActive
+          ? 'phase_14ah_post_token_refresh_upload_site_hosted_pictures_result'
+          : (correctedUploadReapprovalActive ? 'phase_14ac_corrected_upload_site_hosted_pictures_result' : 'phase_14aa_upload_site_hosted_pictures_result'))),
   };
   const registry = phase14AAReadUploadResults();
   const updatedRegistry = phase14AAWriteUploadResults({
@@ -11390,13 +11430,15 @@ async function callEbayListingQualityImageUploadTransport({ itemId, dryRun = tru
       listing_revise_performed: false,
       revise_fixed_price_item_called: false,
     },
-    source: sanitizedUploadApprovalActive
-      ? (succeeded ? 'phase_14ak_sanitized_image_upload_transport_success_v1' : 'phase_14ak_sanitized_image_upload_transport_failure_v1')
-      : (postTokenRefreshUploadApprovalActive
-        ? (succeeded ? 'phase_14ah_post_token_refresh_image_upload_transport_success_v1' : 'phase_14ah_post_token_refresh_image_upload_transport_failure_v1')
-        : (correctedUploadReapprovalActive
-          ? (succeeded ? 'phase_14ac_corrected_image_upload_transport_success_v1' : 'phase_14ac_corrected_image_upload_transport_failure_v1')
-          : (succeeded ? 'phase_14aa_image_upload_transport_success_v1' : 'phase_14aa_image_upload_transport_failure_v1'))),
+    source: compatibleVariantUploadApprovalActive
+      ? (succeeded ? 'phase_14ao_compatible_variant_image_upload_transport_success_v1' : 'phase_14ao_compatible_variant_image_upload_transport_failure_v1')
+      : (sanitizedUploadApprovalActive
+        ? (succeeded ? 'phase_14ak_sanitized_image_upload_transport_success_v1' : 'phase_14ak_sanitized_image_upload_transport_failure_v1')
+        : (postTokenRefreshUploadApprovalActive
+          ? (succeeded ? 'phase_14ah_post_token_refresh_image_upload_transport_success_v1' : 'phase_14ah_post_token_refresh_image_upload_transport_failure_v1')
+          : (correctedUploadReapprovalActive
+            ? (succeeded ? 'phase_14ac_corrected_image_upload_transport_success_v1' : 'phase_14ac_corrected_image_upload_transport_failure_v1')
+            : (succeeded ? 'phase_14aa_image_upload_transport_success_v1' : 'phase_14aa_image_upload_transport_failure_v1')))),
   };
 }
 
