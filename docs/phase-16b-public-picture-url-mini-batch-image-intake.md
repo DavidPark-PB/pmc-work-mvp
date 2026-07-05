@@ -127,21 +127,44 @@ Each supplied URL is checked for:
 
 Validation remains syntactic/read-only. It does not fetch URLs, call eBay, call `GetItem`, create packets, create execution requests, or write DB rows.
 
-Validation with an empty map is accepted as a preparation check and reports missing ready item ids:
+Operator-supplied URL map validated in this phase:
+
+```json
+{
+  "206332929888": "https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/206332929888.jpg",
+  "206371786121": "https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/206371786121.jpg",
+  "206387679082": "https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/206387679082.jpg"
+}
+```
+
+Validation output includes the required compact `validated_urls` map:
 
 ```json
 {
   "mini_batch_url_intake_ready": true,
   "ready_item_ids": ["206332929888", "206371786121", "206387679082"],
   "blocked_item_ids": ["206273302162", "206273302295"],
-  "supplied_item_ids": [],
-  "missing_ready_item_ids": ["206332929888", "206371786121", "206387679082"],
-  "validation_results": [],
-  "all_supplied_urls_valid": false,
+  "validated_urls": {
+    "206332929888": {
+      "valid": true,
+      "picture_url": "https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/206332929888.jpg"
+    },
+    "206371786121": {
+      "valid": true,
+      "picture_url": "https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/206371786121.jpg"
+    },
+    "206387679082": {
+      "valid": true,
+      "picture_url": "https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/206387679082.jpg"
+    }
+  },
+  "all_supplied_urls_valid": true,
   "ready_for_packet_creation": false,
   "marketplace_write": false
 }
 ```
+
+Validation with an empty map remains available as a preparation check; it reports missing ready item ids and `all_supplied_urls_valid=false` without writes.
 
 ## Safety
 

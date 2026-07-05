@@ -13080,10 +13080,22 @@ async function validateEbayPublicPictureUrlMiniBatchUrls({ urlMap = '{}' } = {})
   });
   const missing_ready_item_ids = PHASE16B_READY_LOW_RISK_ITEM_IDS.filter(itemId => !Object.prototype.hasOwnProperty.call(parsedUrlMap, itemId));
   const invalid_item_ids = validation_results.filter(row => !row.valid).map(row => row.item_id);
+  const validated_urls = Object.fromEntries(validation_results.map(row => [row.item_id, {
+    valid: row.valid,
+    picture_url: row.picture_url,
+    url_is_https: row.url_is_https,
+    url_host_is_not_localhost_or_private: row.url_host_is_not_localhost_or_private,
+    url_looks_like_image_url: row.url_looks_like_image_url,
+    item_id_in_approved_low_risk_mini_batch: row.item_id_in_approved_low_risk_mini_batch,
+    allowed_changes: row.allowed_changes,
+    change_scope_remains_images_only: row.change_scope_remains_images_only,
+    blockers: row.blockers,
+  }]));
   return {
     mini_batch_url_intake_ready: checklist.mini_batch_url_intake_ready,
     ready_item_ids: PHASE16B_READY_LOW_RISK_ITEM_IDS,
     blocked_item_ids: PHASE16B_BLOCKED_HIGH_RISK_ITEM_IDS,
+    validated_urls,
     ready_for_packet_creation: false,
     marketplace_write: false,
     read_only: true,
