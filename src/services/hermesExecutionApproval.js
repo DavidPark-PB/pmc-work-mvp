@@ -11781,6 +11781,119 @@ async function executeEbayPublicPictureUrlRecordReconciliation({ requestId, appr
   };
 }
 
+function phase14AXCompletionEvents(events = []) {
+  return (events || []).filter(event => event.id === 16
+    || /phase_14av_public_picture_url_revise_completed/.test(String(event.event_type || ''))
+    || String(event.event_type || '') === 'phase_14av_public_picture_url_revise_completed_rec');
+}
+
+async function buildEbayPublicPictureUrlFinalCloseout({ requestId } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('request-id is required');
+  const { request, packet, events } = await phase14AVLoadRequestPacketEvents({ requestId: id });
+  const startedEvent = events.find(event => event.id === 15 || event.event_type === 'phase_14av_public_picture_url_revise_started') || null;
+  const completionEvent = phase14AXCompletionEvents(events)[0] || null;
+  const result = request?.execution_result || {};
+  const postLiveEvidence = result.post_live_audit_evidence || {};
+  const listingEvidence = result.listing_update_evidence || phase14AVListingUpdateEvidenceSummary(postLiveEvidence);
+  const noUnreconciledStateRemains = request?.status === 'executed'
+    && request?.executed_at != null
+    && request?.execution_result != null
+    && Boolean(startedEvent)
+    && Boolean(completionEvent);
+  return {
+    read_only: true,
+    phase: '14AX',
+    request_id: request?.id || id,
+    packet_id: packet?.id || result.packet_id || null,
+    item_id: packet?.item_id || result.item_id || null,
+    request_status: request?.status || null,
+    executed_at: request?.executed_at || null,
+    execution_result_present: request?.execution_result != null,
+    started_event_id: startedEvent?.id || null,
+    started_event_type: startedEvent?.event_type || null,
+    completion_event_id: completionEvent?.id || null,
+    completion_event_type: completionEvent?.event_type || null,
+    listing_appears_updated: listingEvidence.listing_appears_updated === true,
+    title_evidence: {
+      title: postLiveEvidence.title || null,
+      title_updated: listingEvidence.title_updated === true,
+    },
+    item_specifics_evidence: {
+      item_specifics: postLiveEvidence.item_specifics || [],
+      item_specifics_updated: listingEvidence.item_specifics_updated === true,
+    },
+    picture_evidence: {
+      picture_urls: postLiveEvidence.picture_urls || [],
+      picture_present: listingEvidence.picture_present === true,
+      requested_picture_url_retained: listingEvidence.requested_picture_url_retained === true,
+      picture_url_transformed_to_ebay_hosted: listingEvidence.picture_url_transformed_to_ebay_hosted === true,
+    },
+    picture_url_transformed_to_ebay_hosted_url: listingEvidence.picture_url_transformed_to_ebay_hosted === true,
+    no_unreconciled_state_remains: noUnreconciledStateRemains,
+    no_further_live_action_required: noUnreconciledStateRemains && listingEvidence.listing_appears_updated === true,
+    no_further_ebay_calls_allowed_for_phase_14_closeout: true,
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      listing_changed_by_closeout: false,
+      actual_database_write: false,
+      ai_calls: false,
+    },
+    source: 'phase_14ax_public_picture_url_final_closeout_v1',
+  };
+}
+
+async function buildEbayPublicPictureUrlDuplicateGuard({ requestId } = {}) {
+  const id = intOrNull(requestId);
+  if (id == null) throw new Error('request-id is required');
+  const { request, packet, events } = await phase14AVLoadRequestPacketEvents({ requestId: id });
+  const previousLiveAttemptExists = events.some(event => event.id === 15 || event.event_type === 'phase_14av_public_picture_url_revise_started');
+  const completionEventExists = phase14AXCompletionEvents(events).length > 0;
+  const requestExecutedAtPresent = request?.executed_at != null;
+  const requestExecutionResultPresent = request?.execution_result != null;
+  const duplicateBlockers = [];
+  if (requestExecutedAtPresent) duplicateBlockers.push('request_executed_at_present');
+  if (requestExecutionResultPresent) duplicateBlockers.push('request_execution_result_present');
+  if (previousLiveAttemptExists) duplicateBlockers.push('previous_live_attempt_exists');
+  if (completionEventExists) duplicateBlockers.push('completion_event_exists');
+  return {
+    read_only: true,
+    phase: '14AX',
+    request_id: request?.id || id,
+    packet_id: packet?.id || request?.execution_result?.packet_id || null,
+    item_id: packet?.item_id || request?.execution_result?.item_id || null,
+    another_live_revise_attempt_blocked: duplicateBlockers.length > 0,
+    duplicate_guard_blockers: duplicateBlockers,
+    request_executed_at_present: requestExecutedAtPresent,
+    request_execution_result_present: requestExecutionResultPresent,
+    previous_live_attempt_exists: previousLiveAttemptExists,
+    completion_event_exists: completionEventExists,
+    no_further_upload_revise_action_allowed: true,
+    forbidden_operations: ['ReviseFixedPriceItem', 'UploadSiteHostedPictures', 'marketplace_writes'],
+    final_state: {
+      request_status: request?.status || null,
+      executed_at: request?.executed_at || null,
+      started_event_ids: events.filter(event => event.event_type === 'phase_14av_public_picture_url_revise_started').map(event => event.id),
+      completion_event_ids: phase14AXCompletionEvents(events).map(event => event.id),
+    },
+    safety: {
+      actual_ebay_call: false,
+      actual_network_call: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      listing_changed_by_guard: false,
+      actual_database_write: false,
+      ai_calls: false,
+    },
+    source: 'phase_14ax_public_picture_url_duplicate_guard_v1',
+  };
+}
+
 async function buildEbayTokenRefreshReadiness({ operation = 'UploadSiteHostedPictures' } = {}) {
   const requestedOperation = String(operation || 'UploadSiteHostedPictures');
   const source = await phase14AELoadEbayTokenSourceData();
@@ -19932,6 +20045,8 @@ module.exports = {
   buildEbayPublicPictureUrlRecordReconciliationApprovalChecklist,
   buildEbayPublicPictureUrlRecordReconciliationWriteReadinessNoEbay,
   executeEbayPublicPictureUrlRecordReconciliation,
+  buildEbayPublicPictureUrlFinalCloseout,
+  buildEbayPublicPictureUrlDuplicateGuard,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,
