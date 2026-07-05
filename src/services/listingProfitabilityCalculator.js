@@ -35,6 +35,22 @@ const INPUT_COLUMNS = [
   'operator_note',
 ];
 
+const OVERLAY_COLUMNS = [
+  'item_id',
+  'title',
+  'current_price_usd',
+  'quantity',
+  'quantity_sold',
+  'product_cost_krw',
+  'weight_kg',
+  'length_cm',
+  'width_cm',
+  'height_cm',
+  'operator_note',
+];
+
+const DEFAULT_LISTINGS_PATH = '/Users/parksungmin/pmc-work-mvp/logs/ebay-listings-20260705-1933.csv';
+
 const PHASE = '18A';
 const TEST_SANDBOX_RE = /(test|sample|mock|demo)/i;
 
@@ -430,11 +446,228 @@ function calculateListingProfitability({ file } = {}) {
   });
 }
 
+function listingRowsByItemId(listings = DEFAULT_LISTINGS_PATH) {
+  const { rows } = parseCsvFile(listings);
+  const map = new Map();
+  for (const row of rows) {
+    const normalized = normalizeListingRow(row);
+    if (normalized.item_id && !map.has(normalized.item_id)) map.set(normalized.item_id, normalized);
+  }
+  return { rows, map };
+}
+
+function overlayRowFromListing(row) {
+  return {
+    item_id: row.item_id,
+    title: row.title,
+    current_price_usd: row.current_price_usd,
+    quantity: row.quantity,
+    quantity_sold: row.quantity_sold,
+    product_cost_krw: '',
+    weight_kg: '',
+    length_cm: '',
+    width_cm: '',
+    height_cm: '',
+    operator_note: '',
+  };
+}
+
+function exportListingProfitabilityOverlayTemplate({ listings, limit = 200, out } = {}) {
+  if (!listings) throw new Error('listings is required');
+  if (!out) throw new Error('out is required');
+  const safeLimit = Math.max(1, Math.min(1000, toInteger(limit, 200)));
+  const { rows } = parseCsvFile(listings);
+  const templateRows = rows
+    .map(normalizeListingRow)
+    .filter(row => row.item_id)
+    .slice(0, safeLimit)
+    .map(overlayRowFromListing);
+  const outputPath = writeCsvFile(out, templateRows, OVERLAY_COLUMNS);
+  return baseOutput({
+    phase: '18B',
+    operation: 'listing_profitability_overlay_template',
+    listings_file: path.resolve(listings),
+    output_file: outputPath,
+    template_rows: templateRows.length,
+    rows_scanned: rows.length,
+    columns: OVERLAY_COLUMNS,
+    source: 'phase_18b_listing_profitability_overlay_template_v1',
+  });
+}
+
+function validateListingProfitabilityOverlay({ file, listings = DEFAULT_LISTINGS_PATH } = {}) {
+  if (!file) throw new Error('file is required');
+  const { absolutePath, parsed, rows, fields } = parseCsvFile(file);
+  const { map: listingMap } = listingRowsByItemId(listings);
+  const errors = [];
+  for (const column of OVERLAY_COLUMNS) {
+    if (!fields.includes(column)) errors.push({ row: 1, field: column, code: 'missing_required_column' });
+  }
+  for (const parseError of parsed.errors || []) {
+    errors.push({ row: (parseError.row || 0) + 2, field: '', code: 'csv_parse_error', message: parseError.message });
+  }
+
+  const itemIdCounts = new Map();
+  for (const row of rows) {
+    const itemId = String(row.item_id || '').trim();
+    if (itemId) itemIdCounts.set(itemId, (itemIdCounts.get(itemId) || 0) + 1);
+  }
+  const duplicates = new Set([...itemIdCounts.entries()].filter(([, count]) => count > 1).map(([itemId]) => itemId));
+  const invalidRows = new Set();
+  const blockedRows = new Set();
+
+  rows.forEach((row, index) => {
+    const rowNumber = index + 2;
+    const itemId = String(row.item_id || '').trim();
+    const listing = listingMap.get(itemId);
+    const cost = toNumber(row.product_cost_krw, null);
+    const weight = toNumber(row.weight_kg, null);
+    const length = toNumber(row.length_cm, null);
+    const width = toNumber(row.width_cm, null);
+    const height = toNumber(row.height_cm, null);
+    const rowErrors = [];
+
+    if (!itemId) rowErrors.push({ row: rowNumber, field: 'item_id', code: 'missing_item_id' });
+    if (itemId && !listing) rowErrors.push({ row: rowNumber, field: 'item_id', code: 'item_id_not_found_in_listing_csv', item_id: itemId });
+    if (itemId && duplicates.has(itemId)) rowErrors.push({ row: rowNumber, field: 'item_id', code: 'duplicate_item_id', item_id: itemId });
+    if (cost == null) rowErrors.push({ row: rowNumber, field: 'product_cost_krw', code: 'product_cost_krw_not_numeric', item_id: itemId });
+    else if (cost <= 0) rowErrors.push({ row: rowNumber, field: 'product_cost_krw', code: 'product_cost_krw_must_be_greater_than_zero', item_id: itemId, value: row.product_cost_krw });
+    if (weight == null) rowErrors.push({ row: rowNumber, field: 'weight_kg', code: 'weight_kg_not_numeric', item_id: itemId });
+    else if (weight <= 0) rowErrors.push({ row: rowNumber, field: 'weight_kg', code: 'weight_kg_must_be_greater_than_zero', item_id: itemId, value: row.weight_kg });
+    for (const [field, value] of [['length_cm', length], ['width_cm', width], ['height_cm', height]]) {
+      if (value == null) rowErrors.push({ row: rowNumber, field, code: `${field}_not_numeric`, item_id: itemId });
+      else if (value < 0) rowErrors.push({ row: rowNumber, field, code: `${field}_must_be_greater_than_or_equal_to_zero`, item_id: itemId, value: row[field] });
+    }
+    if (isTestOrSandbox({ ...listing, ...row })) {
+      rowErrors.push({ row: rowNumber, field: 'item_id', code: 'test_or_sandbox_row_blocked', item_id: itemId });
+      blockedRows.add(index);
+    }
+
+    if (rowErrors.length > 0) invalidRows.add(index);
+    errors.push(...rowErrors);
+  });
+
+  const structurallyInvalid = OVERLAY_COLUMNS.some(column => !fields.includes(column));
+  const validRows = structurallyInvalid ? 0 : rows.length - invalidRows.size;
+  const validation = {
+    valid: errors.length === 0 && rows.length > 0,
+    valid_rows: Math.max(0, validRows),
+    invalid_rows: structurallyInvalid ? rows.length : invalidRows.size,
+    blocked_rows: blockedRows.size,
+    errors,
+  };
+  return baseOutput({
+    phase: '18B',
+    operation: 'listing_profitability_overlay_validate',
+    file: absolutePath,
+    listings_file: path.resolve(listings),
+    rows_scanned: rows.length,
+    blocked_rows: blockedRows.size,
+    validation,
+    ready_for_profitability_calculation: validation.valid_rows > 0,
+    source: 'phase_18b_listing_profitability_overlay_validate_v1',
+  });
+}
+
+function calculateListingProfitabilityOverlay({ listings, overlay } = {}) {
+  if (!listings) throw new Error('listings is required');
+  if (!overlay) throw new Error('overlay is required');
+  const validationResult = validateListingProfitabilityOverlay({ file: overlay, listings });
+  const { rows: overlayRows, absolutePath } = parseCsvFile(overlay);
+  const { map: listingMap } = listingRowsByItemId(listings);
+  const invalidRowNumbers = new Set((validationResult.validation.errors || []).map(error => error.row).filter(row => row > 1));
+  const mergedRows = [];
+
+  overlayRows.forEach((row, index) => {
+    if (invalidRowNumbers.has(index + 2)) return;
+    const itemId = String(row.item_id || '').trim();
+    const listing = listingMap.get(itemId);
+    if (!listing) return;
+    mergedRows.push({
+      ...listing,
+      product_cost_krw: row.product_cost_krw,
+      weight_kg: row.weight_kg,
+      length_cm: row.length_cm,
+      width_cm: row.width_cm,
+      height_cm: row.height_cm,
+      operator_note: row.operator_note || '',
+    });
+  });
+
+  const results = [];
+  for (const row of mergedRows) {
+    const currentPriceUsd = toNumber(row.current_price_usd, 0) || 0;
+    const productCostKrw = toNumber(row.product_cost_krw, 0) || 0;
+    const weightKg = toNumber(row.weight_kg, 0) || 0;
+    const lengthCm = toNumber(row.length_cm, 0) || 0;
+    const widthCm = toNumber(row.width_cm, 0) || 0;
+    const heightCm = toNumber(row.height_cm, 0) || 0;
+    const shippingQuotes = getShippingQuotes({ weightKg, lengthCm, widthCm, heightCm });
+    const recommended = shippingQuotes[0] || null;
+    const revenueKrw = roundMoney(currentPriceUsd * ASSUMPTIONS.usd_krw);
+    const ebayFeeKrw = roundMoney(revenueKrw * ASSUMPTIONS.ebay_fee_pct);
+    const shippingKrw = recommended ? recommended.total_krw : 0;
+    const estimatedProfitKrw = revenueKrw - ebayFeeKrw - shippingKrw - productCostKrw;
+    const marginPct = revenueKrw > 0 ? estimatedProfitKrw / revenueKrw : 0;
+    let profitabilityStatus = 'healthy';
+    if (!recommended) profitabilityStatus = 'blocked';
+    else if (estimatedProfitKrw < 0) profitabilityStatus = 'loss';
+    else if (marginPct < 0.10) profitabilityStatus = 'low_margin';
+
+    results.push({
+      item_id: row.item_id,
+      sku: row.sku,
+      title: row.title,
+      current_price_usd: currentPriceUsd,
+      quantity: toInteger(row.quantity, 0),
+      quantity_sold: toInteger(row.quantity_sold, 0),
+      listing_type: row.listing_type || '',
+      revenue_krw: revenueKrw,
+      ebay_fee_krw: ebayFeeKrw,
+      shipping_krw: shippingKrw,
+      product_cost_krw: productCostKrw,
+      estimated_profit_krw: roundMoney(estimatedProfitKrw),
+      margin_pct: roundPct(marginPct),
+      profitability_status: profitabilityStatus,
+      recommended_shipping_quote: recommended,
+      shipping_quotes: shippingQuotes,
+      view_url: row.view_url || '',
+      image_url: row.image_url || '',
+      operator_note: row.operator_note || '',
+    });
+  }
+
+  const counts = results.reduce((acc, row) => {
+    acc[row.profitability_status] = (acc[row.profitability_status] || 0) + 1;
+    return acc;
+  }, {});
+
+  return baseOutput({
+    phase: '18B',
+    operation: 'listing_profitability_calculate_overlay',
+    listings_file: path.resolve(listings),
+    overlay_file: absolutePath,
+    rows_scanned: overlayRows.length,
+    rows_calculated: results.length,
+    blocked_rows: validationResult.validation.blocked_rows + (overlayRows.length - results.length - validationResult.validation.blocked_rows),
+    loss_count: counts.loss || 0,
+    low_margin_count: counts.low_margin || 0,
+    healthy_count: counts.healthy || 0,
+    validation: validationResult.validation,
+    results,
+    source: 'phase_18b_listing_profitability_calculate_overlay_v1',
+  });
+}
+
 module.exports = {
   ASSUMPTIONS,
   INPUT_COLUMNS,
+  OVERLAY_COLUMNS,
   exportListingProfitabilityInput,
   validateListingProfitabilityInput,
   calculateListingProfitability,
+  exportListingProfitabilityOverlayTemplate,
+  validateListingProfitabilityOverlay,
+  calculateListingProfitabilityOverlay,
   getShippingQuotes,
 };
