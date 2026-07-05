@@ -12057,6 +12057,313 @@ async function buildEbayPublicPictureUrlNextCandidatePlan({ limit = 10 } = {}) {
   };
 }
 
+const PHASE15B_CANDIDATE_ITEM_IDS = [
+  '206273508304',
+  '206284142714',
+  '206286078077',
+  '206332929888',
+  '206371786121',
+  '206387679082',
+  '206273500196',
+  '206273302162',
+  '206273302295',
+  '206273369517',
+];
+
+function phase15BListingQualityIssues(evidence = {}) {
+  const issues = [];
+  const title = String(evidence.title || '').trim();
+  const specificsCount = Object.keys(evidence.item_specifics || {}).length;
+  const imageCount = (evidence.images || []).length;
+  if (!title) issues.push({ type: 'title_missing', severity: 'high', value: { title_present: false } });
+  else if (title.length < 40) issues.push({ type: 'title_short', severity: 'medium', value: { title_length: title.length, threshold: 40 } });
+  else if (title.length > 80) issues.push({ type: 'title_long', severity: 'medium', value: { title_length: title.length, threshold: 80 } });
+  if (specificsCount === 0) issues.push({ type: 'item_specifics_missing', severity: 'high', value: { item_specifics_count: 0 } });
+  else if (specificsCount < 4) issues.push({ type: 'item_specifics_sparse', severity: 'medium', value: { item_specifics_count: specificsCount, threshold: 4 } });
+  if (imageCount === 0) issues.push({ type: 'images_missing', severity: 'high', value: { image_count: 0 } });
+  else if (imageCount < 2) issues.push({ type: 'image_count_low', severity: 'medium', value: { image_count: imageCount, threshold: 2 } });
+  if ((evidence.limitations || []).includes('cached_description_missing')) issues.push({ type: 'cached_description_missing', severity: 'low', value: { description_cached: false, blocked_change: 'description' } });
+  return issues;
+}
+
+function phase15BSeverityScore(issues = []) {
+  const weights = { high: 30, medium: 15, low: 5 };
+  return issues.reduce((sum, issue) => sum + (weights[issue.severity] || 0), 0);
+}
+
+function phase15BImageNeedScore(evidence = {}) {
+  const imageCount = (evidence.images || []).length;
+  if (imageCount === 0) return 35;
+  if (imageCount === 1) return 25;
+  if (imageCount < 4) return 10;
+  return 0;
+}
+
+function phase15BEvidenceScore(evidence = {}) {
+  let score = 0;
+  if (evidence.item_id) score += 15;
+  if (evidence.title) score += 10;
+  if (Object.keys(evidence.item_specifics || {}).length > 0) score += 10;
+  if ((evidence.images || []).length > 0) score += 10;
+  if ((evidence.source_tables || []).includes('listing_details')) score += 10;
+  if (evidence.policies) score += 5;
+  return score;
+}
+
+function phase15BRiskSummary(evidence = {}) {
+  const hasCachedListing = (evidence.source_tables || []).includes('listing_details');
+  const hasItemId = Boolean(evidence.item_id);
+  const hasTitle = Boolean(evidence.title);
+  const hasSpecifics = Object.keys(evidence.item_specifics || {}).length > 0;
+  const lowRisk = hasCachedListing && hasItemId && hasTitle && hasSpecifics;
+  return {
+    low_risk_of_accidental_price_inventory_category_description_change: lowRisk,
+    risk_level: lowRisk ? 'low' : 'medium',
+    rationale: lowRisk
+      ? 'Cached listing detail, item id, title, and item specifics are present; Phase 15B still blocks price/inventory/category/description changes.'
+      : 'Cached evidence is incomplete; human review and/or read-only evidence refresh is needed before packet creation.',
+  };
+}
+
+async function phase15BExecutedPublicPictureUrlState() {
+  const db = getClient();
+  const [requestsResult, packetsResult] = await Promise.all([
+    db.from(REQUEST_TABLE).select('id,status,executed_at,execution_result,metadata,requested_action').order('id', { ascending: false }).limit(300),
+    db.from(EBAY_LISTING_QUALITY_PACKET_TABLE).select('id,request_id,item_id,status,planned_mutation').order('id', { ascending: false }).limit(300),
+  ]);
+  if (requestsResult.error) throw requestsResult.error;
+  if (packetsResult.error) throw packetsResult.error;
+  const executedRequests = (requestsResult.data || []).filter(request => request.executed_at != null || request.execution_result != null || request.status === 'executed');
+  const executedRequestIds = new Set(executedRequests.map(row => row.id));
+  const executedItemIds = phase14AExecutedRequestItemIds(executedRequests);
+  for (const packet of packetsResult.data || []) {
+    if (executedRequestIds.has(packet.request_id) && packet.item_id) executedItemIds.add(String(packet.item_id));
+  }
+  return {
+    executed_request_ids: [...executedRequestIds].sort((a, b) => a - b),
+    executed_item_ids: [...executedItemIds].sort(),
+    successful_phase14_request_id: 6,
+    successful_phase14_packet_id: 5,
+    successful_phase14_item_id: '206288370789',
+  };
+}
+
+async function buildEbayPublicPictureUrlCandidateDetail({ itemId } = {}) {
+  const targetItemId = trimOrNull(itemId, 40);
+  if (!targetItemId) throw new Error('item-id is required');
+  const evidence = await loadCachedEbayListingEvidence({ sku: targetItemId });
+  const issues = phase15BListingQualityIssues(evidence);
+  const imageNeed = phase15BImageNeedScore(evidence);
+  const evidenceScore = phase15BEvidenceScore(evidence);
+  const risk = phase15BRiskSummary(evidence);
+  const executedState = await phase15BExecutedPublicPictureUrlState();
+  const duplicateWithPhase14 = targetItemId === '206288370789';
+  const previousExecutedPublicPictureUrlRequest = executedState.executed_item_ids.includes(targetItemId);
+  const recommendedAllowedChanges = [];
+  if (issues.some(issue => /^title_/.test(issue.type))) recommendedAllowedChanges.push('title');
+  if (issues.some(issue => /^item_specifics_/.test(issue.type))) recommendedAllowedChanges.push('item_specifics');
+  if (imageNeed > 0) recommendedAllowedChanges.push('images');
+  const readyForHumanReview = !duplicateWithPhase14 && targetItemId !== '206288370789' && Boolean(evidence.item_id || targetItemId);
+  const currentListingSummary = {
+    sku: evidence.sku || targetItemId,
+    item_id: evidence.item_id || targetItemId,
+    title: evidence.title || null,
+    listing_status: evidence.listing_detail?.listing_status || evidence.ebay_product?.status || null,
+    category_id: evidence.listing_detail?.category_id || null,
+    category_name: evidence.listing_detail?.category_name || null,
+    condition: evidence.listing_detail?.condition || null,
+    source_tables: evidence.source_tables || [],
+    limitations: evidence.limitations || [],
+    cached_internal_data_only: true,
+  };
+  const imageStatus = {
+    image_count: (evidence.images || []).length,
+    images: (evidence.images || []).map(row => ({ image_url: row.image_url, position: row.position, width: row.width, height: row.height })).slice(0, 10),
+    image_improvement_needed: imageNeed > 0,
+    public_picture_url_needed: true,
+    public_picture_url_reason: imageNeed > 0
+      ? 'Public HTTPS PictureURL is needed for image improvement in the public PictureURL rollout path.'
+      : 'Public HTTPS PictureURL remains required as an operator-provided readiness input if this candidate advances to a future public PictureURL packet phase, even when cached image count is currently sufficient.',
+  };
+  const readyForPacketCreation = false;
+  const reasoningParts = [];
+  reasoningParts.push(`Cached evidence score ${evidenceScore}; issue severity score ${phase15BSeverityScore(issues)}; image need score ${imageNeed}.`);
+  if (previousExecutedPublicPictureUrlRequest) reasoningParts.push('Item is blocked because an executed request already exists for this item.');
+  else reasoningParts.push('No previous executed public PictureURL request was found for this item in cached Hermes records.');
+  if (risk.risk_level === 'low') reasoningParts.push('Risk is low because cached listing evidence is sufficient and Phase 15B blocks non-quality fields.');
+  else reasoningParts.push('Risk is not low enough for packet creation without human review/read-only evidence refresh.');
+  reasoningParts.push('Phase 15B is a review step only; packet creation remains false by design.');
+  return {
+    read_only: true,
+    phase: '15B',
+    item_id: targetItemId,
+    title: evidence.title || null,
+    current_listing_summary: currentListingSummary,
+    image_status: imageStatus,
+    listing_quality_issues: issues,
+    recommended_allowed_changes: [...new Set(recommendedAllowedChanges)],
+    blocked_changes: ['price', 'inventory', 'quantity', 'description', 'category', 'shipping', 'payment', 'returns'],
+    public_picture_url_needed: true,
+    ready_for_human_review: readyForHumanReview,
+    ready_for_packet_creation: readyForPacketCreation,
+    reasoning: reasoningParts.join(' '),
+    ranking_factors: {
+      listing_quality_issue_severity_score: phase15BSeverityScore(issues),
+      image_improvement_need_score: imageNeed,
+      cached_listing_evidence_score: evidenceScore,
+      low_risk_of_accidental_price_inventory_category_description_change: risk.low_risk_of_accidental_price_inventory_category_description_change,
+      no_previous_executed_public_picture_url_request: !previousExecutedPublicPictureUrlRequest,
+      no_duplicate_with_item_id_206288370789: !duplicateWithPhase14,
+      no_duplicate_with_request_id_6_packet_id_5: targetItemId !== '206288370789',
+    },
+    duplicate_guard: {
+      previous_executed_public_picture_url_request: previousExecutedPublicPictureUrlRequest,
+      duplicate_with_item_id_206288370789: duplicateWithPhase14,
+      duplicate_with_request_id_6_packet_id_5: targetItemId === '206288370789',
+      excluded_request_ids: [6],
+      excluded_packet_ids: [5],
+      excluded_item_ids: ['206288370789'],
+    },
+    safety: {
+      read_only: true,
+      cached_internal_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      database_write_performed: false,
+      execution_request_created: false,
+      packet_created: false,
+      ai_calls: false,
+    },
+    source: 'phase_15b_public_picture_url_candidate_detail_v1',
+  };
+}
+
+async function buildEbayPublicPictureUrlCandidateShortlist({ limit = 10 } = {}) {
+  const safeLimit = Math.min(10, Math.max(1, intOrNull(limit) || 10));
+  const details = [];
+  for (const itemId of PHASE15B_CANDIDATE_ITEM_IDS) {
+    details.push(await buildEbayPublicPictureUrlCandidateDetail({ itemId }));
+  }
+  const ranked = details
+    .filter(row => row.duplicate_guard.duplicate_with_item_id_206288370789 !== true)
+    .map(row => {
+      const factors = row.ranking_factors;
+      const score = factors.listing_quality_issue_severity_score
+        + factors.image_improvement_need_score
+        + (factors.cached_listing_evidence_score * 2)
+        + (factors.low_risk_of_accidental_price_inventory_category_description_change ? 50 : -80)
+        + (factors.no_previous_executed_public_picture_url_request ? 20 : -100)
+        + (factors.no_duplicate_with_item_id_206288370789 ? 10 : -100)
+        + (factors.no_duplicate_with_request_id_6_packet_id_5 ? 10 : -100);
+      return { ...row, rollout_rank_score: score };
+    })
+    .sort((a, b) => b.rollout_rank_score - a.rollout_rank_score || String(a.item_id).localeCompare(String(b.item_id)))
+    .slice(0, safeLimit)
+    .map((row, index) => ({
+      rank: index + 1,
+      item_id: row.item_id,
+      title: row.title,
+      rollout_rank_score: row.rollout_rank_score,
+      ranking_factors: row.ranking_factors,
+      image_status: row.image_status,
+      listing_quality_issues: row.listing_quality_issues,
+      recommended_allowed_changes: row.recommended_allowed_changes,
+      blocked_changes: row.blocked_changes,
+      public_picture_url_needed: row.public_picture_url_needed,
+      ready_for_human_review: row.ready_for_human_review,
+      ready_for_packet_creation: row.ready_for_packet_creation,
+      reasoning: row.reasoning,
+    }));
+  return {
+    read_only: true,
+    phase: '15B',
+    operation: 'public_picture_url_candidate_shortlist',
+    limit: safeLimit,
+    input_candidate_item_ids: PHASE15B_CANDIDATE_ITEM_IDS,
+    exclusions: {
+      excluded_request_ids: [6],
+      excluded_packet_ids: [5],
+      excluded_item_ids: ['206288370789'],
+      no_duplicate_with_phase14_success_item: true,
+      no_previous_executed_public_picture_url_request_required: true,
+    },
+    ranking_factors: [
+      'listing_quality_issue_severity',
+      'image_improvement_need',
+      'availability_of_cached_listing_evidence',
+      'low_risk_of_accidental_price_inventory_category_description_change',
+      'no_previous_executed_public_picture_url_request',
+      'no_duplicate_with_item_id_206288370789',
+      'no_duplicate_with_request_id_6_packet_id_5',
+    ],
+    ranked_candidates: ranked,
+    selected_candidate: ranked[0] || null,
+    require_human_review_before_packet_creation: true,
+    no_writes_performed: true,
+    safety: {
+      read_only: true,
+      cached_internal_evidence_only: true,
+      actual_ebay_call: false,
+      get_item_called: false,
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      database_write_performed: false,
+      execution_request_created: false,
+      packet_created: false,
+      ai_calls: false,
+    },
+    source: 'phase_15b_public_picture_url_candidate_shortlist_v1',
+  };
+}
+
+async function buildEbayPublicPictureUrlCandidateReviewChecklist({ itemId } = {}) {
+  const detail = await buildEbayPublicPictureUrlCandidateDetail({ itemId });
+  const checklist = [
+    `Phase 15B public PictureURL candidate review checklist for item_id=${detail.item_id}`,
+    '',
+    'Scope confirmation:',
+    '[ ] Use cached/internal evidence only; do not call eBay or GetItem.',
+    '[ ] Do not call ReviseFixedPriceItem.',
+    '[ ] Do not call UploadSiteHostedPictures.',
+    '[ ] Do not create an execution request or packet in Phase 15B.',
+    '[ ] Confirm no marketplace writes or listing changes occur in this review step.',
+    '',
+    'Candidate evidence:',
+    `[ ] Title reviewed: ${detail.title || '(missing cached title)'}`,
+    `[ ] Image status reviewed: image_count=${detail.image_status.image_count}, public_picture_url_needed=${detail.public_picture_url_needed}`,
+    `[ ] Listing quality issues reviewed: ${detail.listing_quality_issues.map(issue => issue.type).join(', ') || 'none'}`,
+    `[ ] Recommended allowed changes reviewed: ${detail.recommended_allowed_changes.join(', ') || 'none'}`,
+    '',
+    'Blocked changes:',
+    ...detail.blocked_changes.map(change => `[ ] Confirm ${change} remains unchanged`),
+    '',
+    'Duplicate guard:',
+    `[ ] Not item_id=206288370789: ${!detail.duplicate_guard.duplicate_with_item_id_206288370789}`,
+    `[ ] Not request_id=6 / packet_id=5 reuse: ${!detail.duplicate_guard.duplicate_with_request_id_6_packet_id_5}`,
+    `[ ] No previous executed public PictureURL request: ${!detail.duplicate_guard.previous_executed_public_picture_url_request}`,
+    '',
+    'Decision:',
+    '[ ] Approve for a future packet creation phase only after human review.',
+    '[ ] Provide a public HTTPS image URL if image change is needed.',
+    '[ ] Keep Phase 15B read-only; packet creation remains false here.',
+  ].join('\n');
+  return {
+    read_only: true,
+    phase: '15B',
+    item_id: detail.item_id,
+    ready_for_human_review: detail.ready_for_human_review,
+    ready_for_packet_creation: false,
+    checklist,
+    candidate_detail: detail,
+    safety: detail.safety,
+    source: 'phase_15b_public_picture_url_candidate_review_checklist_v1',
+  };
+}
+
 async function buildEbayTokenRefreshReadiness({ operation = 'UploadSiteHostedPictures' } = {}) {
   const requestedOperation = String(operation || 'UploadSiteHostedPictures');
   const source = await phase14AELoadEbayTokenSourceData();
@@ -20212,6 +20519,9 @@ module.exports = {
   buildEbayPublicPictureUrlDuplicateGuard,
   buildEbayPublicPictureUrlRolloutReadiness,
   buildEbayPublicPictureUrlNextCandidatePlan,
+  buildEbayPublicPictureUrlCandidateShortlist,
+  buildEbayPublicPictureUrlCandidateDetail,
+  buildEbayPublicPictureUrlCandidateReviewChecklist,
   buildEbayTokenRefreshApprovalChecklist,
   executeEbayTokenRefreshRotation,
   buildEbayListingQualityImageUploadPostTokenRefreshReadiness,

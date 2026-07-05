@@ -1476,6 +1476,33 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-candidate-shortlist') {
+    const { buildEbayPublicPictureUrlCandidateShortlist } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayPublicPictureUrlCandidateShortlist({
+      limit: arg('limit', 10),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-candidate-detail') {
+    const { buildEbayPublicPictureUrlCandidateDetail } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    if (!itemId) throw new Error('item-id is required');
+    const result = await buildEbayPublicPictureUrlCandidateDetail({ itemId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'ebay-public-picture-url-candidate-review-checklist') {
+    const { buildEbayPublicPictureUrlCandidateReviewChecklist } = require('../src/services/hermesExecutionApproval');
+    const itemId = arg('item-id', arg('id', null));
+    if (!itemId) throw new Error('item-id is required');
+    const result = await buildEbayPublicPictureUrlCandidateReviewChecklist({ itemId });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-token-refresh-readiness') {
     const { buildEbayTokenRefreshReadiness } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayTokenRefreshReadiness({
