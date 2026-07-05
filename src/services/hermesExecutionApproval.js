@@ -12864,9 +12864,9 @@ async function buildEbayPublicPictureUrlMiniBatchPlan({ limit = 5 } = {}) {
   for (const itemId of PHASE15B_CANDIDATE_ITEM_IDS) {
     details.push(await buildEbayPublicPictureUrlCandidateDetail({ itemId }));
   }
-  const excludedRequestIds = [6, 7];
-  const excludedPacketIds = [5, 7];
-  const excludedItemIds = ['206288370789', '206284142714'];
+  const excludedRequestIds = [6, 7, 8, 9, 10];
+  const excludedPacketIds = [5, 7, 8, 9, 10];
+  const excludedItemIds = ['206288370789', '206284142714', '206332929888', '206371786121', '206387679082'];
   const mapped = details
     .filter(row => !excludedItemIds.includes(String(row.item_id || '')))
     .filter(row => row.duplicate_guard?.previous_executed_public_picture_url_request !== true)
@@ -13925,6 +13925,207 @@ async function executeEbayPublicPictureUrlMiniBatchApprovedLiveRevise({ requestI
       actual_database_write: true,
       ai_calls: false,
     },
+  };
+}
+
+function phase16FListingImageEvidenceSummary(evidence, expected = {}) {
+  if (!evidence || !['Success', 'Warning'].includes(String(evidence.ack || ''))) {
+    return {
+      get_item_readable: false,
+      listing_image_appears_updated: false,
+      item_id_matches: false,
+      picture_present: false,
+      requested_picture_url_retained: false,
+      picture_url_transformed_to_ebay_hosted: false,
+    };
+  }
+  const pictureUrls = evidence.picture_urls || [];
+  const requestedPictureUrl = expected.picture_url || null;
+  const requestedPictureUrlRetained = Boolean(requestedPictureUrl) && pictureUrls.includes(requestedPictureUrl);
+  const pictureUrlTransformedToEbayHosted = pictureUrls.some(url => /^https:\/\/i\.ebayimg\.com\//i.test(String(url || '')));
+  const picturePresent = requestedPictureUrlRetained || pictureUrlTransformedToEbayHosted || pictureUrls.length > 0;
+  const itemIdMatches = String(evidence.item_id || '') === String(expected.item_id || '');
+  return {
+    get_item_readable: true,
+    listing_image_appears_updated: itemIdMatches && picturePresent,
+    item_id_matches: itemIdMatches,
+    picture_present: picturePresent,
+    requested_picture_url_retained: requestedPictureUrlRetained,
+    picture_url_transformed_to_ebay_hosted: pictureUrlTransformedToEbayHosted,
+  };
+}
+
+async function phase16FLoadRequestPacketEvents({ requestId, packetId }) {
+  const request = await getExecutionRequest({ requestId });
+  const packet = await getEbayListingQualityPacket({ packetId });
+  const db = getClient();
+  const { data: events, error } = await db
+    .from(EVENT_TABLE)
+    .select('id, event_type, actor, payload, created_at')
+    .eq('request_id', requestId)
+    .order('id', { ascending: true });
+  if (error) throw error;
+  return { request, packet, events: events || [] };
+}
+
+async function buildEbayPublicPictureUrlMiniBatchPostLiveAudit({ requestIds } = {}) {
+  const ids = phase16DParseRequestIds(requestIds);
+  if (ids.length === 0) throw new Error('request-ids is required');
+  const expectedRows = [
+    { request_id: 8, packet_id: 8, item_id: '206332929888', picture_url: 'https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/206332929888.jpg', started_event_id: 23, completion_event_id: 24 },
+    { request_id: 9, packet_id: 9, item_id: '206371786121', picture_url: 'https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/206371786121.jpg', started_event_id: 25, completion_event_id: 26 },
+    { request_id: 10, packet_id: 10, item_id: '206387679082', picture_url: 'https://pub-cac9dbf5e5f04a9c83d2788169df18e5.r2.dev/206387679082.jpg', started_event_id: 27, completion_event_id: 28 },
+  ];
+  const expectedRequestIds = expectedRows.map(row => row.request_id);
+  const duplicateGuard = {
+    excluded_request_ids: expectedRequestIds,
+    excluded_packet_ids: expectedRows.map(row => row.packet_id),
+    excluded_item_ids: expectedRows.map(row => row.item_id),
+    request_ids_8_9_10_excluded: true,
+    packet_ids_8_9_10_excluded: true,
+    item_ids_206332929888_206371786121_206387679082_excluded: true,
+  };
+  const results = [];
+  for (const expected of expectedRows.filter(row => ids.includes(row.request_id))) {
+    const { request, packet, events } = await phase16FLoadRequestPacketEvents({ requestId: expected.request_id, packetId: expected.packet_id });
+    const startedEvent = events.find(event => event.id === expected.started_event_id)
+      || events.find(event => event.event_type === 'phase_16e_public_picture_url_mini_batch_revise_started');
+    const completionEvent = events.find(event => event.id === expected.completion_event_id)
+      || events.find(event => /^phase_16e_public_picture_url_mini_batch_revise_(completed|failed)$/.test(String(event.event_type || '')));
+    let getItemEvidence = null;
+    let getItemError = null;
+    try {
+      const ebay = new EbayAPI();
+      const raw = await ebay.callTradingAPI('GetItem', `<ItemID>${phase14AVXmlEscape(expected.item_id)}</ItemID><DetailLevel>ReturnAll</DetailLevel><IncludeItemSpecifics>true</IncludeItemSpecifics>`);
+      getItemEvidence = phase14AVParseGetItemEvidence(raw);
+    } catch (e) {
+      getItemError = e.message || String(e);
+    }
+    const executionResult = request?.execution_result || null;
+    const ebayAck = executionResult?.ebay_response?.ack || null;
+    const ackAccepted = ['Warning', 'Success'].includes(String(ebayAck || ''));
+    const packetTerminal = ['packet_recorded', 'executed', 'closed', 'confirmed'].includes(String(packet?.status || ''));
+    const listingImageEvidence = phase16FListingImageEvidenceSummary(getItemEvidence, expected);
+    const listingImageAppearsUpdated = listingImageEvidence.get_item_readable
+      ? listingImageEvidence.listing_image_appears_updated
+      : executionResult?.listing_changed === true;
+    const forbiddenChangeAudit = {
+      no_title_changes: executionResult?.title_changes === false,
+      no_item_specifics_changes: executionResult?.item_specifics_changes === false,
+      no_price_changes: executionResult?.price_changes === false,
+      no_inventory_changes: executionResult?.inventory_changes === false,
+      no_quantity_changes: executionResult?.quantity_changes === false,
+      no_description_changes: executionResult?.description_changes === false,
+      no_category_changes: executionResult?.category_changes === false,
+      no_shipping_changes: executionResult?.shipping_changes === false,
+      no_payment_changes: executionResult?.payment_changes === false,
+      no_returns_changes: executionResult?.returns_changes === false,
+    };
+    const forbiddenChangeAuditClean = Object.values(forbiddenChangeAudit).every(Boolean);
+    const requestExecuted = request?.status === 'executed' && request?.executed_at != null && executionResult != null;
+    const success = requestExecuted
+      && packetTerminal
+      && Boolean(startedEvent)
+      && Boolean(completionEvent)
+      && ackAccepted
+      && listingImageAppearsUpdated
+      && forbiddenChangeAuditClean;
+    results.push({
+      request_id: expected.request_id,
+      packet_id: expected.packet_id,
+      item_id: expected.item_id,
+      picture_url: expected.picture_url,
+      success,
+      request_status: request?.status || null,
+      packet_status: packet?.status || null,
+      packet_status_terminal_or_equivalent: packetTerminal,
+      started_event_id: startedEvent?.id || null,
+      started_event_exists: Boolean(startedEvent),
+      completion_event_id: completionEvent?.id || null,
+      completion_event_exists: Boolean(completionEvent),
+      execution_result_recorded: executionResult != null,
+      ebay_response_ack: ebayAck,
+      ebay_response_ack_success_or_warning: ackAccepted,
+      listing_image_appears_updated: listingImageAppearsUpdated,
+      listing_image_evidence: listingImageEvidence,
+      get_item_evidence: getItemEvidence,
+      get_item_error: getItemError,
+      get_item_read_only_call_performed: getItemEvidence != null,
+      no_additional_live_revise_attempt_needed: success,
+      no_additional_live_revise_attempt_allowed: true,
+      record_only_reconciliation_needed: !requestExecuted || !executionResult,
+      reconciliation_already_complete: requestExecuted && Boolean(startedEvent) && Boolean(completionEvent) && ackAccepted && forbiddenChangeAuditClean,
+      forbidden_change_audit: forbiddenChangeAudit,
+      execution_result: executionResult,
+      events: events.map(event => ({ id: event.id, event_type: event.event_type, actor: event.actor, created_at: event.created_at })),
+    });
+  }
+  const successCount = results.filter(row => row.success === true).length;
+  const failureCount = results.length - successCount;
+  const reconciliationComplete = results.length === expectedRows.length
+    && results.every(row => row.reconciliation_already_complete === true && row.record_only_reconciliation_needed === false);
+  const phase16Complete = JSON.stringify(ids) === JSON.stringify(expectedRequestIds)
+    && successCount === expectedRows.length
+    && failureCount === 0
+    && reconciliationComplete === true;
+  const exactRecordOnlyReconciliationApprovalText = [
+    'Record-only Hermes reconciliation approval for Phase 16E already-executed mini-batch public PictureURL live revise.',
+    'request_id=8,9,10 only.',
+    'packet_id=8,9,10 only.',
+    'item_id=206332929888,206371786121,206387679082 only.',
+    'No eBay calls.',
+    'Do not call GetItem.',
+    'Do not call ReviseFixedPriceItem.',
+    'Do not call UploadSiteHostedPictures.',
+    'No marketplace writes.',
+    'Allowed internal DB writes only: mark any unreconciled request_id among 8,9,10 executed, attach existing execution_result from Phase 16F audit, create completion event.',
+    'Forbidden changes: listing fields, price, inventory, quantity, description, category, shipping, payment, returns.',
+    'One record-only reconciliation attempt only.',
+    'Do not push.',
+  ].join('\n');
+  return {
+    read_only: true,
+    phase: '16F',
+    operation: 'public_picture_url_mini_batch_post_live_audit',
+    phase_16_complete: phase16Complete,
+    audited_request_ids: ids,
+    expected_request_ids: expectedRequestIds,
+    success_count: successCount,
+    failure_count: failureCount,
+    reconciliation_complete: reconciliationComplete,
+    duplicate_guard_active: true,
+    no_further_live_action_required: phase16Complete,
+    no_further_live_action_allowed: true,
+    record_only_reconciliation_needed: results.some(row => row.record_only_reconciliation_needed === true),
+    record_only_reconciliation_noop: results.every(row => row.record_only_reconciliation_needed !== true),
+    exact_record_only_reconciliation_approval_text: results.some(row => row.record_only_reconciliation_needed === true)
+      ? exactRecordOnlyReconciliationApprovalText
+      : null,
+    duplicate_guard: duplicateGuard,
+    results,
+    safety: {
+      actual_ebay_call: results.some(row => row.get_item_read_only_call_performed === true),
+      actual_network_call: results.some(row => row.get_item_read_only_call_performed === true),
+      get_item_read_only_call_performed: results.some(row => row.get_item_read_only_call_performed === true),
+      revise_fixed_price_item_called: false,
+      upload_site_hosted_pictures_called: false,
+      marketplace_write_performed: false,
+      live_execution_performed: false,
+      listing_changed_by_audit: false,
+      title_changes: false,
+      item_specifics_changes: false,
+      price_changes: false,
+      inventory_changes: false,
+      quantity_changes: false,
+      description_changes: false,
+      category_changes: false,
+      shipping_changes: false,
+      payment_changes: false,
+      returns_changes: false,
+      actual_database_write: false,
+      ai_calls: false,
+    },
+    source: 'phase_16f_public_picture_url_mini_batch_post_live_audit_v1',
   };
 }
 
@@ -22764,6 +22965,7 @@ module.exports = {
   createEbayPublicPictureUrlMiniBatchPackets,
   buildEbayPublicPictureUrlMiniBatchFinalApprovalChecklist,
   executeEbayPublicPictureUrlMiniBatchApprovedLiveRevise,
+  buildEbayPublicPictureUrlMiniBatchPostLiveAudit,
   buildEbayPublicPictureUrlCandidateShortlist,
   buildEbayPublicPictureUrlCandidateDetail,
   buildEbayPublicPictureUrlCandidateReviewChecklist,

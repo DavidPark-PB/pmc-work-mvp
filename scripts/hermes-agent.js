@@ -1586,6 +1586,15 @@ async function main() {
     return;
   }
 
+  if (cmd === 'ebay-public-picture-url-mini-batch-post-live-audit') {
+    const { buildEbayPublicPictureUrlMiniBatchPostLiveAudit } = require('../src/services/hermesExecutionApproval');
+    const result = await buildEbayPublicPictureUrlMiniBatchPostLiveAudit({
+      requestIds: arg('request-ids', ''),
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
   if (cmd === 'ebay-public-picture-url-candidate-shortlist') {
     const { buildEbayPublicPictureUrlCandidateShortlist } = require('../src/services/hermesExecutionApproval');
     const result = await buildEbayPublicPictureUrlCandidateShortlist({
