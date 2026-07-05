@@ -38,6 +38,9 @@ function printUsage() {
     '  npm run hermes:agent -- profit-inventory-cost-enrichment-plan [--limit=100]',
     '  npm run hermes:agent -- profit-inventory-cost-input-template [--limit=100]',
     '  npm run hermes:agent -- profit-inventory-cost-input-validate --file=<CSV_FILE>',
+    '  npm run hermes:agent -- listing-profitability-input-export --listings=<CSV_FILE> --out=<CSV_FILE>',
+    '  npm run hermes:agent -- listing-profitability-input-validate --file=<CSV_FILE>',
+    '  npm run hermes:agent -- listing-profitability-calculate --file=<CSV_FILE>',
     '  npm run hermes:agent -- market --sku=<SKU>',
     '  npm run hermes:agent -- opportunity --sku=<SKU> [--type=<TYPE>]',
     '  npm run hermes:agent -- opportunity-write --sku=<SKU> [--type=<TYPE>] --dry-run',
@@ -277,6 +280,43 @@ async function main() {
     }
     const { validateProfitInventoryCostInput } = require('../src/services/hermesExecutionApproval');
     const result = validateProfitInventoryCostInput({ file });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'listing-profitability-input-export') {
+    const listings = arg('listings', null);
+    const out = arg('out', null);
+    if (!listings || !out) {
+      printUsage();
+      throw new Error('listings and out are required');
+    }
+    const { exportListingProfitabilityInput } = require('../src/services/listingProfitabilityCalculator');
+    const result = exportListingProfitabilityInput({ listings, out });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'listing-profitability-input-validate') {
+    const file = arg('file', null);
+    if (!file) {
+      printUsage();
+      throw new Error('file is required');
+    }
+    const { validateListingProfitabilityInput } = require('../src/services/listingProfitabilityCalculator');
+    const result = validateListingProfitabilityInput({ file });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (cmd === 'listing-profitability-calculate') {
+    const file = arg('file', null);
+    if (!file) {
+      printUsage();
+      throw new Error('file is required');
+    }
+    const { calculateListingProfitability } = require('../src/services/listingProfitabilityCalculator');
+    const result = calculateListingProfitability({ file });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
