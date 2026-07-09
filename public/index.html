@@ -675,7 +675,9 @@
     <div class="menu-item ops-menu" data-page="opportunity-inbox" style="color:#ce93d8;font-weight:600">💡 후보 Inbox</div>
     <div class="menu-item ops-menu" data-page="ops-products" style="color:#81d4fa;font-weight:600">상품 검색/관리</div>
     <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">재고 관리</div>
-    <div class="menu-item ops-menu" data-page="ops-pricing" style="color:#81d4fa;font-weight:600">SKU 원가·판매가 편집</div>
+    <!-- ops-pricing (products.cost_price / price_usd 편집) 은 SKU 마스터 (sku_master.cost_krw) 와 원가 필드 개념이 겹침.
+         혼선 방지를 위해 사이드바에서 숨김. 필요 시 /?page=ops-pricing URL 로 접근. -->
+    <div class="menu-item ops-menu" data-page="ops-pricing" style="display:none;color:#81d4fa;font-weight:600">SKU 원가·판매가 편집</div>
     <div class="menu-item ops-menu" data-page="ops-profit" style="color:#81d4fa;font-weight:600">수익 분석</div>
     <div class="menu-item ops-menu" data-page="ops-logs" style="color:#81d4fa;font-weight:600">자동화 로그</div>
     <!-- WMS Phase 1 — admin 전용 -->
@@ -1766,12 +1768,12 @@
       <div id="battleAlerts" style="display:none;margin:8px 16px;padding:10px 16px;background:#fff3e0;border-left:4px solid #ff6f00;border-radius:4px;font-size:12px"></div>
 
       <!-- ══════════════════════════════════════════════════════ -->
-      <!-- 2. 즉시 대응 (KILL) : 필터 → 전투 테이블 → 킬프라이스 -->
+      <!-- 2. 가격 대응 (KILL) : 필터 → 자동 리프라이싱 → 전투 테이블 (수동 킬) -->
       <!-- ══════════════════════════════════════════════════════ -->
       <!-- 슬림 필터/컨트롤 바 (액션 버튼 5개는 하단 도구로 이동) -->
       <div class="card" style="margin-bottom:16px;border-left:4px solid #e53935">
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:12px;color:#c62828;font-weight:700">⚔️ 즉시 대응</span>
+          <span style="font-size:12px;color:#c62828;font-weight:700">⚔️ 가격 대응</span>
           <select id="battleFilter" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px">
             <option value="all">전체 상품</option>
             <option value="losing">지고 있는 상품 (Target)</option>
@@ -1789,7 +1791,25 @@
         </div>
       </div>
 
-      <!-- 가격 전투 현황 (메인 워크벤치) -->
+      <!-- 자동 리프라이싱 (배치 평가·실행) — 전투 테이블 바로 위 슬림 스트립 -->
+      <div class="card" style="margin-bottom:12px;border-left:4px solid #ff9800;padding:10px 14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <div style="font-size:13px;color:#e65100;font-weight:600">
+            🤖 자동 리프라이싱 <span style="font-size:11px;color:#888;font-weight:400">— 경쟁 셀러 가격 기반 일괄 자동 조정 (최소 마진 보호)</span>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="refresh-btn" id="repricingEvalBtn" style="background:#ff9800;font-size:11px">가격 평가</button>
+            <button class="refresh-btn" id="repricingExecBtn" style="background:#c62828;font-size:11px">일괄 실행</button>
+          </div>
+        </div>
+        <div id="repricingResult" style="display:none;margin-top:10px">
+          <table class="data-table"><thead><tr>
+            <th>SKU</th><th>현재가</th><th>경쟁가</th><th>제안가</th><th>전략</th><th>예상마진</th><th>실행</th>
+          </tr></thead><tbody id="repricingBody"></tbody></table>
+        </div>
+      </div>
+
+      <!-- 가격 전투 현황 (수동 킬프라이스 워크벤치) -->
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <h3 style="font-size:15px;font-weight:600">가격 전투 현황 <span id="battleCount" style="color:#888;font-weight:400;font-size:12px"></span></h3>
@@ -1825,29 +1845,10 @@
       </div>
 
       <!-- ══════════════════════════════════════════════════════ -->
-      <!-- 3. 자동화 : 자동 리프라이싱 -->
+      <!-- 3. 정찰 (RECON) : 소싱 (풀 폭) / 화이트+공격적 (좌우 50/50) -->
       <!-- ══════════════════════════════════════════════════════ -->
-      <div class="card" style="margin-top:16px;margin-bottom:16px;border-left:4px solid #ff9800">
-        <div class="card-header">
-          <h3 style="font-size:15px;font-weight:600;color:#e65100">🤖 자동 리프라이싱</h3>
-          <div style="display:flex;gap:8px">
-            <button class="refresh-btn" id="repricingEvalBtn" style="background:#ff9800;font-size:11px">가격 평가</button>
-            <button class="refresh-btn" id="repricingExecBtn" style="background:#c62828;font-size:11px">일괄 실행</button>
-          </div>
-        </div>
-        <p style="font-size:12px;color:#888;margin-bottom:12px">경쟁 셀러 가격 기반 자동 가격 조정. 최소 마진 보호 적용됨.</p>
-        <div id="repricingResult" style="display:none">
-          <table class="data-table"><thead><tr>
-            <th>SKU</th><th>현재가</th><th>경쟁가</th><th>제안가</th><th>전략</th><th>예상마진</th><th>실행</th>
-          </tr></thead><tbody id="repricingBody"></tbody></table>
-        </div>
-      </div>
-
-      <!-- ══════════════════════════════════════════════════════ -->
-      <!-- 4. 정찰 (RECON) : 소싱 / 화이트스페이스 / 공격적 셀러 -->
-      <!-- ══════════════════════════════════════════════════════ -->
-      <!-- 소싱 기회: 내가 없는데 잘 팔리는 경쟁사 상품 -->
-      <div class="card" style="margin-bottom:16px;border-left:4px solid #7b1fa2">
+      <!-- 소싱 기회: 내가 없는데 잘 팔리는 경쟁사 상품 (풀 폭 — 7컬럼 테이블) -->
+      <div class="card" style="margin-top:16px;margin-bottom:16px;border-left:4px solid #7b1fa2">
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
           <h3 style="font-size:15px;font-weight:600;color:#6a1b9a">🟡 소싱 기회 <span id="battleSourcingCount" style="color:#888;font-weight:400;font-size:12px"></span></h3>
           <button class="refresh-btn" id="battleSourcingRefreshBtn" onclick="refreshBattleSourcing(this)" style="background:#7b1fa2;font-size:11px">소싱 새로고침</button>
@@ -1863,38 +1864,41 @@
         </div>
       </div>
 
-      <!-- 카테고리 화이트스페이스: 경쟁사는 많이 파는데 내가 거의 없는 카테고리 -->
-      <div class="card" style="margin-bottom:16px;border-left:4px solid #00838f">
-        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
-          <h3 style="font-size:15px;font-weight:600;color:#006064">🗺️ 카테고리 화이트스페이스</h3>
-          <button class="refresh-btn" id="battleWhitespaceRefreshBtn" onclick="loadBattleWhitespace(this)" style="background:#00838f;font-size:11px">새로고침</button>
+      <!-- 화이트스페이스 + 공격적 셀러 (좌우 50/50, 좁은 화면에서는 자동 세로) -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px;margin-bottom:16px">
+        <!-- 카테고리 화이트스페이스 -->
+        <div class="card" style="border-left:4px solid #00838f;margin:0">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+            <h3 style="font-size:15px;font-weight:600;color:#006064">🗺️ 카테고리 화이트스페이스</h3>
+            <button class="refresh-btn" id="battleWhitespaceRefreshBtn" onclick="loadBattleWhitespace(this)" style="background:#00838f;font-size:11px">새로고침</button>
+          </div>
+          <p style="font-size:12px;color:#888;margin-bottom:12px">경쟁사 판매 많은데 내 커버율 낮은 카테고리 = 미개척 시장.</p>
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead><tr><th>카테고리</th><th>경쟁</th><th>총 판매</th><th>내 커버율</th><th>미매핑</th></tr></thead>
+              <tbody id="battleWhitespaceBody"><tr><td colspan="5" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
+            </table>
+          </div>
         </div>
-        <p style="font-size:12px;color:#888;margin-bottom:12px">경쟁사 판매 많은데 내 커버율 낮은 카테고리 = 미개척 시장. 미매핑 판매 많은 순.</p>
-        <div style="overflow-x:auto">
-          <table class="data-table">
-            <thead><tr><th>카테고리</th><th>경쟁 리스팅</th><th>총 판매</th><th>내 커버율</th><th>미매핑 판매</th></tr></thead>
-            <tbody id="battleWhitespaceBody"><tr><td colspan="5" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
-          </table>
-        </div>
-      </div>
 
-      <!-- 공격적 셀러: 가격을 자주·크게 내리는 셀러 -->
-      <div class="card" style="margin-bottom:16px;border-left:4px solid #c62828">
-        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
-          <h3 style="font-size:15px;font-weight:600;color:#b71c1c">⚔️ 공격적 셀러 (최근 14일)</h3>
-          <button class="refresh-btn" id="battleAggressiveRefreshBtn" onclick="loadBattleAggressive(this)" style="background:#c62828;font-size:11px">새로고침</button>
-        </div>
-        <p style="font-size:12px;color:#888;margin-bottom:12px">가격을 자주·크게 내리는 셀러 = 감시 우선순위. 인하 빈도순.</p>
-        <div style="overflow-x:auto">
-          <table class="data-table">
-            <thead><tr><th>셀러</th><th>인하 횟수</th><th>평균 인하%</th><th>최대 인하%</th></tr></thead>
-            <tbody id="battleAggressiveBody"><tr><td colspan="4" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
-          </table>
+        <!-- 공격적 셀러 -->
+        <div class="card" style="border-left:4px solid #c62828;margin:0">
+          <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+            <h3 style="font-size:15px;font-weight:600;color:#b71c1c">⚔️ 공격적 셀러 (최근 14일)</h3>
+            <button class="refresh-btn" id="battleAggressiveRefreshBtn" onclick="loadBattleAggressive(this)" style="background:#c62828;font-size:11px">새로고침</button>
+          </div>
+          <p style="font-size:12px;color:#888;margin-bottom:12px">가격을 자주·크게 내리는 셀러 = 감시 우선순위.</p>
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead><tr><th>셀러</th><th>인하 횟수</th><th>평균 인하%</th><th>최대 인하%</th></tr></thead>
+              <tbody id="battleAggressiveBody"><tr><td colspan="4" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </div>
 
       <!-- ══════════════════════════════════════════════════════ -->
-      <!-- 5. 도구 (TOOLS) : 마진 계산기 + 셀러/경쟁사 액션 버튼 -->
+      <!-- 4. 도구 (TOOLS) : 마진 계산기 + 셀러/경쟁사 액션 버튼 -->
       <!-- ══════════════════════════════════════════════════════ -->
       <details class="card" style="margin-bottom:16px;border-left:4px solid #7c4dff">
         <summary style="font-size:14px;font-weight:600;color:#5e35b1;cursor:pointer;user-select:none;padding:6px 0">
@@ -3315,11 +3319,18 @@
     </div>
   </div>
 
-  <!-- ops-pricing: SKU 원가·판매가 편집 (전투상황판과 다른 성격 — 오프라인 마스터 편집) -->
+  <!-- ops-pricing: SKU 원가·판매가 편집 (레거시 — 사이드바에서 숨김) -->
   <div id="page-ops-pricing" class="page">
+    <!-- 안내 배너 — SKU 마스터로 유도 -->
+    <div style="margin-bottom:12px;padding:12px 16px;background:#fff3e0;border-left:4px solid #ff6f00;border-radius:6px;font-size:13px;color:#4e342e">
+      ⚠️ 이 페이지는 <code style="background:#ffe0b2;padding:2px 6px;border-radius:3px">products</code> 테이블의 매입가/판매가만 편집합니다.
+      <br>Engine 1 의 원가·무게·치수 마스터 (<code style="background:#ffe0b2;padding:2px 6px;border-radius:3px">sku_master.cost_krw</code>) 는
+      <a href="#sku-master" onclick="navigateTo('sku-master');return false" style="color:#e65100;font-weight:700;text-decoration:underline">📦 SKU 마스터</a>
+      에서 편집하세요. 두 곳에서 같은 원가를 편집하면 데이터 불일치가 발생합니다.
+    </div>
     <div class="card">
       <div class="card-header" style="flex-wrap:wrap;gap:8px">
-        <h3>SKU 원가·판매가 편집</h3>
+        <h3>SKU 원가·판매가 편집 <span style="font-size:11px;color:#888;font-weight:400">(레거시 · products 테이블)</span></h3>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <input id="opsPricingSearch" type="text" placeholder="SKU / 상품명 검색..."
             style="padding:6px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:220px">
