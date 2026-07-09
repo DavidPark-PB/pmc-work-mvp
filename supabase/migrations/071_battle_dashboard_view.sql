@@ -28,6 +28,16 @@
 --   같은 (our_sku, competitor_item_id) 쌍이 양쪽에 있으면 UNION ALL 로 둘 다
 --   나오고, JS 에서 (sku + competitor_item_id) 유니크 처리 (AI 우선).
 
+-- ── 선행 조건 자동 보강 ────────────────────────────────────────────────────
+-- migration 070 (셀러 크롤 티어) 이 아직 실행 안 됐어도 71 만 실행하면 뷰가
+-- 뜨도록, 71 자체에 competitor_sellers 확장 컬럼을 idempotent 로 추가한다.
+-- 070 이 이미 실행됐다면 IF NOT EXISTS 로 스킵.
+alter table competitor_sellers
+  add column if not exists crawl_tier             text default 'B',
+  add column if not exists next_crawl_offset      integer default 0,
+  add column if not exists crawl_chunk_size       integer default 500,
+  add column if not exists crawl_cycle_started_at timestamptz;
+
 create or replace view v_battle_dashboard_rows as
 -- ── AI 매칭 소스 (매일 크롤 + AI approved) ────────────────────────────────
 select
