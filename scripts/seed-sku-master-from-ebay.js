@@ -78,18 +78,32 @@ async function main() {
   }
 
   // 4. sku_listing_link 연결 (item_id 있는 것만, 중복은 skip)
-  const { data: masters } = await db.from('sku_master')
-    .select('id, internal_sku').in('internal_sku', toCreate.slice(0, 5000));
-  const idBySku = new Map((masters || []).map((m) => [m.internal_sku, m.id]));
+  //    ebay_products 의 모든 SKU 를 대상 (이번 실행에서 신규 등록된 것 + 이미 있던 것 포함)
+  //    2026-07-10 fix: 이전엔 .in('internal_sku', toCreate.slice(0,5000)) 로 5000개 상한 +
+  //    신규 등록만 처리해서 재실행 시 listing_link 가 0개로 남았음. 500 개씩 배치 조회로 변경.
+  const idBySku = new Map();
+  for (let i = 0; i < allSkus.length; i += 500) {
+    const chunk = allSkus.slice(i, i + 500);
+    const { data: masters, error: mErr } = await db.from('sku_master')
+      .select('id, internal_sku').in('internal_sku', chunk);
+    if (mErr) throw new Error(`sku_master id 조회 실패: ${mErr.message}`);
+    (masters || []).forEach((m) => idBySku.set(m.internal_sku, m.id));
+  }
+  //    이미 존재하는 링크는 skip — 신규 링크만 저장.
+  const { data: existingLinks } = await db.from('sku_listing_link')
+    .select('listing_id').eq('marketplace', 'ebay').limit(20000);
+  const linkedListingIds = new Set((existingLinks || []).map((r) => String(r.listing_id)));
   let linked = 0;
-  const links = toCreate
+  const links = allSkus
     .map((sku) => {
       const p = ebayBySku.get(sku);
       const skuId = idBySku.get(sku);
       if (!skuId || !p.item_id) return null;
+      if (linkedListingIds.has(String(p.item_id))) return null;
       return { sku_id: skuId, marketplace: 'ebay', listing_id: String(p.item_id), marketplace_sku: sku, is_primary: true };
     })
     .filter(Boolean);
+  console.log(`[seed] listing_link 시도 대상 ${links.length}건 (기존 ${linkedListingIds.size} 제외)`);
   for (let i = 0; i < links.length; i += 500) {
     const { error } = await db.from('sku_listing_link').insert(links.slice(i, i + 500));
     if (error) console.warn(`[seed] listing_link 일부 실패(무시 — 중복 가능): ${error.message}`);
