@@ -2043,6 +2043,10 @@ router.get('/battle/data', async (req, res) => {
         diff,
         losing,
         killPrice,
+        // 뷰 기반 신규 필드 (사장님 지침 2026-07-09). Legacy 흐름이면 undefined → 기본값.
+        bestTier: row.bestTier || 'B',
+        bestTierRank: row.bestTierRank ?? 3,
+        allOutOfStock: !!row.allOutOfStock,
         recentChanges: row.recentChanges || [],
       };
     });

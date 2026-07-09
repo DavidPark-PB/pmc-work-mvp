@@ -178,14 +178,206 @@ class RepricingService {
   }
 
   /**
-   * Get battle dashboard data: fetch real eBay listings from API, compare with competitor prices
+   * Get battle dashboard data via v_battle_dashboard_rows view.
+   *
+   * 뷰 (migration 071) 가 ebay_products / product_matches / competitor_listings /
+   * competitor_sellers / competitor_prices / products 를 SQL JOIN 으로 이미
+   * 병합하므로 여기서는 단순 select 만. Railway 프록시 60 초 타임아웃 회피.
+   *
+   * 뷰 미적용 (마이그레이션 안 됨) → legacy 흐름으로 폴백.
    */
   async getBattleDashboard() {
     const db = getClient();
 
-    // DB 기반 조회 — ebay_products 테이블 (productSync로 주기적 갱신됨).
-    // 이전에는 eBay API를 요청마다 25페이지 호출해서 Fly 프록시 60초 타임아웃에
-    // 걸려 502가 반복 발생했음. DB 조회는 1초 내로 끝남.
+    // ── 뷰 기반 신규 흐름 ────────────────────────────────────────────────────
+    try {
+      return await this._getBattleDashboardViaView(db);
+    } catch (e) {
+      // 뷰 없음 (42P01: relation does not exist) 또는 컬럼 없음 (42703) → 폴백
+      const code = e?.code || '';
+      const missing = code === '42P01' || code === '42703' ||
+        /v_battle_dashboard_rows/i.test(e?.message || '');
+      if (!missing) {
+        console.error('[BattleDashboard] 뷰 조회 오류:', e.message);
+      } else {
+        console.warn('[BattleDashboard] 뷰 없음 → legacy 흐름 폴백');
+      }
+      return await this._getBattleDashboardLegacy(db);
+    }
+  }
+
+  /**
+   * 뷰 기반 (신규, 2026-07-09 사장님 지침).
+   * v_battle_dashboard_rows 를 select → JS 에서 SKU 별 그룹핑 + 정렬만 담당.
+   */
+  async _getBattleDashboardViaView(db) {
+    const now = Date.now();
+    const STALE_THRESHOLD_DAYS = 7; // 사장님 지침: 7일 넘으면 오래된 가격
+
+    // ── 1. 매칭 있는 SKU 로우 로드 (뷰) ──────────────────────────────────
+    let rows = [];
+    for (let offset = 0; ; offset += 1000) {
+      const { data, error } = await db
+        .from('v_battle_dashboard_rows')
+        .select('*')
+        .range(offset, offset + 999);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      rows = rows.concat(data);
+      if (data.length < 1000) break;
+    }
+    console.log('[BattleDashboard/view] 뷰 로우 수:', rows.length);
+
+    // ── 2. 매칭 없는 내 리스팅 (뷰) ──────────────────────────────────────
+    let unmatched = [];
+    for (let offset = 0; ; offset += 1000) {
+      const { data, error } = await db
+        .from('v_battle_unmatched_listings')
+        .select('*')
+        .range(offset, offset + 999);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      unmatched = unmatched.concat(data);
+      if (data.length < 1000) break;
+    }
+    console.log('[BattleDashboard/view] 매칭 없는 리스팅:', unmatched.length);
+
+    // ── 3. SKU 별 그룹핑 ─────────────────────────────────────────────────
+    // rows 는 (내 SKU × 경쟁사 1명) 조합의 곱. 같은 (sku, competitor_item_id)
+    // 가 AI/manual 양쪽에 있으면 AI 우선.
+    const sku2listing = new Map(); // sku → { my info + competitors[] }
+    const seenPair   = new Set();  // sku::competitor_item_id (중복 방지)
+
+    // AI 우선: source='ai' 먼저 처리, 그 다음 manual
+    rows.sort((a, b) => (a.source === 'ai' ? -1 : 1));
+
+    for (const r of rows) {
+      const sku = r.our_sku;
+      if (!sku) continue;
+      const key = `${sku}::${r.competitor_item_id || ''}`;
+      if (seenPair.has(key)) continue;
+      seenPair.add(key);
+
+      let entry = sku2listing.get(sku);
+      if (!entry) {
+        entry = {
+          sku,
+          itemId: r.our_item_id || '',
+          title:  r.title || sku,
+          myPrice:    Number(r.my_price) || 0,
+          myShipping: Number(r.my_shipping) || 0,
+          myLastSyncedAt: r.my_last_synced_at || null,
+          quantity: Number(r.my_stock) || 0,
+          competitors: [],
+        };
+        sku2listing.set(sku, entry);
+      }
+
+      const compPrice    = Number(r.competitor_price) || 0;
+      const compShipping = Number(r.competitor_shipping) || 0;
+      const trackedMs    = r.tracked_at ? new Date(r.tracked_at).getTime() : 0;
+      const ageDays      = trackedMs > 0 ? Math.floor((now - trackedMs) / 86400000) : null;
+      const status       = r.competitor_status || 'active';
+
+      entry.competitors.push({
+        id:              r.manual_row_id,          // manual 만 값 있음
+        itemId:          r.competitor_item_id || null,
+        price:           compPrice,
+        shipping:        compShipping,
+        total:           +(compPrice + compShipping).toFixed(2),
+        rawPrice:        compPrice,
+        rawShipping:     compShipping,
+        url:             r.competitor_url || (r.competitor_item_id ? `https://www.ebay.com/itm/${r.competitor_item_id}` : null),
+        seller:          r.competitor_seller_id || '',
+        title:           r.competitor_title || null,
+        imageUrl:        r.competitor_image || null,
+        priceMin:        r.price_min != null ? Number(r.price_min) : null,
+        priceMax:        r.price_max != null ? Number(r.price_max) : null,
+        variantCount:    Number(r.variant_count || 1),
+        quantityAvailable: r.competitor_quantity != null ? Number(r.competitor_quantity) : null,
+        status,
+        hasOverride:     !!r.has_override,
+        source:          r.source || 'manual',
+        matchConfidence: r.match_confidence != null ? Number(r.match_confidence) : null,
+        tier:            r.competitor_tier || 'B',
+        trackedAt:       r.tracked_at || null,
+        ageDays,
+        isStale:         ageDays != null && ageDays >= STALE_THRESHOLD_DAYS,
+        isOutOfStock:    status === 'out_of_stock' || status === 'ended',
+      });
+    }
+
+    // ── 4. 매칭 없는 리스팅도 dashboard 에 (no-comp 필터용) ───────────
+    for (const u of unmatched) {
+      if (sku2listing.has(u.our_sku)) continue;
+      sku2listing.set(u.our_sku, {
+        sku:            u.our_sku,
+        itemId:         u.our_item_id || '',
+        title:          u.title || u.our_sku,
+        myPrice:        Number(u.my_price) || 0,
+        myShipping:     Number(u.my_shipping) || 0,
+        myLastSyncedAt: u.my_last_synced_at || null,
+        quantity:       Number(u.my_stock) || 0,
+        competitors:    [],
+      });
+    }
+
+    // ── 5. 각 SKU 마다 경쟁사 3명 top + 정렬 메타 ────────────────────────
+    const TIER_RANK = { F: 0, D: 1, C: 2, B: 3, A: 4 };
+    const dashboard = [];
+    for (const entry of sku2listing.values()) {
+      // 경쟁사 total 오름차순 (가장 싼 것 top)
+      entry.competitors.sort((a, b) => a.total - b.total);
+      entry.competitors = entry.competitors.slice(0, 3);
+
+      const aliveComps = entry.competitors.filter(c => !c.isOutOfStock);
+      const cheapest = aliveComps[0] || null;
+
+      // 이 상품의 최고 티어 (F 가장 급함)
+      const bestTier = entry.competitors.reduce((best, c) => {
+        const t = c.tier || 'B';
+        return TIER_RANK[t] < TIER_RANK[best] ? t : best;
+      }, 'A');
+
+      dashboard.push({
+        sku:              entry.sku,
+        itemId:           entry.itemId,
+        title:            entry.title,
+        myPrice:          entry.myPrice,
+        myShipping:       entry.myShipping,
+        myLastSyncedAt:   entry.myLastSyncedAt,
+        quantity:         entry.quantity,
+        competitors:      entry.competitors,
+        cheapestTotal:    cheapest ? cheapest.total : null,
+        allOutOfStock:    entry.competitors.length > 0 && aliveComps.length === 0,
+        lastTracked:      cheapest?.trackedAt || null,
+        bestTier,
+        bestTierRank:     TIER_RANK[bestTier],
+        recentChanges:    [],
+      });
+    }
+
+    // ── 6. 정렬 — 지고 있는 상품 우선 → F/D 티어 우선 → 차이 큰 순 ────────
+    dashboard.sort((a, b) => {
+      const aMyTotal = a.myPrice + (a.myShipping || 0);
+      const bMyTotal = b.myPrice + (b.myShipping || 0);
+      const aLosing  = a.cheapestTotal != null && aMyTotal > a.cheapestTotal;
+      const bLosing  = b.cheapestTotal != null && bMyTotal > b.cheapestTotal;
+      if (aLosing !== bLosing) return aLosing ? -1 : 1;
+      if (a.bestTierRank !== b.bestTierRank) return a.bestTierRank - b.bestTierRank;
+      const aDiff = a.cheapestTotal != null ? aMyTotal - a.cheapestTotal : -Infinity;
+      const bDiff = b.cheapestTotal != null ? bMyTotal - b.cheapestTotal : -Infinity;
+      return bDiff - aDiff;
+    });
+
+    return dashboard;
+  }
+
+  /**
+   * Legacy 흐름 (뷰 미적용 시 폴백).
+   * Migration 071 이 실행 안 됐어도 대시보드가 계속 뜨도록 유지.
+   */
+  async _getBattleDashboardLegacy(db) {
     let ebayItems = [];
     try {
       // Supabase default row limit은 1000 → range()로 페이지 끝까지 수집.
