@@ -24,6 +24,9 @@ backups/
 npm-debug.log*
 data/sync-logs/
 
+# 킬프라이스 스탠드얼론 프로토타입 스크래치(리스팅 CSV 포함, 커밋 금지)
+killprice/
+
 # OS files
 .DS_Store
 Thumbs.db

@@ -3406,8 +3406,59 @@ async function runCompetitorMonitor(btn) {
   }
 }
 
+// 소싱기회(내가 없는데 잘 팔리는 경쟁사 상품) 렌더
+function renderBattleSourcing(items) {
+  var body = document.getElementById('battleSourcingBody');
+  var countEl = document.getElementById('battleSourcingCount');
+  if (!body) return;
+  if (countEl) countEl.textContent = '(' + (items ? items.length : 0) + ')';
+  if (!items || items.length === 0) {
+    body.innerHTML = '<tr><td colspan="7" class="empty" style="color:#aaa">소싱기회 없음 — "소싱 새로고침"으로 스캔하세요</td></tr>';
+    return;
+  }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+  body.innerHTML = items.map(function (s) {
+    var link = s.url ? '<a href="' + esc(s.url) + '" target="_blank" rel="noopener" style="color:#1565c0">보기</a>' : '-';
+    return '<tr>' +
+      '<td style="max-width:340px">' + esc(s.title) + '</td>' +
+      '<td style="font-weight:700;color:#6a1b9a">' + (s.sold || 0) + '</td>' +
+      '<td>$' + Number(s.price || 0).toFixed(2) + '</td>' +
+      '<td>$' + Number(s.shipping || 0).toFixed(2) + '</td>' +
+      '<td style="font-weight:600">$' + Number(s.total || 0).toFixed(2) + '</td>' +
+      '<td style="font-size:11px;color:#888">' + esc(s.seller) + '</td>' +
+      '<td>' + link + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+async function loadBattleSourcing() {
+  try {
+    var r = await fetch(API + '/battle/sourcing');
+    var data = JSON.parse(await r.text());
+    renderBattleSourcing(data.items || []);
+  } catch (e) {
+    var body = document.getElementById('battleSourcingBody');
+    if (body) body.innerHTML = '<tr><td colspan="7" class="empty" style="color:#c62828">소싱 로드 실패</td></tr>';
+  }
+}
+
+async function refreshBattleSourcing(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '스캔 중…'; }
+  try {
+    var r = await fetch(API + '/battle/sourcing/refresh', { method: 'POST' });
+    var data = JSON.parse(await r.text());
+    if (data.items) renderBattleSourcing(data.items);
+    else await loadBattleSourcing();
+  } catch (e) {
+    alert('소싱 스캔 실패: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '소싱 새로고침'; }
+  }
+}
+
 async function loadBattle() {
   loadBattleAlerts();
+  loadBattleSourcing();
   showLoading(true);
   var _battleRes, _battleText;
   try {
@@ -3687,7 +3738,7 @@ function renderBattleTable(items) {
     //   diff > 0  : 진짜 패배
     //   -2 < diff <= 0 : 동률·근접 (1불 차이 같은 case)
     //   diff <= -2 : 충분한 우위, 적정
-    const MIN_BUFFER = 2.00;
+    const MIN_BUFFER = 1.00;
     const losing = diff !== null && diff > 0;
     const tooClose = diff !== null && diff <= 0 && diff > -MIN_BUFFER;
     const needsKill = losing || tooClose;
@@ -3705,9 +3756,9 @@ function renderBattleTable(items) {
     item.cheapestTotal = cheapestTotal;
     item.allOutOfStock = allOutOfStock;
 
-    // 일반 raise: 내가 $5 이상 싸면 경쟁사 - $2로 올리기 추천
+    // 일반 raise: 내가 $5 이상 싸면 경쟁사 - $1로 올리기 추천 (언더컷 $1 통일)
     const winning = diff !== null && diff < -5;
-    let raisePrice = winning ? +Math.max(item.myPrice, cheapestTotal - 2.00 - (item.myShipping || 0)).toFixed(2) : null;
+    let raisePrice = winning ? +Math.max(item.myPrice, cheapestTotal - 1.00 - (item.myShipping || 0)).toFixed(2) : null;
     // 경쟁사 모두 품절 → 무조건 raise 추천 (현재 가격 + 10% 또는 기존 highest competitor)
     if (allOutOfStock && !raisePrice) {
       const highestSeen = item.competitors.reduce((m, c) => Math.max(m, c.total || 0), 0);

@@ -169,6 +169,8 @@ app.use('/api/notifications', require('./src/web/routes/notifications'));
 // WMS Phase 1 — SKU master + 자동 예외 라우팅 (모두 admin 전용)
 // PR P-1A-B: 발주 폼 SKU autocomplete (read-only, 모든 직원). /api/sku-master 보다 먼저 mount 필요.
 app.use('/api/sku-master/search', require('./src/web/routes/skuMasterSearch'));
+// 원가/무게/치수 CSV 일괄 임포트 — /api/sku-master 의 /:id 라우트보다 먼저 mount 필요
+app.use('/api/sku-master/import', require('./src/web/routes/skuMasterImport'));
 app.use('/api/sku-master', require('./src/web/routes/skuMaster'));
 app.use('/api/exception-routing', require('./src/web/routes/exceptionRouting'));
 // WMS Phase 2 — Order import + matching (admin 전용)

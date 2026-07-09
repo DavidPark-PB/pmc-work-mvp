@@ -1852,6 +1852,23 @@
         </div>
       </div>
 
+      <!-- 소싱 기회: 내가 없는데 잘 팔리는 경쟁사 상품 -->
+      <div class="card" style="margin-bottom:16px;border-left:4px solid #7b1fa2">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <h3 style="font-size:15px;font-weight:600;color:#6a1b9a">🟡 소싱 기회 <span id="battleSourcingCount" style="color:#888;font-weight:400;font-size:12px"></span></h3>
+          <button class="refresh-btn" id="battleSourcingRefreshBtn" onclick="refreshBattleSourcing(this)" style="background:#7b1fa2;font-size:11px">소싱 새로고침</button>
+        </div>
+        <p style="font-size:12px;color:#888;margin-bottom:12px">내가 안 파는데 경쟁사에서 잘 팔리는 상품(판매수 기준). 매일 9시 자동 스캔.</p>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead><tr>
+              <th>상품</th><th>판매수</th><th>가격</th><th>배송</th><th>총액</th><th>셀러</th><th>링크</th>
+            </tr></thead>
+            <tbody id="battleSourcingBody"><tr><td colspan="7" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- 전투 테이블 -->
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">

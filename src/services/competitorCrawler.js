@@ -68,20 +68,31 @@ async function crawlSeller(sellerRow) {
 
   console.log(`[Crawler] 셀러 수집 시작: ${displayName} (seller_id=${sellerId})`);
 
-  // ── 1. 리스팅 목록 수집 — Playwright scraper 우선, 실패시 Finding API fallback ──
+  // ── 1. 리스팅 목록 수집 — API 우선(봇 탐지 없음). 스크래퍼는 명시적으로 켠 경우만 최후수단 ──
+  //   순서: Finding API(findItemsBySeller) → Browse API(셀러필터) → (옵션) Playwright 스크래퍼
+  //   eBay는 셀러 페이지 스크래핑을 봇으로 차단하므로 스크래퍼는 기본 비활성.
+  const ALLOW_SCRAPER = process.env.COMPETITOR_ALLOW_SCRAPER === 'true';
   let listings = [];
   try {
-    const { scrapeSellerListings } = require('./ebayScraper');
-    listings = await scrapeSellerListings(sellerName, 5);
+    listings = await ebay.findSellerListingsByFindingAPI(sellerName, 10);
   } catch (e) {
-    console.warn(`[Crawler][${sellerName}] Scraper 실패, Finding API fallback:`, e.message);
+    console.warn(`[Crawler][${sellerName}] Finding API 실패, Browse API fallback:`, e.message);
     try {
-      listings = await ebay.findSellerListingsByFindingAPI(sellerName, 10);
+      listings = await ebay.findSellerListings(sellerName, 5);
     } catch (e2) {
-      try {
-        listings = await ebay.findSellerListings(sellerName, 5);
-      } catch (e3) {
-        const msg = `리스팅 수집 실패: ${e3.message}`;
+      if (ALLOW_SCRAPER) {
+        console.warn(`[Crawler][${sellerName}] API 실패, 스크래퍼 최후수단 시도:`, e2.message);
+        try {
+          const { scrapeSellerListings } = require('./ebayScraper');
+          listings = await scrapeSellerListings(sellerName, 5);
+        } catch (e3) {
+          const msg = `리스팅 수집 실패(API+스크래퍼): ${e3.message}`;
+          console.error(`[Crawler][${sellerName}] ${msg}`);
+          result.errors.push(msg);
+          return result;
+        }
+      } else {
+        const msg = `리스팅 수집 실패(API): ${e2.message}`;
         console.error(`[Crawler][${sellerName}] ${msg}`);
         result.errors.push(msg);
         return result;

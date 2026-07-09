@@ -119,6 +119,16 @@
           </select>
           <button id="sm-refresh" style="padding:8px 14px;background:#37474f;border:none;border-radius:6px;color:#fff;cursor:pointer;">새로고침</button>
         </div>
+        <!-- 원가/무게/치수 CSV 일괄 입력 — Engine 1 BLOCK(랜딩코스트 미완성) 대량 해소용 -->
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;padding:10px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;">
+          <span style="color:#81d4fa;font-size:13px;font-weight:600;">📥 원가·무게 CSV 일괄 입력</span>
+          <a href="/api/sku-master/import/template?fill=missing" style="padding:6px 12px;background:#37474f;border-radius:6px;color:#fff;font-size:12px;text-decoration:none;" title="원가/무게/치수가 빠진 SKU 목록이 미리 채워진 템플릿">⬇ 미입력 SKU 템플릿</a>
+          <a href="/api/sku-master/import/template" style="padding:6px 12px;background:#37474f;border-radius:6px;color:#fff;font-size:12px;text-decoration:none;">⬇ 빈 템플릿</a>
+          <label style="padding:6px 12px;background:#1565c0;border-radius:6px;color:#fff;font-size:12px;cursor:pointer;font-weight:600;">
+            ⬆ CSV 업로드<input id="sm-import-file" type="file" accept=".csv,text/csv" style="display:none;">
+          </label>
+          <span id="sm-import-result" style="color:#888;font-size:12px;"></span>
+        </div>
         <div id="sm-list" style="overflow-x:auto;"></div>
       </div>
     `;
@@ -129,6 +139,38 @@
     document.getElementById('sm-status-filter').addEventListener('change', refresh);
     document.getElementById('sm-auto-filter').addEventListener('change', refresh);
     document.getElementById('sm-weight-filter').addEventListener('change', refresh);
+    document.getElementById('sm-import-file').addEventListener('change', onImportCsv);
+  }
+
+  // CSV 일괄 임포트 — 파일 텍스트를 그대로 POST (text/csv)
+  async function onImportCsv(e) {
+    const file = e.target.files && e.target.files[0];
+    const out = document.getElementById('sm-import-result');
+    if (!file) return;
+    e.target.value = ''; // 같은 파일 재선택 허용
+    out.style.color = '#888';
+    out.textContent = `업로드 중... (${file.name})`;
+    try {
+      const text = await file.text();
+      const res = await fetch('/api/sku-master/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/csv' },
+        body: text,
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'import failed');
+      const r = json.data;
+      const parts = [`✅ ${r.updated}건 갱신`];
+      if (r.unchanged) parts.push(`변경없음 ${r.unchanged}`);
+      if (r.not_found.length) parts.push(`❓ 미존재 SKU ${r.not_found.length} (${r.not_found.slice(0, 3).join(', ')}${r.not_found.length > 3 ? '…' : ''})`);
+      if (r.invalid.length) parts.push(`⚠️ 오류 ${r.invalid.length}행 (${r.invalid.slice(0, 2).map((x) => `${x.row}행:${x.error}`).join(' / ')}${r.invalid.length > 2 ? '…' : ''})`);
+      out.style.color = r.invalid.length || r.not_found.length ? '#ffcc80' : '#a5d6a7';
+      out.textContent = parts.join(' · ');
+      refresh();
+    } catch (err) {
+      out.style.color = '#ef9a9a';
+      out.textContent = `❌ 실패: ${err.message}`;
+    }
   }
 
   function debounce(fn, ms) {

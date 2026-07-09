@@ -2025,9 +2025,9 @@ router.get('/battle/data', async (req, res) => {
       const compTotal = row.cheapestTotal || 0;
       const diff = compTotal > 0 ? +(myTotal - compTotal).toFixed(2) : null;
       const losing = diff !== null && diff > 0;
-      // 킬 프라이스 = 경쟁사 합계 - $2 - 내 배송비 (내 합계가 경쟁사보다 $2 싸게)
+      // 킬 프라이스 = 경쟁사 합계 - $1 - 내 배송비 (내 합계가 경쟁사보다 $1 싸게, 언더컷 $1 통일)
       const myShip = row.myShipping || 0;
-      const killPrice = losing ? +Math.max(0.99, compTotal - 2.00 - myShip).toFixed(2) : null;
+      const killPrice = losing ? +Math.max(0.99, compTotal - 1.00 - myShip).toFixed(2) : null;
 
       return {
         sku: row.sku,
@@ -2173,6 +2173,50 @@ router.post('/battle/kill-price', async (req, res) => {
     } else {
       res.json({ success: false, error: result.error });
     }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/battle/sourcing — 소싱기회(내가 없는데 잘 팔리는 경쟁사 상품) 목록
+//   killPricingDailyJob 이 opportunity_inbox(product_sourcing)에 저장한 것을 읽어옴
+router.get('/battle/sourcing', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    if (!db) return res.json({ items: [] });
+    const { data, error } = await db
+      .from('opportunity_inbox')
+      .select('id, title, notes, priority, status, metadata, created_at')
+      .eq('opportunity_type', 'product_sourcing')
+      .in('status', ['new', 'reviewing'])
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (error) return res.status(400).json({ error: error.message });
+    const items = (data || []).map(r => ({
+      id: r.id,
+      title: r.title,
+      sold: r.metadata?.sold || 0,
+      total: r.metadata?.total || 0,
+      price: r.metadata?.price || 0,
+      shipping: r.metadata?.shipping || 0,
+      seller: r.metadata?.seller || '',
+      url: r.metadata?.url || '',
+      priority: r.priority,
+      createdAt: r.created_at,
+    })).sort((a, b) => b.sold - a.sold);
+    res.json({ items });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/battle/sourcing/refresh — eBay 라이브로 소싱기회 즉시 재스캔 + 저장
+router.post('/battle/sourcing/refresh', async (req, res) => {
+  try {
+    const { runSourcingScan } = require('../../jobs/killPricingDailyJob');
+    const result = await runSourcingScan();
+    res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

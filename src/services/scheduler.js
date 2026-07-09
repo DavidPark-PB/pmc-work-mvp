@@ -127,6 +127,16 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // 매일 오전 9시 정각 — 킬프라이스 데일리 (경쟁사 총액 대비 킬프라이스 추천 + 소싱기회, 텔레그램 푸시)
+  cron.schedule('0 9 * * *', async () => {
+    try {
+      const { runKillPricingDaily } = require('../jobs/killPricingDailyJob');
+      await runKillPricingDaily();
+    } catch (e) {
+      console.error('[KillPricingDailyJob] error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // 매일 오전 9시 5분 — B2B 미발송 수량 admin 알림
   cron.schedule('5 9 * * *', async () => {
     try {
