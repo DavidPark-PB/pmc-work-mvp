@@ -33,6 +33,10 @@ const TOP_CANDIDATES         = 5;     // AI에 넘길 최대 후보 수
 const MAX_TELEGRAM_PER_RUN   = 10;    // 한 번에 텔레그램 요청 최대 건수
 const CLAUDE_MODEL           = 'claude-sonnet-4-5';
 
+// 하루 API 호출 상한 (사장님 지침 2026-07-09) — 폭발 방지.
+// env AIMATCHER_MAX_CALLS_PER_RUN 로 override 가능.
+const DEFAULT_MAX_CALLS_PER_RUN = 300;
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,7 +178,13 @@ async function matchWithAI(compListing, ourProducts) {
  * @param {boolean} [opts.dryRun]     - DB 쓰기 없이 결과만 확인
  * @returns {{ processed, autoApproved, pending, skipped, errors }}
  */
-async function runMatcher({ hours = 25, silent = false, dryRun = false } = {}) {
+async function runMatcher({ hours = 25, silent = false, dryRun = false, maxCalls } = {}) {
+  const MAX_CALLS = Math.max(1,
+    parseInt(maxCalls) ||
+    parseInt(process.env.AIMATCHER_MAX_CALLS_PER_RUN) ||
+    DEFAULT_MAX_CALLS_PER_RUN
+  );
+  let callsUsed = 0;
   const db = getClient();
   console.log(`[Matcher] ===== AI 매처 시작 (hours=${hours}, dryRun=${dryRun}) =====`);
 
@@ -250,8 +260,14 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false } = {}) {
   const pendingRows = [];   // 텔레그램 승인 요청 대기 목록
 
   for (const listing of unmatched) {
+    // 예산 상한 도달 → 남은 리스팅은 다음 실행으로 이월
+    if (callsUsed >= MAX_CALLS) {
+      console.log(`[Matcher] 예산 상한 (${MAX_CALLS}) 도달 — ${unmatched.length - unmatched.indexOf(listing)}건 이월`);
+      break;
+    }
     let matchResult;
     try {
+      callsUsed++;
       matchResult = await matchWithAI(listing, ourProducts);
     } catch (e) {
       console.error(`[Matcher] matchWithAI 예외 (id=${listing.id}):`, e.message);
@@ -361,6 +377,8 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false } = {}) {
 
   const summary = {
     processed:    unmatched.length,
+    aiCallsUsed:  callsUsed,
+    aiCallsLimit: MAX_CALLS,
     autoApproved,
     pending,
     skipped,

@@ -1321,12 +1321,29 @@ class EbayAPI {
    * Finding API로 셀러 전체 리스팅 수집 (rate limit 관대, 무료)
    * findItemsBySeller — 페이지당 100개, 최대 100페이지 (총 10,000개)
    */
-  async findSellerListingsByFindingAPI(sellerName, maxPages = 10) {
+  /**
+   * Finding API 로 특정 셀러의 리스팅 페이지 범위를 가져온다.
+   * 대형 셀러 청크 처리를 위해 startPage 파라미터를 지원한다.
+   *
+   * @param {string} sellerName
+   * @param {number|object} [pagesOrOpts=10] - 숫자면 maxPages (레거시), 객체면 {startPage, maxPages}
+   * @returns {Promise<{items: Array, lastPage: number, totalPages: number, hasMore: boolean}>|Promise<Array>}
+   *   - 숫자 인자 (레거시): items 배열만 반환
+   *   - 객체 인자: {items, lastPage, totalPages, hasMore} 반환
+   */
+  async findSellerListingsByFindingAPI(sellerName, pagesOrOpts = 10) {
+    const isChunkMode = typeof pagesOrOpts === 'object' && pagesOrOpts !== null;
+    const startPage = isChunkMode ? Math.max(1, parseInt(pagesOrOpts.startPage) || 1) : 1;
+    const maxPages  = isChunkMode ? Math.max(1, parseInt(pagesOrOpts.maxPages)  || 10) : (pagesOrOpts || 10);
+    const endPage   = startPage + maxPages - 1;
+
     const allItems = [];
     const seenIds = new Set();
     const baseUrl = 'https://svcs.ebay.com/services/search/FindingService/v1';
+    let observedTotalPages = 0;
+    let lastPage = startPage - 1;
 
-    for (let page = 1; page <= maxPages; page++) {
+    for (let page = startPage; page <= endPage; page++) {
       try {
         const resp = await axios.get(baseUrl, {
           params: {
@@ -1373,6 +1390,8 @@ class EbayAPI {
         }
 
         const totalPages = parseInt(result.paginationOutput?.[0]?.totalPages?.[0]) || 1;
+        observedTotalPages = totalPages;
+        lastPage = page;
         if (page >= totalPages) break;
 
         // rate limit 방지
@@ -1383,7 +1402,16 @@ class EbayAPI {
       }
     }
 
-    console.log(`[findSellerListingsByFindingAPI] ${sellerName}: ${allItems.length} items`);
+    console.log(`[findSellerListingsByFindingAPI] ${sellerName}: ${allItems.length} items (pages ${startPage}~${lastPage} / total ${observedTotalPages})`);
+
+    if (isChunkMode) {
+      return {
+        items: allItems,
+        lastPage,
+        totalPages: observedTotalPages,
+        hasMore: lastPage < observedTotalPages,
+      };
+    }
     return allItems;
   }
 

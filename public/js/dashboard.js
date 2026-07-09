@@ -3358,6 +3358,50 @@ async function loadBattleSalesStats() {
   }
 }
 
+async function loadBattleScanStatus() {
+  try {
+    var r = await fetch(API + '/battle/scan-status');
+    var d = await r.json();
+    var el = document.getElementById('battleScanStatus');
+    var body = document.getElementById('battleScanStatusBody');
+    if (!el || !body || !d.success) { if (el) el.style.display = 'none'; return; }
+    if (!d.sellers || d.sellers.length === 0) { el.style.display = 'none'; return; }
+
+    var scheduled = (d.sellers || []).filter(function(s){ return s.scheduledToday; });
+    var inProgress = (d.sellers || []).filter(function(s){ return s.inProgress; });
+    var tierBadge = function(t) {
+      var colors = { F:'#b71c1c', D:'#e65100', C:'#f9a825', B:'#2e7d32', A:'#1565c0' };
+      return '<span style="background:' + (colors[t]||'#666') + ';color:#fff;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700">' + t + '</span>';
+    };
+    var byTier = d.byTier || {};
+    var tierSummary = ['F','D','C','B','A'].map(function(t){ return tierBadge(t) + ' ' + (byTier[t] || 0); }).join(' · ');
+
+    var lines = [];
+    lines.push('<div style="margin-bottom:6px">등록 셀러 <strong>' + d.totalActive + '명</strong> · 오늘 처리 예정 <strong>' + d.scheduledToday + '명</strong> · 청크 진행중 <strong>' + d.inProgress + '건</strong></div>');
+    lines.push('<div style="margin-bottom:8px">' + tierSummary + '</div>');
+
+    if (scheduled.length > 0) {
+      lines.push('<div style="font-weight:600;font-size:11px;margin-top:6px;color:#004d40">▶ 오늘 크롤:</div>');
+      lines.push('<div style="font-size:11px;line-height:1.6">' + scheduled.slice(0, 10).map(function(s){
+        var info = tierBadge(s.tier) + ' ' + s.sellerId;
+        if (s.inProgress) {
+          info += ' <span style="color:#e65100">(이어받기 · offset ' + s.nextOffset + ')</span>';
+        } else if (s.daysSinceCrawl != null) {
+          info += ' <span style="color:#666">(' + s.daysSinceCrawl + '일 미크롤)</span>';
+        } else {
+          info += ' <span style="color:#666">(신규)</span>';
+        }
+        return info;
+      }).join(' · ') + '</div>');
+    }
+
+    body.innerHTML = lines.join('');
+    el.style.display = 'block';
+  } catch (e) {
+    console.warn('loadBattleScanStatus', e);
+  }
+}
+
 async function loadBattleAlerts() {
   try {
     var r = await fetch(API + '/battle/alerts');
@@ -3365,14 +3409,79 @@ async function loadBattleAlerts() {
     var el = document.getElementById('battleAlerts');
     if (!el || !d.alerts || d.alerts.length === 0) { if (el) el.style.display = 'none'; return; }
     var recent = d.alerts.slice(0, 10);
-    var icons = { ended: '⚠️', price_crash: '🔴', price_change: '📊', title_change: '⚡' };
-    el.innerHTML = '<strong>최근 알림:</strong><br>' + recent.map(function(a) {
-      var parsed = {};
-      try { parsed = JSON.parse(a.data); } catch(e) {}
-      return (icons[a.type] || '📌') + ' ' + a.message;
-    }).join('<br>');
+    var icons = {
+      ended: '⚠️',
+      price_crash: '🔴',
+      price_change: '📊',
+      title_change: '⚡',
+      raise_opportunity: '📈',
+    };
+
+    el.innerHTML =
+      '<div style="font-weight:700;font-size:13px;margin-bottom:8px">최근 알림 (' + d.alerts.length + '건, 최근 10건 표시)</div>' +
+      recent.map(function(a) {
+        var icon = icons[a.type] || '📌';
+        var img = a.imageUrl
+          ? '<img src="' + a.imageUrl + '" style="width:40px;height:40px;object-fit:cover;border-radius:4px;flex-shrink:0" onerror="this.style.display=\'none\'">'
+          : '<div style="width:40px;height:40px;background:#eee;border-radius:4px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px">' + icon + '</div>';
+
+        // 상품명 (없으면 SKU)
+        var title = a.productTitle || a.sku || '(상품 정보 없음)';
+        var titleShort = title.length > 60 ? title.slice(0, 60) + '…' : title;
+
+        // 가격 정보
+        var priceInfo = '';
+        if (a.oldPrice != null && a.newPrice != null) {
+          var arrow = a.newPrice > a.oldPrice ? '▲' : '▼';
+          var color = a.newPrice > a.oldPrice ? '#2e7d32' : '#c62828';
+          priceInfo = '<span style="color:' + color + ';font-weight:700">' + arrow + ' $' + a.oldPrice.toFixed(2) + ' → $' + a.newPrice.toFixed(2) + '</span>';
+          if (a.changePct) priceInfo += ' <span style="color:#666">(' + (a.newPrice > a.oldPrice ? '+' : '') + a.changePct + '%)</span>';
+        }
+
+        // 내 가격 vs 경쟁
+        var myInfo = '';
+        if (a.myPrice != null) {
+          var myTotal = a.myPrice + (a.myShipping || 0);
+          myInfo = ' · 내 가격 $' + a.myPrice.toFixed(2);
+          if (a.myShipping) myInfo += ' (+$' + a.myShipping.toFixed(2) + ' 배송)';
+          if (a.newPrice != null) {
+            var newCompTotal = a.newPrice;
+            var diff = +(myTotal - newCompTotal).toFixed(2);
+            var diffColor = diff > 0 ? '#c62828' : '#2e7d32';
+            var diffText = diff > 0 ? '내가 $' + diff.toFixed(2) + ' 비쌈' : '내가 $' + Math.abs(diff).toFixed(2) + ' 저렴';
+            myInfo += ' <span style="color:' + diffColor + ';font-weight:600">· ' + diffText + '</span>';
+          }
+        } else {
+          myInfo = ' <span style="color:#f57c00">· 내 SKU 매칭 없음</span>';
+        }
+
+        // 인상 제안
+        var raiseAction = '';
+        if (a.suggestedRaise && a.myItemId) {
+          raiseAction = '<button onclick="applyKillPrice(\'' + a.myItemId + '\',' + a.suggestedRaise + ',\'' + a.sku + '\')" ' +
+            'style="background:#2e7d32;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">💰 $' + a.suggestedRaise.toFixed(2) + ' 로 인상</button>';
+        }
+
+        // 링크
+        var links = '';
+        if (a.myUrl) links += '<a href="' + a.myUrl + '" target="_blank" style="color:#1976d2;font-size:11px;margin-right:8px">내 리스팅</a>';
+        if (a.competitorUrl) links += '<a href="' + a.competitorUrl + '" target="_blank" style="color:#c62828;font-size:11px">경쟁 리스팅</a>';
+
+        return (
+          '<div style="display:flex;gap:10px;padding:8px 0;border-top:1px solid #ffe0b2">' +
+            img +
+            '<div style="flex:1;min-width:0">' +
+              '<div style="font-size:12px;font-weight:600;color:#333;margin-bottom:2px">' + icon + ' ' + titleShort + ' <span style="color:#888;font-weight:400">· ' + (a.seller || '?') + '</span></div>' +
+              '<div style="font-size:12px;margin-bottom:4px">' + priceInfo + myInfo + '</div>' +
+              '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' + raiseAction + links + '</div>' +
+            '</div>' +
+          '</div>'
+        );
+      }).join('');
     el.style.display = 'block';
-  } catch (e) {}
+  } catch (e) {
+    console.error('loadBattleAlerts', e);
+  }
 }
 
 async function runCompetitorMonitor(btn) {
@@ -3401,7 +3510,7 @@ function renderBattleSourcing(items) {
   if (!body) return;
   if (countEl) countEl.textContent = '(' + (items ? items.length : 0) + ')';
   if (!items || items.length === 0) {
-    body.innerHTML = '<tr><td colspan="7" class="empty" style="color:#aaa">소싱기회 없음 — "소싱 새로고침"으로 스캔하세요</td></tr>';
+    body.innerHTML = '<tr><td colspan="8" class="empty" style="color:#aaa">소싱기회 없음 — "소싱 새로고침"으로 스캔하세요</td></tr>';
     return;
   }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
@@ -3410,11 +3519,16 @@ function renderBattleSourcing(items) {
     var gapBadge = s.crossPlatformGap
       ? ' <span style="background:#e8f5e9;color:#2e7d32;font-size:10px;padding:1px 6px;border-radius:8px">🆕 순수신규</span>'
       : (s.onShopify ? ' <span style="background:#eceff1;color:#607d8b;font-size:10px;padding:1px 6px;border-radius:8px">Shopify 有</span>' : '');
+    // 점수 배지 (상위 = 강조)
+    var score = Number(s.score || 0);
+    var scoreColor = score >= 200 ? '#c62828' : (score >= 50 ? '#e65100' : '#888');
+    var monthly = Number(s.expectedMonthlyProfit || 0);
     return '<tr>' +
-      '<td style="max-width:340px">' + esc(s.title) + gapBadge + '</td>' +
+      '<td style="max-width:320px">' + esc(s.title) + gapBadge + '</td>' +
+      '<td style="font-weight:700;color:' + scoreColor + '" title="판매수 × 예상마진 × 미개척가중">' + score.toFixed(0) + '</td>' +
       '<td style="font-weight:700;color:#6a1b9a">' + (s.sold || 0) + '</td>' +
+      '<td title="예상 월수익 = 판매수 × 판매가×30%">$' + monthly.toFixed(0) + '</td>' +
       '<td>$' + Number(s.price || 0).toFixed(2) + '</td>' +
-      '<td>$' + Number(s.shipping || 0).toFixed(2) + '</td>' +
       '<td style="font-weight:600">$' + Number(s.total || 0).toFixed(2) + '</td>' +
       '<td style="font-size:11px;color:#888">' + esc(s.seller) + '</td>' +
       '<td>' + link + '</td>' +
@@ -3501,6 +3615,7 @@ async function loadBattleAggressive(btn) {
 }
 
 async function loadBattle() {
+  loadBattleScanStatus();
   loadBattleAlerts();
   loadBattleSourcing();
   loadBattleWhitespace();

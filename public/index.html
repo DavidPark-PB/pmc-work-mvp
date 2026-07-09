@@ -1758,6 +1758,11 @@
       <div class="stats" id="battleSalesStats" style="margin-bottom:12px">
         <div class="stat-card"><div class="label">매출 로딩 중...</div></div>
       </div>
+      <!-- 오늘의 스캔 상태 배너 (티어 로테이션 · 청크 진행률) -->
+      <div id="battleScanStatus" class="card" style="margin-bottom:12px;border-left:4px solid #37474f;padding:10px 14px;display:none">
+        <div style="font-weight:700;font-size:13px;color:#263238;margin-bottom:6px">📅 오늘의 스캔 상태</div>
+        <div id="battleScanStatusBody" style="font-size:12px;color:#37474f"></div>
+      </div>
       <!-- eBay 가격 신선도 배너 -->
       <div id="battleFreshness" style="display:none;padding:8px 14px;border-radius:8px;margin-bottom:10px;font-size:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"></div>
       <!-- 경쟁 요약 카드 -->
@@ -1857,9 +1862,16 @@
         <div style="overflow-x:auto">
           <table class="data-table">
             <thead><tr>
-              <th>상품</th><th>판매수</th><th>가격</th><th>배송</th><th>총액</th><th>셀러</th><th>링크</th>
+              <th>상품</th>
+              <th title="판매수 × 예상마진 × (1 - 카테고리 커버율)">점수</th>
+              <th>판매수</th>
+              <th title="예상 월수익 (USD)">월수익</th>
+              <th>가격</th>
+              <th>총액</th>
+              <th>셀러</th>
+              <th>링크</th>
             </tr></thead>
-            <tbody id="battleSourcingBody"><tr><td colspan="7" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
+            <tbody id="battleSourcingBody"><tr><td colspan="8" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
           </table>
         </div>
       </div>

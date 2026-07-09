@@ -2180,6 +2180,8 @@ router.post('/battle/kill-price', async (req, res) => {
 
 // GET /api/battle/sourcing — 소싱기회(내가 없는데 잘 팔리는 경쟁사 상품) 목록
 //   killPricingDailyJob 이 opportunity_inbox(product_sourcing)에 저장한 것을 읽어옴
+//   점수화 (2026-07-09 사장님 지침): 판매수 × 예상마진 × (1 - 카테고리 커버율)
+//     - 판매 많음 + 마진 좋음 + 아무도 안 파는 상품 = 강력 후보
 router.get('/battle/sourcing', async (req, res) => {
   try {
     const { getClient } = require('../../db/supabaseClient');
@@ -2191,20 +2193,47 @@ router.get('/battle/sourcing', async (req, res) => {
       .eq('opportunity_type', 'product_sourcing')
       .in('status', ['new', 'reviewing'])
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(100);
     if (error) return res.status(400).json({ error: error.message });
-    const items = (data || []).map(r => ({
-      id: r.id,
-      title: r.title,
-      sold: r.metadata?.sold || 0,
-      total: r.metadata?.total || 0,
-      price: r.metadata?.price || 0,
-      shipping: r.metadata?.shipping || 0,
-      seller: r.metadata?.seller || '',
-      url: r.metadata?.url || '',
-      priority: r.priority,
-      createdAt: r.created_at,
-    })).sort((a, b) => b.sold - a.sold);
+
+    // 점수 계산 파라미터
+    // 예상 마진율: 판매가 - $2 배송 - 15% eBay fee - 원가30% 추정 = 대략 (price × 0.30) 예상 KRW 수익
+    // 커버율: metadata.category_coverage_ratio (0~1) 있으면 사용, 없으면 0.5 로 가정 (중간)
+    const items = (data || []).map(r => {
+      const md = r.metadata || {};
+      const sold = Number(md.sold) || 0;
+      const price = Number(md.price) || 0;
+      const shipping = Number(md.shipping) || 0;
+      // 예상 개당 수익 (USD) — 판매가 30%
+      const expectedMarginUsd = Math.max(0, price * 0.30);
+      // 카테고리 커버율 (0~1, 낮을수록 미개척)
+      const coverage = md.category_coverage_ratio != null ? Math.min(1, Math.max(0, Number(md.category_coverage_ratio))) : 0.5;
+      const uncoveredFactor = 1 - coverage;
+      // 예상 월 매출 (판매수 = 최근 30일 판매 근사) × 예상 마진 × 미개척 가중
+      const score = +(sold * expectedMarginUsd * uncoveredFactor).toFixed(2);
+      // 예상 월수익 (USD) — 표시용
+      const expectedMonthlyProfit = +(sold * expectedMarginUsd).toFixed(2);
+      return {
+        id: r.id,
+        title: r.title,
+        sold,
+        total: Number(md.total) || 0,
+        price,
+        shipping,
+        seller: md.seller || '',
+        url: md.url || '',
+        crossPlatformGap: !!md.cross_platform_gap,
+        onShopify: !!md.on_shopify,
+        priority: r.priority,
+        createdAt: r.created_at,
+        // 신규
+        score,
+        expectedMonthlyProfit,
+        coverageRatio: coverage,
+        expectedMarginUsd: +expectedMarginUsd.toFixed(2),
+      };
+    }).sort((a, b) => b.score - a.score); // 점수 내림차순
+
     res.json({ items });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -2217,6 +2246,87 @@ router.post('/battle/sourcing/refresh', async (req, res) => {
     const { runSourcingScan } = require('../../jobs/killPricingDailyJob');
     const result = await runSourcingScan();
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/battle/aggressive-sellers — 최근 가격을 자주·크게 내리는 공격적 셀러 랭킹
+//   competitor_price_history(가격이력)에서 인하(change_pct<0) 집계
+router.get('/battle/aggressive-sellers', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    if (!db) return res.json({ sellers: [] });
+    const days = Math.min(parseInt(req.query.days) || 14, 90);
+    const since = new Date(Date.now() - days * 86400000).toISOString();
+    const { data, error } = await db
+      .from('competitor_price_history')
+      .select('seller_id, change_pct, changed_at')
+      .gte('changed_at', since)
+      .lt('change_pct', 0)
+      .limit(5000);
+    if (error) return res.status(400).json({ error: error.message });
+    const agg = {};
+    (data || []).forEach(r => {
+      const s = r.seller_id || 'unknown';
+      if (!agg[s]) agg[s] = { seller_id: s, drops: 0, sumPct: 0, maxDrop: 0 };
+      agg[s].drops += 1;
+      agg[s].sumPct += r.change_pct;
+      agg[s].maxDrop = Math.min(agg[s].maxDrop, r.change_pct);
+    });
+    const sellers = Object.values(agg).map(a => ({
+      seller_id: a.seller_id,
+      drops: a.drops,
+      avgDropPct: +(a.sumPct / a.drops).toFixed(1),
+      maxDropPct: +a.maxDrop.toFixed(1),
+    })).sort((a, b) => b.drops - a.drops).slice(0, 30);
+    res.json({ days, sellers });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/battle/whitespace — 경쟁사는 많이 파는데 내가 거의 없는 카테고리(키워드)
+router.get('/battle/whitespace', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    if (!db) return res.json({ categories: [] });
+    const CATS = {
+      'Pokemon/TCG': ['pokemon', 'yugioh', 'tcg', 'booster', 'one piece card', 'digimon', 'nikke'],
+      'K-pop': ['bts', 'bangtan', 'blackpink', 'kpop', 'seventeen', 'nct', 'twice', 'photocard', 'album'],
+      'DJI/드론/카메라': ['dji', 'drone', 'osmo', 'gimbal', 'mavic', 'avata', 'neo'],
+      '완구/피규어': ['transformer', 'robot', 'figure', 'lego', 'toy', 'teenieping', 'plush', 'pinkfong'],
+      'K-뷰티': ['medicube', 'cream', 'serum', 'mask', 'cosmetic', 'skin', 'beauty'],
+      '전자/가전': ['yamaha', 'projector', 'juicer', 'milwaukee', 'saxophone', 'blu-ray'],
+    };
+    const catOf = (t) => {
+      const tl = (t || '').toLowerCase();
+      for (const [c, ks] of Object.entries(CATS)) if (ks.some(k => tl.includes(k))) return c;
+      return '기타';
+    };
+    // 매핑된 경쟁사 아이템(내가 커버 중) 집합
+    const { data: mapped } = await db.from('competitor_prices').select('competitor_id').not('sku', 'is', null);
+    const mappedSet = new Set((mapped || []).map(m => String(m.competitor_id)));
+    // 경쟁사 리스팅 (판매수 있는 것 위주)
+    const { data: listings } = await db.from('competitor_listings')
+      .select('ebay_item_id, title, quantity_sold, price, shipping, status')
+      .eq('status', 'active').limit(8000);
+    const stat = {};
+    (listings || []).forEach(l => {
+      const c = catOf(l.title);
+      if (!stat[c]) stat[c] = { category: c, listings: 0, totalSold: 0, mapped: 0, unmappedSold: 0 };
+      stat[c].listings += 1;
+      const sold = l.quantity_sold || 0;
+      stat[c].totalSold += sold;
+      if (mappedSet.has(String(l.ebay_item_id))) stat[c].mapped += 1;
+      else stat[c].unmappedSold += sold;
+    });
+    const categories = Object.values(stat)
+      .map(s => ({ ...s, coverPct: s.listings ? +(100 * s.mapped / s.listings).toFixed(0) : 0 }))
+      .sort((a, b) => b.unmappedSold - a.unmappedSold);
+    res.json({ categories });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2674,18 +2784,163 @@ router.post('/battle/monitor', async (req, res) => {
   }
 });
 
-// GET /api/battle/alerts — 최근 알림 조회
+// GET /api/battle/scan-status — 티어 스케줄 + 청크 진행 상태 (사장님 지침 2026-07-09)
+router.get('/battle/scan-status', async (req, res) => {
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    let { data: sellers } = await db
+      .from('competitor_sellers')
+      .select('seller_id, seller_name, active, last_crawled_at, listing_count, crawl_tier, next_crawl_offset, crawl_chunk_size, crawl_cycle_started_at')
+      .eq('active', true)
+      .order('last_crawled_at', { ascending: true, nullsFirst: true });
+    if (!sellers || sellers.length === 0) {
+      // migration 070 미적용
+      const { data: legacy } = await db.from('competitor_sellers')
+        .select('seller_id, seller_name, active, last_crawled_at, listing_count')
+        .eq('active', true)
+        .order('last_crawled_at', { ascending: true, nullsFirst: true });
+      sellers = (legacy || []).map(s => ({ ...s, crawl_tier: 'B', next_crawl_offset: 0, crawl_chunk_size: 500 }));
+    }
+
+    // selectTodaysSellers 재사용 — 오늘 크롤 대상
+    let todaysTargets = [];
+    try {
+      const { selectTodaysSellers } = require('../../services/competitorCrawler');
+      todaysTargets = selectTodaysSellers(sellers);
+    } catch (e) {
+      console.warn('[scan-status] selectTodaysSellers 실패:', e.message);
+    }
+    const todayIds = new Set(todaysTargets.map(s => s.seller_id));
+
+    const daysAgo = (iso) => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null;
+
+    const enriched = sellers.map(s => {
+      const offset = parseInt(s.next_crawl_offset) || 0;
+      const chunk = parseInt(s.crawl_chunk_size) || 500;
+      const total = parseInt(s.listing_count) || 0;
+      const progress = offset > 0 && total > 0 ? Math.min(100, Math.round((offset * chunk / total) * 100 / (100 / 100))) : null;
+      return {
+        sellerId: s.seller_id,
+        sellerName: s.seller_name || s.seller_id,
+        tier: s.crawl_tier || 'B',
+        listingCount: total,
+        lastCrawledAt: s.last_crawled_at,
+        daysSinceCrawl: daysAgo(s.last_crawled_at),
+        nextOffset: offset,
+        chunkSize: chunk,
+        cycleStartedAt: s.crawl_cycle_started_at,
+        inProgress: offset > 0,
+        progressPct: progress,
+        scheduledToday: todayIds.has(s.seller_id),
+      };
+    });
+
+    res.json({
+      success: true,
+      totalActive: sellers.length,
+      scheduledToday: todaysTargets.length,
+      inProgress: enriched.filter(e => e.inProgress).length,
+      byTier: {
+        F: enriched.filter(e => e.tier === 'F').length,
+        D: enriched.filter(e => e.tier === 'D').length,
+        C: enriched.filter(e => e.tier === 'C').length,
+        B: enriched.filter(e => e.tier === 'B').length,
+        A: enriched.filter(e => e.tier === 'A').length,
+      },
+      sellers: enriched,
+    });
+  } catch (e) {
+    console.error('[battle/scan-status]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/battle/alerts — 최근 알림 조회 + 상품/가격/이미지 조인
 router.get('/battle/alerts', async (req, res) => {
   try {
     const { getClient } = require('../../db/supabaseClient');
     const db = getClient();
-    const { data } = await db.from('competitor_alerts')
+    const { data: rawAlerts } = await db.from('competitor_alerts')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(50);
-    res.json({ success: true, alerts: data || [] });
+
+    if (!rawAlerts || rawAlerts.length === 0) {
+      return res.json({ success: true, alerts: [] });
+    }
+
+    // 조인용 키 집합
+    const skus = [...new Set(rawAlerts.map(a => a.sku).filter(Boolean))];
+    const competitorIds = [...new Set(rawAlerts.map(a => a.competitor_id).filter(Boolean))];
+
+    // 내 상품 정보 (ebay_products) — title, 가격, 이미지, 링크
+    const productBySku = {};
+    if (skus.length > 0) {
+      const { data: products } = await db.from('ebay_products')
+        .select('sku, item_id, title, price_usd, shipping_usd, image_url')
+        .in('sku', skus);
+      (products || []).forEach(p => { productBySku[p.sku] = p; });
+    }
+
+    // 경쟁사 리스팅 (competitor_prices) — 경쟁 URL, 이미지
+    const competitorByKey = {};
+    if (competitorIds.length > 0) {
+      const { data: competitors } = await db.from('competitor_prices')
+        .select('sku, competitor_id, competitor_price, competitor_shipping, competitor_url, title, seller_id')
+        .in('competitor_id', competitorIds);
+      (competitors || []).forEach(c => {
+        competitorByKey[`${c.sku}::${c.competitor_id}`] = c;
+      });
+    }
+
+    // 알림 enrich
+    const alerts = rawAlerts.map(a => {
+      const p = productBySku[a.sku] || null;
+      const c = competitorByKey[`${a.sku}::${a.competitor_id}`] || null;
+      let alertData = {};
+      try { alertData = JSON.parse(a.data || '{}'); } catch (e) {}
+
+      // 마진 회복 기회 = 경쟁사 인상 후 가격에서 -$0.50 정도로 우리도 인상
+      const oldPrice = Number(alertData.oldPrice) || null;
+      const newPrice = Number(alertData.newPrice) || null;
+      const myPrice = p ? Number(p.price_usd) || null : null;
+      const myShipping = p ? Number(p.shipping_usd) || 0 : 0;
+
+      let suggestedRaise = null;
+      if (a.type === 'raise_opportunity' && newPrice && myPrice) {
+        // 새 경쟁가 - $0.50 로 인상 제안, 단 현재 내 가격보다 낮으면 제안 X
+        const target = +(newPrice - 0.50).toFixed(2);
+        if (target > myPrice) suggestedRaise = target;
+      }
+
+      return {
+        id: a.id,
+        type: a.type,
+        sku: a.sku,
+        seller: a.seller_id,
+        competitorId: a.competitor_id,
+        createdAt: a.created_at,
+        // 원본 message (fallback)
+        message: a.message,
+        // Enriched
+        productTitle: p?.title || c?.title || alertData.title || null,
+        myItemId: p?.item_id || null,
+        myPrice,
+        myShipping,
+        myUrl: p?.item_id ? `https://www.ebay.com/itm/${p.item_id}` : null,
+        imageUrl: p?.image_url || null,
+        oldPrice,
+        newPrice,
+        changePct: alertData.changePct || null,
+        competitorUrl: c?.competitor_url || (a.competitor_id ? `https://www.ebay.com/itm/${a.competitor_id}` : null),
+        suggestedRaise,
+      };
+    });
+
+    res.json({ success: true, alerts });
   } catch (e) {
-    // Table might not exist
+    console.error('[battle/alerts]', e.message);
     res.json({ success: true, alerts: [] });
   }
 });
