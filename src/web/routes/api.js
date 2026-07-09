@@ -2444,6 +2444,22 @@ router.post('/battle/add-competitor', async (req, res) => {
   }
 });
 
+// POST /api/battle/refresh-my-shipping — 내 리스팅 shipping_usd 배치 갱신 (수동 트리거)
+//   사장님 지침 (2026-07-09): 배송비 오류 상품 즉시 갱신.
+//   Body: { maxItems?: number, staleDays?: number }  기본 500 / 14일
+router.post('/battle/refresh-my-shipping', async (req, res) => {
+  try {
+    const { maxItems, staleDays } = req.body || {};
+    const { runRefreshMyListingsChunk } = require('../../services/myListingRefresher');
+    const r = await runRefreshMyListingsChunk({ maxItems, staleDays });
+    battleCache = null; battleCacheTime = 0;
+    res.json({ success: true, ...r });
+  } catch (e) {
+    console.error('[battle/refresh-my-shipping]', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/battle/listing/:itemId/refresh — 내 eBay 리스팅 즉시 Browse API 갱신
 router.post('/battle/listing/:itemId/refresh', async (req, res) => {
   try {

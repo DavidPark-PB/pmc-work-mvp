@@ -1146,13 +1146,56 @@ class EbayAPI {
    * Browse API로 경쟁사 상품 조회 (Shopping API 실패 시 fallback)
    * GET https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id
    */
+  /**
+   * shippingOptions 배열에서 실제 판매되는 배송비 선택.
+   *
+   * 우선순위 (2026-07-09 사장님 지침):
+   *   1. FIXED 옵션 중 값이 0 초과인 것들의 최저값 (실제 판매되는 옵션)
+   *   2. CALCULATED 옵션이 있고 계산된 값이 0 초과면 그 값 (우편번호 헤더로 계산됨)
+   *   3. 모두 0 or 없음 → 0 반환 (진짜 free shipping)
+   *
+   * 이전엔 shippingOptions[0] 만 사용 → 첫 번째가 free 프로모션이면
+   * 실제 판매 옵션 (Standard $27) 을 놓쳤음.
+   */
+  _pickShippingCost(shippingOptions) {
+    if (!Array.isArray(shippingOptions) || shippingOptions.length === 0) return 0;
+    const opts = shippingOptions.map(o => ({
+      type: String(o.type || '').toUpperCase(),
+      cost: parseFloat(o.shippingCost?.value) || 0,
+    }));
+    const fixedPaid = opts.filter(o => o.type === 'FIXED' && o.cost > 0);
+    if (fixedPaid.length > 0) {
+      return Math.min(...fixedPaid.map(o => o.cost));
+    }
+    const calcPaid = opts.filter(o => o.type === 'CALCULATED' && o.cost > 0);
+    if (calcPaid.length > 0) {
+      return Math.min(...calcPaid.map(o => o.cost));
+    }
+    // 모든 유형에서 값 있는 것 fallback
+    const anyPaid = opts.filter(o => o.cost > 0);
+    if (anyPaid.length > 0) {
+      return Math.min(...anyPaid.map(o => o.cost));
+    }
+    return 0; // 진짜 free shipping
+  }
+
   async _fetchViaBrowseAPI(itemId) {
     const appToken = await this.getApplicationToken();
     const url = `https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id=${itemId}`;
 
+    // ── 배송비 정확도 향상 (2026-07-09 사장님 지침) ─────────────────────────
+    // eBay 리스팅 대부분이 CALCULATED shipping (구매자 우편번호 기반 계산).
+    // 우편번호 없이 호출하면 shippingOptions[].shippingCost.value = 0 반환 →
+    // 시스템이 "배송비 무료" 로 오판 → 킬프라이스 잘못 산출.
+    //
+    // X-EBAY-C-ENDUSERCTX 헤더로 미국 대표 우편번호 (19406 Pennsylvania,
+    // 국제 배송 계산 중간값) 를 전달하면 실제 계산된 배송비가 반환됨.
+    // env EBAY_BUYER_ZIP 으로 override 가능.
+    const ctxZip = process.env.EBAY_BUYER_ZIP || '19406';
     const headers = {
       'Authorization': `Bearer ${appToken}`,
       'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+      'X-EBAY-C-ENDUSERCTX': `contextualLocation=country=US,zip=${ctxZip}`,
     };
 
     let item;          // 대표 변형 (single 이거나 item group 의 첫 번째)
@@ -1223,13 +1266,28 @@ class EbayAPI {
     if (quantityAvailable === 0) status = 'out_of_stock';
     // ended 상태는 Browse API 가 404 로 반환하므로 catch 단계에서 처리됨 (여기 도달 안 함)
 
+    // ── shippingOptions 스마트 선택 (2026-07-09 사장님 지침) ─────────────────
+    // 첫 번째 옵션이 아니라 실제 판매되는 값. 우선순위:
+    //   (1) FIXED type 이고 shippingCost.value > 0 → 그 중 최저
+    //   (2) CALCULATED type 이고 우편번호 헤더로 값이 왔으면 → 그 값
+    //   (3) 모두 0 이면 진짜 free shipping (또는 API 가 계산 못 함)
+    // 실제 판매되는 옵션은 대부분 배열 안에 있음. 배송 무료 리스팅도 감지.
+    const shippingCost = this._pickShippingCost(item.shippingOptions);
+
     return {
       itemId: item.legacyItemId || itemId,
       title: item.title || '',
       description: item.description || item.shortDescription || '',
       price: parseFloat(item.price?.value) || priceMin,
       currency: item.price?.currency || 'USD',
-      shippingCost: parseFloat(item.shippingOptions?.[0]?.shippingCost?.value) || 0,
+      shippingCost,
+      // 감사/디버깅용 raw shipping 데이터
+      shippingOptionsRaw: Array.isArray(item.shippingOptions) ? item.shippingOptions.map(o => ({
+        type: o.type || null,
+        cost: parseFloat(o.shippingCost?.value) || 0,
+        currency: o.shippingCost?.currency || 'USD',
+        service: o.shippingCarrierCode || o.shippingServiceCode || null,
+      })) : [],
       quantitySold: parseInt(item.estimatedAvailabilities?.[0]?.soldQuantity) || 0,
       quantityAvailable,
       // 신규: 변형 정보
@@ -1297,7 +1355,7 @@ class EbayAPI {
                 itemId: id,
                 title: item.title || '',
                 price: parseFloat(item.price?.value) || 0,
-                shipping: parseFloat(item.shippingOptions?.[0]?.shippingCost?.value) || 0,
+                shipping: this._pickShippingCost(item.shippingOptions),
                 seller: sellerName,
               });
             }
