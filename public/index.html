@@ -675,7 +675,7 @@
     <div class="menu-item ops-menu" data-page="opportunity-inbox" style="color:#ce93d8;font-weight:600">💡 후보 Inbox</div>
     <div class="menu-item ops-menu" data-page="ops-products" style="color:#81d4fa;font-weight:600">상품 검색/관리</div>
     <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">재고 관리</div>
-    <div class="menu-item ops-menu" data-page="ops-pricing" style="color:#81d4fa;font-weight:600">가격 관리</div>
+    <div class="menu-item ops-menu" data-page="ops-pricing" style="color:#81d4fa;font-weight:600">SKU 원가·판매가 편집</div>
     <div class="menu-item ops-menu" data-page="ops-profit" style="color:#81d4fa;font-weight:600">수익 분석</div>
     <div class="menu-item ops-menu" data-page="ops-logs" style="color:#81d4fa;font-weight:600">자동화 로그</div>
     <!-- WMS Phase 1 — admin 전용 -->
@@ -1749,56 +1749,29 @@
 
     <!-- ===== 전투 상황판 페이지 ===== -->
     <div id="page-battle" class="page">
+      <!-- ══════════════════════════════════════════════════════ -->
+      <!-- 1. 전황 파악 : 매출 / 신선도 / 경쟁 요약 / 알림 -->
+      <!-- ══════════════════════════════════════════════════════ -->
       <!-- 플랫폼별 매출 카드 -->
       <div class="stats" id="battleSalesStats" style="margin-bottom:12px">
         <div class="stat-card"><div class="label">매출 로딩 중...</div></div>
       </div>
-      <!-- 마진 계산기 -->
-      <div class="card" style="margin-bottom:16px;border-left:4px solid #7c4dff">
-        <div class="card-header" style="margin-bottom:12px">
-          <h3 style="font-size:15px;font-weight:700;color:#1a1a2e">마진 계산기 <span style="font-size:11px;color:#7c4dff;font-weight:400">매입가 → 전 플랫폼 판매가 자동 계산</span></h3>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px">
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">매입가 (KRW) *</label>
-            <input type="number" id="mcPurchasePrice" placeholder="10000" oninput="calculateMargins()"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">무게 (kg)</label>
-            <input type="number" id="mcWeight" step="0.01" placeholder="0.5" oninput="calculateMargins()"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">목표 마진 (%)</label>
-            <input type="number" id="mcTargetMargin" value="30" step="1" oninput="calculateMargins()"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 가격 (USD)</label>
-            <input type="number" id="mcCompPrice" step="0.01" placeholder="15.00" oninput="calculateMargins()"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-          <div>
-            <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 배송비 (USD)</label>
-            <input type="number" id="mcCompShipping" step="0.01" placeholder="3.90" oninput="calculateMargins()"
-                   style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
-          </div>
-        </div>
-        <div id="mcResult" style="display:none"></div>
-      </div>
-
       <!-- eBay 가격 신선도 배너 -->
       <div id="battleFreshness" style="display:none;padding:8px 14px;border-radius:8px;margin-bottom:10px;font-size:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"></div>
-
       <!-- 경쟁 요약 카드 -->
       <div class="stats battle-stats" id="battleStats">
         <div class="stat-card"><div class="label">로딩 중...</div></div>
       </div>
+      <!-- 알림 배너 -->
+      <div id="battleAlerts" style="display:none;margin:8px 16px;padding:10px 16px;background:#fff3e0;border-left:4px solid #ff6f00;border-radius:4px;font-size:12px"></div>
 
-      <!-- 필터/컨트롤 바 -->
-      <div class="card" style="margin-bottom:16px">
+      <!-- ══════════════════════════════════════════════════════ -->
+      <!-- 2. 즉시 대응 (KILL) : 필터 → 전투 테이블 → 킬프라이스 -->
+      <!-- ══════════════════════════════════════════════════════ -->
+      <!-- 슬림 필터/컨트롤 바 (액션 버튼 5개는 하단 도구로 이동) -->
+      <div class="card" style="margin-bottom:16px;border-left:4px solid #e53935">
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12px;color:#c62828;font-weight:700">⚔️ 즉시 대응</span>
           <select id="battleFilter" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px">
             <option value="all">전체 상품</option>
             <option value="losing">지고 있는 상품 (Target)</option>
@@ -1808,31 +1781,55 @@
           <select id="battleSellerFilter" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px">
             <option value="">전체 셀러</option>
           </select>
-          <button onclick="battleRefreshSellers()" id="battleRefreshSellersBtn" style="background:#5c6bc0;color:#fff;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">셀러 정보 업데이트</button>
-          <button onclick="showSellerScanModal()" style="background:#d84315;color:#fff;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">🎯 셀러 스캔</button>
-          <button onclick="showSellerManagerModal()" style="background:#2e7d32;color:#fff;border:none;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">👥 셀러 관리</button>
           <input type="text" id="battleSearch" placeholder="SKU 또는 상품명 검색..."
                  style="flex:1;padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;min-width:200px">
           <button class="refresh-btn" id="battleRefreshBtn" style="background:#e53935;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
             실시간 새로고침
           </button>
-          <button onclick="battleImportCompetitors(this)"
-                  style="background:#1565c0;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
-            📥 경쟁사 가져오기
-          </button>
-          <button onclick="runCompetitorMonitor(this)"
-                  style="background:#ff6f00;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
-            🔍 경쟁사 변동 체크
-          </button>
         </div>
       </div>
-      <!-- 알림 배너 -->
-      <div id="battleAlerts" style="display:none;margin:8px 16px;padding:10px 16px;background:#fff3e0;border-left:4px solid #ff6f00;border-radius:4px;font-size:12px"></div>
 
-      <!-- 자동 리프라이싱 패널 -->
-      <div class="card" style="margin-bottom:16px;border-left:4px solid #ff9800">
+      <!-- 가격 전투 현황 (메인 워크벤치) -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="font-size:15px;font-weight:600">가격 전투 현황 <span id="battleCount" style="color:#888;font-weight:400;font-size:12px"></span></h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="battleSort" style="padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px">
+              <option value="diff-desc">차이 큰 순</option>
+              <option value="diff-asc">차이 작은 순</option>
+              <option value="comp-price">경쟁사 가격순</option>
+              <option value="my-price">내 가격순</option>
+              <option value="comp-sold">경쟁사 판매량순</option>
+            </select>
+            <button class="kill-price-btn" id="battleKillAllBtn" style="display:none">일괄 킬프라이스</button>
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:50px"></th>
+                <th>상품</th>
+                <th style="text-align:center">내 가격<br><small style="color:#888">(+배송)</small></th>
+                <th style="text-align:center">경쟁사 가격 (최대 3명)<br><small style="color:#888">▼패배 ▲승리 🔗링크</small></th>
+                <th style="text-align:center">차이<br><small style="color:#888">(최저가)</small></th>
+                <th style="text-align:center">킬 프라이스</th>
+              </tr>
+            </thead>
+            <tbody id="battleTable">
+              <tr><td colspan="6" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
+          <div id="battlePagination"></div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════════ -->
+      <!-- 3. 자동화 : 자동 리프라이싱 -->
+      <!-- ══════════════════════════════════════════════════════ -->
+      <div class="card" style="margin-top:16px;margin-bottom:16px;border-left:4px solid #ff9800">
         <div class="card-header">
-          <h3 style="font-size:15px;font-weight:600;color:#e65100">자동 리프라이싱</h3>
+          <h3 style="font-size:15px;font-weight:600;color:#e65100">🤖 자동 리프라이싱</h3>
           <div style="display:flex;gap:8px">
             <button class="refresh-btn" id="repricingEvalBtn" style="background:#ff9800;font-size:11px">가격 평가</button>
             <button class="refresh-btn" id="repricingExecBtn" style="background:#c62828;font-size:11px">일괄 실행</button>
@@ -1846,6 +1843,9 @@
         </div>
       </div>
 
+      <!-- ══════════════════════════════════════════════════════ -->
+      <!-- 4. 정찰 (RECON) : 소싱 / 화이트스페이스 / 공격적 셀러 -->
+      <!-- ══════════════════════════════════════════════════════ -->
       <!-- 소싱 기회: 내가 없는데 잘 팔리는 경쟁사 상품 -->
       <div class="card" style="margin-bottom:16px;border-left:4px solid #7b1fa2">
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
@@ -1893,40 +1893,61 @@
         </div>
       </div>
 
-      <!-- 전투 테이블 -->
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h3 style="font-size:15px;font-weight:600">가격 전투 현황 <span id="battleCount" style="color:#888;font-weight:400;font-size:12px"></span></h3>
-          <div style="display:flex;gap:8px;align-items:center">
-            <select id="battleSort" style="padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px">
-              <option value="diff-desc">차이 큰 순</option>
-              <option value="diff-asc">차이 작은 순</option>
-              <option value="comp-price">경쟁사 가격순</option>
-              <option value="my-price">내 가격순</option>
-              <option value="comp-sold">경쟁사 판매량순</option>
-            </select>
-            <button class="kill-price-btn" id="battleKillAllBtn" style="display:none">일괄 킬프라이스</button>
+      <!-- ══════════════════════════════════════════════════════ -->
+      <!-- 5. 도구 (TOOLS) : 마진 계산기 + 셀러/경쟁사 액션 버튼 -->
+      <!-- ══════════════════════════════════════════════════════ -->
+      <details class="card" style="margin-bottom:16px;border-left:4px solid #7c4dff">
+        <summary style="font-size:14px;font-weight:600;color:#5e35b1;cursor:pointer;user-select:none;padding:6px 0">
+          🧰 도구 모음 (마진 계산기 · 셀러 관리 · 경쟁사 동기화)
+        </summary>
+        <!-- 5-1. 마진 계산기 -->
+        <div style="margin-top:14px;padding:12px;background:#f8f7ff;border-radius:8px">
+          <div style="font-size:13px;font-weight:700;color:#4527a0;margin-bottom:10px">
+            마진 계산기 <span style="font-size:11px;color:#7c4dff;font-weight:400">매입가 → 전 플랫폼 판매가 자동 계산</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:10px">
+            <div>
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">매입가 (KRW) *</label>
+              <input type="number" id="mcPurchasePrice" placeholder="10000" oninput="calculateMargins()"
+                     style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">무게 (kg)</label>
+              <input type="number" id="mcWeight" step="0.01" placeholder="0.5" oninput="calculateMargins()"
+                     style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">목표 마진 (%)</label>
+              <input type="number" id="mcTargetMargin" value="30" step="1" oninput="calculateMargins()"
+                     style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 가격 (USD)</label>
+              <input type="number" id="mcCompPrice" step="0.01" placeholder="15.00" oninput="calculateMargins()"
+                     style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">경쟁셀러 배송비 (USD)</label>
+              <input type="number" id="mcCompShipping" step="0.01" placeholder="3.90" oninput="calculateMargins()"
+                     style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            </div>
+          </div>
+          <div id="mcResult" style="display:none"></div>
+        </div>
+
+        <!-- 5-2. 셀러 · 경쟁사 액션 버튼 -->
+        <div style="margin-top:14px;padding:12px;background:#fafafa;border-radius:8px">
+          <div style="font-size:13px;font-weight:700;color:#333;margin-bottom:10px">셀러 · 경쟁사 동기화</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button onclick="showSellerScanModal()" style="background:#d84315;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">🎯 셀러 스캔</button>
+            <button onclick="showSellerManagerModal()" style="background:#2e7d32;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">👥 셀러 관리</button>
+            <button onclick="battleRefreshSellers()" id="battleRefreshSellersBtn" style="background:#5c6bc0;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">셀러 정보 업데이트</button>
+            <button onclick="battleImportCompetitors(this)" style="background:#1565c0;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">📥 경쟁사 가져오기</button>
+            <button onclick="runCompetitorMonitor(this)" style="background:#ff6f00;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">🔍 경쟁사 변동 체크</button>
           </div>
         </div>
-        <div style="overflow-x:auto">
-          <table>
-            <thead>
-              <tr>
-                <th style="width:50px"></th>
-                <th>상품</th>
-                <th style="text-align:center">내 가격<br><small style="color:#888">(+배송)</small></th>
-                <th style="text-align:center">경쟁사 가격 (최대 3명)<br><small style="color:#888">▼패배 ▲승리 🔗링크</small></th>
-                <th style="text-align:center">차이<br><small style="color:#888">(최저가)</small></th>
-                <th style="text-align:center">킬 프라이스</th>
-              </tr>
-            </thead>
-            <tbody id="battleTable">
-              <tr><td colspan="6" class="empty">로딩 중...</td></tr>
-            </tbody>
-          </table>
-          <div id="battlePagination"></div>
-        </div>
-      </div>
+      </details>
+
       <!-- 셀러 스캔 모달 -->
       <div id="sellerScanModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:1000;display:none;align-items:center;justify-content:center">
         <div style="background:#1a1a2e;border-radius:12px;padding:24px;width:400px;max-width:90vw;color:#e0e0e0">
@@ -3294,11 +3315,11 @@
     </div>
   </div>
 
-  <!-- ops-pricing: 가격 관리 -->
+  <!-- ops-pricing: SKU 원가·판매가 편집 (전투상황판과 다른 성격 — 오프라인 마스터 편집) -->
   <div id="page-ops-pricing" class="page">
     <div class="card">
       <div class="card-header" style="flex-wrap:wrap;gap:8px">
-        <h3>가격 관리</h3>
+        <h3>SKU 원가·판매가 편집</h3>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <input id="opsPricingSearch" type="text" placeholder="SKU / 상품명 검색..."
             style="padding:6px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:220px">
