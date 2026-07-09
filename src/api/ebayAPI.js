@@ -63,7 +63,14 @@ class EbayAPI {
     if (this._appToken && Date.now() < this._appTokenExpiry) {
       return this._appToken;
     }
+    // single-flight: 병렬 호출 시 토큰 중복 발급 방지
+    if (this._appTokenInflight) return this._appTokenInflight;
+    this._appTokenInflight = this._fetchApplicationToken()
+      .finally(() => { this._appTokenInflight = null; });
+    return this._appTokenInflight;
+  }
 
+  async _fetchApplicationToken() {
     const credentials = Buffer.from(`${this.appId}:${this.certId}`).toString('base64');
     const scope = 'https://api.ebay.com/oauth/api_scope';
 
@@ -993,25 +1000,44 @@ class EbayAPI {
   async getCompetitorItems(itemIds) {
     if (!itemIds || itemIds.length === 0) return [];
 
-    const CONCURRENCY = 4;   // 동시 요청 수 (rate limit 보호)
-    const BATCH_DELAY = 200; // 배치 간 대기(ms)
+    const CONCURRENCY = 2;    // 동시 요청 수 (rate limit 보호)
+    const BATCH_DELAY = 500;  // 배치 간 대기(ms)
+    const RATE_LIMIT_ABORT = 3; // 연속 rate-limit N회 → 즉시 중단 (쿼터 소진 — 남은 호출 낭비 방지)
     const results = [];
     let failed = 0;
+    let rateLimitStreak = 0;
+
+    const isRateLimit = (reason) =>
+      /too many requests|request limit/i.test(String(reason?.message || reason || ''));
 
     for (let i = 0; i < itemIds.length; i += CONCURRENCY) {
       const batch = itemIds.slice(i, i + CONCURRENCY);
       const settled = await Promise.allSettled(
         batch.map((id) => this._fetchViaBrowseAPI(String(id)))
       );
+      let batchRateLimited = false;
       for (const s of settled) {
-        if (s.status === 'fulfilled' && s.value) results.push(s.value);
-        else failed += 1; // ended/404 포함 — 개별 실패는 스킵 (호출부가 DB 캐시로 폴백)
+        if (s.status === 'fulfilled' && s.value) {
+          results.push(s.value);
+          rateLimitStreak = 0;
+        } else {
+          failed += 1; // ended/404 포함 — 개별 실패는 스킵 (호출부가 DB 캐시로 폴백)
+          if (isRateLimit(s.reason)) batchRateLimited = true;
+        }
+      }
+      if (batchRateLimited) {
+        rateLimitStreak += 1;
+        if (rateLimitStreak >= RATE_LIMIT_ABORT) {
+          console.warn(`Browse API 쿼터 소진(연속 rate-limit ${rateLimitStreak}회) — 라이브 조회 중단, DB 캐시가로 폴백 (${results.length}/${itemIds.length} 조회됨)`);
+          break;
+        }
+        await this.sleep(3000); // rate-limit 시 백오프
       }
       if (i + CONCURRENCY < itemIds.length) await this.sleep(BATCH_DELAY);
     }
 
     if (failed > 0) {
-      console.warn(`Browse API getCompetitorItems: ${itemIds.length}개 중 ${failed}개 조회 실패(ended/404 포함)`);
+      console.warn(`Browse API getCompetitorItems: ${itemIds.length}개 중 ${failed}개 조회 실패(ended/404/rate-limit 포함)`);
     }
     return results;
   }

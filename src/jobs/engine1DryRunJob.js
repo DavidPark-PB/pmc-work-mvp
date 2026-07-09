@@ -28,7 +28,10 @@ const events = require('../services/priceEventService');
 const { getShippingQuotes, ASSUMPTIONS } = require('../services/listingProfitabilityCalculator');
 
 const CONFIG = {
-  LIVE_LOOKUP: true,        // false = competitor_listings 캐시가만 사용
+  // 기본 false — CompetitorMonitor가 2h마다 갱신하는 competitor_listings 캐시 사용.
+  // (신선도 임계 48h 대비 충분 + eBay Browse API 일일 쿼터 절약.
+  //  true로 켜면 실행 시점 라이브가 조회 — 쿼터 소진 시 자동으로 캐시 폴백.)
+  LIVE_LOOKUP: false,
   PUSH_TELEGRAM: true,
   CREATE_BLOCK_TASKS: true, // BLOCK → 직원 데이터 태스크 자동 생성
   MAX_SKUS: 2000,
