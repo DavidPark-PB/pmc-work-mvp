@@ -3938,40 +3938,17 @@ function renderBattleTable(items) {
       : (tooClose ? '<span class="battle-status" style="background:#ff9800;color:#fff">근접</span>'
         : (hasComp ? '<span class="battle-status winning">승리</span>' : '<span class="battle-status neutral">-</span>'));
 
-    // 경쟁사 셀: 최대 3명 세로 나열 (품절·변형·수동고정·티어·AI 매칭 신뢰도·오래된 가격 표시)
-    // 사장님 지침 2026-07-09:
-    //   - 품절 경쟁사 = 파란 배지로 표시 (숨김 X — 소싱 어려움 신호)
-    //   - 7일 이상 오래된 가격 = 회색 배지
-    //   - AI 매칭 신뢰도 < 90% = 노랑 배지 (사장님 확인 필요)
-    //   - 티어 F/D 셀러 = 빨강/주황 배지
+    // 경쟁사 셀: 최대 3명 세로 나열 (품절·변형 범위·수동 고정 표시)
     const compCell = hasComp
       ? item.competitors.map((c, idx) => {
-          const isOOS = c.status === 'out_of_stock' || c.isOutOfStock;
+          const isOOS = c.status === 'out_of_stock';
           const isEnded = c.status === 'ended';
-          // 품절이어도 표시 (사장님 지침). 종료된 것만 dim.
-          const dim = isEnded ? 'opacity:0.55;' : (idx > 0 ? 'opacity:0.75;' : '');
+          const dim = isOOS || isEnded ? 'opacity:0.55;' : (idx > 0 ? 'opacity:0.75;' : '');
           const iLose = !isOOS && !isEnded && item.myTotal > c.total;
-          // 상태 배지
-          const statusBadge = isOOS ? '<span style="background:#1565c0;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700" title="경쟁사 품절 — 소싱 어려움 신호">📦 품절</span>'
+          const badge = isOOS ? '<span style="background:#c62828;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700">품절</span>'
             : (isEnded ? '<span style="background:#888;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700">종료</span>'
-              : (iLose ? '<span style="color:#c62828;font-size:9px;font-weight:700" title="경쟁사가 나보다 저렴">▼</span>'
-                       : '<span style="color:#2e7d32;font-size:9px;font-weight:700" title="내가 저렴">▲</span>'));
-          // 티어 배지 (F/D 만 강조 — 박터지는 상대)
-          const tierColors = { F: '#b71c1c', D: '#e65100', C: '#f9a825', B: 'transparent', A: 'transparent' };
-          const tierBadge = c.tier && tierColors[c.tier] && c.tier !== 'B' && c.tier !== 'A'
-            ? `<span style="background:${tierColors[c.tier]};color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700;margin-left:2px" title="${c.tier}티어 셀러 — 우선 감시">🎯${c.tier}</span>`
-            : '';
-          // AI 매칭 신뢰도 배지 (source='ai' 이고 신뢰도 < 90% 이면 사장님 확인 권장)
-          const aiBadge = c.source === 'ai' && c.matchConfidence != null
-            ? (c.matchConfidence >= 0.9
-                ? `<span style="background:#2e7d32;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700;margin-left:2px" title="AI 자동 매칭 (신뢰도 ${(c.matchConfidence*100).toFixed(0)}%)">🤖</span>`
-                : `<span style="background:#f9a825;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700;margin-left:2px" title="AI 매칭 신뢰도 낮음 (${(c.matchConfidence*100).toFixed(0)}%) — 확인 필요">🤖 ${(c.matchConfidence*100).toFixed(0)}%</span>`)
-            : '';
-          // 오래된 가격 배지 (7일 이상)
-          const staleBadge = c.isStale
-            ? `<span style="background:#9e9e9e;color:#fff;font-size:8px;padding:1px 4px;border-radius:3px;font-weight:700;margin-left:2px" title="가격 ${c.ageDays}일 전 수집 — 신선하지 않음">⚠️ ${c.ageDays}일</span>`
-            : '';
-          const badge = statusBadge + tierBadge + aiBadge + staleBadge;
+              : (iLose ? '<span style="color:#c62828;font-size:9px;font-weight:700">▼</span>'
+                       : '<span style="color:#2e7d32;font-size:9px;font-weight:700">▲</span>'));
           const findSimilarBtn = (isOOS || isEnded) && c.id && c.seller
             ? `<button onclick="battleFindSimilar('${c.id}','${esc(item.sku)}')" style="font-size:8px;padding:0 4px;background:#ff9800;color:#fff;border:0;border-radius:2px;cursor:pointer;margin-left:2px;font-weight:600" title="${esc(c.seller)} 의 새 리스팅 찾기">🔍 새 리스팅</button>`
             : '';
@@ -4045,22 +4022,18 @@ function renderBattleTable(items) {
       <td style="text-align:center">
         <div class="battle-diff ${diffClass}">${diffText}</div>
       </td>
-      <td style="text-align:center;min-width:120px">
+      <td style="text-align:center">
         ${item.needsKill && item.killPrice > 0
-          ? `<div style="font-size:11px;color:#888;margin-bottom:2px">→ 이 가격으로</div>
-             <div style="font-weight:800;font-size:18px;color:${item.losing ? '#c62828' : '#ff9800'};line-height:1">$${item.killPrice.toFixed(2)}</div>
-             ${item.tooClose ? '<div style="font-size:9px;color:#ff9800">버퍼 \$1 확보</div>' : ''}
+          ? `<div style="font-weight:700;color:${item.losing ? '#c62828' : '#ff9800'}">$${item.killPrice.toFixed(2)}</div>
+             ${item.tooClose ? '<div style="font-size:9px;color:#ff9800">버퍼 \$2 확보</div>' : ''}
              <button class="kill-price-btn" onclick="applyKillPrice('${esc(item.itemId)}', ${item.killPrice}, '${esc(item.sku)}')"
-                     id="kill-${esc(item.itemId || item.sku)}"
-                     style="margin-top:4px;padding:6px 14px;font-size:12px;font-weight:700;background:#c62828;color:#fff;border:none;border-radius:6px;cursor:pointer;box-shadow:0 1px 3px rgba(198,40,40,0.4)">🔥 킬프라이스</button>`
+                     id="kill-${esc(item.itemId || item.sku)}">↓내리기</button>`
           : (item.raisePrice && item.raisePrice > item.myPrice
-            ? `<div style="font-size:11px;color:#888;margin-bottom:2px">→ 이 가격으로</div>
-               <div style="font-weight:800;font-size:18px;color:#2e7d32;line-height:1">$${item.raisePrice.toFixed(2)}</div>
+            ? `<div style="font-weight:700;color:#2e7d32">$${item.raisePrice.toFixed(2)}</div>
                ${item.allOutOfStock ? '<div style="font-size:9px;color:#ff9800;font-weight:600">📈 경쟁사 모두 품절</div>' : ''}
-               <button class="kill-price-btn" onclick="applyKillPrice('${esc(item.itemId)}', ${item.raisePrice}, '${esc(item.sku)}')"
-                       id="raise-${esc(item.itemId || item.sku)}"
-                       style="margin-top:4px;padding:6px 14px;font-size:12px;font-weight:700;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer;box-shadow:0 1px 3px rgba(46,125,50,0.4)">📈 인상</button>`
-            : (hasComp ? '<span style="color:#2e7d32;font-size:12px;font-weight:600">✅ 적정</span>' : '<span style="color:#bbb">-</span>'))
+               <button class="kill-price-btn" style="background:#2e7d32" onclick="applyKillPrice('${esc(item.itemId)}', ${item.raisePrice}, '${esc(item.sku)}')"
+                       id="raise-${esc(item.itemId || item.sku)}">↑올리기</button>`
+            : (hasComp ? '<span style="color:#888;font-size:11px">적정</span>' : '-'))
         }
       </td>
     </tr>`;

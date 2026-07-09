@@ -240,98 +240,6 @@ class RepricingService {
       if (data) compRows = compRows.concat(data);
     }
 
-    // ── AI 매칭 (product_matches approved) + competitor_listings 병합 ──────
-    // 사장님 지침 (2026-07-09): 매일 크롤 + AI 매칭 결과를 전투 현황에 반영.
-    //   competitor_prices 는 수동 등록 (셀러 스캔/경쟁사 가져오기 버튼) 만 담고 있어
-    //   자동 크롤로 채워지는 competitor_listings 를 놓치고 있었음.
-    const matchesBySku = new Map();  // sku → [ {competitorItemId, confidence, sellerId} ]
-    try {
-      for (let i = 0; i < skus.length; i += 500) {
-        const chunk = skus.slice(i, i + 500);
-        const { data: matches } = await db
-          .from('product_matches')
-          .select('our_sku, competitor_item_id, seller_id, confidence, status')
-          .in('our_sku', chunk)
-          .eq('status', 'approved');
-        (matches || []).forEach(m => {
-          if (!matchesBySku.has(m.our_sku)) matchesBySku.set(m.our_sku, []);
-          matchesBySku.get(m.our_sku).push(m);
-        });
-      }
-    } catch (e) {
-      console.warn('[BattleDashboard] product_matches 조회 실패:', e.message);
-    }
-
-    // competitor_listings 배치 조회 (매칭된 경쟁 리스팅만)
-    const allMatchedItemIds = [];
-    matchesBySku.forEach(list => list.forEach(m => allMatchedItemIds.push(m.competitor_item_id)));
-    const uniqueMatchedIds = [...new Set(allMatchedItemIds)];
-    const listingByItemId = new Map();
-    try {
-      for (let i = 0; i < uniqueMatchedIds.length; i += 500) {
-        const chunk = uniqueMatchedIds.slice(i, i + 500);
-        const { data: listings } = await db
-          .from('competitor_listings')
-          .select('ebay_item_id, seller_id, title, price, shipping, image_url, url, status, quantity, quantity_sold, last_seen')
-          .in('ebay_item_id', chunk);
-        (listings || []).forEach(l => listingByItemId.set(l.ebay_item_id, l));
-      }
-    } catch (e) {
-      console.warn('[BattleDashboard] competitor_listings 조회 실패:', e.message);
-    }
-
-    // AI 매칭 결과를 compRows 스키마로 변환해서 병합 (competitor_prices 와 동일 형식)
-    const seenKey = new Set(compRows.map(c => `${c.sku}::${c.competitor_id}`));
-    matchesBySku.forEach((matches, sku) => {
-      matches.forEach(m => {
-        const key = `${sku}::${m.competitor_item_id}`;
-        if (seenKey.has(key)) return; // 이미 competitor_prices 에 있음
-        const listing = listingByItemId.get(m.competitor_item_id);
-        if (!listing) return; // competitor_listings 에 없으면 스킵
-        compRows.push({
-          id: null,
-          sku,
-          competitor_id: m.competitor_item_id,
-          competitor_price: listing.price,
-          competitor_shipping: listing.shipping,
-          competitor_url: listing.url || `https://www.ebay.com/itm/${m.competitor_item_id}`,
-          seller_id: m.seller_id || listing.seller_id || '',
-          seller_feedback: 0,
-          tracked_at: listing.last_seen,
-          price_min: null,
-          price_max: null,
-          variant_count: 1,
-          quantity_available: listing.quantity,
-          status: listing.status || 'active',
-          manual_price_override: null,
-          manual_shipping_override: null,
-          // 신규 필드 — 소스 구분 + AI 매칭 정보
-          _source: 'ai',
-          _matchConfidence: Number(m.confidence) || 0,
-          _title: listing.title || '',
-          _imageUrl: listing.image_url || null,
-        });
-        seenKey.add(key);
-      });
-    });
-
-    // 셀러 티어 정보 로드 (핵심 F/D 셀러 최상단 정렬용)
-    const tierBySeller = new Map();
-    try {
-      const uniqueSellers = [...new Set(compRows.map(c => c.seller_id).filter(Boolean))];
-      for (let i = 0; i < uniqueSellers.length; i += 500) {
-        const chunk = uniqueSellers.slice(i, i + 500);
-        const { data: sellers, error: se } = await db
-          .from('competitor_sellers')
-          .select('seller_id, crawl_tier')
-          .in('seller_id', chunk);
-        if (se && se.code === '42703') break; // migration 070 미적용
-        (sellers || []).forEach(s => tierBySeller.set(s.seller_id, s.crawl_tier || 'B'));
-      }
-    } catch (e) {
-      console.warn('[BattleDashboard] competitor_sellers 티어 조회 실패:', e.message);
-    }
-
     // 헬퍼: override 가 있으면 그 값을 effective price/shipping 으로 사용.
     // 주의: Number(null) === 0 + isFinite(0) === true 라서 null 체크를 명시적으로 해야
     //       null override 가 0 으로 잘못 매핑되지 않음.
@@ -377,26 +285,12 @@ class RepricingService {
       compList[sku] = compListAll[sku].slice(0, 3);
     });
 
-    // 티어 우선순위 (숫자 작을수록 상단)
-    const TIER_RANK = { F: 0, D: 1, C: 2, B: 3, A: 4 };
-    const now = Date.now();
-    const STALE_THRESHOLD_DAYS = 7; // 사장님 지침 2026-07-09: 7일 넘으면 오래된 가격
-
     const dashboard = normalizedListings.map(p => {
       const competitors = compList[p.sku] || compList[p.itemId] || [];
-      // 활성(품절 아닌) 경쟁사 중 최저가 사용 — 킬프라이스 기준
-      // 품절 경쟁사도 표시 (사장님 지침 2026-07-09): 소싱 어려움 신호
+      // 활성(품절 아닌) 경쟁사 중 최저가 사용
       const aliveComps = competitors.filter(isAlive);
       const cheapest = aliveComps[0] || null;
       const allOutOfStock = competitors.length > 0 && aliveComps.length === 0;
-
-      // 이 상품의 최고 티어 (F 가장 급함)
-      const bestTier = competitors.reduce((best, c) => {
-        const t = tierBySeller.get(c.seller_id) || 'B';
-        return TIER_RANK[t] < TIER_RANK[best] ? t : best;
-      }, 'A');
-      const bestTierRank = TIER_RANK[bestTier];
-
       return {
         sku: p.sku,
         itemId: p.itemId,
@@ -405,63 +299,29 @@ class RepricingService {
         myShipping: p.shipping,
         myLastSyncedAt: p.lastSyncedAt,
         quantity: p.quantity ?? 0,
-        // 정렬용
-        bestTier,
-        bestTierRank,
-        competitors: competitors.map(c => {
-          const tier = tierBySeller.get(c.seller_id) || 'B';
-          const trackedMs = c.tracked_at ? new Date(c.tracked_at).getTime() : 0;
-          const ageDays = trackedMs > 0 ? Math.floor((now - trackedMs) / 86400000) : null;
-          const isStale = ageDays != null && ageDays >= STALE_THRESHOLD_DAYS;
-          const isOutOfStock = !isAlive(c);
-          return {
-            id: c.id,
-            itemId: c.competitor_id || null,
-            price: effPrice(c),
-            shipping: effShipping(c),
-            total: effPrice(c) + effShipping(c),
-            rawPrice: Number(c.competitor_price) || 0,
-            rawShipping: Number(c.competitor_shipping || 0),
-            url: c.competitor_url || null,
-            seller: c.seller_id || '',
-            title: c._title || null,
-            imageUrl: c._imageUrl || null,
-            // 변형 + 재고
-            priceMin: c.price_min != null ? Number(c.price_min) : null,
-            priceMax: c.price_max != null ? Number(c.price_max) : null,
-            variantCount: Number(c.variant_count || 1),
-            quantityAvailable: c.quantity_available != null ? Number(c.quantity_available) : null,
-            status: c.status || 'active',
-            hasOverride: c.manual_price_override != null,
-            // 신규 (사장님 지침 2026-07-09)
-            source: c._source || 'manual',        // 'ai' | 'manual'
-            matchConfidence: c._matchConfidence || null,  // 0~1 (AI 매칭 신뢰도)
-            tier,                                  // F | D | C | B | A
-            trackedAt: c.tracked_at || null,
-            ageDays,
-            isStale,                               // 7일 이상 오래됨
-            isOutOfStock,
-          };
-        }),
+        competitors: competitors.map(c => ({
+          id: c.id,
+          itemId: c.competitor_id || null,
+          price: effPrice(c),
+          shipping: effShipping(c),
+          total: effPrice(c) + effShipping(c),
+          rawPrice: Number(c.competitor_price) || 0,
+          rawShipping: Number(c.competitor_shipping || 0),
+          url: c.competitor_url || null,
+          seller: c.seller_id || '',
+          // 신규: 변형 + 재고
+          priceMin: c.price_min != null ? Number(c.price_min) : null,
+          priceMax: c.price_max != null ? Number(c.price_max) : null,
+          variantCount: Number(c.variant_count || 1),
+          quantityAvailable: c.quantity_available != null ? Number(c.quantity_available) : null,
+          status: c.status || 'active',
+          hasOverride: c.manual_price_override != null,
+        })),
         cheapestTotal: cheapest ? effPrice(cheapest) + effShipping(cheapest) : null,
         allOutOfStock,
         lastTracked: cheapest?.tracked_at || null,
         recentChanges: [],
       };
-    });
-
-    // 정렬: 지고 있는 상품 우선 → 티어 F/D 우선 → 차이 큰 순
-    // (사장님 지침 2026-07-09: 직원이 위에서부터 처리하면 됨)
-    dashboard.sort((a, b) => {
-      const aMyTotal = a.myPrice + (a.myShipping || 0);
-      const bMyTotal = b.myPrice + (b.myShipping || 0);
-      const aLosing = a.cheapestTotal != null && aMyTotal > a.cheapestTotal;
-      const bLosing = b.cheapestTotal != null && bMyTotal > b.cheapestTotal;
-      if (aLosing !== bLosing) return aLosing ? -1 : 1;  // losing 위로
-      if (a.bestTierRank !== b.bestTierRank) return a.bestTierRank - b.bestTierRank; // F/D 위로
-      const aDiff = a.cheapestTotal != null ? aMyTotal - a.cheapestTotal : -Infinity;
-      const bDiff = b.cheapestTotal != null ? bMyTotal - b.cheapestTotal : -Infinity;
-      return bDiff - aDiff;  // 차이 큰 순
     });
 
     return dashboard;

@@ -2043,10 +2043,6 @@ router.get('/battle/data', async (req, res) => {
         diff,
         losing,
         killPrice,
-        // 정렬용 (사장님 지침 2026-07-09)
-        bestTier: row.bestTier || 'B',
-        bestTierRank: row.bestTierRank ?? 3,
-        allOutOfStock: !!row.allOutOfStock,
         recentChanges: row.recentChanges || [],
       };
     });
