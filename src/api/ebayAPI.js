@@ -980,54 +980,39 @@ class EbayAPI {
   }
 
   /**
-   * 경쟁사 상품 정보 조회 (eBay Shopping API - GetMultipleItems)
-   * @param {string[]} itemIds - eBay Item ID 배열 (최대 20개씩 배치)
-   * @returns {Array} 상품 정보 배열
+   * 경쟁사 상품 정보 조회 (eBay Browse API 기반)
+   *
+   * 주의: 기존 Shopping API(GetMultipleItems)는 eBay 서비스 종료로
+   * open.api.ebay.com DNS 자체가 사라져(ENOTFOUND) 사용 불가.
+   * → 단건 Browse API(_fetchViaBrowseAPI)를 동시성 제한으로 병렬 호출.
+   * 반환 형식은 기존과 동일 (itemId/price/shippingCost/quantitySold/seller/...).
+   *
+   * @param {string[]} itemIds - eBay Item ID 배열
+   * @returns {Array} 상품 정보 배열 (조회 실패 아이템은 제외)
    */
   async getCompetitorItems(itemIds) {
     if (!itemIds || itemIds.length === 0) return [];
 
+    const CONCURRENCY = 4;   // 동시 요청 수 (rate limit 보호)
+    const BATCH_DELAY = 200; // 배치 간 대기(ms)
     const results = [];
-    const chunks = [];
-    for (let i = 0; i < itemIds.length; i += 20) {
-      chunks.push(itemIds.slice(i, i + 20));
-    }
+    let failed = 0;
 
-    for (const chunk of chunks) {
-      try {
-        const data = await this.callShoppingAPI('GetMultipleItems', {
-          ItemID: chunk.join(','),
-          IncludeSelector: 'Details,ShippingCosts'
-        });
-
-        if (data.Ack === 'Success' || data.Ack === 'Warning') {
-          const items = Array.isArray(data.Item) ? data.Item : (data.Item ? [data.Item] : []);
-          items.forEach(item => {
-            results.push({
-              itemId: item.ItemID,
-              title: item.Title || '',
-              price: parseFloat(item.ConvertedCurrentPrice?.Value) || parseFloat(item.CurrentPrice?.Value) || 0,
-              currency: item.ConvertedCurrentPrice?.CurrencyID || item.CurrentPrice?.CurrencyID || 'USD',
-              shippingCost: parseFloat(item.ShippingCostSummary?.ShippingServiceCost?.Value) || 0,
-              quantitySold: parseInt(item.QuantitySold) || 0,
-              seller: item.Seller?.UserID || '',
-              sellerFeedbackScore: parseInt(item.Seller?.FeedbackScore) || 0,
-              listingStatus: item.ListingStatus || '',
-              viewItemURL: item.ViewItemURLForNaturalSearch || '',
-              galleryURL: item.GalleryURL || '',
-              quantityAvailable: (parseInt(item.Quantity) || 0) - (parseInt(item.QuantitySold) || 0),
-            });
-          });
-        }
-
-        if (chunks.indexOf(chunk) < chunks.length - 1) {
-          await this.sleep(300);
-        }
-      } catch (error) {
-        console.error('Shopping API GetMultipleItems 실패:', error.message);
+    for (let i = 0; i < itemIds.length; i += CONCURRENCY) {
+      const batch = itemIds.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map((id) => this._fetchViaBrowseAPI(String(id)))
+      );
+      for (const s of settled) {
+        if (s.status === 'fulfilled' && s.value) results.push(s.value);
+        else failed += 1; // ended/404 포함 — 개별 실패는 스킵 (호출부가 DB 캐시로 폴백)
       }
+      if (i + CONCURRENCY < itemIds.length) await this.sleep(BATCH_DELAY);
     }
 
+    if (failed > 0) {
+      console.warn(`Browse API getCompetitorItems: ${itemIds.length}개 중 ${failed}개 조회 실패(ended/404 포함)`);
+    }
     return results;
   }
 
