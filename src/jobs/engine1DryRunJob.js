@@ -141,9 +141,11 @@ async function runEngine1DryRun() {
   const started = Date.now();
   const db = getClient();
 
+  console.log('[engine1] 시작 — guardrails/매칭 로드 중...');
   const guardrails = await events.getGuardrails();
   const matchesBySku = await loadApprovedMatches(db);
   const skus = [...matchesBySku.keys()].slice(0, CONFIG.MAX_SKUS);
+  console.log(`[engine1] 승인된 매칭 SKU ${skus.length}개 — 데이터 로드 중...`);
 
   const allCompIds = [...new Set([].concat(...skus.map((s) => matchesBySku.get(s).map((m) => String(m.competitor_item_id)))))];
   const listingCache = await loadCompetitorListings(db, allCompIds);
@@ -151,6 +153,8 @@ async function runEngine1DryRun() {
   const skuMaster = await loadSkuMaster(db, skus);
   const myPrices = await loadMyPrices(db, skus);
   const rules = await loadRules(db);
+  const todayDropMap = await events.getTodayDropPctMap(skus);
+  console.log(`[engine1] 로드 완료 — 경쟁리스팅 ${listingCache.size} · sku_master ${skuMaster.size} · 내가격 ${myPrices.size} · 판정 시작`);
 
   // 라이브 조회 (실패해도 캐시로 폴백)
   let live = new Map();
@@ -196,7 +200,7 @@ async function runEngine1DryRun() {
       : { complete: false, missing: ['sku_master'], baseCostUsd: null };
 
     const rule = rules.bySku.get(sku) || rules.global || {};
-    const todayDropPctUsed = await events.getTodayDropPctUsed(sku);
+    const todayDropPctUsed = todayDropMap.get(sku) || 0;
 
     const d = engine.decideSku({
       sku,
@@ -225,6 +229,7 @@ async function runEngine1DryRun() {
   }
 
   // 이벤트 발행 (추천만 — 가격 변경 없음)
+  console.log(`[engine1] 판정 완료 ${decisions.length}건 — price_events 기록 중...`);
   await events.publishRecommendations(decisions, { actor: 'system:engine1-dryrun' });
 
   // BLOCK → 직원 데이터 태스크

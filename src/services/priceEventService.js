@@ -58,26 +58,30 @@ async function publishPriceEvent(ev) {
   return data.id;
 }
 
-/** 추천 배치 발행 — decideSku() 결과 배열을 그대로 기록. */
+/** 추천 배치 발행 — decideSku() 결과 배열을 일괄 INSERT (500개 단위). */
 async function publishRecommendations(decisions, { actor = 'system' } = {}) {
-  const ids = [];
-  for (const d of decisions) {
-    ids.push(await publishPriceEvent({
-      event_type: 'PriceRecommendationCreated',
-      sku: d.sku,
-      item_id: d.item_id,
-      old_price: d.current_total ?? null,
-      recommended_price: d.recommended_price,
-      action: d.action,
-      reason_code: d.reason_code,
-      confidence_snapshot: d.confidence_snapshot,
-      rule_version: d.rule_version,
-      competitor_ref: d.competitor_ref || null,
-      landing_cost: d.landing_cost_usd ?? null,
-      actor,
-    }));
+  const db = getClient();
+  const rows = decisions.map((d) => ({
+    event_type: 'PriceRecommendationCreated',
+    sku: d.sku,
+    item_id: d.item_id || null,
+    old_price: d.current_total ?? null,
+    recommended_price: d.recommended_price,
+    action: d.action,
+    reason_code: d.reason_code,
+    confidence_snapshot: d.confidence_snapshot,
+    rule_version: d.rule_version,
+    competitor_ref: d.competitor_ref || null,
+    landing_cost: d.landing_cost_usd ?? null,
+    actor,
+  }));
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += 500) {
+    const { error } = await db.from('price_events').insert(rows.slice(i, i + 500));
+    if (error) throw new Error(`price_events 일괄 insert 실패: ${error.message}`);
+    inserted += Math.min(500, rows.length - i);
   }
-  return ids;
+  return inserted;
 }
 
 /** 현재가 파생 — 최신 PriceApplied 이벤트. 없으면 null(레거시 소스 사용). */
@@ -92,19 +96,28 @@ async function getCurrentAppliedPrice(sku) {
 
 /** 오늘 이 SKU가 이미 인하한 누적 % (일일 최대 인하율 캡 검사용). */
 async function getTodayDropPctUsed(sku) {
+  const map = await getTodayDropPctMap([sku]);
+  return map.get(sku) || 0;
+}
+
+/** 오늘 SKU별 누적 인하 % — 전체를 쿼리 1~2번으로 로드 (배치용). */
+async function getTodayDropPctMap(skus) {
   const db = getClient();
   const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const map = new Map();
   const { data } = await db.from('price_events')
-    .select('old_price, new_price')
-    .eq('sku', sku).eq('event_type', 'PriceApplied')
-    .gte('created_at', dayStart.toISOString());
-  let pct = 0;
+    .select('sku, old_price, new_price')
+    .eq('event_type', 'PriceApplied')
+    .gte('created_at', dayStart.toISOString())
+    .limit(10000);
+  const wanted = skus ? new Set(skus) : null;
   for (const e of data || []) {
+    if (wanted && !wanted.has(e.sku)) continue;
     if (e.old_price > 0 && e.new_price < e.old_price) {
-      pct += (e.old_price - e.new_price) / e.old_price * 100;
+      map.set(e.sku, (map.get(e.sku) || 0) + (e.old_price - e.new_price) / e.old_price * 100);
     }
   }
-  return pct;
+  return map;
 }
 
 /** guardrails 싱글톤 로드. */
@@ -161,6 +174,7 @@ module.exports = {
   publishRecommendations,
   getCurrentAppliedPrice,
   getTodayDropPctUsed,
+  getTodayDropPctMap,
   getGuardrails,
   createBlockDataTasks,
 };
