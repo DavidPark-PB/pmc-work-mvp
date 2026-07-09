@@ -177,14 +177,10 @@ app.use('/api/exception-routing', require('./src/web/routes/exceptionRouting'));
 // 주의: /api/orders/mock-import 가 /api/orders/:id 보다 먼저 등록돼야 함 (path specificity).
 app.use('/api/orders/mock-import', require('./src/web/routes/mockOrderImport'));
 app.use('/api/orders', require('./src/web/routes/orders'));
-// Phase 3 PR M — Safety Foundation 실행 로그 read API (admin / staff 동일 가시성)
-app.use('/api/safety-runs', require('./src/web/routes/safetyRuns'));
 // PR O1 — Daily Operations Briefing (오늘 운영 요약 read-only)
 app.use('/api/ops-briefing', require('./src/web/routes/operationsBriefing'));
 // PR R0 — Opportunity Inbox (직원/admin 후보 등록 + 사장님 검토)
 app.use('/api/opportunity-inbox', require('./src/web/routes/opportunityInbox'));
-// Hermes Phase 5F — Execution request read-only visibility API
-app.use('/api/hermes-execution', require('./src/web/routes/hermesExecutionRequests'));
 // PR R1 — AI Draft Generator (opportunity → AI 가 platform 별 title/description 생성)
 app.use('/api/opportunity-drafts', require('./src/web/routes/opportunityDrafts'));
 

@@ -673,10 +673,6 @@
     <div class="menu-item ops-menu" data-page="ops-briefing" style="color:#ffd54f;font-weight:600">📅 오늘 브리핑</div>
     <!-- PR R-Inbox UI — Opportunity Inbox (R0 후속, admin / staff 동일 가시성) -->
     <div class="menu-item ops-menu" data-page="opportunity-inbox" style="color:#ce93d8;font-weight:600">💡 후보 Inbox</div>
-    <!-- Hermes Phase 2F — Opportunity Review UI -->
-    <div class="menu-item ops-menu" data-page="hermes-opportunity-review" style="color:#90caf9;font-weight:700">🧠 Hermes Review</div>
-    <!-- Hermes Phase 5G — Execution Request Read-Only UI -->
-    <div class="menu-item ops-menu" data-page="hermes-execution-requests" style="color:#ffcc80;font-weight:700">🛡️ Hermes Execution</div>
     <div class="menu-item ops-menu" data-page="ops-products" style="color:#81d4fa;font-weight:600">상품 검색/관리</div>
     <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">재고 관리</div>
     <div class="menu-item ops-menu" data-page="ops-pricing" style="color:#81d4fa;font-weight:600">가격 관리</div>
@@ -687,8 +683,6 @@
     <div class="menu-item ops-menu" data-page="exception-tasks" data-admin-only style="color:#81d4fa;font-weight:600">⚠️ 자동 예외</div>
     <!-- WMS Phase 2 — staff 도 접근 가능 (mock import + 목록 + 상세 통합). 권한 차단보다 실행자 기록 우선. -->
     <div class="menu-item ops-menu" data-page="wms-orders" style="color:#81d4fa;font-weight:600">📦 WMS 주문</div>
-    <!-- Phase 3 PR M — Safety Foundation 실행 로그 (staff 도 접근 가능, 정책 §1-A) -->
-    <div class="menu-item ops-menu" data-page="safety-runs" style="color:#81d4fa;font-weight:600">📜 실행 로그</div>
     <div class="menu-title">시스템</div>
     <div class="menu-item" data-page="sync">동기화</div>
     <div class="menu-item" data-page="settings" style="color:#ff9800;font-weight:600">설정</div>
@@ -1865,6 +1859,36 @@
               <th>상품</th><th>판매수</th><th>가격</th><th>배송</th><th>총액</th><th>셀러</th><th>링크</th>
             </tr></thead>
             <tbody id="battleSourcingBody"><tr><td colspan="7" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 카테고리 화이트스페이스: 경쟁사는 많이 파는데 내가 거의 없는 카테고리 -->
+      <div class="card" style="margin-bottom:16px;border-left:4px solid #00838f">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <h3 style="font-size:15px;font-weight:600;color:#006064">🗺️ 카테고리 화이트스페이스</h3>
+          <button class="refresh-btn" id="battleWhitespaceRefreshBtn" onclick="loadBattleWhitespace(this)" style="background:#00838f;font-size:11px">새로고침</button>
+        </div>
+        <p style="font-size:12px;color:#888;margin-bottom:12px">경쟁사 판매 많은데 내 커버율 낮은 카테고리 = 미개척 시장. 미매핑 판매 많은 순.</p>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead><tr><th>카테고리</th><th>경쟁 리스팅</th><th>총 판매</th><th>내 커버율</th><th>미매핑 판매</th></tr></thead>
+            <tbody id="battleWhitespaceBody"><tr><td colspan="5" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 공격적 셀러: 가격을 자주·크게 내리는 셀러 -->
+      <div class="card" style="margin-bottom:16px;border-left:4px solid #c62828">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+          <h3 style="font-size:15px;font-weight:600;color:#b71c1c">⚔️ 공격적 셀러 (최근 14일)</h3>
+          <button class="refresh-btn" id="battleAggressiveRefreshBtn" onclick="loadBattleAggressive(this)" style="background:#c62828;font-size:11px">새로고침</button>
+        </div>
+        <p style="font-size:12px;color:#888;margin-bottom:12px">가격을 자주·크게 내리는 셀러 = 감시 우선순위. 인하 빈도순.</p>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead><tr><th>셀러</th><th>인하 횟수</th><th>평균 인하%</th><th>최대 인하%</th></tr></thead>
+            <tbody id="battleAggressiveBody"><tr><td colspan="4" class="empty" style="color:#aaa">로딩 중…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -3418,9 +3442,6 @@
     <div id="wms-list-section"></div>
   </div>
   <!-- Phase 3 PR M: Safety Foundation 실행 로그 -->
-  <div id="page-safety-runs" class="page">
-    <div id="safety-runs-section"></div>
-  </div>
   <!-- PR O1: Daily Operations Briefing -->
   <div id="page-ops-briefing" class="page">
     <div id="ops-briefing-section"></div>
@@ -3428,14 +3449,6 @@
   <!-- PR R-Inbox UI: Opportunity Inbox -->
   <div id="page-opportunity-inbox" class="page">
     <div id="opportunity-inbox-section"></div>
-  </div>
-  <!-- Hermes Phase 2F: Opportunity Review UI -->
-  <div id="page-hermes-opportunity-review" class="page">
-    <div id="hermes-opportunity-review-section"></div>
-  </div>
-  <!-- Hermes Phase 5G: Execution Request Read-Only UI -->
-  <div id="page-hermes-execution-requests" class="page">
-    <div id="hermes-execution-requests-section"></div>
   </div>
 
 
@@ -3499,16 +3512,10 @@
   <!-- ── WMS Phase 2 ── -->
   <script src="/js/orderImport.js?v=20260509a"></script>
   <script src="/js/orderList.js?v=20260509a"></script>
-  <!-- ── Phase 3 PR M — Safety Foundation 실행 로그 ── -->
-  <script src="/js/safetyRuns.js?v=20260510a"></script>
   <!-- ── PR O1 — Daily Operations Briefing ── -->
   <script src="/js/opsBriefing.js?v=20260510a"></script>
   <!-- ── PR R-Inbox UI — Opportunity Inbox ── -->
   <script src="/js/opportunityInbox.js?v=20260511a"></script>
-  <!-- ── Hermes Phase 2F — Opportunity Review UI ── -->
-  <script src="/js/hermesOpportunityReview.js?v=20260701phase3c"></script>
-  <!-- ── Hermes Phase 5G — Execution Request Read-Only UI ── -->
-  <script src="/js/hermesExecutionRequests.js?v=20260701phase5g"></script>
   <script src="/js/shippingRecs.js?v=20260623auto"></script>
   <script src="/js/shippingRecsWms.js?v=20260513p4a"></script>
   <script src="/js/aiWorkflow.js?v=20260512wfa"></script>

@@ -107,10 +107,6 @@ function navigateTo(page) {
       if (window.pmcOrderImport) pmcOrderImport.init();
       if (window.pmcOrderList)   pmcOrderList.init();
       break;
-    // ── Phase 3 PR M — Safety Foundation 실행 로그 ──
-    case 'safety-runs':
-      if (window.pmcSafetyRuns)  pmcSafetyRuns.init();
-      break;
     // ── PR O1 — Daily Operations Briefing ──
     case 'ops-briefing':
       if (window.pmcOpsBriefing) pmcOpsBriefing.init();
@@ -118,14 +114,6 @@ function navigateTo(page) {
     // ── PR R-Inbox UI — Opportunity Inbox (R0 후속) ──
     case 'opportunity-inbox':
       if (window.pmcOpportunityInbox) pmcOpportunityInbox.init();
-      break;
-    // ── Hermes Phase 2F — Opportunity Review UI ──
-    case 'hermes-opportunity-review':
-      if (window.pmcHermesOpportunityReview) pmcHermesOpportunityReview.init();
-      break;
-    // ── Hermes Phase 5G — Execution Request Read-Only UI ──
-    case 'hermes-execution-requests':
-      if (window.pmcHermesExecutionRequests) pmcHermesExecutionRequests.init();
       break;
   }
 }
@@ -3419,8 +3407,11 @@ function renderBattleSourcing(items) {
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
   body.innerHTML = items.map(function (s) {
     var link = s.url ? '<a href="' + esc(s.url) + '" target="_blank" rel="noopener" style="color:#1565c0">보기</a>' : '-';
+    var gapBadge = s.crossPlatformGap
+      ? ' <span style="background:#e8f5e9;color:#2e7d32;font-size:10px;padding:1px 6px;border-radius:8px">🆕 순수신규</span>'
+      : (s.onShopify ? ' <span style="background:#eceff1;color:#607d8b;font-size:10px;padding:1px 6px;border-radius:8px">Shopify 有</span>' : '');
     return '<tr>' +
-      '<td style="max-width:340px">' + esc(s.title) + '</td>' +
+      '<td style="max-width:340px">' + esc(s.title) + gapBadge + '</td>' +
       '<td style="font-weight:700;color:#6a1b9a">' + (s.sold || 0) + '</td>' +
       '<td>$' + Number(s.price || 0).toFixed(2) + '</td>' +
       '<td>$' + Number(s.shipping || 0).toFixed(2) + '</td>' +
@@ -3456,9 +3447,64 @@ async function refreshBattleSourcing(btn) {
   }
 }
 
+// 카테고리 화이트스페이스
+async function loadBattleWhitespace(btn) {
+  var body = document.getElementById('battleWhitespaceBody');
+  if (!body) return;
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    var r = await fetch(API + '/battle/whitespace');
+    var data = JSON.parse(await r.text());
+    var cats = data.categories || [];
+    if (!cats.length) { body.innerHTML = '<tr><td colspan="5" class="empty" style="color:#aaa">데이터 없음</td></tr>'; return; }
+    body.innerHTML = cats.map(function (c) {
+      var coverColor = c.coverPct < 20 ? '#c62828' : (c.coverPct < 50 ? '#ef6c00' : '#2e7d32');
+      return '<tr>' +
+        '<td style="font-weight:600">' + c.category + '</td>' +
+        '<td>' + (c.listings || 0) + '</td>' +
+        '<td>' + (c.totalSold || 0).toLocaleString() + '</td>' +
+        '<td style="color:' + coverColor + ';font-weight:600">' + (c.coverPct || 0) + '%</td>' +
+        '<td style="font-weight:700;color:#006064">' + (c.unmappedSold || 0).toLocaleString() + '</td>' +
+        '</tr>';
+    }).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="5" class="empty" style="color:#c62828">로드 실패</td></tr>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '새로고침'; }
+  }
+}
+
+// 공격적 셀러 랭킹
+async function loadBattleAggressive(btn) {
+  var body = document.getElementById('battleAggressiveBody');
+  if (!body) return;
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    var r = await fetch(API + '/battle/aggressive-sellers');
+    var data = JSON.parse(await r.text());
+    var sellers = data.sellers || [];
+    if (!sellers.length) { body.innerHTML = '<tr><td colspan="4" class="empty" style="color:#aaa">최근 인하 기록 없음</td></tr>'; return; }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]; }); }
+    body.innerHTML = sellers.map(function (s) {
+      return '<tr>' +
+        '<td style="font-weight:600">' + esc(s.seller_id) + '</td>' +
+        '<td style="font-weight:700;color:#b71c1c">' + s.drops + '</td>' +
+        '<td>' + s.avgDropPct + '%</td>' +
+        '<td style="color:#c62828">' + s.maxDropPct + '%</td>' +
+        '</tr>';
+    }).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="4" class="empty" style="color:#c62828">로드 실패</td></tr>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '새로고침'; }
+  }
+}
+
 async function loadBattle() {
   loadBattleAlerts();
   loadBattleSourcing();
+  loadBattleWhitespace();
+  loadBattleAggressive();
   showLoading(true);
   var _battleRes, _battleText;
   try {
