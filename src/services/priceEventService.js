@@ -129,40 +129,47 @@ async function getGuardrails() {
 }
 
 /**
- * BLOCK → 직원 데이터 태스크 생성 (dedupe_key로 중복 방지).
- * Control Tower 표시: "가격 변경 불가 N개 → 무게/원가/매핑 입력 큐".
+ * BLOCK → 직원 데이터 태스크 생성.
+ * SKU별 개별 카드가 아니라 **reason_code당 1장으로 집계** (일 단위 dedupe).
+ * (개별 생성 시 수백 장 스팸 + 실행 시간 폭증 — 상세 SKU 목록은 카드 context와
+ *  v_block_task_queue 뷰 + CSV '미입력 SKU 템플릿'에서 확인.)
  */
 async function createBlockDataTasks(blockDecisions) {
   const { createExceptionTask } = require('./exceptionTask');
   const TASK_MEMO = {
-    BLOCK_LANDING_COST_UNKNOWN: 'weight_gram / 치수 / cost_krw 보완 필요 — 입력 시 자동가격 대상에 편입됩니다.',
-    BLOCK_NO_MATCH: 'SKU 매핑 확인/등록 필요 (product_matches 승인).',
+    BLOCK_LANDING_COST_UNKNOWN: 'SKU 마스터 화면에서 "미입력 SKU 템플릿" CSV 다운로드 → 원가/무게/치수 입력 → 업로드. 입력분은 다음 실행부터 자동가격 대상 편입.',
+    BLOCK_NO_MATCH: 'SKU 매핑 확인/등록 필요 (product_matches 승인 또는 경쟁 리스팅 재크롤).',
     BLOCK_MAP: 'MAP(최저광고가) 정책 등록/해제 확인 필요.',
-    BLOCK_STALE_COMPETITOR: '경쟁가 신선도 초과 — 크롤 재수집 필요.',
+    BLOCK_STALE_COMPETITOR: '경쟁가 신선도 초과 — CompetitorMonitor 크롤 상태 점검.',
     BLOCK_API_ERROR: 'API 오류 — 자동화 파이프라인 점검 필요.',
   };
-  let created = 0;
+  const byReason = new Map();
   for (const d of blockDecisions) {
-    const type = BLOCK_TASK_TYPE[d.reason_code];
+    if (!byReason.has(d.reason_code)) byReason.set(d.reason_code, []);
+    byReason.get(d.reason_code).push(d.sku);
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  let created = 0;
+  for (const [reason, skus] of byReason) {
+    const type = BLOCK_TASK_TYPE[reason];
     if (!type) continue;
     try {
       const res = await createExceptionTask({
         exceptionType: type,
-        dedupeKey: `engine1:${d.reason_code}:${d.sku}`,
-        title: `[Engine1] ${d.sku} — ${d.reason_code}`,
-        memo: TASK_MEMO[d.reason_code] || d.reason_code,
+        dedupeKey: `engine1:${reason}:${today}`,
+        title: `[Engine1] ${reason} — ${skus.length}개 SKU 데이터 보완 필요`,
+        memo: TASK_MEMO[reason] || reason,
         severity: 'medium',
         context: {
           source: 'engine1',
-          sku: d.sku,
-          item_id: d.item_id,
-          reason_code: d.reason_code,
-          missing_data: d.missing_data || null,
+          reason_code: reason,
+          sku_count: skus.length,
+          sample_skus: skus.slice(0, 30),
         },
       });
       if (!res.deduped) created += 1;
     } catch (e) {
-      console.warn(`[priceEvents] BLOCK 태스크 생성 실패(${d.sku}):`, e.message);
+      console.warn(`[priceEvents] BLOCK 집계 태스크 생성 실패(${reason}):`, e.message);
     }
   }
   return created;
