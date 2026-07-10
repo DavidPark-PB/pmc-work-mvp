@@ -1456,6 +1456,11 @@ class EbayAPI {
         await new Promise(r => setTimeout(r, 300));
       } catch (err) {
         console.warn(`[findSellerListingsByFindingAPI] page ${page} error:`, err.message);
+        // 첫 페이지에서 실패했으면 API 자체가 죽었거나 rate-limit — throw 로 상위 fallback 트리거.
+        // 이후 페이지 실패는 그때까지 수집한 것 반환.
+        if (page === startPage) {
+          throw new Error(`Finding API 첫 페이지 실패: ${err.message}`);
+        }
         break;
       }
     }
