@@ -285,6 +285,25 @@
     if (canDone) {
       document.getElementById('ef-done-btn').addEventListener('click', () => onMarkDone(c.id));
     }
+
+    // 2026-07-10 일괄 열기 버튼 (SKU CSV 를 data-* 로 넘겨 안전 바인딩)
+    document.querySelectorAll('.ef-bulk-open').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const skuCsv = btn.dataset.bulkSkus || '';
+        if (!skuCsv) return;
+        try {
+          const u = new URL(location.href);
+          u.searchParams.set('page', 'sku-master');
+          u.searchParams.set('skus', skuCsv);
+          history.pushState({}, '', u);
+        } catch (_) {}
+        if (typeof navigateTo === 'function') {
+          navigateTo('sku-master');
+        } else {
+          location.href = '/?page=sku-master&skus=' + encodeURIComponent(skuCsv);
+        }
+      });
+    });
   }
 
   // 2026-07-10: 우선순위 SKU context 를 표 형태 + 클릭 이동으로 렌더.
@@ -308,9 +327,11 @@
     const summary = `우선순위 SKU <strong>${skus.length}</strong>개 · 누적 규모 <strong>$${Number(totalUsd).toLocaleString()}</strong>`;
     // 2026-07-10 사장님 지침: 전체 SKU 를 SKU 마스터에서 한 번에 열기.
     //   URL 파라미터 ?skus=A,B,C 로 SKU 마스터가 정확 일치 필터.
+    //   ⚠️ SKU CSV 는 최대 4000+ 자라 onclick attribute 인라인은 브라우저 파싱 실패.
+    //     data-* 속성에 두고 addEventListener 로 바인딩 (renderDetail 안에서 처리).
     const skuCsv = skus.map((s) => s.sku).filter(Boolean).join(',');
     const bulkOpenBtn = skuCsv
-      ? `<button onclick="(function(){ const u=new URL(location.href); u.searchParams.set('page','sku-master'); u.searchParams.set('skus','${skuCsv.replace(/'/g, "\\'")}'); history.pushState({}, '', u); navigateTo('sku-master'); })(); return false;" style="padding:6px 12px;background:#2e7d32;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">🚀 SKU 마스터에 ${skus.length}개 일괄 열기</button>`
+      ? `<button class="ef-bulk-open" data-bulk-skus="${esc(skuCsv)}" style="padding:6px 12px;background:#2e7d32;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">🚀 SKU 마스터에 ${skus.length}개 일괄 열기</button>`
       : '';
     const rows = skus.map((s, i) => {
       const scale = s.estimated_revenue_usd != null ? `$${Number(s.estimated_revenue_usd).toLocaleString()}` : (s.diff != null ? `+$${s.diff}` : '-');
