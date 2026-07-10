@@ -280,8 +280,13 @@
     //   · 소싱처 드롭다운 · 플랫폼 뱃지 (eBay/Shopify/Naver/Shopee/Qoo10)
     const rows = cache.map(s => `
       <tr data-id="${s.id}">
-        <td style="padding:10px;font-family:monospace;color:#81d4fa;">${esc(s.internal_sku)}</td>
-        <td style="padding:10px;color:#fff;">${esc(s.title)}</td>
+        <td style="padding:10px;font-family:monospace;color:#81d4fa;white-space:nowrap;">${esc(s.internal_sku)}</td>
+        <td style="padding:8px;color:#fff;max-width:340px;">
+          <div style="display:flex;gap:8px;align-items:center;">
+            ${s.image_url ? `<img src="${esc(s.image_url)}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:4px;background:#0f0f23;flex-shrink:0;" onerror="this.style.display='none';">` : `<div style="width:40px;height:40px;background:#0f0f23;border-radius:4px;flex-shrink:0;"></div>`}
+            <div style="min-width:0;flex:1;font-size:12px;line-height:1.3;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;" title="${esc(s.title || '')}">${esc(s.title || '')}</div>
+          </div>
+        </td>
         <td style="padding:10px;text-align:right;">
           <input type="number" class="sm-cost" data-id="${s.id}" data-orig="${s.cost_krw ?? ''}" value="${s.cost_krw ?? ''}" placeholder="원가" style="width:90px;padding:4px 6px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;text-align:right;">
           <div style="font-size:9px;color:#666;">KRW</div>

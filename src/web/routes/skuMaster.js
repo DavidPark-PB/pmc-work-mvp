@@ -130,10 +130,28 @@ router.get('/', async (req, res) => {
       });
     }
 
+    // 2026-07-11 사장님 지침: 제목이 짤려서 어떤 상품인지 모르겠다 →
+    // ebay_products 에서 image_url 조회해 SKU 마스터 UI 썸네일 표시.
+    const imageBySku = new Map();
+    const internalSkus = rows.map((r) => r.internal_sku).filter(Boolean);
+    if (internalSkus.length > 0) {
+      for (let i = 0; i < internalSkus.length; i += 500) {
+        const chunk = internalSkus.slice(i, i + 500);
+        const { data: eb } = await c.from('ebay_products')
+          .select('sku, image_url')
+          .in('sku', chunk)
+          .neq('status', 'ended');
+        (eb || []).forEach((e) => {
+          if (e.image_url && !imageBySku.has(e.sku)) imageBySku.set(e.sku, e.image_url);
+        });
+      }
+    }
+
     const enriched = rows.map((r) => ({
       ...r,
       supplier: r.supplier_id && supplierMap.has(r.supplier_id) ? supplierMap.get(r.supplier_id) : null,
       listings: linksBySku.get(r.id) || [],
+      image_url: imageBySku.get(r.internal_sku) || null,
     }));
 
     res.json({ data: enriched });
