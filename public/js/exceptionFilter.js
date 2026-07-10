@@ -279,15 +279,76 @@
 
       ${recipientsHtml}
 
-      <div style="margin-bottom:8px;">
-        <div style="color:#aaa;font-size:11px;margin-bottom:4px;">context (JSON · backend redact 통과)</div>
-        <pre style="background:#0f0f23;color:#cfd8dc;padding:10px;border-radius:6px;font-size:11px;overflow-x:auto;max-height:280px;margin:0;">${esc(JSON.stringify(c.context || {}, null, 2))}</pre>
-      </div>
+      ${renderContextSection(c.context)}
     `;
 
     if (canDone) {
       document.getElementById('ef-done-btn').addEventListener('click', () => onMarkDone(c.id));
     }
+  }
+
+  // 2026-07-10: 우선순위 SKU context 를 표 형태 + 클릭 이동으로 렌더.
+  // priority_skus 배열 있으면 표, 없으면 JSON 그대로.
+  function renderContextSection(ctx) {
+    if (!ctx || typeof ctx !== 'object' || Object.keys(ctx).length === 0) {
+      return `<div style="margin-bottom:8px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:4px;">context</div>
+        <div style="background:#0f0f23;color:#666;padding:10px;border-radius:6px;font-size:12px;">(비어있음)</div>
+      </div>`;
+    }
+    const skus = Array.isArray(ctx.priority_skus) ? ctx.priority_skus : null;
+    if (!skus || skus.length === 0) {
+      return `<div style="margin-bottom:8px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:4px;">context (JSON · backend redact 통과)</div>
+        <pre style="background:#0f0f23;color:#cfd8dc;padding:10px;border-radius:6px;font-size:11px;overflow-x:auto;max-height:280px;margin:0;">${esc(JSON.stringify(ctx, null, 2))}</pre>
+      </div>`;
+    }
+    // priority_skus 표 렌더 (사장님이 SKU 클릭 → SKU 마스터로 이동해 인라인 편집)
+    const totalUsd = ctx.total_estimated_revenue_usd || ctx.total_potential_impact_usd || 0;
+    const summary = `우선순위 SKU <strong>${skus.length}</strong>개 · 누적 규모 <strong>$${Number(totalUsd).toLocaleString()}</strong>`;
+    const rows = skus.map((s, i) => {
+      const scale = s.estimated_revenue_usd != null ? `$${Number(s.estimated_revenue_usd).toLocaleString()}` : (s.diff != null ? `+$${s.diff}` : '-');
+      const sold = s.sales_count != null ? s.sales_count : (s.competitor_sold != null ? s.competitor_sold : '-');
+      const price = s.price_usd != null ? `$${s.price_usd}` : (s.my_price != null ? `$${s.my_price}` : '-');
+      const skuLabel = esc(s.sku || '');
+      // SKU 마스터 페이지로 이동 (검색어 = SKU) — dashboard.js navigateTo 사용
+      const linkOnclick = `navigateTo('sku-master'); setTimeout(() => { const inp=document.getElementById('sm-search'); if(inp){inp.value='${skuLabel.replace(/'/g,"\\'")}'; inp.dispatchEvent(new Event('input',{bubbles:true})); } }, 300); return false;`;
+      return `<tr style="border-bottom:1px solid #1a1a2e;">
+        <td style="padding:6px 8px;color:#888;font-size:11px;text-align:right;">${i + 1}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:11px;">
+          <a href="#" onclick="${linkOnclick}" style="color:#81d4fa;text-decoration:none;">${skuLabel}</a>
+        </td>
+        <td style="padding:6px 8px;color:#fff;font-size:11px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(s.title || '')}">${esc((s.title || '').slice(0, 60))}</td>
+        <td style="padding:6px 8px;color:#aaa;font-size:11px;text-align:right;">${sold}</td>
+        <td style="padding:6px 8px;color:#aaa;font-size:11px;text-align:right;">${price}</td>
+        <td style="padding:6px 8px;font-weight:700;color:#69f0ae;font-size:11px;text-align:right;">${scale}</td>
+        <td style="padding:6px 8px;color:#ef9a9a;font-size:10px;">${esc(s.missing || '')}</td>
+      </tr>`;
+    }).join('');
+    return `
+      <div style="margin-bottom:12px;padding:10px;background:#0d2818;border-left:3px solid #2e7d32;border-radius:4px;font-size:12px;color:#c5e1a5;">
+        📌 ${summary}. SKU 클릭 시 <a href="#" onclick="navigateTo('sku-master');return false;" style="color:#81d4fa;">SKU 마스터 화면</a>으로 이동 → 원가/무게/치수/소싱처 인라인 입력.
+      </div>
+      <div style="margin-bottom:8px;">
+        <div style="color:#aaa;font-size:11px;margin-bottom:4px;">우선순위 SKU 목록 (context.priority_skus)</div>
+        <div style="max-height:400px;overflow:auto;background:#0f0f23;border-radius:6px;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead style="position:sticky;top:0;background:#0f0f23;">
+              <tr style="border-bottom:1px solid #333;color:#aaa;font-size:11px;">
+                <th style="padding:6px 8px;text-align:right;">#</th>
+                <th style="padding:6px 8px;text-align:left;">SKU</th>
+                <th style="padding:6px 8px;text-align:left;">제목</th>
+                <th style="padding:6px 8px;text-align:right;">판매</th>
+                <th style="padding:6px 8px;text-align:right;">단가</th>
+                <th style="padding:6px 8px;text-align:right;">규모</th>
+                <th style="padding:6px 8px;text-align:left;">미입력</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
   }
 
   async function onMarkDone(taskId) {
