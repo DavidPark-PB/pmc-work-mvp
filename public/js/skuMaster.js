@@ -290,6 +290,10 @@
           <input type="number" step="0.001" min="0" class="sm-weight" data-id="${s.id}" data-orig-kg="${gramsToKg(s.weight_gram)}" value="${gramsToKg(s.weight_gram)}" placeholder="무게" style="width:80px;padding:4px 6px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;text-align:right;">
           <div style="font-size:9px;color:#666;">kg ${weightStatusBadge(s.weight_status)}</div>
         </td>
+        <td style="padding:10px;">
+          <input type="text" class="sm-barcode" data-id="${s.id}" data-orig="${esc(s.upc_ean || '')}" value="${esc(s.upc_ean || '')}" placeholder="UPC / EAN" maxlength="50" style="width:130px;padding:4px 6px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;font-family:monospace;">
+          <div style="font-size:9px;color:#666;">바코드</div>
+        </td>
         <td style="padding:10px;">${renderSupplierSelect(s.id, s.supplier_id)}</td>
         <td style="padding:10px;white-space:nowrap;">${renderPlatformBadges(s.id, s.listings)}</td>
         <td style="padding:10px;">
@@ -311,7 +315,7 @@
         </td>
       </tr>
       <tr id="sm-link-row-${s.id}" style="display:${openLinkIds.has(s.id)?'table-row':'none'};">
-        <td colspan="10" style="padding:0;background:#0f0f23;">
+        <td colspan="11" style="padding:0;background:#0f0f23;">
           <div id="sm-link-panel-${s.id}" style="padding:12px 16px;border-top:1px solid #333;"></div>
         </td>
       </tr>
@@ -325,6 +329,7 @@
             <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">제목</th>
             <th style="padding:10px;text-align:right;color:#aaa;font-size:12px;">원가 ✏️</th>
             <th style="padding:10px;text-align:right;color:#aaa;font-size:12px;">무게 ✏️</th>
+            <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">바코드 ✏️</th>
             <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">소싱처</th>
             <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">등록 플랫폼</th>
             <th style="padding:10px;color:#aaa;font-size:12px;">상태</th>
@@ -344,6 +349,7 @@
     // 2026-07-10 인라인 편집
     el.querySelectorAll('.sm-cost').forEach(inp => inp.addEventListener('blur', onCostBlur));
     el.querySelectorAll('.sm-weight').forEach(inp => inp.addEventListener('blur', onWeightBlur));
+    el.querySelectorAll('.sm-barcode').forEach(inp => inp.addEventListener('blur', onBarcodeBlur));
     el.querySelectorAll('.sm-supplier').forEach(sel => sel.addEventListener('change', onSupplierChange));
     el.querySelectorAll('.sm-platform-badge').forEach(b => b.addEventListener('click', onPlatformBadgeClick));
     // 2026-07-10 일괄 필터 해제 버튼
@@ -382,6 +388,18 @@
     const grams = kgToGrams(curKg);
     await patchInline(el, id, { weight_gram: grams });
     el.dataset.origKg = curKg;
+  }
+
+  // 2026-07-11 사장님 지침: 바코드 (UPC/EAN) 인라인 편집.
+  // 계약서 §Identity Confidence: 국제 표준 상품 식별자 = Ecount / eBay 자동 매칭 신뢰도 최대.
+  async function onBarcodeBlur(e) {
+    const el = e.target;
+    const id = parseInt(el.dataset.id, 10);
+    const orig = el.dataset.orig || '';
+    const cur = el.value.trim();
+    if (cur === orig) return;
+    await patchInline(el, id, { upc_ean: cur === '' ? null : cur });
+    el.dataset.orig = cur;
   }
 
   // 2026-07-10 플랫폼 뱃지 토글 (사장님 지침). 사장님·직원이 클릭 = 등록됨/해제 표시.

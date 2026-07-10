@@ -291,6 +291,12 @@ router.patch('/:id', async (req, res) => {
     const v = body.supplier_id;
     updates.supplier_id = (v === null || v === '' ? null : parseInt(v, 10));
   }
+  // 바코드 (UPC/EAN — 068 migration 예약, 2026-07-11 UI 활용 시작).
+  // 계약서 §Identity Confidence: 국제 표준 상품 식별자 = 매칭 신뢰도 최대.
+  // Ecount / eBay 자동 매칭에 활용.
+  if (body.upc_ean !== undefined) {
+    updates.upc_ean = trimOrNull(body.upc_ean, 50);
+  }
   // Phase 1 배송 컬럼
   if (body.default_packaging_weight_g !== undefined) updates.default_packaging_weight_g = parseIntOrNull(body.default_packaging_weight_g);
   if (body.width_cm  !== undefined) updates.width_cm  = parseNumOrNull(body.width_cm);
