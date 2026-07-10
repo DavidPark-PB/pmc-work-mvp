@@ -98,7 +98,37 @@ router.get('/', async (req, res) => {
 
     const { data, error } = await q.limit(500);
     if (error) throw error;
-    res.json({ data: data || [] });
+
+    // 소싱처(suppliers) + 등록 플랫폼(sku_listing_link) 조인 (2026-07-10)
+    // SKU 마스터 UI 에 소싱처 이름 표시 + 플랫폼 뱃지 (eBay/Shopify/Naver/Shopee/Qoo10)용.
+    const rows = data || [];
+    const skuIds = rows.map((r) => r.id).filter(Number.isFinite);
+    const supplierIds = [...new Set(rows.map((r) => r.supplier_id).filter(Number.isFinite))];
+
+    const supplierMap = new Map();
+    if (supplierIds.length > 0) {
+      const { data: sups } = await c.from('suppliers').select('id, name, channel').in('id', supplierIds);
+      (sups || []).forEach((s) => supplierMap.set(s.id, s));
+    }
+
+    const linksBySku = new Map();
+    if (skuIds.length > 0) {
+      const { data: links } = await c.from('sku_listing_link')
+        .select('sku_id, marketplace, listing_id')
+        .in('sku_id', skuIds);
+      (links || []).forEach((l) => {
+        if (!linksBySku.has(l.sku_id)) linksBySku.set(l.sku_id, []);
+        linksBySku.get(l.sku_id).push({ marketplace: l.marketplace, listing_id: l.listing_id });
+      });
+    }
+
+    const enriched = rows.map((r) => ({
+      ...r,
+      supplier: r.supplier_id && supplierMap.has(r.supplier_id) ? supplierMap.get(r.supplier_id) : null,
+      listings: linksBySku.get(r.id) || [],
+    }));
+
+    res.json({ data: enriched });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -248,6 +278,11 @@ router.patch('/:id', async (req, res) => {
   if (body.weight_gram !== undefined)  updates.weight_gram = parseIntOrNull(body.weight_gram);
   if (body.hs_code !== undefined)      updates.hs_code     = trimOrNull(body.hs_code, 50);
   if (body.notes !== undefined)        updates.notes       = trimOrNull(body.notes);
+  // 소싱처 링크 (Engine 5 예약 컬럼, 2026-07-10 UI 활용 시작)
+  if (body.supplier_id !== undefined) {
+    const v = body.supplier_id;
+    updates.supplier_id = (v === null || v === '' ? null : parseInt(v, 10));
+  }
   // Phase 1 배송 컬럼
   if (body.default_packaging_weight_g !== undefined) updates.default_packaging_weight_g = parseIntOrNull(body.default_packaging_weight_g);
   if (body.width_cm  !== undefined) updates.width_cm  = parseNumOrNull(body.width_cm);

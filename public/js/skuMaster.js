@@ -17,6 +17,15 @@
   let user = null;
   let cache = [];
   let openLinkIds = new Set();
+  let suppliersCache = [];  // {id, name, channel, is_active} — 소싱처 드롭다운 소스
+  // 사장님 지정 플랫폼 뱃지 (2026-07-10). marketplace 값과 매칭.
+  const PLATFORMS = [
+    { key: 'ebay',     label: 'eBay',    color: '#e53238' },
+    { key: 'shopify',  label: 'Shopify', color: '#95bf47' },
+    { key: 'naver',    label: 'Naver',   color: '#03c75a' },
+    { key: 'shopee',   label: 'Shopee',  color: '#ee4d2d' },
+    { key: 'qoo10',    label: 'Qoo10',   color: '#ff7f00' },
+  ];
 
   function esc(s) {
     if (s == null) return '';
@@ -190,15 +199,44 @@
     if (weightStatus) params.set('weight_status', weightStatus);
 
     try {
-      const res = await fetch('/api/sku-master?' + params.toString());
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'load failed');
+      // suppliers 는 첫 로드 시 or 명시적 재조회에서만
+      const promises = [fetch('/api/sku-master?' + params.toString()).then(r => r.json())];
+      if (suppliersCache.length === 0) {
+        promises.push(fetch('/api/suppliers?active=true').then(r => r.json()));
+      }
+      const [json, supJson] = await Promise.all(promises);
+      if (json.error) throw new Error(json.error);
       cache = json.data || [];
+      if (supJson) suppliersCache = supJson.data || [];
       renderList();
     } catch (e) {
       document.getElementById('sm-list').innerHTML =
         `<div style="padding:20px;color:#ef9a9a;">로드 실패: ${esc(e.message)}</div>`;
     }
+  }
+
+  // 플랫폼 뱃지 렌더 (등록 있음=색상, 없음=회색)
+  function renderPlatformBadges(listings) {
+    const has = new Set((listings || []).map(l => String(l.marketplace || '').toLowerCase()));
+    return PLATFORMS.map(p => {
+      const on = has.has(p.key);
+      const bg = on ? p.color : '#333';
+      const color = on ? '#fff' : '#666';
+      const mark = on ? '✓' : '';
+      return `<span style="display:inline-block;padding:2px 6px;margin-right:3px;background:${bg};color:${color};border-radius:4px;font-size:10px;font-weight:600;" title="${p.label} ${on?'등록됨':'미등록'}">${p.label}${mark}</span>`;
+    }).join('');
+  }
+
+  // 소싱처 드롭다운 (suppliersCache 에서)
+  function renderSupplierSelect(skuId, currentSupplierId) {
+    const opts = suppliersCache.map(s =>
+      `<option value="${s.id}" ${currentSupplierId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`
+    ).join('');
+    return `<select class="sm-supplier" data-id="${skuId}" style="width:110px;padding:4px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:11px;">
+      <option value="">— 선택 —</option>
+      ${opts}
+      <option value="__new__" style="color:#81c784;">+ 새 소싱처</option>
+    </select>`;
   }
 
   function renderList() {
@@ -207,24 +245,22 @@
       el.innerHTML = '<div style="padding:20px;color:#888;">SKU 가 없습니다. 위의 폼에서 신규 SKU 를 등록해 보세요.</div>';
       return;
     }
-    const rows = cache.map(s => {
-      const dimsStr = fmtDims(s.width_cm, s.height_cm, s.length_cm);
-      const pkgStr = s.default_packaging_weight_g != null ? `+${s.default_packaging_weight_g}g 포장` : '';
-      return `
+    // 2026-07-10 사장님 지침: 브랜드/유형 컬럼 제거 · 원가·무게 인라인 편집
+    //   · 소싱처 드롭다운 · 플랫폼 뱃지 (eBay/Shopify/Naver/Shopee/Qoo10)
+    const rows = cache.map(s => `
       <tr data-id="${s.id}">
         <td style="padding:10px;font-family:monospace;color:#81d4fa;">${esc(s.internal_sku)}</td>
         <td style="padding:10px;color:#fff;">${esc(s.title)}</td>
-        <td style="padding:10px;color:#aaa;">${esc(s.brand || '-')}</td>
-        <td style="padding:10px;color:#aaa;">
-          ${esc(s.product_type || '-')}
-          ${s.shipping_group ? `<div style="font-size:10px;color:#81c784;margin-top:2px;">📦 ${esc(s.shipping_group)}</div>` : ''}
+        <td style="padding:10px;text-align:right;">
+          <input type="number" class="sm-cost" data-id="${s.id}" data-orig="${s.cost_krw ?? ''}" value="${s.cost_krw ?? ''}" placeholder="원가" style="width:90px;padding:4px 6px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;text-align:right;">
+          <div style="font-size:9px;color:#666;">KRW</div>
         </td>
-        <td style="padding:10px;text-align:right;color:#fff;">${fmtMoney(s.cost_krw)}</td>
-        <td style="padding:10px;text-align:right;color:#aaa;white-space:nowrap;">
-          ${fmtGram(s.weight_gram)} ${weightStatusBadge(s.weight_status)}
-          ${dimsStr ? `<div style="font-size:10px;color:#666;margin-top:2px;">${dimsStr}</div>` : ''}
-          ${pkgStr ? `<div style="font-size:10px;color:#888;">${pkgStr}</div>` : ''}
+        <td style="padding:10px;text-align:right;white-space:nowrap;">
+          <input type="number" class="sm-weight" data-id="${s.id}" data-orig="${s.weight_gram ?? ''}" value="${s.weight_gram ?? ''}" placeholder="무게" style="width:80px;padding:4px 6px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;text-align:right;">
+          <div style="font-size:9px;color:#666;">g ${weightStatusBadge(s.weight_status)}</div>
         </td>
+        <td style="padding:10px;">${renderSupplierSelect(s.id, s.supplier_id)}</td>
+        <td style="padding:10px;white-space:nowrap;">${renderPlatformBadges(s.listings)}</td>
         <td style="padding:10px;">
           <select class="sm-status" data-id="${s.id}" style="padding:4px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;">
             <option value="active" ${s.status==='active'?'selected':''}>active</option>
@@ -248,8 +284,7 @@
           <div id="sm-link-panel-${s.id}" style="padding:12px 16px;border-top:1px solid #333;"></div>
         </td>
       </tr>
-    `;
-    }).join('');
+    `).join('');
 
     el.innerHTML = `
       <table style="width:100%;border-collapse:collapse;">
@@ -257,10 +292,10 @@
           <tr style="background:#0f0f23;border-bottom:2px solid #2a2a4a;">
             <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">internal_sku</th>
             <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">제목</th>
-            <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">브랜드</th>
-            <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">유형</th>
-            <th style="padding:10px;text-align:right;color:#aaa;font-size:12px;">원가</th>
-            <th style="padding:10px;text-align:right;color:#aaa;font-size:12px;">무게</th>
+            <th style="padding:10px;text-align:right;color:#aaa;font-size:12px;">원가 ✏️</th>
+            <th style="padding:10px;text-align:right;color:#aaa;font-size:12px;">무게 ✏️</th>
+            <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">소싱처</th>
+            <th style="padding:10px;text-align:left;color:#aaa;font-size:12px;">등록 플랫폼</th>
             <th style="padding:10px;color:#aaa;font-size:12px;">상태</th>
             <th style="padding:10px;color:#aaa;font-size:12px;">자동화</th>
             <th style="padding:10px;color:#aaa;font-size:12px;">갱신</th>
@@ -275,8 +310,82 @@
     el.querySelectorAll('.sm-auto').forEach(c => c.addEventListener('change', onAutoToggle));
     el.querySelectorAll('.sm-delete').forEach(b => b.addEventListener('click', onSoftDelete));
     el.querySelectorAll('.sm-links').forEach(b => b.addEventListener('click', onToggleLinks));
+    // 2026-07-10 인라인 편집
+    el.querySelectorAll('.sm-cost').forEach(inp => inp.addEventListener('blur', onCostBlur));
+    el.querySelectorAll('.sm-weight').forEach(inp => inp.addEventListener('blur', onWeightBlur));
+    el.querySelectorAll('.sm-supplier').forEach(sel => sel.addEventListener('change', onSupplierChange));
 
     for (const id of openLinkIds) renderLinkPanel(id);
+  }
+
+  // 인라인 편집 핸들러 — 사장님/직원이 즉시 값 입력해 landing_cost BLOCK 해소.
+  async function onCostBlur(e) {
+    const el = e.target;
+    const id = parseInt(el.dataset.id, 10);
+    const orig = el.dataset.orig || '';
+    const cur = el.value.trim();
+    if (cur === orig) return; // 변경 없음
+    await patchInline(el, id, { cost_krw: cur === '' ? null : Number(cur) });
+    el.dataset.orig = cur;
+  }
+
+  async function onWeightBlur(e) {
+    const el = e.target;
+    const id = parseInt(el.dataset.id, 10);
+    const orig = el.dataset.orig || '';
+    const cur = el.value.trim();
+    if (cur === orig) return;
+    await patchInline(el, id, { weight_gram: cur === '' ? null : parseInt(cur, 10) });
+    el.dataset.orig = cur;
+  }
+
+  async function onSupplierChange(e) {
+    const el = e.target;
+    const id = parseInt(el.dataset.id, 10);
+    const val = el.value;
+    if (val === '__new__') {
+      // 새 소싱처 추가
+      const name = prompt('새 소싱처 이름을 입력하세요:');
+      if (!name || !name.trim()) { el.value = ''; return; }
+      try {
+        const res = await fetch('/api/suppliers', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name.trim() }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || 'create failed');
+        suppliersCache.push(json.data);
+        suppliersCache.sort((a, b) => a.name.localeCompare(b.name));
+        // 새 소싱처로 이 SKU 도 매핑
+        await patchInline(el, id, { supplier_id: json.data.id });
+        renderList();
+      } catch (err) {
+        alert('소싱처 추가 실패: ' + err.message);
+        el.value = '';
+      }
+      return;
+    }
+    const supplier_id = val === '' ? null : parseInt(val, 10);
+    await patchInline(el, id, { supplier_id });
+  }
+
+  async function patchInline(el, id, body) {
+    const origBg = el.style.borderColor;
+    el.style.borderColor = '#ff9800';
+    try {
+      const res = await fetch('/api/sku-master/' + id, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'update failed');
+      el.style.borderColor = '#2e7d32';
+      const idx = cache.findIndex(s => s.id === id);
+      if (idx >= 0) Object.assign(cache[idx], json.data);
+      setTimeout(() => { el.style.borderColor = origBg || '#444'; }, 1500);
+    } catch (err) {
+      el.style.borderColor = '#c62828';
+      alert('저장 실패: ' + err.message);
+    }
   }
 
   async function onCreate(e) {

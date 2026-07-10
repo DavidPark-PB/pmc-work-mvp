@@ -183,6 +183,8 @@ app.use('/api/ops-briefing', require('./src/web/routes/operationsBriefing'));
 app.use('/api/opportunity-inbox', require('./src/web/routes/opportunityInbox'));
 // PR R1 — AI Draft Generator (opportunity → AI 가 platform 별 title/description 생성)
 app.use('/api/opportunity-drafts', require('./src/web/routes/opportunityDrafts'));
+// suppliers 마스터 (Engine 5 예약 활용, 2026-07-10)
+app.use('/api/suppliers', require('./src/web/routes/suppliers'));
 
 // ── 발주 관리 (Phase 2) ──
 app.use('/api/purchase-requests', require('./src/web/routes/purchaseRequests'));
