@@ -215,16 +215,27 @@
     }
   }
 
-  // 플랫폼 뱃지 렌더 (등록 있음=색상, 없음=회색)
-  function renderPlatformBadges(listings) {
+  // 플랫폼 뱃지 렌더 — 클릭 토글 지원 (2026-07-10 사장님 지침)
+  //   등록 있음=색상, 미등록=회색. 클릭 시 등록/해제 즉시 반영 (낙관적 업데이트).
+  //   직원들도 뱃지 색깔로 등록 여부 확인 가능.
+  function renderPlatformBadges(skuId, listings) {
     const has = new Set((listings || []).map(l => String(l.marketplace || '').toLowerCase()));
     return PLATFORMS.map(p => {
       const on = has.has(p.key);
       const bg = on ? p.color : '#333';
-      const color = on ? '#fff' : '#666';
+      const color = on ? '#fff' : '#888';
       const mark = on ? '✓' : '';
-      return `<span style="display:inline-block;padding:2px 6px;margin-right:3px;background:${bg};color:${color};border-radius:4px;font-size:10px;font-weight:600;" title="${p.label} ${on?'등록됨':'미등록'}">${p.label}${mark}</span>`;
+      return `<span class="sm-platform-badge" data-sku-id="${skuId}" data-marketplace="${p.key}" data-enabled="${on}" style="display:inline-block;padding:3px 7px;margin-right:3px;background:${bg};color:${color};border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;user-select:none;" title="${p.label} ${on?'등록됨 (클릭하면 해제)':'미등록 (클릭하면 등록)'}">${p.label}${mark}</span>`;
     }).join('');
+  }
+
+  // 무게 변환 (2026-07-10 사장님 지침): sku_master.weight_gram (정수 g) ↔ UI kg (소수점).
+  function gramsToKg(g) { return g == null || g === '' ? '' : (Number(g) / 1000); }
+  function kgToGrams(kg) {
+    if (kg == null || kg === '') return null;
+    const n = parseFloat(kg);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.round(n * 1000);
   }
 
   // 소싱처 드롭다운 (suppliersCache 에서)
@@ -256,11 +267,11 @@
           <div style="font-size:9px;color:#666;">KRW</div>
         </td>
         <td style="padding:10px;text-align:right;white-space:nowrap;">
-          <input type="number" class="sm-weight" data-id="${s.id}" data-orig="${s.weight_gram ?? ''}" value="${s.weight_gram ?? ''}" placeholder="무게" style="width:80px;padding:4px 6px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;text-align:right;">
-          <div style="font-size:9px;color:#666;">g ${weightStatusBadge(s.weight_status)}</div>
+          <input type="number" step="0.001" min="0" class="sm-weight" data-id="${s.id}" data-orig-kg="${gramsToKg(s.weight_gram)}" value="${gramsToKg(s.weight_gram)}" placeholder="무게" style="width:80px;padding:4px 6px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;text-align:right;">
+          <div style="font-size:9px;color:#666;">kg ${weightStatusBadge(s.weight_status)}</div>
         </td>
         <td style="padding:10px;">${renderSupplierSelect(s.id, s.supplier_id)}</td>
-        <td style="padding:10px;white-space:nowrap;">${renderPlatformBadges(s.listings)}</td>
+        <td style="padding:10px;white-space:nowrap;">${renderPlatformBadges(s.id, s.listings)}</td>
         <td style="padding:10px;">
           <select class="sm-status" data-id="${s.id}" style="padding:4px;background:#0f0f23;border:1px solid #444;color:#fff;border-radius:4px;font-size:12px;">
             <option value="active" ${s.status==='active'?'selected':''}>active</option>
@@ -314,6 +325,7 @@
     el.querySelectorAll('.sm-cost').forEach(inp => inp.addEventListener('blur', onCostBlur));
     el.querySelectorAll('.sm-weight').forEach(inp => inp.addEventListener('blur', onWeightBlur));
     el.querySelectorAll('.sm-supplier').forEach(sel => sel.addEventListener('change', onSupplierChange));
+    el.querySelectorAll('.sm-platform-badge').forEach(b => b.addEventListener('click', onPlatformBadgeClick));
 
     for (const id of openLinkIds) renderLinkPanel(id);
   }
@@ -332,11 +344,63 @@
   async function onWeightBlur(e) {
     const el = e.target;
     const id = parseInt(el.dataset.id, 10);
-    const orig = el.dataset.orig || '';
-    const cur = el.value.trim();
-    if (cur === orig) return;
-    await patchInline(el, id, { weight_gram: cur === '' ? null : parseInt(cur, 10) });
-    el.dataset.orig = cur;
+    // 2026-07-10 사장님 지침: 무게는 kg 입력, 저장은 g. data-orig-kg 로 kg 비교.
+    const origKg = el.dataset.origKg || '';
+    const curKg = el.value.trim();
+    if (curKg === origKg) return;
+    const grams = kgToGrams(curKg);
+    await patchInline(el, id, { weight_gram: grams });
+    el.dataset.origKg = curKg;
+  }
+
+  // 2026-07-10 플랫폼 뱃지 토글 (사장님 지침). 사장님·직원이 클릭 = 등록됨/해제 표시.
+  async function onPlatformBadgeClick(e) {
+    const el = e.currentTarget;
+    const skuId = parseInt(el.dataset.skuId, 10);
+    const marketplace = el.dataset.marketplace;
+    const wasEnabled = el.dataset.enabled === 'true';
+    const nextEnabled = !wasEnabled;
+
+    // 낙관적 UI 업데이트
+    const platform = PLATFORMS.find(p => p.key === marketplace);
+    if (platform) {
+      el.dataset.enabled = String(nextEnabled);
+      el.style.background = nextEnabled ? platform.color : '#333';
+      el.style.color = nextEnabled ? '#fff' : '#888';
+      el.textContent = platform.label + (nextEnabled ? '✓' : '');
+      el.title = platform.label + (nextEnabled ? ' 등록됨 (클릭하면 해제)' : ' 미등록 (클릭하면 등록)');
+    }
+
+    try {
+      const res = await fetch('/api/sku-master/' + skuId + '/platform', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ marketplace, enabled: nextEnabled }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'toggle failed');
+      // 캐시의 listings 업데이트
+      const skuIdx = cache.findIndex(s => s.id === skuId);
+      if (skuIdx >= 0) {
+        const list = cache[skuIdx].listings || [];
+        if (nextEnabled) {
+          if (!list.some(l => (l.marketplace || '').toLowerCase() === marketplace)) {
+            list.push({ marketplace, listing_id: 'sku-marker' });
+          }
+        } else {
+          cache[skuIdx].listings = list.filter(l => (l.marketplace || '').toLowerCase() !== marketplace);
+        }
+      }
+    } catch (err) {
+      // 실패 시 원상복구
+      if (platform) {
+        el.dataset.enabled = String(wasEnabled);
+        el.style.background = wasEnabled ? platform.color : '#333';
+        el.style.color = wasEnabled ? '#fff' : '#888';
+        el.textContent = platform.label + (wasEnabled ? '✓' : '');
+      }
+      alert('플랫폼 토글 실패: ' + err.message);
+    }
   }
 
   async function onSupplierChange(e) {

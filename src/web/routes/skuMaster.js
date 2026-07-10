@@ -602,4 +602,55 @@ router.delete('/:id/links/:linkId', async (req, res) => {
   }
 });
 
+// PUT /api/sku-master/:id/platform  body: { marketplace, enabled: true|false }
+// 2026-07-10 사장님 지침: 등록 플랫폼 뱃지 클릭 토글.
+//   enabled=true  → sku_listing_link 에 marker row 추가 (listing_id 미상이면 placeholder)
+//   enabled=false → 해당 (sku_id, marketplace) 링크 전부 delete (marker + real 포함)
+// listing_id 는 sku_listing_link.listing_id NOT NULL 이므로 placeholder 사용.
+router.put('/:id/platform', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+    const body = req.body || {};
+    const marketplace = trimOrNull(body.marketplace, 50);
+    const enabled = body.enabled === true;
+    if (!marketplace || !VALID_MARKETPLACES.has(marketplace)) {
+      return res.status(400).json({ error: `marketplace 부적합 (허용: ${[...VALID_MARKETPLACES].join(',')})` });
+    }
+    const c = getClient();
+
+    if (enabled) {
+      // 이미 있으면 skip, 없으면 marker insert
+      const { data: existing } = await c.from('sku_listing_link')
+        .select('id').eq('sku_id', id).eq('marketplace', marketplace).limit(1);
+      if (existing && existing.length > 0) {
+        return res.json({ data: { enabled: true, existing: true } });
+      }
+      // marker row — 사장님이 나중에 실제 listing_id 알면 UPDATE 가능.
+      // unique(marketplace, listing_id, option_id) 통과용: option_id=String(sku_id)
+      const { error } = await c.from('sku_listing_link').insert({
+        sku_id: id,
+        marketplace,
+        listing_id: 'sku-marker',
+        option_id: String(id),
+        marketplace_sku: null,
+        is_primary: false,
+      });
+      if (error) {
+        if (error.code === '23505') return res.json({ data: { enabled: true, existing: true } });
+        throw error;
+      }
+      return res.json({ data: { enabled: true } });
+    }
+
+    // enabled=false → 전체 delete (해당 sku_id + marketplace)
+    const { error } = await c.from('sku_listing_link')
+      .delete().eq('sku_id', id).eq('marketplace', marketplace);
+    if (error) throw error;
+    return res.json({ data: { enabled: false } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
