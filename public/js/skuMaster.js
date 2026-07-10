@@ -18,6 +18,7 @@
   let cache = [];
   let openLinkIds = new Set();
   let suppliersCache = [];  // {id, name, channel, is_active} — 소싱처 드롭다운 소스
+  let bulkSkusFilter = null; // 2026-07-10: 자동 예외에서 넘어온 SKU 리스트 (?skus=A,B,C)
   // 사장님 지정 플랫폼 뱃지 (2026-07-10). marketplace 값과 매칭.
   const PLATFORMS = [
     { key: 'ebay',     label: 'eBay',    color: '#e53238' },
@@ -58,6 +59,13 @@
       el.innerHTML = '<div style="padding:40px;color:#888;">관리자 전용 페이지입니다.</div>';
       return;
     }
+    // 2026-07-10 사장님 지침: 자동 예외에서 SKU 리스트 일괄 열기 지원.
+    //   URL 파라미터 ?skus=A,B,C 있으면 그 SKU 리스트만 필터.
+    try {
+      const usp = new URLSearchParams(location.search);
+      const raw = usp.get('skus');
+      bulkSkusFilter = raw ? raw.split(',').map((s) => s.trim()).filter(Boolean) : null;
+    } catch (_) { bulkSkusFilter = null; }
     renderShell(el);
     await refresh();
   }
@@ -197,6 +205,10 @@
     if (status) params.set('status', status);
     if (auto) params.set('automation_enabled', auto);
     if (weightStatus) params.set('weight_status', weightStatus);
+    // 2026-07-10: 자동 예외에서 넘어온 SKU 리스트 일괄 필터.
+    if (bulkSkusFilter && bulkSkusFilter.length > 0) {
+      params.set('skus', bulkSkusFilter.join(','));
+    }
 
     try {
       // suppliers 는 첫 로드 시 or 명시적 재조회에서만
@@ -252,8 +264,16 @@
 
   function renderList() {
     const el = document.getElementById('sm-list');
+    // 2026-07-10: 일괄 필터 활성 시 상단 배너 (자동 예외 카드에서 넘어옴).
+    const bulkBanner = (bulkSkusFilter && bulkSkusFilter.length > 0) ? `
+      <div style="margin-bottom:12px;padding:12px 14px;background:#0d2818;border-left:4px solid #2e7d32;border-radius:6px;font-size:13px;color:#c5e1a5;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div>🎯 자동 예외 우선순위 <strong>${bulkSkusFilter.length}</strong>개 SKU 필터 중 (표시 ${cache.length}개). 각 SKU 원가/무게/치수/소싱처 채우면 Engine 1 즉시 편입.</div>
+        <button id="sm-bulk-clear" style="padding:6px 12px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">전체 SKU 보기</button>
+      </div>` : '';
     if (cache.length === 0) {
-      el.innerHTML = '<div style="padding:20px;color:#888;">SKU 가 없습니다. 위의 폼에서 신규 SKU 를 등록해 보세요.</div>';
+      el.innerHTML = bulkBanner + '<div style="padding:20px;color:#888;">SKU 가 없습니다. 위의 폼에서 신규 SKU 를 등록해 보세요.</div>';
+      const clearBtn = document.getElementById('sm-bulk-clear');
+      if (clearBtn) clearBtn.addEventListener('click', () => { bulkSkusFilter = null; refresh(); });
       return;
     }
     // 2026-07-10 사장님 지침: 브랜드/유형 컬럼 제거 · 원가·무게 인라인 편집
@@ -297,7 +317,7 @@
       </tr>
     `).join('');
 
-    el.innerHTML = `
+    el.innerHTML = bulkBanner + `
       <table style="width:100%;border-collapse:collapse;">
         <thead>
           <tr style="background:#0f0f23;border-bottom:2px solid #2a2a4a;">
@@ -326,6 +346,17 @@
     el.querySelectorAll('.sm-weight').forEach(inp => inp.addEventListener('blur', onWeightBlur));
     el.querySelectorAll('.sm-supplier').forEach(sel => sel.addEventListener('change', onSupplierChange));
     el.querySelectorAll('.sm-platform-badge').forEach(b => b.addEventListener('click', onPlatformBadgeClick));
+    // 2026-07-10 일괄 필터 해제 버튼
+    const clearBtn = document.getElementById('sm-bulk-clear');
+    if (clearBtn) clearBtn.addEventListener('click', () => {
+      bulkSkusFilter = null;
+      try {
+        const u = new URL(location.href);
+        u.searchParams.delete('skus');
+        history.replaceState({}, '', u);
+      } catch (_) {}
+      refresh();
+    });
 
     for (const id of openLinkIds) renderLinkPanel(id);
   }

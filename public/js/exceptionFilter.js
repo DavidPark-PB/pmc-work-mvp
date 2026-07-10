@@ -306,6 +306,12 @@
     // priority_skus 표 렌더 (사장님이 SKU 클릭 → SKU 마스터로 이동해 인라인 편집)
     const totalUsd = ctx.total_estimated_revenue_usd || ctx.total_potential_impact_usd || 0;
     const summary = `우선순위 SKU <strong>${skus.length}</strong>개 · 누적 규모 <strong>$${Number(totalUsd).toLocaleString()}</strong>`;
+    // 2026-07-10 사장님 지침: 전체 SKU 를 SKU 마스터에서 한 번에 열기.
+    //   URL 파라미터 ?skus=A,B,C 로 SKU 마스터가 정확 일치 필터.
+    const skuCsv = skus.map((s) => s.sku).filter(Boolean).join(',');
+    const bulkOpenBtn = skuCsv
+      ? `<button onclick="(function(){ const u=new URL(location.href); u.searchParams.set('page','sku-master'); u.searchParams.set('skus','${skuCsv.replace(/'/g, "\\'")}'); history.pushState({}, '', u); navigateTo('sku-master'); })(); return false;" style="padding:6px 12px;background:#2e7d32;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">🚀 SKU 마스터에 ${skus.length}개 일괄 열기</button>`
+      : '';
     const rows = skus.map((s, i) => {
       const scale = s.estimated_revenue_usd != null ? `$${Number(s.estimated_revenue_usd).toLocaleString()}` : (s.diff != null ? `+$${s.diff}` : '-');
       const sold = s.sales_count != null ? s.sales_count : (s.competitor_sold != null ? s.competitor_sold : '-');
@@ -327,7 +333,9 @@
     }).join('');
     return `
       <div style="margin-bottom:12px;padding:10px;background:#0d2818;border-left:3px solid #2e7d32;border-radius:4px;font-size:12px;color:#c5e1a5;">
-        📌 ${summary}. SKU 클릭 시 <a href="#" onclick="navigateTo('sku-master');return false;" style="color:#81d4fa;">SKU 마스터 화면</a>으로 이동 → 원가/무게/치수/소싱처 인라인 입력.
+        <div style="margin-bottom:8px;">📌 ${summary}.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">${bulkOpenBtn}
+        <span style="color:#888;font-size:11px;">아래 표에서 SKU 개별 클릭 시 그 SKU 만 필터.</span></div>
       </div>
       <div style="margin-bottom:8px;">
         <div style="color:#aaa;font-size:11px;margin-bottom:4px;">우선순위 SKU 목록 (context.priority_skus)</div>

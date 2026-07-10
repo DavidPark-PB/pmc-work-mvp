@@ -86,6 +86,14 @@ router.get('/', async (req, res) => {
       // internal_sku 또는 title 부분일치
       q = q.or(`internal_sku.ilike.%${search}%,title.ilike.%${search}%`);
     }
+    // 2026-07-10 사장님 지침: 우선순위 카드에서 SKU 리스트 일괄 열기 지원.
+    //   ?skus=SKU1,SKU2,SKU3,... — 정확 일치 (internal_sku IN)
+    const skusParam = trimOrNull(req.query.skus, 8000);
+    let skuFilter = null;
+    if (skusParam) {
+      skuFilter = skusParam.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 500);
+      if (skuFilter.length > 0) q = q.in('internal_sku', skuFilter);
+    }
     const status = trimOrNull(req.query.status, 30);
     if (status && VALID_STATUS.has(status)) q = q.eq('status', status);
 
