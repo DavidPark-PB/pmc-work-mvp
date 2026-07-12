@@ -75,6 +75,11 @@ async function main() {
   }
 
   // 3. losing 판정 + 정렬
+  //   2026-07-12: 데이터 신선도 태그 추가 — 사장님 지적 (내 가격 3~4개월 전
+  //   이라 오판정). productSync 크론 문제 해결 전까지 신선도 표시로 사장님이
+  //   직접 판단.
+  const now = Date.now();
+  const STALE_DAYS = 14;
   const losing = [];
   for (const m of matches) {
     const my = myBySku.get(m.our_sku);
@@ -90,6 +95,9 @@ async function main() {
     const cTotal = cPrice + cShipping;
     if (!(myTotal > 0 && cTotal > 0)) continue;
     if (myTotal <= cTotal) continue; // 이기고 있거나 동률
+    const myUpdatedMs = my.updated_at ? new Date(my.updated_at).getTime() : 0;
+    const myAgeDays = myUpdatedMs > 0 ? Math.floor((now - myUpdatedMs) / 86400000) : null;
+    const isStale = myAgeDays != null && myAgeDays >= STALE_DAYS;
     losing.push({
       sku: my.sku,
       my_item_id: my.item_id,
@@ -97,6 +105,10 @@ async function main() {
       my_price: r2(myPrice),
       my_shipping: r2(myShipping),
       my_total: r2(myTotal),
+      my_updated_at: my.updated_at,
+      my_age_days: myAgeDays,
+      is_stale: isStale,
+      my_url: my.item_id ? `https://www.ebay.com/itm/${my.item_id}` : null,
       competitor_item_id: String(c.ebay_item_id),
       competitor_price: r2(cPrice),
       competitor_shipping: r2(cShipping),
@@ -107,14 +119,16 @@ async function main() {
       match_confidence: Number(m.confidence) || null,
     });
   }
+  const staleCount = losing.filter((x) => x.is_stale).length;
 
   losing.sort((a, b) => b.diff - a.diff);
   const totalDiff = r2(losing.reduce((s, x) => s + x.diff, 0));
 
-  console.log(`[find-losing] ${SELLER} 대비 지는 상품: ${losing.length}건 · 잠재 조정폭 합계 $${totalDiff.toLocaleString()}`);
+  console.log(`[find-losing] ${SELLER} 대비 지는 상품: ${losing.length}건 (⚠️ 신선도 ${STALE_DAYS}일↑ ${staleCount}건) · 잠재 조정폭 합계 $${totalDiff.toLocaleString()}`);
   console.log('[find-losing] 상위 10개:');
   losing.slice(0, 10).forEach((x, i) => {
-    console.log(`  ${i + 1}. ${x.sku.padEnd(20)} diff=$${x.diff.toString().padStart(6)} · 내 $${x.my_total} vs 경쟁 $${x.competitor_total} · ${x.title.slice(0, 50)}`);
+    const stale = x.is_stale ? ` ⚠️ ${x.my_age_days}일전` : '';
+    console.log(`  ${i + 1}. ${x.sku.padEnd(20)} diff=$${x.diff.toString().padStart(6)} · 내 $${x.my_total}${stale} vs 경쟁 $${x.competitor_total} · ${x.title.slice(0, 45)}`);
   });
 
   if (!APPLY) {
@@ -133,12 +147,13 @@ async function main() {
   const res = await createExceptionTask({
     exceptionType: 'LANDING_COST_DATA_MISSING',
     dedupeKey: `battle:losing-vs-${SELLER}:${today}`,
-    title: `[전투] ${SELLER} 대비 지는 상품 ${losing.length}개 (조정폭 합계 $${totalDiff.toLocaleString()})`,
+    title: `[전투] ${SELLER} 대비 지는 상품 ${losing.length}개 (⚠️ 신선도 ${STALE_DAYS}일↑ ${staleCount}건 · 조정폭 $${totalDiff.toLocaleString()})`,
     memo: [
       `경쟁 셀러 ${SELLER} 리스팅 중 승인 매칭 + active + 내 total > 경쟁 total 인 상품.`,
-      'diff (내 total - 경쟁 total) 큰 순 정렬.',
-      'SKU 마스터에서 원가/무게/치수/소싱처 채우면 Engine 1 이 자동 대응.',
-      '즉시 킬프라이스 필요하면 전투 상황판에서 개별 처리.',
+      'diff 큰 순 정렬. missing 컬럼에 신선도 표시 (⚠️ N일전).',
+      `⚠️ 내 리스팅 가격이 ${STALE_DAYS}일 이상 오래된 SKU 는 판정 신뢰 낮음 —`,
+      '  productSync 크론이 사실상 안 도는 중 (전체 9,591 중 최근 7일 갱신 9개).',
+      '  각 SKU 옆 my_url 로 실제 이베이 가격 확인 후 판단.',
     ].join('\n'),
     severity: 'high',
     context: {
@@ -153,11 +168,15 @@ async function main() {
         title: x.title,
         item_id: x.my_item_id,
         my_price: x.my_total,
+        my_url: x.my_url,
         competitor_total: x.competitor_total,
+        competitor_url: x.competitor_url,
         diff: x.diff,
         competitor_sold: x.competitor_sold,
-        missing: 'diff-vs-' + SELLER,
-        // 아래 필드는 UI 우선순위 표에 표시되는 이름
+        my_age_days: x.my_age_days,
+        // 신선도 태그 (UI missing 컬럼에 표시)
+        missing: x.is_stale ? `⚠️ ${x.my_age_days}일전` : `✓ 최근`,
+        // UI 우선순위 표에 표시되는 필드
         estimated_revenue_usd: x.diff,
         sales_count: x.competitor_sold,
         price_usd: x.my_total,
