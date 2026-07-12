@@ -29,6 +29,7 @@ const { createExceptionTask } = require('../src/services/exceptionTask');
 
 const args = process.argv.slice(2);
 const APPLY = args.includes('--apply');
+const INCLUDE_STALE = args.includes('--include-stale'); // 기본 false — 오래된 것 제외
 const sellerIdx = args.indexOf('--seller');
 const SELLER = sellerIdx >= 0 ? args[sellerIdx + 1] : null;
 
@@ -120,11 +121,18 @@ async function main() {
     });
   }
   const staleCount = losing.filter((x) => x.is_stale).length;
+  const freshCount = losing.length - staleCount;
+
+  // 2026-07-12 사장님 지침 (기본): 오래된 판정은 자동 예외 콘솔 카드에서 제외.
+  //   Browse API 쿼터 회복 후 matched-only refresh 돌면 신선한 것만 남음.
+  //   --include-stale 로 이전 동작 복원 가능.
+  const filteredForTask = INCLUDE_STALE ? losing : losing.filter((x) => !x.is_stale);
 
   losing.sort((a, b) => b.diff - a.diff);
   const totalDiff = r2(losing.reduce((s, x) => s + x.diff, 0));
 
-  console.log(`[find-losing] ${SELLER} 대비 지는 상품: ${losing.length}건 (⚠️ 신선도 ${STALE_DAYS}일↑ ${staleCount}건) · 잠재 조정폭 합계 $${totalDiff.toLocaleString()}`);
+  console.log(`[find-losing] ${SELLER} 대비 지는 상품: 총 ${losing.length}건 = 신선 ${freshCount} + 오래됨 ${staleCount} · 조정폭 $${totalDiff.toLocaleString()}`);
+  console.log(`[find-losing] 자동 예외 카드에는 ${INCLUDE_STALE ? '전부' : `신선한 ${freshCount}건만`} 표시 (${INCLUDE_STALE ? '--include-stale 활성' : '--include-stale 로 오래된 것도 포함 가능'})`);
   console.log('[find-losing] 상위 10개:');
   losing.slice(0, 10).forEach((x, i) => {
     const stale = x.is_stale ? ` ⚠️ ${x.my_age_days}일전` : '';
@@ -136,8 +144,48 @@ async function main() {
     return;
   }
 
-  if (losing.length === 0) {
-    console.log('[find-losing] 지는 상품 없음 — team_task 생성 안 함');
+  const filteredTotalDiff = r2(filteredForTask.reduce((s, x) => s + x.diff, 0));
+
+  // 신선 없음 + stale 있음 → 이전 오판정 카드 done 처리 + 판정 유예 카드로 교체.
+  if (filteredForTask.length === 0 && staleCount > 0) {
+    const today = new Date().toISOString().slice(0, 10);
+    const { getClient } = require('../src/db/supabaseClient');
+    const db = getClient();
+    const { error: doneErr } = await db.from('team_tasks')
+      .update({ status: 'done', completion_note: '오판정 (오래된 데이터) — 판정 유예 카드로 교체' })
+      .eq('dedupe_key', `battle:losing-vs-${SELLER}:${today}`)
+      .neq('status', 'done');
+    if (doneErr) console.warn('[find-losing] 기존 카드 done 처리 실패:', doneErr.message);
+    else console.log('[find-losing] 오늘 자 이전 카드 done 처리 완료');
+
+    const res = await createExceptionTask({
+      exceptionType: 'AUTOMATION_FAILED',
+      dedupeKey: `battle:losing-vs-${SELLER}:pending:${today}`,
+      title: `[전투] ${SELLER} 판정 유예 — 데이터 오래됨 (${staleCount}건 refresh 대기)`,
+      memo: [
+        `${SELLER} 매칭된 내 리스팅 ${staleCount}건 모두 ${STALE_DAYS}일 이상 오래된 데이터.`,
+        '실제 이베이 가격은 대부분 이미 갱신됐지만 우리 DB 는 예전 값 → 정확 판정 불가.',
+        '조치 (2026-07-12 배포):',
+        '  1. myListingRefresher matched-only 모드 활성 — 매일 새벽 3시 매칭 SKU 만 refresh.',
+        '  2. 매칭 approved SKU 약 1,078개 → 하루에 전량 신선화 예상.',
+        '내일 오전 이후 재실행 시 신선한 판정만 남음.',
+        `수동 확인 원하면: node scripts/find-losing-vs-seller.js --seller ${SELLER} --apply --include-stale`,
+      ].join('\n'),
+      severity: 'medium',
+      context: {
+        source: 'find-losing-vs-seller',
+        seller_id: SELLER,
+        pending: true,
+        stale_count: staleCount,
+        generated_at: new Date().toISOString(),
+      },
+    });
+    console.log(`[find-losing] 판정 유예 카드 ${res.deduped ? 'dedup' : '생성'} id=${res.id ?? '?'}`);
+    return;
+  }
+
+  if (filteredForTask.length === 0) {
+    console.log('[find-losing] 지는 상품 없음 (신선/오래됨 모두 0) — team_task 생성 안 함');
     return;
   }
 
@@ -147,23 +195,31 @@ async function main() {
   const res = await createExceptionTask({
     exceptionType: 'LANDING_COST_DATA_MISSING',
     dedupeKey: `battle:losing-vs-${SELLER}:${today}`,
-    title: `[전투] ${SELLER} 대비 지는 상품 ${losing.length}개 (⚠️ 신선도 ${STALE_DAYS}일↑ ${staleCount}건 · 조정폭 $${totalDiff.toLocaleString()})`,
+    title: INCLUDE_STALE
+      ? `[전투] ${SELLER} 대비 지는 상품 ${losing.length}개 (⚠️ 신선도 ${STALE_DAYS}일↑ ${staleCount}건 · 조정폭 $${totalDiff.toLocaleString()})`
+      : `[전투] ${SELLER} 대비 지는 상품 ${filteredForTask.length}개 (신선한 판정만 · 조정폭 $${filteredTotalDiff.toLocaleString()}, 오래된 ${staleCount}건 제외)`,
     memo: [
       `경쟁 셀러 ${SELLER} 리스팅 중 승인 매칭 + active + 내 total > 경쟁 total 인 상품.`,
-      'diff 큰 순 정렬. missing 컬럼에 신선도 표시 (⚠️ N일전).',
-      `⚠️ 내 리스팅 가격이 ${STALE_DAYS}일 이상 오래된 SKU 는 판정 신뢰 낮음 —`,
-      '  productSync 크론이 사실상 안 도는 중 (전체 9,591 중 최근 7일 갱신 9개).',
-      '  각 SKU 옆 my_url 로 실제 이베이 가격 확인 후 판단.',
+      'diff 큰 순 정렬. 각 SKU 옆 my_url / competitor_url 로 실제 이베이 페이지 확인.',
+      INCLUDE_STALE
+        ? `⚠️ 신선도 ${STALE_DAYS}일↑ 항목 포함 — 오래된 데이터는 판정 신뢰 낮음.`
+        : `이 카드는 최근 ${STALE_DAYS}일 이내 갱신된 SKU 만 표시. 오래된 ${staleCount}건은 제외됨.`,
+      'productSync 크론 미가동으로 대량 SKU 가 stale — 매일 새벽 3시 matched-only refresh 로 순차 신선화 중.',
     ].join('\n'),
     severity: 'high',
     context: {
       source: 'find-losing-vs-seller',
       seller_id: SELLER,
       generated_at: new Date().toISOString(),
-      total_losing: losing.length,
-      total_estimated_revenue_usd: totalDiff, // 이름 재사용 (UI 가 이 필드 렌더)
-      top_n: losing.length,
-      priority_skus: losing.map((x) => ({
+      include_stale: INCLUDE_STALE,
+      stale_days: STALE_DAYS,
+      total_losing_all: losing.length,
+      fresh_count: freshCount,
+      stale_count: staleCount,
+      total_losing: filteredForTask.length,
+      total_estimated_revenue_usd: INCLUDE_STALE ? totalDiff : filteredTotalDiff,
+      top_n: filteredForTask.length,
+      priority_skus: filteredForTask.map((x) => ({
         sku: x.sku,
         title: x.title,
         item_id: x.my_item_id,
