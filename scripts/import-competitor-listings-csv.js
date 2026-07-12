@@ -86,6 +86,49 @@ function parseSoldWatch(s) {
   };
 }
 
+// 2026-07-12 재작성: CSV 파일별로 컬럼 순서가 다름 (Type A 9열, Type B 8열 등).
+// 각 셀 값을 정규식으로 판별해서 필드 자동 인식.
+// url + title 은 c[1], c[2] 로 고정 (이미지 c[0] 도 고정).
+// 나머지 (가격/배송/컨디션/판매/타입/날짜) 는 어느 위치든 정확히 잡음.
+function classifyCells(cells) {
+  const out = { price: null, shipping: 0, sold: null, watchers: null, total: null, condition: null };
+  const dollarValues = []; // 순서대로 등장하는 $XX.XX
+  for (const raw of cells.slice(3)) {  // c[3] 부터 (0/1/2 = image/url/title)
+    const s = String(raw || '').trim();
+    if (!s) continue;
+    const low = s.toLowerCase();
+    // 배송비 판정 우선 (delivery/shipping 키워드 있음)
+    if (/delivery|shipping|postage/.test(low) || low.includes('free')) {
+      out.shipping = parseShipping(s);
+      continue;
+    }
+    // sold / watchers
+    if (/\bsold\b|\bwatchers?\b/.test(low)) {
+      const sw = parseSoldWatch(s);
+      if (sw.sold != null) out.sold = sw.sold;
+      if (sw.watchers != null) out.watchers = sw.watchers;
+      continue;
+    }
+    // 컨디션
+    if (/brand new|pre[-\s]?owned|used|open box|refurb|for parts/.test(low)) {
+      out.condition = s;
+      continue;
+    }
+    // 순수 $ 값 (가격 or 총액)
+    const m = s.match(/^\$?([\d,]+\.?\d*)$/);
+    if (m) {
+      dollarValues.push(parseFloat(m[1].replace(/,/g, '')) || 0);
+      continue;
+    }
+    // 그 외 (판매타입 "Buy It Now", 날짜 "Nov-13 10:00" 등) 무시
+  }
+  if (dollarValues.length > 0) {
+    out.price = dollarValues[0];
+    if (dollarValues.length > 1) out.total = dollarValues[dollarValues.length - 1];
+  }
+  return out;
+}
+
 async function main() {
   if (!fs.existsSync(FOLDER)) {
     console.error(`[import] 폴더 없음: ${FOLDER}`);
@@ -121,31 +164,25 @@ async function main() {
       const image = r[0] || null;
       const url = r[1];
       const title = r[2];
-      const priceStr = r[3];
-      const shippingStr = r[5];
-      const totalStr = r[7];
-      const soldStr = r[8];
       const itemId = extractItemIdFromUrl(url);
       if (!itemId || !title) continue;
 
-      const price = parseUsd(priceStr);
-      const shipping = parseShipping(shippingStr);
-      const total = totalStr ? parseUsd(totalStr) : (price + shipping);
-      const sw = parseSoldWatch(soldStr);
+      // 값 형태 기반 필드 자동 판별 (2026-07-12 개선).
+      const cls = classifyCells(r);
+      const price = cls.price || 0;
+      const shipping = cls.shipping;
+      const total = cls.total != null ? cls.total : (price + shipping);
 
       totalRows++;
 
-      if (mp.has(itemId)) {
-        // 이미 있으면 최신값 유지 (첫 등장이 대개 신선함)
-        continue;
-      }
+      if (mp.has(itemId)) continue; // 첫 등장 값 사용
       mp.set(itemId, {
         seller_id: seller,
         ebay_item_id: itemId,
         title: String(title).slice(0, 500),
         price,
         shipping,
-        quantity_sold: sw.sold,
+        quantity_sold: cls.sold,
         image_url: image,
         url: url || `https://www.ebay.com/itm/${itemId}`,
         status: 'active',
