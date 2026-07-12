@@ -28,30 +28,86 @@
 const { getClient } = require('../db/supabaseClient');
 const EbayAPI = require('../api/ebayAPI');
 
-async function runRefreshMyListingsChunk({ maxItems, staleDays } = {}) {
+async function runRefreshMyListingsChunk({ maxItems, staleDays, matchedOnly } = {}) {
   const CHUNK      = Math.max(50, parseInt(maxItems)  || parseInt(process.env.MY_LISTING_REFRESH_CHUNK) || 500);
   const STALE_DAYS = Math.max(1,  parseInt(staleDays) || parseInt(process.env.MY_LISTING_STALE_DAYS)   || 14);
+  const MATCHED_ONLY = matchedOnly === true || process.env.MY_LISTING_MATCHED_ONLY === 'true';
   const staleThreshold = new Date(Date.now() - STALE_DAYS * 86400000).toISOString();
 
   const db = getClient();
   const ebay = new EbayAPI();
 
-  console.log(`[MyListingRefresher] 시작 — chunk=${CHUNK}, staleDays=${STALE_DAYS}`);
+  console.log(`[MyListingRefresher] 시작 — chunk=${CHUNK}, staleDays=${STALE_DAYS}, matchedOnly=${MATCHED_ONLY}`);
+
+  // 2026-07-12 사장님 지침 (matchedOnly=true 기본):
+  //   product_matches (status='approved') 에 있는 our_sku 만 refresh 대상.
+  //   이유: 매칭 없는 SKU 는 Engine 1 판정 안 됨 → 신선도 우선순위 낮음.
+  //   대상을 좁히면 매일 크론 1회에 전량 refresh 가능 → 항상 신선.
+  let matchedSkus = null;
+  if (MATCHED_ONLY) {
+    const set = new Set();
+    let ofs = 0;
+    while (true) {
+      const { data, error } = await db.from('product_matches')
+        .select('our_sku').eq('status', 'approved').range(ofs, ofs + 999);
+      if (error) { console.warn('[MyListingRefresher] product_matches 로드 실패:', error.message); break; }
+      if (!data || data.length === 0) break;
+      data.forEach((r) => r.our_sku && set.add(r.our_sku));
+      if (data.length < 1000) break;
+      ofs += 1000;
+    }
+    matchedSkus = [...set];
+    console.log(`[MyListingRefresher] 매칭된 SKU: ${matchedSkus.length}개 (이것만 대상)`);
+    if (matchedSkus.length === 0) {
+      console.log('[MyListingRefresher] 매칭 없음 — 종료');
+      return { processed: 0, updated: 0, failed: 0, errors: [] };
+    }
+  }
 
   // 우선순위:
   //   (1) shipping_usd = 0 or null (아예 배송비 정보 없음)  ← 가장 급함
   //   (2) shipping_usd > 0 이지만 updated_at 이 stale
   //   각 그룹 안에서 updated_at 오래된 순.
-  //
-  // Supabase 로 OR 조건 여러 개 처리 — .or() 사용.
-  const { data: candidates, error } = await db
-    .from('ebay_products')
-    .select('item_id, sku, shipping_usd, price_usd, updated_at, status')
-    .neq('status', 'ended')
-    .or(`shipping_usd.is.null,shipping_usd.eq.0,updated_at.lt.${staleThreshold}`)
-    .order('shipping_usd', { ascending: true, nullsFirst: true })
-    .order('updated_at', { ascending: true, nullsFirst: true })
-    .limit(CHUNK);
+  let candidates = [];
+  if (MATCHED_ONLY && matchedSkus) {
+    // .in() 은 최대 ~1000 개 안전. 500 개씩 청크 조회 후 병합.
+    const collected = [];
+    for (let i = 0; i < matchedSkus.length; i += 500) {
+      const chunk = matchedSkus.slice(i, i + 500);
+      const { data, error } = await db.from('ebay_products')
+        .select('item_id, sku, shipping_usd, price_usd, updated_at, status')
+        .neq('status', 'ended')
+        .in('sku', chunk);
+      if (error) {
+        console.error('[MyListingRefresher] 후보 로드 실패:', error.message);
+        return { processed: 0, updated: 0, failed: 0, errors: [error.message] };
+      }
+      collected.push(...(data || []));
+    }
+    // updated_at 오래된 순 정렬 후 상한 CHUNK
+    collected.sort((a, b) => {
+      const at = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+      const bt = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+      return at - bt;
+    });
+    candidates = collected.slice(0, CHUNK);
+  } else {
+    const { data, error } = await db
+      .from('ebay_products')
+      .select('item_id, sku, shipping_usd, price_usd, updated_at, status')
+      .neq('status', 'ended')
+      .or(`shipping_usd.is.null,shipping_usd.eq.0,updated_at.lt.${staleThreshold}`)
+      .order('shipping_usd', { ascending: true, nullsFirst: true })
+      .order('updated_at', { ascending: true, nullsFirst: true })
+      .limit(CHUNK);
+    if (error) {
+      console.error('[MyListingRefresher] 후보 로드 실패:', error.message);
+      return { processed: 0, updated: 0, failed: 0, errors: [error.message] };
+    }
+    candidates = data || [];
+  }
+  // 이후 로직 (undefined 참조 방지)
+  const error = null;
 
   if (error) {
     console.error('[MyListingRefresher] 후보 로드 실패:', error.message);

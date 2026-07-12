@@ -220,15 +220,16 @@ function start() {
     }
   }, { timezone: TZ });
 
-  // 내 리스팅 배송비/가격 갱신 — 매일 새벽 3시 (500개 청크로 로테이션)
-  // 사장님 지침 (2026-07-09): GetMyeBaySelling 이 배송비를 트랜잭션 기준으로만 반환해서
-  // 새 리스팅 shipping_usd 가 0/null 로 들어감. Browse API (우편번호 컨텍스트 헤더) 로
-  // 정기 갱신해야 CALCULATED shipping 도 정확한 값이 저장됨.
+  // 내 리스팅 배송비/가격 갱신 — 매일 새벽 3시
+  // 사장님 지침 (2026-07-12): 매칭된 SKU 만 대상 (product_matches approved).
+  //   이유: 매칭 없는 SKU 는 Engine 1 판정 안 됨. 매칭된 것만 매일 refresh 하면
+  //   전체 9,591 → ~1,000-2,000 개로 축소 → 하루에 전량 refresh → 항상 신선.
+  //   MY_LISTING_MATCHED_ONLY=false 로 override 가능.
   cron.schedule('0 3 * * *', async () => {
     try {
       const { runRefreshMyListingsChunk } = require('./myListingRefresher');
-      const r = await runRefreshMyListingsChunk();
-      console.log(`[scheduler] MyListingRefresher: processed=${r.processed}, updated=${r.updated}, failed=${r.failed}`);
+      const r = await runRefreshMyListingsChunk({ matchedOnly: true, maxItems: 3000 });
+      console.log(`[scheduler] MyListingRefresher (matched-only): processed=${r.processed}, updated=${r.updated}, failed=${r.failed}`);
     } catch (e) {
       console.error('[scheduler] MyListingRefresher error:', e.message);
     }
