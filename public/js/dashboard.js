@@ -8739,11 +8739,16 @@ async function b2bParseManual() {
     const fd = new FormData();
     fd.append('file', _b2bManualFile);
     const r = await fetch(`${API}/b2b/invoices/manual/parse`, { method: 'POST', body: fd });
-    const j = await r.json();
-    if (!j.success) throw new Error(j.error || '파싱 실패');
+    // 사장님 보고 2026-07-03: 400/500 구분 없이 axios throw 문자열만 보이던 문제.
+    // 이제 서버가 j.error 에 진짜 원인 (Anthropic API 응답 or magic byte 실패 등) 을 실어줌.
+    const j = await r.json().catch(() => ({ success: false, error: `HTTP ${r.status} — 응답 파싱 실패` }));
+    if (!j.success) {
+      const detail = j.anthropicType ? ` [${j.anthropicType}]` : '';
+      throw new Error(`${j.error || '파싱 실패'}${detail}`);
+    }
     b2bRenderManualForm(j.parsed);
   } catch (e) {
-    status.innerHTML = `<span style="color:#ff8a80;">❌ ${e.message}</span>`;
+    status.innerHTML = `<span style="color:#ff8a80;">❌ ${esc(e.message)}</span>`;
     btn.disabled = false; btn.textContent = '🤖 AI 로 읽기';
   }
 }

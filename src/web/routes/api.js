@@ -5060,8 +5060,16 @@ router.post('/b2b/invoices/manual/parse', manualUpload.single('file'), async (re
       size: req.file.size,
     }});
   } catch (e) {
-    console.error('❌ manual invoice parse:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    // ParseError 는 status 필드 (400/502/503 등) 를 그대로 씀 — 프론트에 진짜 원인 노출.
+    // 사장님 보고 2026-07-03: "Request failed with status code 400" 만 뜨던 문제 해결.
+    const status = e.status || 500;
+    console.error(`❌ manual invoice parse (${status}${e.anthropicType ? ' ' + e.anthropicType : ''}):`, e.message);
+    res.status(status).json({
+      success: false,
+      error: e.message,
+      anthropicType: e.anthropicType || null,
+      anthropicRequestId: e.anthropicRequestId || null,
+    });
   }
 });
 

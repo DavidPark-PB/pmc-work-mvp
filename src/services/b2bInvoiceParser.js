@@ -50,16 +50,68 @@ const PROMPT = `당신은 B2B 인보이스/견적서 파서입니다. 이미지 
 function _isImage(mime) { return /^image\/(jpeg|png|webp|gif)$/i.test(mime || ''); }
 function _isPdf(mime) { return /^application\/pdf$/i.test(mime || ''); }
 
+// PDF 매직 바이트 검증 — Anthropic 이 non-PDF 를 400 으로 거부하기 전 우리가 먼저 잡음.
+// PDF 는 항상 '%PDF-' (25 50 44 46 2D) 로 시작. xlsx 를 확장자만 .pdf 로 바꾼 케이스 등 조기 감지.
+function _looksLikePdf(buffer) {
+  if (!buffer || buffer.length < 5) return false;
+  return buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46 && buffer[4] === 0x2D;
+}
+
+// axios 에러에서 Anthropic API 응답 body 의 상세 원인 추출.
+// e.response.data.error.{type,message} 가 표준. 이거 그대로 던지면 사장님이 화면에서 원인 확인 가능.
+class ParseError extends Error {
+  constructor(message, { status = 500, anthropicType, anthropicRequestId } = {}) {
+    super(message);
+    this.name = 'ParseError';
+    this.status = status;
+    this.anthropicType = anthropicType;
+    this.anthropicRequestId = anthropicRequestId;
+  }
+}
+
+function _extractAnthropicError(e) {
+  const status = e.response?.status;
+  const body = e.response?.data;
+  const anthErr = body?.error;
+  if (anthErr?.message) {
+    return {
+      status,
+      type: anthErr.type || null,
+      message: anthErr.message,
+      requestId: e.response?.headers?.['request-id'] || null,
+    };
+  }
+  // JSON 아닌 응답 (HTML 에러 페이지 등)
+  const raw = typeof body === 'string' ? body.slice(0, 300) : (body ? JSON.stringify(body).slice(0, 300) : e.message);
+  return { status, type: null, message: raw, requestId: e.response?.headers?.['request-id'] || null };
+}
+
 async function parseManualInvoice(buffer, mimeType) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY 가 config/.env 에 설정되지 않았습니다');
-  if (!buffer || !buffer.length) throw new Error('파일이 비어있습니다');
+  if (!apiKey) throw new ParseError('ANTHROPIC_API_KEY 가 config/.env 에 설정되지 않았습니다', { status: 503 });
+  if (!buffer || !buffer.length) throw new ParseError('파일이 비어있습니다', { status: 400 });
 
   const mt = (mimeType || '').toLowerCase();
   const base64 = Buffer.from(buffer).toString('base64');
 
   let contentBlock;
   if (_isPdf(mt)) {
+    // PDF magic byte 검증 — Anthropic 에 보내기 전 조기 감지 (사장님 보고 2026-07-03: xlsx 를
+    // PDF 확장자로 저장한 경우 등에서 400 이 원인 불명으로 남던 문제)
+    if (!_looksLikePdf(buffer)) {
+      throw new ParseError(
+        '파일이 유효한 PDF 형식이 아닙니다 (매직 바이트 %PDF- 없음). ' +
+        '엑셀/워드로 저장한 파일이면 "다른 이름으로 저장 → PDF" 로 다시 저장하거나, 파일 자체를 첨부해주세요.',
+        { status: 400 }
+      );
+    }
+    // Anthropic 한도: 32MB (base64 후) / 600 페이지 — 여기서 크기만 사전 체크
+    if (base64.length > 32 * 1024 * 1024) {
+      throw new ParseError(
+        `PDF 가 너무 큽니다 (base64 ${Math.round(base64.length / 1024 / 1024)}MB, 한도 32MB). PDF 를 압축하거나 페이지를 줄여주세요.`,
+        { status: 400 }
+      );
+    }
     contentBlock = {
       type: 'document',
       source: { type: 'base64', media_type: 'application/pdf', data: base64 },
@@ -70,7 +122,7 @@ async function parseManualInvoice(buffer, mimeType) {
       source: { type: 'base64', media_type: mt, data: base64 },
     };
   } else {
-    throw new Error(`지원하지 않는 파일 형식: ${mt || 'unknown'} (PDF·JPG·PNG·WEBP 만 지원)`);
+    throw new ParseError(`지원하지 않는 파일 형식: ${mt || 'unknown'} (PDF·JPG·PNG·WEBP 만 지원)`, { status: 400 });
   }
 
   const callAPI = async (model) => axios.post(ANTHROPIC_API_URL, {
@@ -90,16 +142,35 @@ async function parseManualInvoice(buffer, mimeType) {
   });
 
   let resp;
+  let firstErr = null;
   try {
     resp = await callAPI(MODEL);
   } catch (e) {
-    console.warn('[b2bInvoiceParser] 1차 실패, fallback:', e.response?.data?.error?.message || e.message);
-    resp = await callAPI(MODEL_FALLBACK);
+    firstErr = _extractAnthropicError(e);
+    console.warn(`[b2bInvoiceParser] ${MODEL} 실패 (${firstErr.status} ${firstErr.type || ''}): ${firstErr.message}`);
+    // 400 (invalid_request_error / permission_error) 는 fallback 도 같은 결과 → 즉시 throw
+    if (firstErr.status && firstErr.status >= 400 && firstErr.status < 500) {
+      throw new ParseError(
+        `Anthropic API ${firstErr.status}: ${firstErr.message}`,
+        { status: firstErr.status, anthropicType: firstErr.type, anthropicRequestId: firstErr.requestId }
+      );
+    }
+    // 5xx / 네트워크 문제만 fallback
+    try {
+      resp = await callAPI(MODEL_FALLBACK);
+    } catch (e2) {
+      const err2 = _extractAnthropicError(e2);
+      console.error(`[b2bInvoiceParser] ${MODEL_FALLBACK} 도 실패 (${err2.status}): ${err2.message}`);
+      throw new ParseError(
+        `AI 파싱 실패 — 두 모델 모두 에러. ${MODEL}: ${firstErr.message} / ${MODEL_FALLBACK}: ${err2.message}`,
+        { status: err2.status || 502, anthropicType: err2.type, anthropicRequestId: err2.requestId }
+      );
+    }
   }
 
   const text = resp.data?.content?.[0]?.text || '';
   const parsed = _extractJson(text);
-  if (!parsed) throw new Error(`AI 응답 파싱 실패. 원문: ${text.slice(0, 300)}`);
+  if (!parsed) throw new ParseError(`AI 응답 파싱 실패. 원문: ${text.slice(0, 300)}`, { status: 502 });
 
   return _normalize(parsed);
 }
@@ -177,4 +248,4 @@ function _normalizeDate(v) {
   return '';
 }
 
-module.exports = { parseManualInvoice };
+module.exports = { parseManualInvoice, ParseError };
