@@ -26,7 +26,7 @@
 'use strict';
 
 const opsBriefing = require('../services/operationsBriefing');
-const { notifyAdmins, getAdminIds } = require('../services/notificationService');
+const { notifyAdmins, notifyMany, getAdminIds, getStaffIds } = require('../services/notificationService');
 
 /**
  * @param {Object} [opts]
@@ -43,23 +43,28 @@ async function runOperationsBriefingJob({ dryRun = false } = {}) {
   // 3) dryRun
   if (dryRun) {
     // 로그 — recipient count 만 미리 (DB write 0)
-    const adminIds = await getAdminIds().catch(() => []);
+    const [adminIds, staffIds] = await Promise.all([
+      getAdminIds().catch(() => []),
+      getStaffIds().catch(() => []),
+    ]);
     console.log('[OpsBriefingJob] dryRun:', {
       title: notification.title,
       bodyLen: notification.body.length,
-      recipientHint: `${adminIds.length} admin(s)`,
+      recipientHint: `${adminIds.length} admin(s) + ${staffIds.length} staff`,
     });
-    return { briefing, notification, recipientCount: adminIds.length, dryRun: true };
+    return { briefing, notification, recipientCount: adminIds.length + staffIds.length, dryRun: true };
   }
 
-  // 4) admin 전체 알림
-  const adminIds = await getAdminIds();
-  if (adminIds.length === 0) {
-    console.warn('[OpsBriefingJob] no active admin found — skipping notification insert');
+  // 4) admin + staff 전체 알림 (사장님 결정 2026-07-15: 직원도 아침 브리핑 공유 —
+  //    브리핑 body 에 마진/원가 등 민감 정보 없음, 주문 수·업무 건수만)
+  const [adminIds, staffIds] = await Promise.all([getAdminIds(), getStaffIds()]);
+  const allIds = [...adminIds, ...staffIds];
+  if (allIds.length === 0) {
+    console.warn('[OpsBriefingJob] no active admin/staff found — skipping notification insert');
     return { briefing, notification, recipientCount: 0, dryRun: false };
   }
 
-  await notifyAdmins({
+  await notifyMany(allIds, {
     type:        notification.type,
     title:       notification.title,
     body:        notification.body,
@@ -71,10 +76,12 @@ async function runOperationsBriefingJob({ dryRun = false } = {}) {
   console.log('[OpsBriefingJob] sent:', {
     title:          notification.title,
     bodyLen:        notification.body.length,
-    recipientCount: adminIds.length,
+    recipientCount: allIds.length,
+    admins:         adminIds.length,
+    staff:          staffIds.length,
   });
 
-  return { briefing, notification, recipientCount: adminIds.length, dryRun: false };
+  return { briefing, notification, recipientCount: allIds.length, dryRun: false };
 }
 
 module.exports = { runOperationsBriefingJob };

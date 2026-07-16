@@ -12,6 +12,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../config/.
 const { getClient } = require('../db/supabaseClient');
 const telegram = require('./telegramBot');
 const { getDashboard } = require('./competitorDashboard');
+const { notifyMany, getAdminIds, getStaffIds } = require('./notificationService');
 
 const TZ = 'Asia/Seoul';
 
@@ -213,7 +214,6 @@ async function recordMarketAlert(alert, { sendTelegram = false } = {}) {
 }
 
 async function sendMarketAlertToTelegram(alert) {
-  if (!telegram.isConfigured()) return null;
   const icon = {
     price_drop: '📉', price_rise: '📈', out_of_stock: '⚫', restocked: '🟢',
     new_listing: '🆕', undercut: '⚠️', margin_risk: '🔴', ended: '⚫',
@@ -225,9 +225,47 @@ async function sendMarketAlertToTelegram(alert) {
     alert.recommendation ? `추천: ${alert.recommendation}` : '',
   ].filter(Boolean).join('\n');
 
+  // 인앱 알림 미러링 (사장님 결정 2026-07-15): 경쟁사 가격/재고 변동을 직원에게도 공유.
+  // margin_risk 는 원가/마진 노출 소지 있어 admin 만. 나머지 (price/stock/new_listing) 는 admin+staff.
+  await _mirrorMarketAlertInApp(alert, icon).catch(e => console.warn('[MarketIntel] in-app mirror 실패:', e.message));
+
+  if (!telegram.isConfigured()) return null;
   const shortId = String(alert.id || '').slice(0, 8);
   const keyboard = shortId ? [[{ text: '상세보기', callback_data: `market:detail:${shortId}` }]] : [];
   return telegram.sendWithButtons(text, keyboard, { parseMode: null });
+}
+
+async function _mirrorMarketAlertInApp(alert, icon) {
+  const isMarginSensitive = alert.alert_type === 'margin_risk';
+  // 사장님에게만 갈 종류 vs 전 직원 공유 종류 구분
+  const [adminIds, staffIds] = await Promise.all([getAdminIds(), getStaffIds()]);
+  const recipients = isMarginSensitive ? adminIds : [...adminIds, ...staffIds];
+  if (recipients.length === 0) return;
+
+  const titleMap = {
+    price_drop: '경쟁사 가격 하락',
+    price_rise: '경쟁사 가격 상승',
+    out_of_stock: '경쟁사 품절',
+    restocked: '경쟁사 재입고',
+    new_listing: '경쟁사 신규 리스팅',
+    undercut: '경쟁사 언더컷',
+    margin_risk: '마진 위험',
+    ended: '경쟁사 리스팅 종료',
+  };
+  const title = `${icon} ${titleMap[alert.alert_type] || 'Market Alert'}`;
+  const bodyParts = [];
+  if (alert.sku) bodyParts.push(`SKU ${alert.sku}`);
+  if (alert.message) bodyParts.push(alert.message);
+  const body = bodyParts.join(' · ').slice(0, 250);
+
+  await notifyMany(recipients, {
+    type: 'market_alert',
+    title,
+    body,
+    linkUrl: '/?page=hermes-market',
+    relatedType: 'market_alert',
+    relatedId: alert.id || null,
+  });
 }
 
 function buildAlertFromPriceHistory(row, mappingByComp, listingByComp) {
