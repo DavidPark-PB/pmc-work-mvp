@@ -113,10 +113,17 @@ function start() {
 
   // Kill switch (2026-07-15): EBAY_API_LOCKED=true 면 eBay Browse API 를 소비하는
   // 크론 3종 (RepricingPipeline, CompetitorCrawler, MyListingRefresher) 등록 스킵.
-  //   배경: Buy > Browse API 쿼터가 며칠간 회복 안 됨. 크론이 계속 두들겨서
-  //   회복 자체를 방해 중. env 로 즉시 정지 → tier 회복/승인 후 env 삭제 재개.
-  const EBAY_API_LOCKED = process.env.EBAY_API_LOCKED === 'true';
-  if (EBAY_API_LOCKED) console.log('[scheduler] ⚠️ EBAY_API_LOCKED=true — Browse API 소비 크론 3종 정지');
+  //   배경: Buy > Browse API default 5,000 calls/day. 크론이 6h마다 대량 호출 →
+  //   초과 → rate-limit → 회복 불가. env 로 즉시 정지 → 회복 후 조정 재개.
+  //
+  // 세분화 (2026-07-15 저녁):
+  //   EBAY_API_LOCKED       — 3종 전부 정지 (긴급용)
+  //   EBAY_CRAWLER_LOCKED   — CompetitorCrawler 만 정지 (신규 리스팅 대량 발견 시 헤비)
+  //   기본값: EBAY_CRAWLER_LOCKED=true 유지 권장, 다른 2종은 조정된 스케줄로 활성.
+  const EBAY_API_LOCKED     = process.env.EBAY_API_LOCKED === 'true';
+  const EBAY_CRAWLER_LOCKED = process.env.EBAY_CRAWLER_LOCKED === 'true' || EBAY_API_LOCKED;
+  if (EBAY_API_LOCKED)     console.log('[scheduler] ⚠️ EBAY_API_LOCKED=true — Browse API 소비 크론 3종 전부 정지');
+  if (EBAY_CRAWLER_LOCKED && !EBAY_API_LOCKED) console.log('[scheduler] ⚠️ EBAY_CRAWLER_LOCKED=true — CompetitorCrawler 만 정지');
 
   // 매일 오전 9시 정각 — 오늘 할 일 다이제스트
   cron.schedule('0 9 * * *', () => {
@@ -187,10 +194,14 @@ function start() {
     }
   }, { timezone: TZ });
 
-  // 경쟁사 가격 모니터 + 리프라이싱 파이프라인 — 6시간마다 (0시·6시·12시·18시 KST)
-  // DRY_RUN=true (기본): 실제 가격 변경 없음, 텔레그램 리포트만
-  // 변동 없으면 텔레그램 알림 안 보냄 (노이즈 방지)
-  if (!EBAY_API_LOCKED) cron.schedule('0 0,6,12,18 * * *', async () => {
+  // 경쟁사 가격 모니터 + 리프라이싱 파이프라인 — 매일 새벽 5시 KST (하루 1회)
+  //   2026-07-15: 6시간마다 → 하루 1회로 축소.
+  //     이유: Browse API default 5,000 calls/day 안에 유지하기 위함.
+  //     competitor_prices active ~1,049건 × 4회/day = 4,200/day 로 쿼터 대부분 소진했음.
+  //     1회/day 로 낮추면 ~1,049/day 로 여유 확보 (MyListingRefresher 와 합해도 ~2,200/day).
+  //   DRY_RUN=true (기본): 실제 가격 변경 없음, 텔레그램 리포트만.
+  //   변동 없으면 텔레그램 알림 안 보냄 (노이즈 방지).
+  if (!EBAY_API_LOCKED) cron.schedule('0 5 * * *', async () => {
     try {
       const { runRepricingPipeline } = require('../jobs/repricingPipelineJob');
       const r = await runRepricingPipeline();
@@ -217,7 +228,9 @@ function start() {
   }, { timezone: TZ });
 
   // 경쟁셀러 크롤러 — 매일 새벽 1시 (전체 리스팅 수집)
-  if (!EBAY_API_LOCKED) cron.schedule('0 1 * * *', async () => {
+  //   Browse API 헤비 (셀러당 신규 리스팅 수백~수천 발견 시 그만큼 콜) →
+  //   EBAY_CRAWLER_LOCKED 별도 스위치로 통제. 필요시 수동 CSV 임포트로 대체.
+  if (!EBAY_CRAWLER_LOCKED) cron.schedule('0 1 * * *', async () => {
     try {
       const { runCrawler } = require('./competitorCrawler');
       const r = await runCrawler();
