@@ -357,6 +357,29 @@ class RepricingService {
       });
     }
 
+    // ── 5.5. 원가 정보 붙이기 (마진 표시용) ─────────────────────────────
+    //   2026-07-15 사장님: 킬프라이스 옆에 예상 마진 표시 요청.
+    //   sku_master.cost_krw 배치 로드 → USD 환산 (KRW_PER_USD=1350 상수).
+    //   원가 없으면 costKrw=null → 프론트에서 "원가 미입력" 뱃지.
+    const KRW_PER_USD = 1350;
+    const allSkus = [...sku2listing.keys()];
+    const costBySku = new Map();
+    for (let i = 0; i < allSkus.length; i += 500) {
+      const chunk = allSkus.slice(i, i + 500);
+      const { data } = await db.from('sku_master')
+        .select('internal_sku, cost_krw').in('internal_sku', chunk);
+      (data || []).forEach(r => {
+        if (r.cost_krw != null && r.cost_krw > 0) costBySku.set(r.internal_sku, Number(r.cost_krw));
+      });
+    }
+
+    // 각 dashboard entry 에 cost 필드 추가
+    for (const d of dashboard) {
+      const krw = costBySku.get(d.sku);
+      d.costKrw = krw != null ? krw : null;
+      d.costUsd = krw != null ? +(krw / KRW_PER_USD).toFixed(2) : null;
+    }
+
     // ── 6. 정렬 — 지고 있는 상품 우선 → F/D 티어 우선 → 차이 큰 순 ────────
     dashboard.sort((a, b) => {
       const aMyTotal = a.myPrice + (a.myShipping || 0);

@@ -3987,9 +3987,12 @@ function renderBattleTable(items) {
           const refreshBtn = c.id ? `<button onclick="battleRefreshComp('${c.id}',this)" style="font-size:8px;padding:0 3px;background:none;border:1px solid #1565c0;color:#1565c0;border-radius:2px;cursor:pointer;margin-left:2px" title="가격 즉시 갱신">🔄</button>` : '';
           const overrideBtn = c.id ? `<button onclick="battleOverridePrice('${c.id}', ${c.priceMin || 0}, ${c.priceMax || 0}, ${c.rawPrice || 0}, ${c.rawShipping || 0}, ${c.hasOverride ? 1 : 0})" style="font-size:8px;padding:0 3px;background:${c.hasOverride ? '#7c4dff' : 'none'};border:1px solid #7c4dff;color:${c.hasOverride ? '#fff' : '#7c4dff'};border-radius:2px;cursor:pointer;margin-left:2px" title="가격 수동 고정">💰</button>` : '';
           const delBtn = `<button onclick="battleDeleteCompetitor('${esc(item.sku)}','${esc(c.itemId || '')}',this)" style="font-size:8px;padding:0 3px;background:none;border:1px solid #c62828;color:#c62828;border-radius:2px;cursor:pointer;margin-left:2px" title="경쟁사 삭제">✕</button>`;
+          // 2026-07-15 사장님 요청: 총액 강조 · 상품가+배송비는 부제로 작게
           const priceText = (isOOS || isEnded)
-            ? `<s style="color:#999">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=\$${c.total.toFixed(2)}</s>`
-            : `<span style="font-weight:${idx===0?'700':'400'}">\$${c.price.toFixed(2)}+\$${c.shipping.toFixed(2)}=<b>\$${c.total.toFixed(2)}</b></span>`;
+            ? `<s style="color:#999">$${c.total.toFixed(2)}</s> <span style="font-size:9px;color:#bbb">(${c.price.toFixed(2)}+${c.shipping.toFixed(2)})</span>`
+            : (idx === 0
+                ? `<span style="font-size:14px;font-weight:800;color:#1a1a2e;letter-spacing:-0.2px">$${c.total.toFixed(2)}</span> <span style="font-size:9px;color:#888">(상품 $${c.price.toFixed(2)} + 배송 $${c.shipping.toFixed(2)})</span>`
+                : `<span style="font-size:12px;font-weight:600">$${c.total.toFixed(2)}</span> <span style="font-size:9px;color:#999">($${c.price.toFixed(2)}+$${c.shipping.toFixed(2)})</span>`);
           return `<div style="padding:1px 0;${dim}">
             ${badge} <span style="font-size:11px">${priceText}</span>${sellerTag}${label}${link}${refreshBtn}${overrideBtn}${findSimilarBtn}${delBtn}
             ${variantInfo}
@@ -4026,12 +4029,18 @@ function renderBattleTable(items) {
         </div>
       </td>
       <td class="battle-price-cell">
-        <div class="price-main" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px" onclick="battleEditMyPrice('${esc(item.itemId)}','${esc(item.sku)}',${item.myPrice || 0})" title="클릭해서 가격 수정">
-          $${(item.myPrice || 0).toFixed(2)} <span style="font-size:10px;color:#7c4dff">✏️</span>
+        <!-- 2026-07-15 사장님 요청: 배송비 포함 총액을 가장 크게, 가격+배송은 부제 -->
+        <div style="font-size:18px;font-weight:800;color:#1a1a2e;line-height:1.1;letter-spacing:-0.3px">
+          $${(item.myTotal || 0).toFixed(2)}
         </div>
-        <div class="price-ship">+$${(item.myShipping || 0).toFixed(2)} 배송</div>
-        <div class="price-total">합계 $${(item.myTotal || 0).toFixed(2)}</div>
-        <div style="margin-top:4px;display:flex;align-items:center;gap:4px">
+        <div style="font-size:10px;color:#888;margin-top:2px">
+          <span style="cursor:pointer" onclick="battleEditMyPrice('${esc(item.itemId)}','${esc(item.sku)}',${item.myPrice || 0})" title="클릭해서 가격 수정">
+            상품 $${(item.myPrice || 0).toFixed(2)} <span style="color:#7c4dff">✏️</span>
+          </span>
+          <span style="color:#bbb">+</span>
+          배송 $${(item.myShipping || 0).toFixed(2)}
+        </div>
+        <div style="margin-top:6px;display:flex;align-items:center;gap:4px">
           <span style="font-size:10px;color:#888">재고:</span>
           <input type="number" value="${item.quantity || 0}" min="0" style="width:40px;padding:2px 4px;font-size:11px;border:1px solid #ddd;border-radius:3px;text-align:center" onchange="battleUpdateStock('${esc(item.itemId)}',this.value,this)">
           ${myRefreshBtn}
@@ -4043,21 +4052,68 @@ function renderBattleTable(items) {
       <td style="text-align:center">
         <div class="battle-diff ${diffClass}">${diffText}</div>
       </td>
-      <td style="text-align:center;min-width:130px">
+      <td style="text-align:center;min-width:180px">
         ${item.needsKill && item.killPrice > 0
-          ? `<div style="font-size:10px;color:#888">→ 이 가격으로</div>
-             <div style="font-weight:800;font-size:17px;color:${item.losing ? '#c62828' : '#ff9800'};line-height:1.1">$${item.killPrice.toFixed(2)}</div>
-             ${item.tooClose ? '<div style="font-size:9px;color:#ff9800">버퍼 \$1 확보</div>' : ''}
-             <button class="kill-price-btn" onclick="applyKillPrice('${esc(item.itemId)}', ${item.killPrice}, '${esc(item.sku)}')"
-                     id="kill-${esc(item.itemId || item.sku)}"
-                     style="margin-top:4px;padding:6px 14px;font-size:12px;font-weight:700;background:#c62828;color:#fff;border:none;border-radius:6px;cursor:pointer;box-shadow:0 1px 3px rgba(198,40,40,0.4)">🔥 킬프라이스</button>`
+          ? (() => {
+              // 2026-07-15 사장님: 킬프라이스 셀에 마진·우위 함께 표시.
+              const killTotal = item.killPrice + (item.myShipping || 0);
+              const advantage = item.cheapestTotal != null ? +(item.cheapestTotal - killTotal).toFixed(2) : 0;
+              const advTxt = advantage > 0
+                ? `<span style="color:#2e7d32;font-weight:700">-\$${advantage.toFixed(2)} 우위</span>`
+                : `<span style="color:#c62828;font-weight:700">동률</span>`;
+              // 마진 계산 (원가 있을 때만) — eBay 수수료 13% + PayPal 3% ≈ 16% 차감 후 원가 대비
+              const FEE_PCT = 0.16;
+              let marginBadge = '';
+              if (item.costUsd != null && item.costUsd > 0) {
+                const netAfterFee = item.killPrice * (1 - FEE_PCT);
+                const profit = +(netAfterFee - item.costUsd).toFixed(2);
+                const marginPct = Math.round((profit / item.killPrice) * 100);
+                const marginColor = marginPct >= 15 ? '#2e7d32' : (marginPct >= 5 ? '#f9a825' : '#c62828');
+                const marginIcon = marginPct >= 15 ? '✅' : (marginPct >= 5 ? '⚠️' : '❌');
+                marginBadge = `<div style="font-size:10px;color:${marginColor};font-weight:700;margin-top:3px">${marginIcon} 마진 ${marginPct}% ($${profit.toFixed(2)})</div>
+                               <div style="font-size:9px;color:#888">원가 $${item.costUsd.toFixed(2)} · 수수료 16% 반영</div>`;
+              } else {
+                marginBadge = `<div style="font-size:9px;color:#999;margin-top:3px" title="SKU 마스터에 cost_krw 입력 필요">💰 원가 미입력</div>`;
+              }
+              return `
+                <div style="font-size:10px;color:#888;line-height:1">합계</div>
+                <div style="font-weight:800;font-size:18px;color:${item.losing ? '#c62828' : '#ff9800'};line-height:1.1">$${killTotal.toFixed(2)}</div>
+                <div style="font-size:10px;color:#666;line-height:1.2">상품 <b>$${item.killPrice.toFixed(2)}</b> + 배송 $${(item.myShipping || 0).toFixed(2)}</div>
+                <div style="font-size:10px;margin-top:2px">${advTxt}</div>
+                ${marginBadge}
+                <button class="kill-price-btn" onclick="applyKillPrice('${esc(item.itemId)}', ${item.killPrice}, '${esc(item.sku)}')"
+                        id="kill-${esc(item.itemId || item.sku)}"
+                        style="margin-top:6px;padding:7px 12px;font-size:12px;font-weight:700;background:#c62828;color:#fff;border:none;border-radius:6px;cursor:pointer;box-shadow:0 1px 3px rgba(198,40,40,0.4);width:100%">🔥 $${item.killPrice.toFixed(2)} 즉시 반영</button>
+              `;
+            })()
           : (item.raisePrice && item.raisePrice > item.myPrice
-            ? `<div style="font-size:10px;color:#888">→ 이 가격으로</div>
-               <div style="font-weight:800;font-size:17px;color:#2e7d32;line-height:1.1">$${item.raisePrice.toFixed(2)}</div>
-               ${item.allOutOfStock ? '<div style="font-size:9px;color:#ff9800;font-weight:600">📈 경쟁사 모두 품절</div>' : ''}
-               <button class="kill-price-btn" onclick="applyKillPrice('${esc(item.itemId)}', ${item.raisePrice}, '${esc(item.sku)}')"
-                       id="raise-${esc(item.itemId || item.sku)}"
-                       style="margin-top:4px;padding:6px 14px;font-size:12px;font-weight:700;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer;box-shadow:0 1px 3px rgba(46,125,50,0.4)">📈 인상</button>`
+            ? (() => {
+                const raiseTotal = item.raisePrice + (item.myShipping || 0);
+                const gain = +(item.raisePrice - item.myPrice).toFixed(2);
+                const FEE_PCT = 0.16;
+                let marginBadge = '';
+                if (item.costUsd != null && item.costUsd > 0) {
+                  const netAfterFee = item.raisePrice * (1 - FEE_PCT);
+                  const profit = +(netAfterFee - item.costUsd).toFixed(2);
+                  const marginPct = Math.round((profit / item.raisePrice) * 100);
+                  const marginColor = marginPct >= 15 ? '#2e7d32' : (marginPct >= 5 ? '#f9a825' : '#c62828');
+                  marginBadge = `<div style="font-size:10px;color:${marginColor};font-weight:700;margin-top:3px">✅ 마진 ${marginPct}% ($${profit.toFixed(2)})</div>
+                                 <div style="font-size:9px;color:#888">원가 $${item.costUsd.toFixed(2)} · 수수료 16% 반영</div>`;
+                } else {
+                  marginBadge = `<div style="font-size:9px;color:#999;margin-top:3px">💰 원가 미입력</div>`;
+                }
+                return `
+                  <div style="font-size:10px;color:#888;line-height:1">합계</div>
+                  <div style="font-weight:800;font-size:18px;color:#2e7d32;line-height:1.1">$${raiseTotal.toFixed(2)}</div>
+                  <div style="font-size:10px;color:#666;line-height:1.2">상품 <b>$${item.raisePrice.toFixed(2)}</b> + 배송 $${(item.myShipping || 0).toFixed(2)}</div>
+                  <div style="font-size:10px;margin-top:2px"><span style="color:#2e7d32;font-weight:700">+$${gain.toFixed(2)} 인상 기회</span></div>
+                  ${item.allOutOfStock ? '<div style="font-size:9px;color:#ff9800;font-weight:600;margin-top:2px">📈 경쟁사 모두 품절</div>' : ''}
+                  ${marginBadge}
+                  <button class="kill-price-btn" onclick="applyKillPrice('${esc(item.itemId)}', ${item.raisePrice}, '${esc(item.sku)}')"
+                          id="raise-${esc(item.itemId || item.sku)}"
+                          style="margin-top:6px;padding:7px 12px;font-size:12px;font-weight:700;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer;box-shadow:0 1px 3px rgba(46,125,50,0.4);width:100%">📈 $${item.raisePrice.toFixed(2)} 즉시 반영</button>
+                `;
+              })()
             : (hasComp ? '<span style="color:#2e7d32;font-size:12px;font-weight:600">✅ 적정</span>' : '<span style="color:#bbb">-</span>'))
         }
       </td>
