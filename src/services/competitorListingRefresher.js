@@ -102,8 +102,7 @@ async function runRefreshCompetitorListingsChunk({ maxItems } = {}) {
       last_seen: now,
     };
     if (Number.isFinite(item.quantityAvailable)) patch.quantity = item.quantityAvailable;
-    // total_price = price + shipping (competitor_listings 에 있는 컬럼)
-    if (patch.price != null) patch.total_price = +(patch.price + (patch.shipping || 0)).toFixed(2);
+    // total_price 는 generated column (price + shipping) 이라 직접 UPDATE 불가.
 
     const { error: upErr } = await db.from('competitor_listings').update(patch).eq('ebay_item_id', t.ebay_item_id);
     if (upErr) {
