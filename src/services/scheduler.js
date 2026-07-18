@@ -255,6 +255,21 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // CSV 임포트 경쟁사 리스팅 갱신 — 매일 새벽 4시
+  // 사장님 지침 (2026-07-19): CompetitorMonitor 는 competitor_prices 만 refresh 함.
+  //   hello_kr 등 CSV 로 임포트한 competitor_listings 는 자동 refresh 경로 없어서
+  //   일주일씩 오래된 가격이 전투 상황판에 노출됨. 매칭된 competitor_item_id 만
+  //   매일 refresh (총 ~583건, Browse API 12% 소비).
+  if (!EBAY_API_LOCKED) cron.schedule('0 4 * * *', async () => {
+    try {
+      const { runRefreshCompetitorListingsChunk } = require('./competitorListingRefresher');
+      const r = await runRefreshCompetitorListingsChunk({ maxItems: 1000 });
+      console.log(`[scheduler] CompListingRefresher: processed=${r.processed}, updated=${r.updated}, failed=${r.failed}`);
+    } catch (e) {
+      console.error('[scheduler] CompListingRefresher error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // Hermes v1 Daily Market Report — 매일 오전 8시 KST, Telegram 리포트 전송
   // 읽기/분석/리포트 전용. eBay 가격 변경 API 호출 없음.
   cron.schedule('0 8 * * *', async () => {
