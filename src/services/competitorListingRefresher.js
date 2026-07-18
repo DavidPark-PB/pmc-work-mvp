@@ -93,6 +93,8 @@ async function runRefreshCompetitorListingsChunk({ maxItems } = {}) {
     else if (Number.isFinite(item.quantityAvailable) && item.quantityAvailable === 0) newStatus = 'out_of_stock';
     else newStatus = 'active';
 
+    // competitor_listings 스키마에 실제 있는 컬럼만 UPDATE.
+    // (quantity_available/price_min/price_max/variant_count 는 없음 → 42703 유발)
     const patch = {
       price: price != null ? price : t.price,
       shipping,
@@ -100,24 +102,13 @@ async function runRefreshCompetitorListingsChunk({ maxItems } = {}) {
       last_seen: now,
     };
     if (Number.isFinite(item.quantityAvailable)) patch.quantity = item.quantityAvailable;
-    if (Number.isFinite(item.quantityAvailable)) patch.quantity_available = item.quantityAvailable;
-
-    // 변형 상품 (item_group) 지원
-    if (item.priceMin != null && item.priceMax != null && item.priceMin !== item.priceMax) {
-      patch.price_min = item.priceMin;
-      patch.price_max = item.priceMax;
-      patch.variant_count = item.variantCount || null;
-    }
+    // total_price = price + shipping (competitor_listings 에 있는 컬럼)
+    if (patch.price != null) patch.total_price = +(patch.price + (patch.shipping || 0)).toFixed(2);
 
     const { error: upErr } = await db.from('competitor_listings').update(patch).eq('ebay_item_id', t.ebay_item_id);
     if (upErr) {
       failed++;
-      // 컬럼 부족 fallback (마이그레이션 미적용)
-      if (upErr.code === '42703') {
-        await db.from('competitor_listings').update({
-          price: patch.price, shipping: patch.shipping, status: patch.status, last_seen: patch.last_seen,
-        }).eq('ebay_item_id', t.ebay_item_id);
-      }
+      if (failed <= 5) console.error(`[CompListingRefresher] UPDATE fail ${t.ebay_item_id}: ${upErr.code} ${upErr.message}`);
     } else {
       updated++;
     }
