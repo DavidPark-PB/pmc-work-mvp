@@ -1,0 +1,66 @@
+<div class="page-header">
+  <h1 class="page-title">네이버 엑셀 PIM</h1>
+</div>
+
+<div class="card">
+  <div class="section-header"><h2><i class="ti ti-file-spreadsheet"></i> 네이버 일괄등록 엑셀 처리</h2></div>
+  <p class="text-muted" style="margin-bottom:var(--space-5)">판매자 상품코드를 기준으로 상품 DB를 생성·업데이트하고, 외부 이미지를 R2로 복사한 뒤 수정된 엑셀을 내려받습니다.</p>
+
+  <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+    <span class="icon"><i class="ti ti-cloud-upload"></i></span>
+    <p>네이버 일괄등록 .xlsx 파일을 드래그하거나 클릭하세요</p>
+    <p class="hint">.xlsx · 최대 50MB</p>
+  </div>
+  <input type="file" id="file-input" accept=".xlsx" class="hidden">
+
+  <div id="status" class="hidden mt-16"></div>
+  <div id="result" class="hidden mt-16"></div>
+</div>
+
+<div class="card mt-16">
+  <div class="section-header"><h2><i class="ti ti-alert-triangle"></i> 카테고리 주의</h2></div>
+  <p class="text-muted">카테고리 <strong>50000343</strong> 사용 시 어린이 인증 대상 상품으로 판단되어 네이버 카탈로그 입력이 필수일 수 있습니다.</p>
+</div>
+
+<script>
+const input = document.getElementById('file-input');
+const zone = document.getElementById('drop-zone');
+const statusBox = document.getElementById('status');
+const resultBox = document.getElementById('result');
+
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault(); zone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) processFile(e.dataTransfer.files[0]);
+});
+input.addEventListener('change', () => input.files[0] && processFile(input.files[0]));
+
+async function processFile(file) {
+  if (!file.name.toLowerCase().endsWith('.xlsx')) return showError('.xlsx 파일만 업로드할 수 있습니다.');
+  statusBox.classList.remove('hidden');
+  resultBox.classList.add('hidden');
+  statusBox.innerHTML = '<div class="progress-wrap"><div class="progress-fill striped" style="width:70%"><span class="spinner" style="border-color:rgba(255,255,255,.3);border-top-color:#fff;width:14px;height:14px"></span>&nbsp;DB 저장 및 R2 이미지 복사 중...</div></div>';
+  const form = new FormData(); form.append('file', file);
+  try {
+    const res = await fetch('/api/naver/import-xlsx', { method:'POST', body:form });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || '처리 실패');
+    statusBox.innerHTML = '<div class="progress-wrap"><div class="progress-fill" style="width:100%"><i class="ti ti-check"></i>&nbsp;처리 완료</div></div>';
+    const warnings = (data.warnings || []).map(w => '<li>' + escapeHtml(w) + '</li>').join('');
+    const errors = (data.errors || []).map(e => '<li>' + escapeHtml('행 ' + e.row + ' / ' + e.sku + ': ' + e.error) + '</li>').join('');
+    resultBox.innerHTML = `
+      <div class="section-header"><h2>처리 결과</h2></div>
+      <p>신규 상품 <strong>${data.created}</strong>개 · 업데이트 <strong>${data.updated}</strong>개 · 이미지 저장 <strong>${data.imagesSaved}</strong>개</p>
+      ${warnings ? '<div class="mt-16" style="color:var(--yellow-text)"><strong>경고</strong><ul>' + warnings + '</ul></div>' : ''}
+      ${errors ? '<div class="mt-16" style="color:var(--red-text)"><strong>일부 오류</strong><ul>' + errors + '</ul></div>' : ''}
+      <a class="btn btn-primary mt-16" href="${data.downloadUrl}"><i class="ti ti-download"></i> _PIM_R2_READY.xlsx 다운로드</a>`;
+    resultBox.classList.remove('hidden');
+  } catch (e) { showError(e.message); }
+}
+function showError(message) {
+  statusBox.classList.remove('hidden');
+  statusBox.innerHTML = '<div style="color:var(--red-text);font-weight:600"><i class="ti ti-alert-circle"></i> ' + escapeHtml(message) + '</div>';
+}
+function escapeHtml(s) { const d=document.createElement('div'); d.textContent=String(s); return d.innerHTML; }
+</script>

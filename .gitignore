@@ -54,3 +54,9 @@ automation/.env 2
 automation/.env.sample
 automation/.DS_Store
 automation/data/
+
+automation.bak/
+.env
+.env.*
+!.env.example
+!.env.sample

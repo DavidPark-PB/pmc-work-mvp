@@ -39,6 +39,9 @@
       <a href="/upload-csv" class="nav-item <%= it.step === 1 ? 'active' : '' %>">
         <i class="ti ti-file-upload"></i> CSV 업로드
       </a>
+      <a href="/naver-import" class="nav-item admin-only <%= it.step === 14 ? 'active' : '' %>">
+        <i class="ti ti-file-spreadsheet"></i> 네이버 엑셀 PIM
+      </a>
       <a href="/history" class="nav-item <%= it.step === 6 ? 'active' : '' %>">
         <i class="ti ti-history"></i> 히스토리
       </a>

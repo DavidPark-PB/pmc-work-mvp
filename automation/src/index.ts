@@ -17,6 +17,7 @@ import { assignRoutes } from './routes/assign.js';
 import { tokenRoutes } from './routes/tokens.js';
 import { backupRoutes } from './routes/backups.js';
 import { authRoutes } from './routes/auth.js';
+import { naverRoutes } from './routes/naver.js';
 
 import { syncAllInventory } from './services/inventory-sync.js';
 import { db } from './db/index.js';
@@ -127,6 +128,7 @@ app.register(pageRoutes);
 app.register(settingsRoutes);
 app.register(tokenRoutes);
 app.register(backupRoutes);
+app.register(naverRoutes);
 
 // ─── 서버 시작 ──────────────────────────────────
 async function start() {
