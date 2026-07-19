@@ -2166,9 +2166,23 @@ router.post('/battle/kill-price', async (req, res) => {
     const result = await ebay.updateItem(itemId, { price });
 
     if (result.success) {
-      // Update price in Supabase
+      // Update price in Supabase — BOTH tables:
+      //   products (legacy)          — dataSource.updateProduct 는 이것만 함
+      //   ebay_products (전투 상황판) — v_battle_dashboard_rows 가 읽는 진짜 소스
+      //
+      // 2026-07-19 사장님 지적: 킬프라이스 후 계속 "지고 있는 상품" 으로 보임.
+      //   원인: ebay_products 는 크론 (03:00 KST) 이 돌기 전까지 안 갱신 →
+      //   전투 상황판은 옛날 가격으로 losing 판정 유지. Fix: 여기서 즉시 UPDATE.
       if (sku) {
         await dataSource.updateProduct('sku', sku, { priceUSD: parseFloat(newPrice) });
+      }
+      if (itemId) {
+        const { getClient } = require('../../db/supabaseClient');
+        const epDb = getClient();
+        await epDb.from('ebay_products').update({
+          price_usd: parseFloat(newPrice),
+          updated_at: new Date().toISOString(),
+        }).eq('item_id', String(itemId));
       }
 
       battleCache = null;
