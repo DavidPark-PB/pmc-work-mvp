@@ -172,13 +172,20 @@ function checkEnv() {
 router.get('/', async (req, res) => {
   const t0 = Date.now();
 
+  // 2026-07-19 사장님 지적: /api/health 가 반복 호출될 때마다 eBay Trading API +
+  //   네이버 토큰 발급을 실행 → Railway 이벤트 루프 blocked → 전투 상황판 502.
+  // Fix: 무거운 외부 API 체크 (eBay/naver/sheets) 는 ?full=true 파라미터가 있을
+  //   때만 실행. 기본 헬스체크는 DB + Storage + env 만 확인 (가볍고 빠름).
+  const full = req.query.full === 'true' || req.query.full === '1';
+  const skipped = { ok: true, note: 'skipped (?full=true 로 활성화)' };
+
   const [db, migrations, sheets, ebay, shopify, naver, storage] = await Promise.all([
     checkDb().catch(e => ({ ok: false, error: e.message })),
     checkMigrations().catch(e => ({ ok: false, error: e.message })),
-    checkSheets().catch(e => ({ ok: false, error: e.message })),
-    checkEbay().catch(e => ({ ok: false, error: e.message })),
+    full ? checkSheets().catch(e => ({ ok: false, error: e.message })) : skipped,
+    full ? checkEbay().catch(e => ({ ok: false, error: e.message }))   : skipped,
     checkShopify().catch(e => ({ ok: false, error: e.message })),
-    checkNaver().catch(e => ({ ok: false, error: e.message })),
+    full ? checkNaver().catch(e => ({ ok: false, error: e.message }))  : skipped,
     checkStorage().catch(e => ({ ok: false, error: e.message })),
   ]);
 
