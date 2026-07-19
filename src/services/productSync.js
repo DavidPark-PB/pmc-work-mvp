@@ -82,10 +82,13 @@ function mapToRow(platform, item) {
       // NOTE: stock is NOT included — preserves manual edits
       // ebay_api_stock tracks eBay's actual quantity separately
     };
-    // shipping_usd 은 Trading API 가 정확한 값 못 줄 때 (null) omit → 기존 DB 값 유지.
+    // shipping_usd 은 Trading API 가 정확한 값 못 줄 때 (null/0) omit → 기존 DB 값 유지.
     // /api/battle/listing/:itemId/refresh (Browse API) 로 별도 갱신.
-    if (item.shippingCost != null && Number.isFinite(parseFloat(item.shippingCost))) {
-      row.shipping_usd = parseFloat(item.shippingCost);
+    // 2026-07-19 사장님 지적: `> 0` 필터 안 하면 8,198개 shipping 이 0 으로 덮어씌워짐
+    // (line 138 의 `|| 0` 이 null → 0 변환하기 때문). productSync 는 shipping 만지지 마.
+    const parsedShip = parseFloat(item.shippingCost);
+    if (Number.isFinite(parsedShip) && parsedShip > 0) {
+      row.shipping_usd = parsedShip;
     }
     return row;
   }
