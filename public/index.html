@@ -1787,7 +1787,10 @@
           </select>
           <select id="battleSellerFilter" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px">
             <option value="">전체 셀러</option>
+            <option value="__TOP3_KILL__" style="color:#c62828;font-weight:800">🎯 TOP 3 몰살 (value-goods · onmom_house · hello_kr)</option>
           </select>
+          <!-- TOP 3 몰살 요약 카드 (선택 시에만 표시) -->
+          <div id="battleTop3Stats" style="display:none;width:100%;margin-top:12px;display:none"></div>
           <input type="text" id="battleSearch" placeholder="SKU 또는 상품명 검색..."
                  style="flex:1;padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:12px;min-width:200px">
           <button class="refresh-btn" id="battleRefreshBtn" style="background:#e53935;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">
@@ -3533,7 +3536,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260715battleui"></script>
+  <script src="/js/dashboard.js?v=20260720top3kill"></script>
   <script src="/js/operations.js?v=20260420a"></script>
   <script src="/js/catalog.js?v=20260512batch"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->

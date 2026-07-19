@@ -3832,7 +3832,51 @@ function renderBattleTable(items) {
   else if (filter === 'no-comp') filtered = filtered.filter(i => i.competitors.length === 0);
 
   // 셀러 필터 (경쟁사 seller 이름 기준)
-  if (sellerFilter) filtered = filtered.filter(i => i.competitors.some(c => c.seller === sellerFilter));
+  // 2026-07-20 사장님 요청: TOP 3 몰살 옵션 — 3명 동시 필터.
+  const TOP3_KILL_SELLERS = ['value-goods', 'onmom_house', 'hello_kr'];
+  const isTop3Kill = sellerFilter === '__TOP3_KILL__';
+  if (isTop3Kill) {
+    filtered = filtered.filter(i => i.competitors.some(c => TOP3_KILL_SELLERS.includes(c.seller)));
+  } else if (sellerFilter) {
+    filtered = filtered.filter(i => i.competitors.some(c => c.seller === sellerFilter));
+  }
+
+  // TOP 3 몰살 요약 카드 렌더링 (전투 시각화)
+  const top3StatsEl = document.getElementById('battleTop3Stats');
+  if (top3StatsEl) {
+    if (isTop3Kill) {
+      const stats = TOP3_KILL_SELLERS.map(seller => {
+        const items = filtered.filter(i => i.competitors.some(c => c.seller === seller));
+        const losing = items.filter(i => i.losing);
+        const totalDiff = losing.reduce((sum, i) => sum + Math.abs(i.diff || 0), 0);
+        return { seller, losing: losing.length, totalDiff, items: items.length };
+      });
+      const grandTotal = stats.reduce((s, x) => s + x.totalDiff, 0);
+      const grandLosing = stats.reduce((s, x) => s + x.losing, 0);
+      const colors = { 'value-goods': '#c62828', 'onmom_house': '#e65100', 'hello_kr': '#4527a0' };
+      top3StatsEl.style.display = 'flex';
+      top3StatsEl.style.gap = '12px';
+      top3StatsEl.style.flexWrap = 'wrap';
+      top3StatsEl.innerHTML = `
+        <div style="flex:1;min-width:220px;padding:14px;background:linear-gradient(135deg,#1a1a2e,#2d1a3a);color:#fff;border-radius:8px">
+          <div style="font-size:11px;opacity:0.85;font-weight:700;letter-spacing:0.5px">🎯 TOP 3 몰살 대상</div>
+          <div style="font-size:26px;font-weight:900;margin-top:4px">${grandLosing}건</div>
+          <div style="font-size:13px;opacity:0.9">총 조정폭 <b style="color:#ffcdd2">-$${grandTotal.toFixed(2)}</b></div>
+        </div>
+        ${stats.map(s => `
+          <div style="flex:1;min-width:160px;padding:12px 14px;background:#fff;border-left:5px solid ${colors[s.seller]};border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+            <div style="font-size:12px;color:${colors[s.seller]};font-weight:700">👊 ${s.seller}</div>
+            <div style="font-size:22px;font-weight:900;color:#1a1a2e;margin-top:2px">${s.losing}건</div>
+            <div style="font-size:11px;color:#666">지고 있음 / ${s.items}건 매칭</div>
+            <div style="font-size:12px;color:${colors[s.seller]};font-weight:700;margin-top:4px">-$${s.totalDiff.toFixed(2)}</div>
+          </div>
+        `).join('')}
+      `;
+    } else {
+      top3StatsEl.style.display = 'none';
+      top3StatsEl.innerHTML = '';
+    }
+  }
 
   // 검색 (SKU, itemId, 상품명 모두)
   if (search) {
@@ -4588,7 +4632,9 @@ function populateBattleSellerFilter(sellers) {
   const el = document.getElementById('battleSellerFilter');
   if (!el) return;
   const current = el.value;
+  // 2026-07-20 사장님 요청: TOP 3 몰살 옵션 (value-goods, onmom_house, hello_kr) 상단 고정.
   el.innerHTML = '<option value="">전체 셀러</option>' +
+    '<option value="__TOP3_KILL__" style="color:#c62828;font-weight:800">🎯 TOP 3 몰살 (value-goods · onmom_house · hello_kr)</option>' +
     sellers.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
   el.value = current;
 }
