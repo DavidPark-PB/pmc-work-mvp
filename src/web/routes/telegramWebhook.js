@@ -227,13 +227,13 @@ async function handleMessage(message) {
       .from('competitor_alerts')
       .select('*', { count: 'exact', head: true })
       .gte('created_at', new Date(Date.now() - 24 * 3600 * 1000).toISOString())
-      .catch(() => ({ count: 0 }));
+      .then(r => r, () => ({ count: 0 }));
 
     const { count: logCount } = await db
       .from('repricer_log')
       .select('*', { count: 'exact', head: true })
       .gte('created_at', new Date().toISOString().slice(0, 10))
-      .catch(() => ({ count: 0 }));
+      .then(r => r, () => ({ count: 0 }));
 
     await telegram.sendMessage(
       `📊 *PMC 리프라이싱 현황*\n\n` +
