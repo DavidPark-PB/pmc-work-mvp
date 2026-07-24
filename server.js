@@ -130,6 +130,11 @@ app.post('/api/auth/login', loginRateLimit, loginHandler);
 app.post('/api/auth/logout', logoutHandler);
 
 // Auth guard — protects everything below
+// Telegram webhook — external call from Telegram servers, no auth
+
+// Telegram webhook — external call from Telegram servers, no auth
+app.use('/api/telegram/webhook', require('./src/web/routes/telegramWebhook'));
+
 app.use(authGuard);
 
 // 레거시 관리자 계정은 업무관리 쓰기 차단 (users FK 제약)
@@ -221,7 +226,6 @@ app.use('/api/resources', require('./src/web/routes/resources'));
 app.use('/api/accio', require('./src/web/routes/accio'));
 
 // Telegram webhook (인라인 버튼 클릭 처리 — auth 미들웨어 없음, 텔레그램 서버가 직접 호출)
-app.use('/api/telegram/webhook', require('./src/web/routes/telegramWebhook'));
 
 // 경쟁셀러 자동 수집 + AI 매핑 시스템
 app.use('/api/competitor-system', require('./src/web/routes/competitorSystem'));
