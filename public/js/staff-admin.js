@@ -94,7 +94,14 @@
         <td style="padding:10px;text-align:center;">${isAdmin ? '<span style="padding:2px 8px;background:#7c4dff;color:#fff;border-radius:8px;font-size:11px;">Admin</span>' : '<span style="padding:2px 8px;background:#0288d1;color:#fff;border-radius:8px;font-size:11px;">Staff</span>'}</td>
         <td style="padding:10px;text-align:center;">${u.is_active ? '<span style="color:#81c784;">● 활성</span>' : '<span style="color:#888;">○ 비활성</span>'}</td>
         <td style="padding:10px;color:#aaa;font-size:12px;">${esc(u.platform || '-')}</td>
-        <td style="padding:10px;text-align:right;font-family:monospace;">${u.hourly_rate ? Number(u.hourly_rate).toLocaleString() + '원' : '-'}</td>
+        <td style="padding:10px;text-align:right;font-family:monospace;">
+          <input type="number" value="${u.hourly_rate || 0}" min="0" step="100" data-orig="${u.hourly_rate || 0}"
+                 onblur="pmcStaffAdmin.updateWage(${u.id}, this)"
+                 onkeydown="if(event.key==='Enter'){this.blur();}"
+                 title="Enter 또는 클릭 밖으로 저장"
+                 style="width:90px;padding:4px 6px;background:#0f0f23;border:1px solid #444;border-radius:4px;color:#fff;text-align:right;font-family:monospace;font-size:12px;">
+          <span style="font-size:10px;color:#888;margin-left:2px;">원</span>
+        </td>
         <td style="padding:10px;text-align:center;">${finCell}</td>
         <td style="padding:10px;text-align:center;font-size:11px;color:#888;">${dt(u.last_login_at)}</td>
         <td style="padding:10px;text-align:center;white-space:nowrap;">
@@ -160,5 +167,36 @@
     refresh();
   }
 
-  window.pmcStaffAdmin = { load, refresh, resetPw, toggleActive, toggleFinance };
+  async function updateWage(userId, inputEl) {
+    const orig = parseInt(inputEl.dataset.orig || '0', 10);
+    const next = parseInt(inputEl.value || '0', 10);
+    if (isNaN(next) || next < 0) {
+      alert('시급은 0 이상의 숫자여야 합니다');
+      inputEl.value = orig;
+      return;
+    }
+    if (next === orig) return; // 변경 없음
+    // 큰 변화면 확인
+    if (Math.abs(next - orig) >= 5000 && !confirm(`시급을 ${orig.toLocaleString()}원 → ${next.toLocaleString()}원 으로 변경합니까?`)) {
+      inputEl.value = orig;
+      return;
+    }
+    const res = await fetch(`/api/users/${userId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hourlyRate: next }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.error || '시급 수정 실패');
+      inputEl.value = orig;
+      return;
+    }
+    inputEl.dataset.orig = String(next);
+    // 짧은 성공 표시
+    const prevBorder = inputEl.style.borderColor;
+    inputEl.style.borderColor = '#4caf50';
+    setTimeout(() => { inputEl.style.borderColor = prevBorder; }, 800);
+  }
+
+  window.pmcStaffAdmin = { load, refresh, resetPw, toggleActive, toggleFinance, updateWage };
 })();
