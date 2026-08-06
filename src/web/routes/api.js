@@ -1060,6 +1060,59 @@ router.get('/products/csv-template', async (req, res) => {
   }
 });
 
+// GET /api/products/export.csv?platform=ebay — 플랫폼별 전체 상품 CSV 내보내기
+// 2026-08-07 사장님 지침: eBay 전체 상품을 엑셀로 뽑고 싶음.
+router.get('/products/export.csv', async (req, res) => {
+  try {
+    const { platform } = req.query;
+    if (!platform || !['ebay', 'shopify', 'naver', 'alibaba', 'shopee'].includes(platform)) {
+      return res.status(400).json({ error: 'platform 파라미터 필요 (ebay/shopify/naver/alibaba/shopee)' });
+    }
+    const table = platform + '_products';
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+
+    // 페이지네이션으로 전체 로드
+    const rows = [];
+    for (let offset = 0; ; offset += 1000) {
+      const { data, error } = await db.from(table).select('*').range(offset, offset + 999);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      rows.push(...data);
+      if (data.length < 1000) break;
+    }
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: `${platform} 상품 데이터 없음` });
+    }
+
+    // CSV: 모든 컬럼 사용 (플랫폼별 스키마 자동 반영)
+    const headers = Object.keys(rows[0]);
+    const escapeCsv = (v) => {
+      if (v == null) return '';
+      const s = String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    };
+    let csv = '﻿'; // Excel UTF-8 BOM (한글 깨짐 방지)
+    csv += headers.join(',') + '\n';
+    for (const row of rows) {
+      csv += headers.map(h => escapeCsv(row[h])).join(',') + '\n';
+    }
+
+    const date = new Date().toISOString().slice(0, 10);
+    const filename = `${platform}-listings-${date}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (error) {
+    console.error('[products/export] 실패:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/categories/search — 플랫폼별 카테고리 검색
 router.get('/categories/search', async (req, res) => {
   try {

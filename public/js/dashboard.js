@@ -650,6 +650,18 @@ function setupAllProductSearch() {
   }
 }
 
+// 2026-08-07 사장님 지침: 플랫폼별 전체 상품 CSV 내보내기.
+async function exportProductsCsv() {
+  const pf = document.getElementById('allPlatformFilter').value;
+  if (!pf) {
+    alert('플랫폼을 먼저 선택하세요 (전체 플랫폼 → 개별 플랫폼)');
+    return;
+  }
+  const url = `${API}/products/export.csv?platform=${encodeURIComponent(pf)}`;
+  // 새 창에서 download 트리거
+  window.location.href = url;
+}
+
 async function loadAllProducts(platform) {
   setupAllProductSearch();
   try {

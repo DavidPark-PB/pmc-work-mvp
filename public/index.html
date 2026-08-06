@@ -809,6 +809,10 @@
               <option value="title-asc">상품명 A→Z</option>
               <option value="title-desc">상품명 Z→A</option>
             </select>
+            <button onclick="exportProductsCsv()" title="현재 선택된 플랫폼의 전체 상품 CSV 내보내기"
+                    style="padding:6px 12px;background:#1e7e34;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap">
+              📥 CSV 내보내기
+            </button>
           </div>
         </div>
         <div class="table-wrap">
@@ -3536,7 +3540,7 @@
   </style>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="/js/dashboard.js?v=20260720top3kill"></script>
+  <script src="/js/dashboard.js?v=20260807csvexport"></script>
   <script src="/js/operations.js?v=20260420a"></script>
   <script src="/js/catalog.js?v=20260512batch"></script>
   <!-- ── 업무관리 (Phase 1~5) ── -->
