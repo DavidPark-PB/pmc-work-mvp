@@ -357,13 +357,16 @@
         receiptBtn = `<button onclick="pmcExpenses.uploadReceiptLater(${e.id})" style="padding:4px 8px;background:#2a2a4a;border:1px dashed #555;border-radius:4px;color:#888;cursor:pointer;font-size:11px;">📎 첨부</button>`;
       }
       // PR W-G3: status / sourceType 뱃지 (048 신규 컬럼)
-      const statusBadge = e.status === '예정'
+      // 2026-08-08 사장님 지침: 발주 자동생성 (source_type='purchase_order') · cancelled 도 표시
+      const statusBadge = (e.status === '예정')
         ? '<span title="지급 예정 (인건비 자동 연동 등)" style="margin-left:4px;padding:1px 6px;background:#ffa726;color:#fff;border-radius:8px;font-size:9px;">예정</span>'
-        : e.status === '취소됨'
+        : (e.status === '취소됨' || e.status === 'cancelled')
         ? '<span title="취소된 자동 연동 expense (감사 보존)" style="margin-left:4px;padding:1px 6px;background:#555;color:#fff;border-radius:8px;font-size:9px;">취소</span>'
         : ''; // '지급완료' 는 기본 — 뱃지 안 표시 (양 줄임)
       const autoLink = e.sourceType === 'payroll' && e.sourceId
         ? `<span onclick="pmcExpenses.gotoPayrollPeriod(${e.sourceId})" title="급여 기간 #${e.sourceId} 로 이동" style="margin-left:4px;padding:1px 6px;background:#1a3a4a;color:#64b5f6;border-radius:8px;font-size:9px;cursor:pointer;">📅 급여 자동</span>`
+        : e.sourceType === 'purchase_order' && e.sourceId
+        ? `<span onclick="window.location.href='/?page=orders'" title="발주 #${e.sourceId} 자동 생성 — 발주관리로 이동" style="margin-left:4px;padding:1px 6px;background:#1a3a2a;color:#81c784;border-radius:8px;font-size:9px;cursor:pointer;">🔗 구매 자동</span>`
         : '';
       return `
         <div style="padding:12px 16px;border-bottom:1px solid #2a2a4a;display:flex;gap:12px;align-items:center;flex-wrap:wrap;${e.status === '취소됨' ? 'opacity:0.5;' : ''}">

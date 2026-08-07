@@ -55,8 +55,17 @@
       </div>
       ${statsBar}
 
+      <!-- 2026-08-08 사장님 지침: 사후 구매 원클릭 (승인 스킵, 바로 완료+지출 자동) -->
+      <div style="background:#1a1a2e;border:1px solid #2a4a2a;border-radius:12px;padding:16px 20px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <div>
+          <div style="color:#81c784;font-weight:700;font-size:14px;">⚡ 이미 구매한 건은 여기</div>
+          <div style="color:#888;font-size:11px;margin-top:2px;">승인 절차 없이 사후 기록 · 지출 자동 생성</div>
+        </div>
+        <button onclick="pmcOrders.openQuickPurchase()" style="padding:10px 18px;background:#4caf50;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:700;">⚡ 사후 구매 기록</button>
+      </div>
+
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;margin-bottom:16px;">
-        <h3 style="color:#fff;margin-bottom:12px;">➕ 발주 요청</h3>
+        <h3 style="color:#fff;margin-bottom:12px;">➕ 발주 요청 <span style="font-size:11px;color:#888;font-weight:400;">— 관리자 승인이 필요한 신규 발주</span></h3>
         <form id="po-form" autocomplete="off">
           <!-- 상품명 -->
           <div style="position:relative;margin-bottom:10px;">
@@ -468,12 +477,25 @@
       ['추천 소싱처',    '<span style="color:#666;">— (1-C)</span>'],
     ];
 
+    // 구매완료 상세 (2026-08-08 사장님 지침)
+    const purchaseInfo = o.status === 'ordered' && (o.actual_price || o.payment_method) ? `
+      <div style="margin-top:8px;padding:8px 12px;background:#0f2a1a;border-left:3px solid #4caf50;border-radius:6px;font-size:12px;">
+        <div style="color:#81c784;font-weight:700;margin-bottom:4px;">💰 실제 구매</div>
+        <div style="color:#ccc;">
+          ${o.actual_price ? '금액: <strong style="color:#fff">₩' + Number(o.actual_price).toLocaleString() + '</strong>' : ''}
+          ${o.payment_method ? ' · ' + esc(o.payment_method) : ''}
+          ${o.card_last4 ? ' (**' + esc(o.card_last4) + ')' : ''}
+          ${o.purchased_at ? ' · ' + dt(o.purchased_at) : ''}
+        </div>
+        ${o.expense_id ? '<div style="color:#888;font-size:11px;margin-top:2px;">🔗 지출관리 자동생성: expense #' + o.expense_id + '</div>' : ''}
+      </div>` : '';
+
     const statusMsg = o.status === 'rejected'
       ? `<div style="margin-top:8px;padding:6px 10px;background:#2a1a1a;border-radius:6px;font-size:12px;"><strong style="color:#ff8a80;">반려:</strong> ${REJECT_LABELS[o.rejection_reason] || o.rejection_reason || '-'}${o.rejection_note ? ' — ' + esc(o.rejection_note) : ''}</div>`
       : o.status === 'approved'
       ? `<div style="margin-top:6px;font-size:12px;color:#81c784;">✓ ${dt(o.decision_at)} 승인</div>`
       : o.status === 'ordered'
-      ? `<div style="margin-top:6px;font-size:12px;color:#64b5f6;">📦 ${dt(o.ordered_at)} · ${esc(o.orderer?.display_name || '-')} 주문</div>`
+      ? `<div style="margin-top:6px;font-size:12px;color:#64b5f6;">📦 ${dt(o.ordered_at)} · ${esc(o.orderer?.display_name || '-')} 주문</div>${purchaseInfo}`
       : '';
 
     return `
@@ -636,11 +658,163 @@
     refresh();
   }
 
+  // 2026-08-08 사장님 지침: 주문완료 시 최소 필드 (실제 구매금액/구매일/결제수단/카드4)
+  //   지출 자동생성에 사용됨. actualPrice 필수, 나머지는 default 있음.
   async function markOrdered(id) {
-    if (!confirm('이 항목을 주문완료 처리하시겠습니까?')) return;
-    const res = await fetch(`/api/purchase-requests/${id}/order`, { method: 'PATCH' });
-    if (!res.ok) { alert((await res.json()).error || '처리 실패'); return; }
-    refresh();
+    const o = (cachedOrders || []).find(x => x.id === id);
+    openOrderCompleteModal(id, o);
+  }
+
+  function openOrderCompleteModal(id, o) {
+    const existing = document.getElementById('po-complete-modal');
+    if (existing) existing.remove();
+    const est = o?.estimated_price ? Number(o.estimated_price) : '';
+    const today = new Date().toISOString().slice(0, 10);
+    const m = document.createElement('div');
+    m.id = 'po-complete-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;width:460px;max-width:95vw;color:#e0e0e0;">
+        <h3 style="color:#fff;font-size:15px;margin:0 0 14px;">📦 주문완료 · 지출 자동 생성</h3>
+        <div style="font-size:11px;color:#888;margin-bottom:12px;padding:8px;background:#0f0f23;border-radius:6px;">💡 실제 결제 후 지출관리에 자동으로 지출 1건이 기록됩니다.</div>
+        <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">실제 구매금액 (원) *</label>
+        <input id="po-c-amount" type="number" min="0" step="100" placeholder="${est ? '예상: ' + est.toLocaleString() : ''}" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:10px;font-size:14px;">
+        <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">구매일</label>
+        <input id="po-c-date" type="date" value="${today}" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:10px;font-size:13px;">
+        <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">결제수단 *</label>
+        <select id="po-c-payment" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:10px;font-size:13px;">
+          <option value="법인카드">법인카드</option>
+          <option value="개인카드">개인카드 (환급)</option>
+          <option value="현금">현금</option>
+          <option value="계좌이체">계좌이체</option>
+          <option value="기타">기타</option>
+        </select>
+        <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">카드 뒷 4자리 (선택 · 카드명세 매칭용)</label>
+        <input id="po-c-card" type="text" maxlength="4" pattern="[0-9]*" inputmode="numeric" placeholder="예: 1234" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:14px;font-size:13px;">
+        <div style="display:flex;gap:8px;">
+          <button id="po-c-submit" style="flex:1;padding:10px;background:#1565c0;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">📦 주문완료 처리</button>
+          <button onclick="document.getElementById('po-complete-modal').remove()" style="padding:10px 16px;background:#2a2a4a;border:0;border-radius:6px;color:#aaa;cursor:pointer;">취소</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    document.getElementById('po-c-amount').focus();
+    document.getElementById('po-c-submit').addEventListener('click', async () => {
+      const amount = Number(document.getElementById('po-c-amount').value);
+      if (!Number.isFinite(amount) || amount <= 0) { alert('실제 구매금액을 입력하세요'); return; }
+      const paymentMethod = document.getElementById('po-c-payment').value;
+      const purchasedAt = document.getElementById('po-c-date').value;
+      const cardLast4 = document.getElementById('po-c-card').value.replace(/\D/g, '').slice(-4);
+      const btn = document.getElementById('po-c-submit');
+      btn.disabled = true; btn.textContent = '처리 중...';
+      try {
+        const res = await fetch(`/api/purchase-requests/${id}/order`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ actualPrice: amount, purchasedAt, paymentMethod, cardLast4 }),
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || '처리 실패'); btn.disabled = false; btn.textContent = '📦 주문완료 처리'; return; }
+        document.getElementById('po-complete-modal').remove();
+        alert(`✅ 주문완료. 지출 자동 생성 (₩${amount.toLocaleString()})${data.expenseId ? ' · expense #' + data.expenseId : ''}`);
+        refresh();
+      } catch (e) {
+        alert('네트워크 오류: ' + e.message);
+        btn.disabled = false; btn.textContent = '📦 주문완료 처리';
+      }
+    });
+  }
+
+  // 2026-08-08 사장님 지침: 사후 구매 원클릭 — 승인 스킵, 바로 완료+지출
+  function openQuickPurchase() {
+    const existing = document.getElementById('po-quick-modal');
+    if (existing) existing.remove();
+    const today = new Date().toISOString().slice(0, 10);
+    const m = document.createElement('div');
+    m.id = 'po-quick-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #333;border-radius:12px;padding:24px;width:520px;max-width:95vw;color:#e0e0e0;max-height:92vh;overflow-y:auto;">
+        <h3 style="color:#fff;font-size:15px;margin:0 0 4px;">⚡ 사후 구매 기록</h3>
+        <p style="color:#888;font-size:12px;margin:0 0 14px;">이미 구매한 건을 승인 절차 없이 바로 완료로 등록 · 지출 자동 생성</p>
+        <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">상품명 *</label>
+        <input id="pq-name" type="text" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:10px;font-size:13px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+          <div>
+            <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">수량 *</label>
+            <input id="pq-qty" type="number" min="1" value="1" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">실제 구매금액 (원) *</label>
+            <input id="pq-amount" type="number" min="0" step="100" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+          <div>
+            <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">구매일</label>
+            <input id="pq-date" type="date" value="${today}" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">결제수단 *</label>
+            <select id="pq-payment" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+              <option value="법인카드">법인카드</option>
+              <option value="개인카드">개인카드 (환급)</option>
+              <option value="현금">현금</option>
+              <option value="계좌이체">계좌이체</option>
+              <option value="기타">기타</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+          <div>
+            <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">SKU (선택)</label>
+            <input id="pq-sku" type="text" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          </div>
+          <div>
+            <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">카드 뒷 4자리 (선택)</label>
+            <input id="pq-card" type="text" maxlength="4" pattern="[0-9]*" inputmode="numeric" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
+          </div>
+        </div>
+        <label style="display:block;font-size:12px;color:#aaa;margin-bottom:4px;">메모 (선택)</label>
+        <textarea id="pq-memo" rows="2" style="width:100%;padding:9px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;margin-bottom:14px;resize:vertical;"></textarea>
+        <div style="display:flex;gap:8px;">
+          <button id="pq-submit" style="flex:1;padding:11px;background:#4caf50;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:700;">⚡ 등록 · 지출 자동생성</button>
+          <button onclick="document.getElementById('po-quick-modal').remove()" style="padding:11px 16px;background:#2a2a4a;border:0;border-radius:6px;color:#aaa;cursor:pointer;">취소</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    document.getElementById('pq-name').focus();
+    document.getElementById('pq-submit').addEventListener('click', async () => {
+      const payload = {
+        productName: document.getElementById('pq-name').value.trim(),
+        quantity: Number(document.getElementById('pq-qty').value),
+        actualPrice: Number(document.getElementById('pq-amount').value),
+        purchasedAt: document.getElementById('pq-date').value,
+        paymentMethod: document.getElementById('pq-payment').value,
+        sku: document.getElementById('pq-sku').value.trim() || undefined,
+        cardLast4: document.getElementById('pq-card').value.replace(/\D/g, '').slice(-4) || undefined,
+        memo: document.getElementById('pq-memo').value.trim() || undefined,
+      };
+      if (!payload.productName) { alert('상품명을 입력하세요'); return; }
+      if (!Number.isFinite(payload.quantity) || payload.quantity <= 0) { alert('수량은 1 이상'); return; }
+      if (!Number.isFinite(payload.actualPrice) || payload.actualPrice <= 0) { alert('실제 구매금액을 입력하세요'); return; }
+      const btn = document.getElementById('pq-submit');
+      btn.disabled = true; btn.textContent = '등록 중...';
+      try {
+        const res = await fetch(`/api/purchase-requests/completed`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || '등록 실패'); btn.disabled = false; btn.textContent = '⚡ 등록 · 지출 자동생성'; return; }
+        document.getElementById('po-quick-modal').remove();
+        alert(`✅ 사후 구매 기록 완료 · 지출 자동 생성 (₩${payload.actualPrice.toLocaleString()})${data.expenseId ? ' · expense #' + data.expenseId : ''}`);
+        refresh();
+      } catch (e) {
+        alert('네트워크 오류: ' + e.message);
+        btn.disabled = false; btn.textContent = '⚡ 등록 · 지출 자동생성';
+      }
+    });
   }
 
   async function unorder(id) {
@@ -853,6 +1027,7 @@
 
   window.pmcOrders = {
     load, refresh, approve, openReject, del, toggleInsights, markOrdered, unorder,
+    openQuickPurchase,
     openEdit, closeEdit, saveEdit,
     previewNewImages, toggleImages, uploadMoreImages, removeEditImage,
     toggleDetail,

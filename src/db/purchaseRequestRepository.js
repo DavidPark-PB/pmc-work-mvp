@@ -16,6 +16,7 @@ async function listRequests({ user, status, scope, statusGroup, includeDeleted }
     quantity, estimated_price, priority, reason,
     requested_by, requested_at, status, decision_by, decision_at,
     rejection_reason, rejection_note, ordered_by, ordered_at,
+    actual_price, purchased_at, payment_method, card_last4, expense_id,
     deleted_at, deleted_by,
     requester:users!purchase_requests_requested_by_users_id_fk ( id, display_name, platform ),
     orderer:users!purchase_requests_ordered_by_fk ( id, display_name )

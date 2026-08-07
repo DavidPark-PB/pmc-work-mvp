@@ -29,6 +29,75 @@ const sseHub = require('../../services/sseHub');
 const { getClient } = require('../../db/supabaseClient');
 const safetyExec = require('../../services/safetyExec');
 const dupDetector = require('../../services/duplicatePurchaseDetector');
+const expenseRepo = require('../../db/expenseRepository');
+
+// ─── 발주-지출 통합 (2026-08-08 사장님 지침) ─────────────────────────────
+//
+//   ordered 상태 시 expenses 자동 생성. 사장님 지침:
+//     1) 실제 구매금액(actual_price)만 지출 amount 로 사용 (estimated_price 절대 금지)
+//     2) source_type='purchase_order', source_id=purchase_request.id 필수
+//     3) UNIQUE(source_type, source_id) 인덱스 + 앱 레벨 방어 (이미 있으면 skip)
+//     4) 자동 생성 지출은 지출관리에서 배지 표시 (source_type 으로 구분)
+//     5) 취소 시 삭제 X → status='cancelled' 로 마킹
+//
+async function autoCreateExpense(pr, executedBy) {
+  // 필수: actual_price
+  const amount = Number(pr.actual_price);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('actual_price 가 없어 지출 자동생성 불가 (구매완료 시 실제 구매금액 필수)');
+  }
+
+  // 앱 레벨 중복 방어 (UNIQUE 인덱스 + 앱 레벨 이중 방어)
+  const { data: existing } = await getClient()
+    .from('expenses')
+    .select('id, status')
+    .eq('source_type', 'purchase_order')
+    .eq('source_id', pr.id)
+    .maybeSingle();
+  if (existing) {
+    // 취소된 것이면 다시 활성화 (드문 재실행 케이스)
+    if (existing.status === 'cancelled') {
+      await expenseRepo.updateExpense(existing.id, { status: null });
+    }
+    return existing.id;
+  }
+
+  const paidAt = pr.purchased_at || pr.ordered_at || new Date().toISOString();
+  const memo = `${pr.product_name} × ${pr.quantity}${pr.unit || '개'}`
+    + (pr.memo ? ` — ${pr.memo}` : '');
+
+  const created = await expenseRepo.createExpense({
+    paidAt,
+    amount,                                     // 실제 구매금액만
+    currency: 'KRW',
+    category: '재료비',                          // 발주는 재고 매입 → 재료비 카테고리 (수정 가능)
+    merchant: null,                              // 거래처는 supplier_id 기반. 지금은 null.
+    memo,
+    source: 'manual',                            // legacy 필드
+    cardLast4: pr.card_last4 || null,
+    createdBy: pr.requested_by || executedBy,
+    // 발주-지출 링크
+    sourceType: 'purchase_order',
+    sourceId: pr.id,
+    paidBy: executedBy,
+    status: null,                                // 기본 (활성)
+  });
+  return created.id;
+}
+
+async function cancelLinkedExpense(pr) {
+  const { data: exp } = await getClient()
+    .from('expenses')
+    .select('id, status')
+    .eq('source_type', 'purchase_order')
+    .eq('source_id', pr.id)
+    .maybeSingle();
+  if (exp && exp.status !== 'cancelled') {
+    await expenseRepo.updateExpense(exp.id, { status: 'cancelled' });
+    return exp.id;
+  }
+  return null;
+}
 
 // PR P-1A-B: status 도메인 화이트리스트.
 //   1-A 시점 활성: pending / approved / ordered / rejected
@@ -260,6 +329,88 @@ router.post('/', async (req, res) => {
       afterSnapshot: prSnapshot(created),
     });
     res.json({ data: created });
+  } catch (e) {
+    safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/purchase-requests/completed — 사후 구매 원클릭 기록 (2026-08-08 사장님 지침)
+//   이미 결제한 소액/일상 구매를 발주 요청/승인 절차 없이 바로 완료 상태로 등록.
+//   자동으로 status='ordered' + expense 자동생성. 전 직원 사용 가능.
+//
+//   필수: productName, quantity, actualPrice, paymentMethod
+//   선택: purchasedAt(기본 now), cardLast4, sku, memo, currentStock
+router.post('/completed', async (req, res) => {
+  const b = req.body || {};
+  if (!b.productName || !String(b.productName).trim()) return res.status(400).json({ error: '상품명을 입력하세요' });
+  const qty = Number(b.quantity);
+  if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: '수량은 1 이상이어야 합니다' });
+  const actualPrice = Number(b.actualPrice);
+  if (!Number.isFinite(actualPrice) || actualPrice <= 0) return res.status(400).json({ error: '실제 구매금액은 0 이상 숫자여야 합니다' });
+  if (!b.paymentMethod || !String(b.paymentMethod).trim()) return res.status(400).json({ error: '결제수단을 선택하세요' });
+
+  const executedBy = req.user.id;
+
+  // pre-action audit
+  let run;
+  try {
+    run = await safetyExec.runAction({
+      actionName:       'purchase_request_completed_directly',
+      executedBy,
+      isLegacyExecutor: req.user?.isLegacy === true,
+      targetTable:      'purchase_requests',
+      targetId:         null,
+      beforeSnapshot:   null,
+      rollbackMethod:   'manual',
+      rollbackHint:     '사후 기록한 발주 row 를 확인 후 취소/삭제 정책에 따라 수동 처리하세요.',
+      status: 'pending',
+    });
+  } catch (auditErr) {
+    console.error('[purchase-requests] audit failed (completed_directly):', auditErr.message);
+    return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
+  }
+
+  try {
+    const norm = normalizePurchaseInput(b, { isCreate: true });
+    const now = new Date().toISOString();
+    const purchasedAt = b.purchasedAt ? new Date(b.purchasedAt).toISOString() : now;
+
+    const created = await repo.createRequest({
+      ...norm,
+      quantity: qty,
+      estimated_price: null,
+      priority: 'normal',
+      reason: b.memo?.trim() || '사후 구매 기록',
+      requested_by: executedBy,
+      // 승인 스킵 — 바로 ordered 로 저장
+      status: 'ordered',
+      decision_by: executedBy,
+      decision_at: now,
+      ordered_by: executedBy,
+      ordered_at: now,
+      // 실제 구매 정보 (사장님 지침 필수)
+      actual_price: actualPrice,
+      purchased_at: purchasedAt,
+      payment_method: String(b.paymentMethod).slice(0, 50),
+      card_last4: b.cardLast4 ? String(b.cardLast4).replace(/\D/g, '').slice(-4) : null,
+    });
+
+    // 지출 자동생성
+    let expenseId = null;
+    try {
+      expenseId = await autoCreateExpense(created, executedBy);
+      if (expenseId) await repo.updateRequest(created.id, { expense_id: expenseId });
+    } catch (expErr) {
+      console.error('[purchase-requests] 사후구매 지출 자동생성 실패:', expErr.message);
+    }
+
+    safetyExec.updateRun(run.id, {
+      status: 'succeeded',
+      targetId: created.id,
+      afterSnapshot: prSnapshot({ ...created, expense_id: expenseId }),
+    });
+    res.json({ data: { ...created, expense_id: expenseId }, expenseId });
   } catch (e) {
     safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
     res.status(500).json({ error: e.message });
@@ -527,12 +678,43 @@ router.patch('/:id/order', async (req, res) => {
     return res.status(500).json({ error: 'audit 시스템 일시 장애 — 잠시 후 재시도' });
   }
 
+  // 2026-08-08 사장님 지침: 구매완료 시 필수 필드 (actual_price / purchased_at / payment_method)
+  //   card_last4 는 선택. body 없으면 기존 값 유지 (호환성).
+  const b = req.body || {};
+  const actualPrice = b.actualPrice != null && b.actualPrice !== ''
+    ? Number(b.actualPrice) : null;
+  if (actualPrice != null && (!Number.isFinite(actualPrice) || actualPrice <= 0)) {
+    safetyExec.updateRun(run.id, { status: 'cancelled', errorCode: 'invalid_actual_price', errorMessage: 'actual_price must be > 0' });
+    return res.status(400).json({ error: '실제 구매금액은 0 이상 숫자여야 합니다' });
+  }
+
   try {
-    const updated = await repo.updateRequest(id, {
+    const patch = {
       status: 'ordered',
       ordered_by: executedBy,
       ordered_at: new Date().toISOString(),
-    });
+    };
+    if (actualPrice != null) patch.actual_price = actualPrice;
+    if (b.purchasedAt) patch.purchased_at = new Date(b.purchasedAt).toISOString();
+    else patch.purchased_at = new Date().toISOString();
+    if (b.paymentMethod) patch.payment_method = String(b.paymentMethod).slice(0, 50);
+    if (b.cardLast4) patch.card_last4 = String(b.cardLast4).replace(/\D/g, '').slice(-4);
+
+    const updated = await repo.updateRequest(id, patch);
+
+    // 지출 자동생성 (actual_price 있을 때만)
+    let expenseId = null;
+    if (Number.isFinite(Number(updated.actual_price))) {
+      try {
+        expenseId = await autoCreateExpense(updated, executedBy);
+        if (expenseId) {
+          await repo.updateRequest(id, { expense_id: expenseId });
+        }
+      } catch (expErr) {
+        // 지출 생성 실패해도 발주 상태는 유지 (사용자 명확 알림)
+        console.error('[purchase-requests] 지출 자동생성 실패:', expErr.message);
+      }
+    }
 
     // 요청자에게 알림 (주문자 본인이면 생략)
     if (existing.requested_by && existing.requested_by !== executedBy) {
@@ -549,8 +731,8 @@ router.patch('/:id/order', async (req, res) => {
       sseHub.sendTo(existing.requested_by, { type: 'purchase_ordered', title: oBody, linkUrl: '/?page=orders' });
     }
 
-    safetyExec.updateRun(run.id, { status: 'succeeded', afterSnapshot: prSnapshot(updated) });
-    res.json({ data: updated });
+    safetyExec.updateRun(run.id, { status: 'succeeded', afterSnapshot: prSnapshot({ ...updated, expense_id: expenseId }) });
+    res.json({ data: { ...updated, expense_id: expenseId }, expenseId });
   } catch (e) {
     safetyExec.updateRun(run.id, { status: 'failed', errorCode: 'unknown', errorMessage: e.message });
     res.status(500).json({ error: e.message });
@@ -576,7 +758,16 @@ router.patch('/:id/unorder', async (req, res) => {
       ordered_by: null,
       ordered_at: null,
     });
-    res.json({ data: updated });
+
+    // 2026-08-08 사장님 지침 5: 취소 시 expense 삭제 X → status='cancelled' 마킹
+    let cancelledExpenseId = null;
+    try {
+      cancelledExpenseId = await cancelLinkedExpense(existing);
+    } catch (expErr) {
+      console.error('[purchase-requests] unorder 지출 취소 실패:', expErr.message);
+    }
+
+    res.json({ data: updated, cancelledExpenseId });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

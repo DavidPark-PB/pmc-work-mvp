@@ -246,6 +246,8 @@ async function getExpense(id) {
 async function createExpense({
   paidAt, amount, currency = 'KRW', category, merchant, memo,
   source = 'manual', cardLast4, taskId, recurringId, createdBy,
+  // 발주-지출 통합 (2026-08-08): source_type/source_id/paid_by/status 지원
+  sourceType, sourceId, paidBy, status,
 }) {
   if (!paidAt) throw new Error('paid_at is required');
   if (!Number.isFinite(Number(amount))) throw new Error('amount must be number');
@@ -262,6 +264,10 @@ async function createExpense({
     recurring_id: recurringId || null,
     created_by: createdBy || null,
   };
+  if (sourceType !== undefined) row.source_type = sourceType || null;
+  if (sourceId !== undefined)   row.source_id   = sourceId != null ? Number(sourceId) : null;
+  if (paidBy !== undefined)     row.paid_by     = paidBy || null;
+  if (status !== undefined)     row.status      = status || null;
   const { data, error } = await getClient().from('expenses')
     .insert(row).select().single();
   if (error) throwFriendly(error);
@@ -299,6 +305,11 @@ async function updateExpense(id, updates) {
   if (updates.memo !== undefined) patch.memo = updates.memo || null;
   if (updates.cardLast4 !== undefined) patch.card_last4 = updates.cardLast4 ? String(updates.cardLast4).slice(-4) : null;
   if (updates.taskId !== undefined) patch.task_id = updates.taskId || null;
+  // 발주-지출 통합 (2026-08-08): source_type/source_id/paid_by/status 지원
+  if (updates.sourceType !== undefined) patch.source_type = updates.sourceType || null;
+  if (updates.sourceId   !== undefined) patch.source_id   = updates.sourceId != null ? Number(updates.sourceId) : null;
+  if (updates.paidBy     !== undefined) patch.paid_by     = updates.paidBy || null;
+  if (updates.status     !== undefined) patch.status      = updates.status || null;
   if (Object.keys(patch).length === 0) throw new Error('변경할 내용이 없습니다');
   const { data, error } = await getClient().from('expenses')
     .update(patch).eq('id', id).select().single();
