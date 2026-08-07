@@ -98,6 +98,11 @@
     await refreshKnownCards();
     renderShell();
     await refresh();
+    // 2026-08-08: 통합 후 기본 탭 = 상품 구매. orders.js 즉시 로드.
+    if (activeTab === 'orders' && window.pmcOrders && !ordersLoaded) {
+      window.pmcOrders.load();
+      ordersLoaded = true;
+    }
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
       if (document.getElementById('page-expenses').classList.contains('active')) refresh();
@@ -126,13 +131,17 @@
         ` : ''}
       </div>
 
-      <!-- 탭 바 -->
+      <!-- 탭 바 (2026-08-08: 발주관리 통합 — 상품 구매를 기본 탭으로) -->
       <div style="display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid #2a2a4a;">
-        <button type="button" id="tab-btn-expenses" onclick="pmcExpenses.switchTab('expenses')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid #7c4dff;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">💸 지출${hasFinance ? ' + 정기결제' : ''}</button>
+        <button type="button" id="tab-btn-orders" onclick="pmcExpenses.switchTab('orders')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid #7c4dff;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">🛒 상품 구매</button>
+        <button type="button" id="tab-btn-expenses" onclick="pmcExpenses.switchTab('expenses')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">💸 일반 지출${hasFinance ? ' + 정기결제' : ''}</button>
         <button type="button" id="tab-btn-purchases" onclick="pmcExpenses.switchTab('purchases')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">🃏 카드 매입</button>
       </div>
 
-      <div id="tab-expenses">
+      <!-- 상품 구매 탭 body — 통합된 orders.js 가 여기에 mount (id=page-orders 유지) -->
+      <div id="tab-orders"><div id="page-orders" class="page active"></div></div>
+
+      <div id="tab-expenses" style="display:none;">
 
       <!-- 등록 폼 -->
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
@@ -1099,12 +1108,13 @@
   // ──────────────────────────────────────────────────────────
   // 탭 전환
   // ──────────────────────────────────────────────────────────
-  let activeTab = 'expenses';
+  let activeTab = 'orders';   // 2026-08-08: 통합 후 상품 구매가 기본
   let purchasesLoaded = false;
+  let ordersLoaded = false;
 
   function switchTab(key) {
     activeTab = key;
-    const allTabs = ['expenses', 'purchases'];
+    const allTabs = ['orders', 'expenses', 'purchases'];
     for (const k of allTabs) {
       const btn = document.getElementById('tab-btn-' + k);
       const panel = document.getElementById('tab-' + k);
@@ -1125,6 +1135,10 @@
       renderPurchasesShell();
       refreshPurchases();
       purchasesLoaded = true;
+    }
+    if (key === 'orders' && !ordersLoaded && window.pmcOrders) {
+      window.pmcOrders.load();
+      ordersLoaded = true;
     }
   }
 

@@ -32,6 +32,13 @@ function setupNavigation() {
 }
 
 function navigateTo(page) {
+  // 2026-08-08: 발주 관리 → 구매·지출 관리로 통합. 기존 orders 링크/알림은 자동 리다이렉트.
+  if (page === 'orders') {
+    navigateTo('expenses');
+    // 로드 완료 후 상품 구매 탭 자동 선택 (expenses.js switchTab 은 async 아님)
+    setTimeout(() => { if (window.pmcExpenses?.switchTab) pmcExpenses.switchTab('orders'); }, 100);
+    return;
+  }
   currentPage = page;
 
   // 페이지 전환

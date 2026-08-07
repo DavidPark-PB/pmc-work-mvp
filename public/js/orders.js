@@ -18,7 +18,13 @@
     await refresh();
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
-      if (document.getElementById('page-orders').classList.contains('active')) refresh();
+      // 2026-08-08: 발주 관리가 구매·지출 관리 (page-expenses) 안 '상품 구매' 탭으로 통합됨.
+      // 부모 page-expenses 가 활성이고 상품 구매 탭이 표시 중일 때만 refresh.
+      const parent = document.getElementById('page-expenses');
+      const ordersTab = document.getElementById('tab-orders');
+      const visible = parent && parent.classList.contains('active')
+        && ordersTab && ordersTab.style.display !== 'none';
+      if (visible) refresh();
     }, 30000);
   }
 
