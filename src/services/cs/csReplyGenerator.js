@@ -56,11 +56,20 @@ function _resolveTone(tone, purpose, riskLevel) {
   return 'friendly';
 }
 
-function buildPrompt({ analysis, koreanDraft, tone, purpose }) {
+function buildPrompt({ analysis, koreanDraft, tone, purpose, previousReply, refinementInstruction }) {
   const purposeLabel = purpose && PURPOSES[purpose]?.label || '일반 답변';
   const requiredBullets = (analysis.required_reply_points || []).map(p => `  - ${p}`).join('\n') || '  (없음)';
   const forbiddenBullets = (analysis.forbidden_reply_points || []).map(p => `  - ${p}`).join('\n') || '  (없음)';
   const riskTagsStr = (analysis.risk_tags || []).join(', ') || '(없음)';
+
+  // 2026-08-08: 대화형 재수정 지원 — 이전 답변 + 추가 지시가 있으면 프롬프트에 주입.
+  const refinementSection = (previousReply || refinementInstruction) ? `
+═══ PREVIOUS REPLY (rewrite this — do not start from scratch) ═══
+${previousReply || '(없음)'}
+
+═══ ADDITIONAL INSTRUCTION FROM STAFF ═══
+${refinementInstruction || '(위 이전 답변을 새 tone/purpose 로 다시 작성)'}
+` : '';
 
   return `You are PMC's senior CS writer. PMC is a Korean global e-commerce seller.
 Your job: write a polished ENGLISH reply that strictly satisfies the analysis below,
@@ -83,7 +92,7 @@ ${forbiddenBullets}
 
 ═══ STAFF KOREAN INTENT (the human's draft direction) ═══
 ${koreanDraft || '(직원 한국어 지시 없음 — 분석 결과만 보고 표준 응대)'}
-
+${refinementSection}
 ═══ TONE / PURPOSE ═══
 - Tone: ${tone}   (friendly = warm, professional = neutral business, firm = polite but unyielding)
 - Purpose: ${purposeLabel}
@@ -180,12 +189,14 @@ function preflightCheck(koreanDraft, analysis) {
 
 /**
  * @param {Object} params
- * @param {Object} params.analysis     - csMessageAnalyzer 결과 .analysis (필수)
- * @param {string} params.koreanDraft  - 사용자 한국어 답변 지시문 (선택, 없어도 동작)
- * @param {string} [params.tone]       - friendly | professional | firm
- * @param {string} [params.purpose]    - 8개 enum 중 하나
+ * @param {Object} params.analysis                 - csMessageAnalyzer 결과 .analysis (필수)
+ * @param {string} params.koreanDraft              - 사용자 한국어 답변 지시문 (선택)
+ * @param {string} [params.tone]                   - friendly | professional | firm
+ * @param {string} [params.purpose]                - 8개 enum 중 하나
+ * @param {string} [params.previousReply]          - 이전 답변 (대화형 재수정 시)
+ * @param {string} [params.refinementInstruction]  - 추가 지시 ("더 짧게", "환불 안 된다고" 등)
  */
-async function generateReply({ analysis, koreanDraft, tone, purpose } = {}) {
+async function generateReply({ analysis, koreanDraft, tone, purpose, previousReply, refinementInstruction } = {}) {
   if (!analysis || !analysis.original_message) {
     throw new ValidationError('analysis (csMessageAnalyzer 결과) 가 필요합니다');
   }
@@ -210,7 +221,7 @@ async function generateReply({ analysis, koreanDraft, tone, purpose } = {}) {
     };
   }
 
-  const prompt = buildPrompt({ analysis, koreanDraft, tone: resolvedTone, purpose });
+  const prompt = buildPrompt({ analysis, koreanDraft, tone: resolvedTone, purpose, previousReply, refinementInstruction });
   const { text, inputTokens, outputTokens } = await callAnthropic({ prompt, model: DEFAULT_MODEL });
 
   let parsed;

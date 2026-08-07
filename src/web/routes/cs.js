@@ -304,8 +304,9 @@ router.post('/translate', async (req, res) => {
 // 한국어 지시문 단독 번역 금지. 정책 미커버 시 사전 경고.
 
 // POST /api/cs/analyze-message
-//   body: { message: string }
-//   response: { analysis: 9-field, policyHits: [...], provider, mock, costUsd }
+//   body: { message: string, platformIds?: {ebay,shopify,...} }
+//   response: { analysis: 9-field, policyHits: [...], suspiciousMatch, provider, mock, costUsd }
+//   2026-08-08: simple UI 개편 — suspiciousMatch 를 결과에 포함하여 경고 배지 자동 표시.
 router.post('/analyze-message', async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
@@ -313,9 +314,19 @@ router.post('/analyze-message', async (req, res) => {
     if (!message.trim()) return res.status(400).json({ error: '메시지가 비어있습니다' });
     try {
       const result = await csMessageAnalyzer.analyze({ message });
+      // 진상 매칭 (best-effort — 실패해도 분석 결과는 반환)
+      const suspiciousMatch = await buyerMatcher.findMatches({
+        message,
+        buyerName: null,
+        platformIds: req.body?.platformIds || null,
+      }).catch(e => {
+        console.warn('[cs/analyze-message] matcher error:', e.message);
+        return { matches: [], primary: null, extractedEmails: [] };
+      });
       res.json({
         analysis: result.analysis,
         policyHits: result.policyHits,
+        suspiciousMatch,
         provider: result.provider,
         mock: !!result.mock,
         costUsd: result.costUsd,
@@ -340,13 +351,14 @@ router.post('/analyze-message', async (req, res) => {
 router.post('/generate-reply', async (req, res) => {
   try {
     if (!req.user) return res.status(401).json({ error: '로그인이 필요합니다' });
-    const { analysis, koreanDraft, tone, purpose, force } = req.body || {};
+    const { analysis, koreanDraft, tone, purpose, force, previousReply, refinementInstruction } = req.body || {};
     if (!analysis || !analysis.original_message) {
       return res.status(400).json({ error: 'analysis (csMessageAnalyzer 결과) 필수' });
     }
     try {
-      // 사전 가드 — force 가 아니면 uncovered 있을 때 생성 중단
-      if (!force) {
+      // 사전 가드 — force 또는 재수정(previousReply) 이 아니면 uncovered 있을 때 생성 중단.
+      // 재수정 flow 에선 이미 사용자가 초기 답변을 확인한 상태이므로 preflight 스킵.
+      if (!force && !previousReply) {
         const uncovered = csReplyGenerator.preflightCheck(koreanDraft, analysis);
         if (uncovered.length > 0) {
           return res.json({
@@ -356,7 +368,7 @@ router.post('/generate-reply', async (req, res) => {
           });
         }
       }
-      const result = await csReplyGenerator.generateReply({ analysis, koreanDraft, tone, purpose });
+      const result = await csReplyGenerator.generateReply({ analysis, koreanDraft, tone, purpose, previousReply, refinementInstruction });
       res.json({
         blocked: false,
         reply_text: result.reply_text,
