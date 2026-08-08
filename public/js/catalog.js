@@ -20,9 +20,35 @@
   }
 
   async function load() {
-    renderShell();
-    checkAccio();
-    await refresh();
+    try {
+      renderShell();
+    } catch (e) {
+      // renderShell 자체가 실패해도 최소한 뭐가 잘못됐는지 화면에 표시.
+      console.error('[catalog] renderShell error:', e);
+      const el = document.getElementById('page-catalog');
+      if (el) {
+        el.innerHTML = `<div style="padding:40px;color:#ff8a80;">
+          <div style="font-weight:700;margin-bottom:6px;">⚠️ 카탈로그 초기화 실패</div>
+          <div style="font-size:12px;">${e && e.message ? String(e.message).replace(/[<>]/g, '') : e}</div>
+          <button onclick="pmcCatalog.load()" style="margin-top:12px;padding:6px 14px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">🔄 다시 시도</button>
+        </div>`;
+      } else {
+        // page-catalog div 자체가 없음 — 아주 이례적. body 에라도 알림.
+        const alt = document.querySelector('.content-area, main, body');
+        if (alt) alt.insertAdjacentHTML('afterbegin',
+          `<div style="padding:20px;background:#3a1a1a;color:#ff8a80;">⚠️ page-catalog 컨테이너 없음 — index.html 확인 필요</div>`);
+      }
+      return;
+    }
+    checkAccio().catch(() => {});
+    try {
+      await refresh();
+    } catch (e) {
+      // refresh 는 자체 try/catch 있지만 그 밖에서 던진 예외 대비.
+      console.error('[catalog] load/refresh error:', e);
+      const content = document.getElementById('cat-content');
+      if (content) content.innerHTML = `<div style="padding:40px;color:#ff8a80;">데이터 로드 실패: ${e && e.message ? String(e.message).replace(/[<>]/g, '') : e}</div>`;
+    }
   }
 
   async function checkAccio() {
@@ -35,6 +61,7 @@
 
   function renderShell() {
     const el = document.getElementById('page-catalog');
+    if (!el) throw new Error('page-catalog 컨테이너를 찾을 수 없습니다. index.html 이 오래된 캐시일 수 있습니다 (Cmd+Shift+R).');
     el.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:12px;">
         <div>
