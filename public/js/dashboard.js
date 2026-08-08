@@ -7247,6 +7247,10 @@ function setupB2BPage() {
   if (!b2bInit) {
     b2bInit = true;
 
+    // 2026-08-08: 통화 select 변경 시 카탈로그 담긴 라인 재환산
+    const curSel = document.getElementById('b2bCurrency');
+    if (curSel) curSel.addEventListener('change', _b2bOnCurrencyChange);
+
     // 탭 전환
     document.querySelectorAll('.b2b-tab').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -7342,17 +7346,48 @@ async function loadB2BBuyerSelect() {
 // ─── 상품 행 추가 ───
 // ─── 카탈로그 자동완성 (수동 인보이스 폼용) ───
 let _b2bCatalog = null;   // { bySku: {...}, byName: {...} }
+// 2026-08-08: 수동 인보이스 폼 USD → 인보이스 통화 환산.
+// 자동 모달의 _autoConvertFromUsd 와 동일 로직. rates 는 카탈로그 로드 시 확보.
+function _b2bConvertFromUsd(usdPrice, invoiceCcy) {
+  const p = Number(usdPrice) || 0;
+  if (!p) return 0;
+  const ccy = String(invoiceCcy || 'USD').toUpperCase();
+  const rates = (_b2bCatalog && _b2bCatalog.rates) || {};
+  if (ccy === 'KRW') return Math.round(p * (rates.usdToKrw || 1400));
+  if (ccy === 'EUR') return Number((p * (rates.usdToEur || 0.92)).toFixed(2));
+  return Number(p.toFixed(2));  // USD or JPY (JPY 환율 미지원)
+}
+
+// 통화 select 변경 시 이미 담긴 라인의 가격 재환산 (원본 USD 값 있는 것만).
+function _b2bOnCurrencyChange() {
+  const invoiceCcy = document.getElementById('b2bCurrency')?.value || 'USD';
+  const rows = document.querySelectorAll('#b2bItemsBody tr[id^="b2b-item-"]');
+  rows.forEach(tr => {
+    const idx = parseInt(tr.id.replace('b2b-item-', ''), 10);
+    const item = b2bInvoiceItems[idx];
+    if (!item || !item._usdBase) return;   // 카탈로그에서 담긴 것만 (수동 입력은 손 안 댐)
+    const converted = _b2bConvertFromUsd(item._usdBase, invoiceCcy);
+    const priceInput = tr.querySelector('[data-field="price"]');
+    if (priceInput) {
+      priceInput.value = converted;
+      item.price = converted;
+    }
+  });
+  if (typeof b2bRecalcTotal === 'function') b2bRecalcTotal();
+}
+
 async function b2bLoadCatalogForAutocomplete() {
   if (_b2bCatalog) return _b2bCatalog;
-  _b2bCatalog = { bySku: {}, byName: {}, list: [] };   // 선 세팅 — 중복 로드 방지
+  _b2bCatalog = { bySku: {}, byName: {}, list: [], rates: null };  // rates 필드 신설
   try {
     const tabsRes = await fetch(`${API}/catalog/tabs`);
     const { tabs = [] } = await tabsRes.json();
-    // 모든 탭 병렬 조회
+    // 모든 탭 병렬 조회 — rates 는 첫 응답에서 확보 (모든 탭 응답에 동일 포함)
     const results = await Promise.all(tabs.map(async tab => {
       try {
         const r = await fetch(`${API}/catalog/prices?tab=${encodeURIComponent(tab)}`);
         const j = await r.json();
+        if (j.rates && !_b2bCatalog.rates) _b2bCatalog.rates = j.rates;
         return j.items || [];
       } catch { return []; }
     }));
@@ -7447,11 +7482,17 @@ function b2bAddItemRow() {
             otherInput.value = otherVal;
             b2bInvoiceItems[i][otherField] = otherVal;
           }
-          // 단가도 0이면 자동 세팅
+          // 단가 자동 세팅 — 2026-08-08 fix: 인보이스 통화로 환산
+          //   기존 버그: match.price (USD) 를 그대로 넣어서 KRW 통화 인보이스에도 USD 숫자 들어감.
+          //   해결: 현재 선택된 통화 확인 → _b2bConvertFromUsd() 로 환산.
           const priceInput = tr.querySelector('[data-field="price"]');
           if (priceInput && (!priceInput.value || Number(priceInput.value) === 0) && match.price > 0) {
-            priceInput.value = match.price;
-            b2bInvoiceItems[i].price = match.price;
+            const invoiceCcy = document.getElementById('b2bCurrency')?.value || 'USD';
+            const converted = _b2bConvertFromUsd(match.price, invoiceCcy);
+            priceInput.value = converted;
+            b2bInvoiceItems[i].price = converted;
+            // 원본 USD 값 저장 — 통화 변경 시 재환산에 사용
+            b2bInvoiceItems[i]._usdBase = match.price;
           }
         }
       }
