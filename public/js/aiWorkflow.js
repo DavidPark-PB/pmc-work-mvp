@@ -30,12 +30,13 @@
   // 프리셋 (localStorage 로 사장님 커스터마이즈 저장. GET /presets 로 default 조회 가능)
   // 2026-08-09: v1 → v3 — 옛 프리셋 (잘못된 conditionId 등) 자동 무효화.
   //   default 는 사장님 실제 성공 리스팅 (206202404025) 에서 그대로 복사.
-  const PRESET_STORAGE_KEY = 'pmcAIWorkflow.presets.v3';
+  const PRESET_STORAGE_KEY = 'pmcAIWorkflow.presets.v4';
   function loadPresets() {
     try {
-      // 옛 버전 자동 제거 (한번만)
+      // 옛 버전 자동 제거 (Card Condition 추가 전 버전들)
       localStorage.removeItem('pmcAIWorkflow.presets.v1');
       localStorage.removeItem('pmcAIWorkflow.presets.v2');
+      localStorage.removeItem('pmcAIWorkflow.presets.v3');
       const raw = localStorage.getItem(PRESET_STORAGE_KEY);
       if (raw) return JSON.parse(raw);
     } catch {}
@@ -43,7 +44,7 @@
       ebay: {
         // 사장님 실제 리스팅 206202404025 검증값 (2026-08-09 fetch):
         //   category=183454 (CCG Individual Cards), condition=4000 (Ungraded)
-        //   itemSpecifics: Game/Type/Manufacturer/Language/Age Level/Country
+        //   Card Condition aspect (40001) 필수 — "Near mint or better" 가 실제 값.
         categoryId: '183454', conditionId: '4000', currency: 'USD', quantity: 1,
         itemSpecifics: {
           Game: 'Pokémon TCG',
@@ -52,6 +53,7 @@
           Language: 'Korean',
           'Age Level': '6+',
           'Country of Origin': 'Korea, Republic of',
+          'Card Condition': 'Near mint or better',
         },
       },
       shopify: {
@@ -697,6 +699,11 @@
                 <label style="color:#aaa;">Age Level (필수)<br><input type="text" id="wf-preset-ebay-age" value="${esc(presets.ebay.itemSpecifics?.['Age Level'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Language<br><input type="text" id="wf-preset-ebay-lang" value="${esc(presets.ebay.itemSpecifics?.Language || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Country of Origin<br><input type="text" id="wf-preset-ebay-country" value="${esc(presets.ebay.itemSpecifics?.['Country of Origin'] || presets.ebay.itemSpecifics?.['Country/Region of Manufacture'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;grid-column:span 2;">Card Condition (필수 — aspect 40001)
+                  <select id="wf-preset-ebay-cardcond" style="width:100%;margin-top:2px;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+                    ${['Near mint or better','Excellent','Very Good','Good','Light Play','Poor'].map(v => `<option value="${v}" ${(presets.ebay.itemSpecifics?.['Card Condition'] || 'Near mint or better') === v ? 'selected' : ''}>${v}</option>`).join('')}
+                  </select>
+                </label>
               </div>
             </details>
           </div>
@@ -878,6 +885,7 @@
           'Age Level':         document.getElementById('wf-preset-ebay-age')?.value?.trim() || '',
           Language:            document.getElementById('wf-preset-ebay-lang')?.value?.trim() || '',
           'Country of Origin': document.getElementById('wf-preset-ebay-country')?.value?.trim() || '',
+          'Card Condition':    document.getElementById('wf-preset-ebay-cardcond')?.value || 'Near mint or better',
         },
       },
       shopify: {

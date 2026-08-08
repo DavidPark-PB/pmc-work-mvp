@@ -40,6 +40,7 @@ const DEFAULT_PRESETS = {
       Language: 'Korean',
       'Age Level': '6+',
       'Country of Origin': 'Korea, Republic of',
+      'Card Condition': 'Near mint or better',   // aspect 40001 필수
     },
   },
   shopify: {
