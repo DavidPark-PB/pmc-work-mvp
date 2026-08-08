@@ -294,17 +294,23 @@
   }
 
   async function runReconstruct() {
+    // 이미지 있으면 Vision 모드, 없으면 텍스트 모드 (해외 3개 플랫폼은 텍스트만으로 OK — 사장님 지침).
     const imgs = (state.competitor?.images || []).slice(0, 5);
-    if (imgs.length === 0) { alert('1단계에서 이미지가 없습니다.'); return; }
     const lang = document.getElementById('wf-lang')?.value || 'en';
     const mode = document.getElementById('wf-mode')?.value || 'standard';
     const btn = document.getElementById('wf-reconstruct-btn');
     const status = document.getElementById('wf-step2-status');
     if (btn) { btn.disabled = true; btn.textContent = '재구성 중…'; }
-    if (status) status.textContent = '이미지 분석 + 상세페이지 생성 중 (15~60초)…';
+    if (status) status.textContent = imgs.length > 0
+      ? `이미지 ${imgs.length}장 분석 + 상세페이지 생성 중 (15~60초)…`
+      : '텍스트 기반 상세페이지 생성 중 (10~30초)…';
 
+    // client-side timeout 90초 (Vision 은 오래 걸림)
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 90000);
     try {
-      // 1단계 이미지를 fetch → blob → FormData 로 업로드 (백엔드 multipart 라우트 재사용)
+      // 1단계 이미지를 fetch → blob → FormData 로 업로드 (백엔드 multipart 라우트 재사용).
+      // 이미지 없어도 htmlContent + remake 결과로 텍스트 상세페이지 생성 가능.
       const fd = new FormData();
       let imgIndex = 0;
       for (const url of imgs) {
@@ -315,13 +321,28 @@
           fd.append('images', blob, `wf-${imgIndex++}.${ext}`);
         } catch (_) { /* 한 장 실패해도 계속 진행 */ }
       }
-      fd.append('htmlContent', state.competitor?.description || '');
+      // 텍스트 소스: competitor.description + 1단계 remake 결과 (title/description) 합침
+      const textParts = [];
+      if (state.competitor?.title) textParts.push('제품: ' + state.competitor.title);
+      if (state.remake?.title || state.remake?.seoTitle) textParts.push('SEO 제목: ' + (state.remake.seoTitle || state.remake.title));
+      if (state.remake?.description) textParts.push('설명 초안: ' + state.remake.description.replace(/<[^>]+>/g, ' '));
+      if (state.competitor?.description) textParts.push('원본 상세: ' + state.competitor.description);
+      const htmlContent = textParts.join('\n\n');
+      fd.append('htmlContent', htmlContent);
       fd.append('lang', lang);
       fd.append('mode', mode);
 
-      const res = await fetch('/api/remarker/reconstruct', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || '재구성 실패');
+      const res = await fetch('/api/remarker/reconstruct', { method: 'POST', body: fd, signal: ctrl.signal });
+      let data;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        const m = text.match(/<pre>([\s\S]*?)<\/pre>/i);
+        throw new Error(`서버 오류 (${res.status}): ${m ? m[1].trim() : text.slice(0, 200)}`);
+      }
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
       // 응답 필드: lang='en'/'ko' → description; lang='both' → descriptionEn + descriptionKo
       const htmlDescription = data.lang === 'both'
         ? `${data.descriptionEn || ''}<hr style="margin:32px 0;border:0;border-top:2px dashed #ccc;">${data.descriptionKo || ''}`
@@ -330,8 +351,11 @@
       if (status) status.textContent = '';
       renderStep2();
     } catch (e) {
-      if (status) status.textContent = '에러: ' + e.message;
+      const msg = e.name === 'AbortError' ? '90초 timeout' : e.message;
+      if (status) status.textContent = '에러: ' + msg;
       if (btn) { btn.disabled = false; btn.textContent = '🤖 상세페이지 재구성'; }
+    } finally {
+      clearTimeout(to);
     }
   }
 
