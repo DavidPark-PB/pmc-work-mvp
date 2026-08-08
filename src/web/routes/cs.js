@@ -30,6 +30,34 @@ const router = express.Router();
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
+// 2026-08-08: 진단용 — 현재 API key 가 실제 접근 가능한 모델 목록 조회.
+// Google 계정 유형/지역에 따라 사용 가능한 모델이 다르므로 fallback 리스트 조정 참고용.
+// GET /api/cs/gemini-models
+router.get('/gemini-models', async (req, res) => {
+  try {
+    if (!req.user || !req.user.isAdmin) return res.status(403).json({ error: 'admin only' });
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) return res.status(503).json({ error: 'GEMINI_API_KEY 미설정' });
+    const r = await axios.get(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`, {
+      timeout: 15000, validateStatus: () => true,
+    });
+    if (r.status !== 200) {
+      return res.status(r.status).json({ error: r.data?.error?.message || `HTTP ${r.status}`, raw: r.data });
+    }
+    const models = (r.data?.models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+      .map(m => ({
+        name: m.name?.replace(/^models\//, ''),
+        displayName: m.displayName,
+        inputTokenLimit: m.inputTokenLimit,
+        outputTokenLimit: m.outputTokenLimit,
+      }));
+    res.json({ count: models.length, models });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/cs/templates
 router.get('/templates', async (req, res) => {
   try {

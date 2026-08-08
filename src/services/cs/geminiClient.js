@@ -16,13 +16,15 @@
 
 const axios = require('axios');
 
-// 2026-08-08: 무료 티어 지원 순서로 fallback.
-//   - 2.0-flash: 최신 안정, 대부분 계정 무료 티어 지원
-//   - 1.5-flash: 구형, 무료 티어 가장 폭넓게 지원 (신규 프로젝트에서도 잘 됨)
-//   - 1.5-flash-8b: 더 저렴한 소형 모델, 무료 티어 확실
+// 2026-08-08: 신규 API key 는 특정 모델 접근 못 하는 케이스 대응 fallback.
+//   - 2.0-flash-lite: 2025 출시, 신규 무료 티어 폭넓게 지원 (일부 계정에서 유일하게 됨)
+//   - 2.0-flash: 최신 안정, 대부분 계정 지원
+//   - 2.5-flash-lite: 새로운 저가 모델
+//   - flash-latest: alias (Google 이 최신으로 라우팅)
+//   - 1.5-* 는 2026 년 v1beta 에서 완전 폐기됨 → 제거.
 // CS_GEMINI_MODEL_FALLBACK env 로 override 가능 (콤마 구분).
 const DEFAULT_MODELS = (process.env.CS_GEMINI_MODEL_FALLBACK ||
-  'gemini-2.0-flash,gemini-1.5-flash,gemini-1.5-flash-8b')
+  'gemini-2.0-flash-lite,gemini-2.0-flash,gemini-2.5-flash-lite,gemini-flash-latest')
   .split(',').map(s => s.trim()).filter(Boolean);
 const DEFAULT_MODEL = process.env.CS_GEMINI_DEFAULT_MODEL || DEFAULT_MODELS[0];
 
