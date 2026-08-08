@@ -14,7 +14,9 @@
 
 const axios = require('axios');
 
-const DEFAULT_MODEL = process.env.CS_GEMINI_DEFAULT_MODEL || 'gemini-2.5-flash';
+// 2026-08-08: 'gemini-2.5-flash' 는 신규 API 사용자에게 404 반환됨.
+//   'gemini-2.0-flash' 는 안정 · 무료 티어 지원 · 신규 계정 OK.
+const DEFAULT_MODEL = process.env.CS_GEMINI_DEFAULT_MODEL || 'gemini-2.0-flash';
 const API_URL_TPL = 'https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent';
 
 class ProviderError extends Error {
