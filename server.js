@@ -39,7 +39,11 @@ if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 // Security middleware
 app.use(helmet({ contentSecurityPolicy: false })); // CSP disabled for inline scripts
 app.use(cookieParser());
-app.use(express.json());
+// 2026-08-08: 기본 100KB 초과 → 413 Payload Too Large 발생하던 케이스 다수 —
+//   AI 상품 제작 (competitor description HTML + 이미지 URL 다수), b2b AI 파싱,
+//   catalog batch save 등. 10MB 로 상향 (Vision 이미지 base64 는 별도 multer 라우트).
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // ── Rate limiting (사장님 요청 2026-05) ──
 //
