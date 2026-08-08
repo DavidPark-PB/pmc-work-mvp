@@ -288,6 +288,10 @@ async function importSheetImages({ spreadsheetId, tabName = null, userId } = {})
     errors: [],
   };
 
+  // 2026-08-08: 탭마다 IMAGE 컬럼 위치 다름 (POKEMON=C(2)/K(10), ONE PIECE=C(2)/I(8)).
+  // catalogService 헤더 감지 재사용해서 각 side 의 IMAGE col idx 를 동적으로 얻음.
+  const catalogService = require('./catalogService');
+
   for (const target of targets) {
     let xlsxBuf;
     try {
@@ -305,15 +309,49 @@ async function importSheetImages({ spreadsheetId, tabName = null, userId } = {})
       continue;
     }
 
+    // 해당 탭의 IMAGE 컬럼 idx 조회 (헤더 감지) — anchor col 매칭에 사용
+    let leftImageCol = 2, rightImageCol = 10;  // POKEMON default fallback
+    try {
+      // catalogService 는 SHEET_IDS.USD 를 사용 — 여기서도 동일 시트
+      const s = await catalogService.SHEET_IDS ? require('./catalogService') : null;
+      const items = await catalogService.getCatalog(target.title).catch(() => null);
+      if (items && items.items && items.items.length > 0) {
+        const leftSample = items.items.find(i => i.side === 'left');
+        const rightSample = items.items.find(i => i.side === 'right');
+        // catalogService 는 image col idx 를 직접 노출하지 않음 → 다른 방법으로 헤더 재조회
+      }
+      // 헤더 직접 조회 (동일 로직 재구현)
+      const GSAPI = require('../api/googleSheetsAPI');
+      const gs = new GSAPI();
+      await gs.authenticate();
+      const headRows = await gs.readData(process.env.SHEET_ID_USD || '1O6a7tSHmIHiFSmX0qLXN7Ab624viR-sEENmrGtXfQ_0',
+        `'${target.title}'!A1:P25`);
+      for (const r of headRows.slice(0, 25)) {
+        const upper = (r || []).map(v => String(v || '').toUpperCase().trim());
+        if (upper.includes('#') && upper.includes('NAME')) {
+          const imageIdxs = [];
+          upper.forEach((v, idx) => { if (v === 'IMAGE') imageIdxs.push(idx); });
+          if (imageIdxs.length >= 1) leftImageCol = imageIdxs[0];
+          if (imageIdxs.length >= 2) rightImageCol = imageIdxs[1];
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn(`[importer] ${target.title} 헤더 감지 실패, 기본값 사용 (2/10):`, e.message);
+    }
+
     // xlsx export 는 단일 시트만 포함 → parsed[0] 사용. sheetName 은 원래 이름으로 대체.
     const sheetImages = parsed[0]?.images || [];
-    stats.tabsProcessed.push({ tab: target.title, imageCount: sheetImages.length });
+    stats.tabsProcessed.push({
+      tab: target.title, imageCount: sheetImages.length,
+      leftImageCol, rightImageCol,
+    });
 
     for (const img of sheetImages) {
       const rowIndex = img.fromRow + 1;
       let side;
-      if (img.fromCol === 2) side = 'left';
-      else if (img.fromCol === 10) side = 'right';
+      if (img.fromCol === leftImageCol) side = 'left';
+      else if (img.fromCol === rightImageCol) side = 'right';
       else continue;
 
       const key = `${target.title.replace(/[^\w\-]/g, '_')}/${rowIndex}-${side}.${_extFromContentType(img.contentType)}`;

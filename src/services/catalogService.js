@@ -185,9 +185,61 @@ function isCategoryHeader(row) {
   return null;
 }
 
+// 2026-08-08: 탭마다 컬럼 구조가 다름 (POKEMON=17행 헤더/UPC·LOT 포함, ONE PIECE·NIKKE=13행
+// 헤더/UPC·LOT 없음). 하드코딩 대신 헤더 행을 감지해서 컬럼명 → index 로 매핑한다.
+//
+// 헤더 행 감지 규칙: 상위 25행 중, 셀에 "#" 과 "NAME" 이 동시에 있는 첫 행.
+// 컬럼 매핑: 헤더에서 각 필드명 (# / IMAGE / NAME / SET CODE / PRICE / UPC / LOT / Description)
+// 을 찾아 left/right 각 side 별 col index 를 계산 (첫 등장 = left, 두 번째 등장 = right).
+function _detectHeader(rows) {
+  for (let i = 0; i < Math.min(rows.length, 25); i++) {
+    const r = rows[i] || [];
+    const upper = r.map(v => String(v || '').toUpperCase().trim());
+    const hasNum = upper.some(v => v === '#');
+    const hasName = upper.some(v => v === 'NAME');
+    if (hasNum && hasName) return { rowIndex: i, row: r };
+  }
+  return null;
+}
+
+function _buildColumnMap(headerRow) {
+  // 필드명 alias
+  const FIELDS = {
+    num:       [/^#$/],
+    image:     [/^IMAGE$/],
+    name:      [/^NAME$/],
+    setCode:   [/^SET\s*CODE$/],
+    price:     [/^PRICE/],
+    upc:       [/UPC|EAN/],
+    lot:       [/LOT|재조|재고/],
+    description: [/^DESCRIPTION$/],
+  };
+  // 각 필드별 발견 index 리스트
+  const found = {};
+  for (const key of Object.keys(FIELDS)) found[key] = [];
+  headerRow.forEach((cell, idx) => {
+    const v = String(cell || '').toUpperCase().trim();
+    if (!v) return;
+    for (const [key, patterns] of Object.entries(FIELDS)) {
+      if (patterns.some(p => p.test(v))) {
+        found[key].push(idx);
+        break;
+      }
+    }
+  });
+  // 첫 번째 = left, 두 번째 = right
+  const left = {}, right = {};
+  for (const key of Object.keys(FIELDS)) {
+    left[key] = found[key][0] ?? null;
+    right[key] = found[key][1] ?? null;
+  }
+  return { left, right };
+}
+
 /**
- * 탭 전체 파싱 → 카테고리별 아이템 배열
- * 각 아이템에 { rowIndex(1-based sheet row), side: 'left'|'right', name, setCode, image, upc, usdPrice }
+ * 탭 전체 파싱 → 카테고리별 아이템 배열.
+ * 헤더 감지 기반 (탭마다 구조 달라도 자동 대응).
+ * 각 아이템: { rowIndex(1-based sheet row), side, name, setCode, image, upc, usdPrice, description }
  */
 async function parseTab(tabName) {
   const s = await getSheets();
@@ -195,12 +247,20 @@ async function parseTab(tabName) {
   const items = [];
   let currentCategory = 'UNCATEGORIZED';
 
+  const header = _detectHeader(rows);
+  if (!header) {
+    console.warn(`[catalog] '${tabName}' 헤더를 찾을 수 없음 (# + NAME 컬럼 필요)`);
+    return items;
+  }
+  const cols = _buildColumnMap(header.row);
+  const dataStartRow = header.rowIndex + 1;  // 헤더 다음 행부터 데이터
+
   for (let i = 0; i < rows.length; i++) {
-    const sheetRow = i + 1; // 1-based
+    const sheetRow = i + 1;
     const row = rows[i] || [];
 
-    // 카테고리 헤더 감지 (16행 근처)
-    if (sheetRow < DATA_START_ROW) {
+    // 헤더 위쪽 = 카테고리 헤더 후보 + 정보 영역
+    if (i < dataStartRow) {
       const cat = isCategoryHeader(row);
       if (cat) currentCategory = cat;
       continue;
@@ -209,39 +269,37 @@ async function parseTab(tabName) {
     const maybeCat = isCategoryHeader(row);
     if (maybeCat) { currentCategory = maybeCat; continue; }
 
-    // left item (B~H, index 1~7). 가격은 F = index 5
-    const leftName = String(row[3] || '').trim();
-    const leftPrice = parseUsdPrice(row[5]);
+    // left item
+    const leftName = cols.left.name != null ? String(row[cols.left.name] || '').trim() : '';
     if (leftName) {
       items.push({
         category: currentCategory,
         rowIndex: sheetRow,
         side: 'left',
-        num: String(row[1] || '').trim(),
-        name: leftName,
-        setCode: String(row[4] || '').trim(),
-        image: String(row[2] || '').trim(),
-        upc: String(row[6] || '').trim(),
-        description: String(row[7] || '').trim(),
-        usdPrice: leftPrice,
+        num:      cols.left.num       != null ? String(row[cols.left.num] || '').trim() : '',
+        name:     leftName,
+        setCode:  cols.left.setCode   != null ? String(row[cols.left.setCode] || '').trim() : '',
+        image:    cols.left.image     != null ? String(row[cols.left.image] || '').trim() : '',
+        upc:      cols.left.upc       != null ? String(row[cols.left.upc] || '').trim() : '',
+        description: cols.left.description != null ? String(row[cols.left.description] || '').trim() : '',
+        usdPrice: cols.left.price     != null ? parseUsdPrice(row[cols.left.price]) : null,
       });
     }
 
-    // right item (I~N, index 8~13). 가격은 M = index 12
-    const rightName = String(row[10] || '').trim();
-    const rightPrice = parseUsdPrice(row[12]);
+    // right item
+    const rightName = cols.right.name != null ? String(row[cols.right.name] || '').trim() : '';
     if (rightName) {
       items.push({
         category: currentCategory,
         rowIndex: sheetRow,
         side: 'right',
-        num: String(row[8] || '').trim(),
-        name: rightName,
-        setCode: String(row[11] || '').trim(),
-        image: String(row[9] || '').trim(),
-        upc: String(row[13] || '').trim(),
-        description: '',
-        usdPrice: rightPrice,
+        num:      cols.right.num      != null ? String(row[cols.right.num] || '').trim() : '',
+        name:     rightName,
+        setCode:  cols.right.setCode  != null ? String(row[cols.right.setCode] || '').trim() : '',
+        image:    cols.right.image    != null ? String(row[cols.right.image] || '').trim() : '',
+        upc:      cols.right.upc      != null ? String(row[cols.right.upc] || '').trim() : '',
+        description: cols.right.description != null ? String(row[cols.right.description] || '').trim() : '',
+        usdPrice: cols.right.price    != null ? parseUsdPrice(row[cols.right.price]) : null,
       });
     }
   }
