@@ -16,12 +16,36 @@
  */
 (function() {
   const state = {
-    step: 1,            // 1 / 2 / 3
-    competitor: null,   // step 1 fetch 결과: { title, images:[url...], description, ... }
-    remake: null,       // step 1 AI 리메이크 결과: { seoTitle, htmlDescription, killPrice, ... }
-    reconstruct: null,  // step 2 결과: { htmlDescription, originalImages, lang, mode }
-    thumbnails: [],     // step 3 결과: [{ platform, url }]
+    step: 1,
+    competitor: null,
+    remake: null,
+    reconstruct: null,
+    thumbnails: [],
+    // 2026-08-08: 사장님 요청 — 원하는 이미지만 선택해서 후속 단계 사용.
+    // Set<url>. fetchCompetitor 시 전체 선택으로 초기화.
+    selectedImageUrls: new Set(),
   };
+
+  // 선택된 이미지만 반환 (없으면 빈 배열 — 후속 함수가 알아서 처리)
+  function selectedImages() {
+    const all = state.competitor?.images || [];
+    if (state.selectedImageUrls.size === 0) return [];
+    return all.filter(u => state.selectedImageUrls.has(u));
+  }
+
+  function toggleImage(url) {
+    if (state.selectedImageUrls.has(url)) state.selectedImageUrls.delete(url);
+    else state.selectedImageUrls.add(url);
+    renderStep1();
+  }
+  function selectAllImages() {
+    state.selectedImageUrls = new Set(state.competitor?.images || []);
+    renderStep1();
+  }
+  function clearImageSelection() {
+    state.selectedImageUrls = new Set();
+    renderStep1();
+  }
 
   function esc(s) {
     if (s == null) return '';
@@ -121,12 +145,25 @@
             <div style="color:#888;font-size:11px;margin-bottom:4px;">경쟁사 원본 제목</div>
             <div style="color:#fff;font-size:13px;line-height:1.5;">${esc(c.title || '-')}</div>
             <div style="color:#888;font-size:11px;margin-top:8px;">가격: <span style="color:#ffd54f;">$${esc(c.price || '-')}</span></div>
-            <div style="color:#888;font-size:11px;">이미지: ${(c.images || []).length}장</div>
+            <div style="color:#888;font-size:11px;">이미지: ${(c.images || []).length}장 · 선택 <span id="wf-sel-count" style="color:#81c784;">${state.selectedImageUrls.size}</span>장</div>
           </div>
           <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:12px;">
-            <div style="color:#888;font-size:11px;margin-bottom:4px;">이미지 미리보기</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <div style="color:#888;font-size:11px;">이미지 선택 (클릭하여 선택/해제)</div>
+              <div style="display:flex;gap:4px;">
+                <button type="button" onclick="pmcAIWorkflow.selectAllImages()" style="padding:2px 8px;background:#2a2a4a;border:0;border-radius:3px;color:#aaa;cursor:pointer;font-size:10px;">전체선택</button>
+                <button type="button" onclick="pmcAIWorkflow.clearImageSelection()" style="padding:2px 8px;background:#2a2a4a;border:0;border-radius:3px;color:#aaa;cursor:pointer;font-size:10px;">전체해제</button>
+              </div>
+            </div>
             <div style="display:flex;gap:4px;flex-wrap:wrap;">
-              ${(c.images || []).slice(0, 6).map(u => `<img src="${esc(u)}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;border:1px solid #333;">`).join('')}
+              ${(c.images || []).map(u => {
+                const selected = state.selectedImageUrls.has(u);
+                return `<div onclick="pmcAIWorkflow.toggleImage('${esc(u).replace(/'/g, "\\'")}')" title="${selected ? '선택됨 — 클릭하여 해제' : '해제됨 — 클릭하여 선택'}"
+                  style="position:relative;width:56px;height:56px;cursor:pointer;border:2px solid ${selected ? '#81c784' : '#333'};border-radius:4px;overflow:hidden;${selected ? '' : 'opacity:0.4;'}">
+                  <img src="${esc(u)}" style="width:100%;height:100%;object-fit:cover;pointer-events:none;">
+                  ${selected ? '<div style="position:absolute;top:1px;right:2px;background:#81c784;color:#000;font-size:9px;font-weight:700;padding:0 3px;border-radius:2px;">✓</div>' : ''}
+                </div>`;
+              }).join('')}
             </div>
           </div>
         </div>
@@ -185,6 +222,8 @@
         images: item.images || item.pictureURLs || [],
       };
       state.remake = null;
+      // 신규 fetch — 모든 이미지 기본 선택
+      state.selectedImageUrls = new Set(state.competitor.images);
       renderStep1();
     } catch (e) {
       const msg = e.name === 'AbortError' ? '30초 timeout' : e.message;
@@ -242,7 +281,7 @@
   function renderStep2() {
     const host = document.getElementById('wf-body');
     const r = state.reconstruct;
-    const imgs = (state.competitor?.images || []).slice(0, 5);
+    const imgs = selectedImages().slice(0, 5);
     host.innerHTML = `
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;">
         <h3 style="color:#fff;margin:0 0 12px;">2단계 · PMC 브랜드 상세페이지 생성</h3>
@@ -406,7 +445,7 @@
     state.reconstruct = {
       htmlDescription: html,
       raw: { source: 'template', fields },
-      originalImages: (state.competitor?.images || []).slice(0, 5),
+      originalImages: selectedImages().slice(0, 5),
       lang: 'en',
       mode: 'template',
     };
@@ -414,8 +453,8 @@
   }
 
   async function runReconstruct() {
-    // 이미지 있으면 Vision 모드, 없으면 텍스트 모드 (해외 3개 플랫폼은 텍스트만으로 OK — 사장님 지침).
-    const imgs = (state.competitor?.images || []).slice(0, 5);
+    // 사장님이 선택한 이미지만 사용. 없으면 텍스트 모드 (해외 3사 OK).
+    const imgs = selectedImages().slice(0, 5);
     const lang = document.getElementById('wf-lang')?.value || 'en';
     const mode = document.getElementById('wf-mode')?.value || 'standard';
     const btn = document.getElementById('wf-reconstruct-btn');
@@ -491,7 +530,7 @@
   // ───────────────────────────────────────────────
   function renderStep3() {
     const host = document.getElementById('wf-body');
-    const imgs = (state.competitor?.images || []).slice(0, 6);
+    const imgs = selectedImages().slice(0, 6);
     host.innerHTML = `
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;">
         <h3 style="color:#fff;margin:0 0 12px;">3단계 · 플랫폼별 썸네일 생성</h3>
@@ -615,5 +654,6 @@
   }
 
   // ───────────────────────────────────────────────
-  window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails };
+  window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails,
+    toggleImage, selectAllImages, clearImageSelection };
 })();
