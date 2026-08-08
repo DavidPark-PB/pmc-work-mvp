@@ -3,15 +3,18 @@
 /**
  * Hermes Market Agent v1.
  *
- * Reads SKU Context, gates Claude usage by price signals, and sends only a
+ * Reads SKU Context, gates AI usage by price signals, and sends only a
  * compact signal/price payload to AI. This module performs no writes.
+ *
+ * 2026-08-08: Anthropic → Gemini 전환.
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '../../config/.env') });
 
 const { buildSkuContext } = require('../services/skuContextBuilder');
+const geminiClient = require('../services/geminiClient');
 
-const CLAUDE_MODEL = 'claude-haiku-4-5-20251001';
+const AI_MODEL = process.env.MARKET_AGENT_MODEL || geminiClient.DEFAULT_MODEL;
 const PRICE_SIGNAL_TYPES = new Set(['competitor_lower_price', 'price_attack']);
 const VALID_RECOMMENDATIONS = new Set(['lower_price', 'hold', 'raise_price']);
 
@@ -130,11 +133,6 @@ function baseAnalysis(facts, recommendation, reasoning, source) {
   };
 }
 
-function createClaudeClient() {
-  const Anthropic = require('@anthropic-ai/sdk');
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-}
-
 function stripJsonBlock(text) {
   return String(text || '')
     .replace(/```json\s*/gi, '')
@@ -149,19 +147,11 @@ function normalizeAiResult(parsed) {
 
   return {
     recommendation,
-    reasoning: String(parsed?.reasoning || 'Claude returned no reasoning.').slice(0, 1000),
+    reasoning: String(parsed?.reasoning || 'AI returned no reasoning.').slice(0, 1000),
   };
 }
 
-function extractClaudeText(response) {
-  return (response?.content || [])
-    .map(part => part?.text || '')
-    .join('\n')
-    .trim();
-}
-
-async function callClaudeMarketAnalysis(facts, options = {}) {
-  const client = options.claudeClient || createClaudeClient();
+async function callAiMarketAnalysis(facts) {
   const payload = {
     signals: facts.aiSignals,
     current_price: facts.currentPrice,
@@ -170,6 +160,11 @@ async function callClaudeMarketAnalysis(facts, options = {}) {
   };
 
   const userPrompt = [
+    'You are a cautious marketplace pricing analyst.',
+    'Use only the provided signals and price fields.',
+    'Do not suggest automatic writes or marketplace changes.',
+    'Choose exactly one recommendation: lower_price, hold, or raise_price.',
+    '',
     'Analyze this compact marketplace signal payload.',
     'Return only JSON with this shape:',
     '{"recommendation":"lower_price|hold|raise_price","reasoning":"short explanation"}',
@@ -177,22 +172,20 @@ async function callClaudeMarketAnalysis(facts, options = {}) {
     JSON.stringify(payload, null, 2),
   ].join('\n');
 
-  const response = await client.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 300,
+  const r = await geminiClient.callGemini({
+    prompt: userPrompt,
+    model: AI_MODEL,
+    maxTokens: 300,
     temperature: 0,
-    system: [
-      'You are a cautious marketplace pricing analyst.',
-      'Use only the provided signals and price fields.',
-      'Do not suggest automatic writes or marketplace changes.',
-      'Choose exactly one recommendation: lower_price, hold, or raise_price.',
-    ].join(' '),
-    messages: [{ role: 'user', content: userPrompt }],
+    expectJson: true,
+    errCodePrefix: 'marketAgent',
   });
-
-  const raw = stripJsonBlock(extractClaudeText(response));
+  const raw = stripJsonBlock(r.text);
   return normalizeAiResult(JSON.parse(raw));
 }
+
+// Legacy export alias — 기존 코드에서 callClaudeMarketAnalysis 이름으로 부를 수 있음.
+const callClaudeMarketAnalysis = callAiMarketAnalysis;
 
 async function analyzeMarketContext(context, options = {}) {
   const facts = extractMarketFacts(context);
@@ -206,7 +199,7 @@ async function analyzeMarketContext(context, options = {}) {
     );
   }
 
-  const aiResult = await callClaudeMarketAnalysis(facts, options);
+  const aiResult = await callAiMarketAnalysis(facts);
   return baseAnalysis(facts, aiResult.recommendation, aiResult.reasoning, 'ai');
 }
 
@@ -219,10 +212,12 @@ async function runMarketAgent({ sku }, options = {}) {
 }
 
 module.exports = {
-  CLAUDE_MODEL,
+  AI_MODEL,
+  CLAUDE_MODEL: AI_MODEL,          // legacy alias
   PRICE_SIGNAL_TYPES,
   analyzeMarketContext,
-  callClaudeMarketAnalysis,
+  callClaudeMarketAnalysis,        // legacy alias for callAiMarketAnalysis
+  callAiMarketAnalysis,
   extractMarketFacts,
   hasPriceSignal,
   runMarketAgent,

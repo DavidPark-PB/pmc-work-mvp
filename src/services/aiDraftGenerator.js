@@ -7,7 +7,7 @@
  *
  * Provider:
  *   - Anthropic Claude (default: claude-sonnet-4-6)
- *   - AI_DRAFT_MOCK_MODE=true 또는 ANTHROPIC_API_KEY 미설정 시 mock placeholder 반환
+ *   - AI_DRAFT_MOCK_MODE=true 또는 GEMINI_API_KEY 미설정 시 mock placeholder 반환
  *     (운영 적용 전 staging / dependency 미설치 환경 안전 가드)
  *
  * 비용 통제:
@@ -30,17 +30,14 @@
 
 const { getClient } = require('../db/supabaseClient');
 const safetyExec = require('./safetyExec');
+const geminiClient = require('./geminiClient');
 
-const PROMPT_VERSION = 'v1.0';
-const DEFAULT_MODEL = process.env.AI_DRAFT_DEFAULT_MODEL || 'claude-sonnet-5';
+// 2026-08-08: Anthropic → Gemini 전환.
+const PROMPT_VERSION = 'v2-gemini';
+const DEFAULT_MODEL = process.env.AI_DRAFT_DEFAULT_MODEL || geminiClient.DEFAULT_MODEL;
 const DAILY_USD_CAP = parseFloat(process.env.AI_DRAFT_DAILY_USD_CAP || '5.00');
 const MOCK_MODE = process.env.AI_DRAFT_MOCK_MODE === 'true';
 const MAX_OUTPUT_TOKENS = 1000;
-
-// Anthropic price (claude-sonnet-4-6 기준 — 2026-05 시점 추정).
-// 운영에서 변하면 본 상수만 갱신.
-const PRICE_PER_MTOK_INPUT  = 3.00;   // $3 per 1M input tokens
-const PRICE_PER_MTOK_OUTPUT = 15.00;  // $15 per 1M output tokens
 
 class UsageCapError extends Error {
   constructor(message) { super(message); this.code = 'aiDraft/usage_cap_exceeded'; }
@@ -60,9 +57,7 @@ class ValidationError extends Error {
 // ──────────────────────────────────────────────────────────────────────────
 
 function calcCostUsd(inputTokens, outputTokens) {
-  const inCost  = (inputTokens  / 1_000_000) * PRICE_PER_MTOK_INPUT;
-  const outCost = (outputTokens / 1_000_000) * PRICE_PER_MTOK_OUTPUT;
-  return Math.round((inCost + outCost) * 10000) / 10000;  // 4자리
+  return geminiClient.estimateCost(inputTokens, outputTokens);
 }
 
 async function getDailyUsageUsd(supabase) {
@@ -136,7 +131,7 @@ OUTPUT (return JSON only, no other text):
 function mockGenerate({ platform, language }) {
   return {
     title:       `[MOCK ${platform} ${language}] Title placeholder`,
-    description: `[MOCK ${platform}] Description placeholder. AI_DRAFT_MOCK_MODE=true 또는 ANTHROPIC_API_KEY 미설정.`,
+    description: `[MOCK ${platform}] Description placeholder. AI_DRAFT_MOCK_MODE=true 또는 GEMINI_API_KEY 미설정.`,
     hashtags:    ['mock', platform, language],
     inputTokens: 0,
     outputTokens: 0,
@@ -145,59 +140,36 @@ function mockGenerate({ platform, language }) {
   };
 }
 
-async function callAnthropic({ prompt, model }) {
-  // dependency 동적 require — package 미설치 시 명확한 에러
-  let Anthropic;
+async function callLLM({ prompt, model }) {
+  let r;
   try {
-    Anthropic = require('@anthropic-ai/sdk');
+    r = await geminiClient.callGemini({
+      prompt, model, maxTokens: MAX_OUTPUT_TOKENS,
+      expectJson: true,
+      errCodePrefix: 'aiDraft',
+    });
   } catch (e) {
-    throw new ConfigError('@anthropic-ai/sdk dependency 미설치 — npm install @anthropic-ai/sdk 필요');
+    if (e.code === 'aiDraft/config_error') throw new ConfigError(e.message);
+    throw new ProviderError(e.message);
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new ConfigError('ANTHROPIC_API_KEY 미설정 — config/.env 확인');
-  }
-
-  const client = new Anthropic({ apiKey });
-  const tryOnce = async () => client.messages.create({
-    model,
-    max_tokens: MAX_OUTPUT_TOKENS,
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  let response;
-  try {
-    response = await tryOnce();
-  } catch (e) {
-    // 5xx 만 1회 retry. 4xx (rate limit / invalid request) 즉시 실패.
-    if (e?.status >= 500) {
-      try { response = await tryOnce(); }
-      catch (e2) { throw new ProviderError(`Anthropic 5xx retry 실패: ${e2.message}`); }
-    } else {
-      throw new ProviderError(`Anthropic ${e?.status || ''}: ${e.message}`);
-    }
-  }
-
-  const text = response?.content?.[0]?.text || '';
   let parsed;
   try {
-    // JSON 추출 (model 이 ```json ... ``` 으로 감쌀 수도)
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const jsonMatch = r.text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error('JSON object not found in response');
     parsed = JSON.parse(jsonMatch[0]);
   } catch (e) {
-    throw new ProviderError(`Anthropic JSON 파싱 실패: ${e.message}`);
+    throw new ProviderError(`Gemini JSON 파싱 실패: ${e.message}`);
   }
 
   return {
     title:       String(parsed.title || ''),
     description: String(parsed.description || ''),
     hashtags:    Array.isArray(parsed.hashtags) ? parsed.hashtags.map(String) : [],
-    inputTokens:  response?.usage?.input_tokens  || 0,
-    outputTokens: response?.usage?.output_tokens || 0,
-    aiProvider:  'anthropic',
-    aiModel:     model,
+    inputTokens:  r.inputTokens,
+    outputTokens: r.outputTokens,
+    aiProvider:  'gemini',
+    aiModel:     r.model,
   };
 }
 
@@ -244,7 +216,7 @@ async function generateDraft({ user, opportunityId, platform, language }) {
   }
 
   const model = DEFAULT_MODEL;
-  const useMock = MOCK_MODE || !process.env.ANTHROPIC_API_KEY;
+  const useMock = MOCK_MODE || !process.env.GEMINI_API_KEY;
 
   // Safety Foundation audit — pre-action (strict)
   let run;
@@ -279,7 +251,7 @@ async function generateDraft({ user, opportunityId, platform, language }) {
     const prompt = buildPrompt({ opportunity: opp, platform, language });
     const aiResult = useMock
       ? mockGenerate({ platform, language })
-      : await callAnthropic({ prompt, model });
+      : await callLLM({ prompt, model });
 
     const cost = useMock ? 0 : calcCostUsd(aiResult.inputTokens, aiResult.outputTokens);
 

@@ -1,14 +1,13 @@
 /**
- * Gemini API 공통 호출 클라이언트 — CS AI 서비스 4개가 공유.
+ * Gemini API 공통 호출 클라이언트 — 모든 AI 서비스가 공유.
  *
- * 2026-08-08: Anthropic → Gemini 전환 (사장님 결정).
- *   기존 GEMINI_API_KEY 재활용 (legacy /api/cs/suggest 에서 사용 중이던 것).
+ * 2026-08-08: Anthropic → Gemini 전환 (사장님 결정 · 결제 활성화 완료).
  *
  * 특징:
  *   - 모델 fallback 리스트: 첫 모델이 429/404 반환 시 다음 모델 자동 시도
- *     (신규 API key 는 특정 모델 무료 티어 접근 못 하는 케이스 대응)
- *   - JSON 응답 강제 (expectJson=true 시)
- *   - 실 에러 메시지 그대로 throw (Anthropic 크레딧 사고 재발 방지)
+ *   - JSON 응답 강제 (expectJson=true 시 responseMimeType='application/json')
+ *   - Vision 지원: opts.imageData = { mimeType, base64 } 로 이미지/PDF 인풋
+ *   - 실 에러 메시지 그대로 throw
  *   - usage tokens 지원
  *   - 5xx 는 1회 retry, 4xx (재시도 무의미) 는 즉시 fallback
  */
@@ -59,14 +58,25 @@ async function _postOnce({ apiKey, model, payload }) {
  * @param {string} [opts.errCodePrefix]
  * @returns {Promise<{text, inputTokens, outputTokens, model}>}
  */
-async function callGemini({ prompt, model, maxTokens = 2500, temperature = 0.2, expectJson = true, errCodePrefix = 'gemini' } = {}) {
+async function callGemini({ prompt, model, maxTokens = 2500, temperature = 0.2, expectJson = true, imageData = null, errCodePrefix = 'gemini' } = {}) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new ConfigError('GEMINI_API_KEY 미설정', `${errCodePrefix}/config_error`);
   if (!prompt || !String(prompt).trim()) throw new ProviderError('빈 프롬프트', `${errCodePrefix}/validation`);
 
   const generationConfig = { temperature, maxOutputTokens: maxTokens };
   if (expectJson) generationConfig.responseMimeType = 'application/json';
-  const payload = { contents: [{ parts: [{ text: prompt }] }], generationConfig };
+
+  // Vision 인풋 지원: imageData = { mimeType, base64 } | [{ mimeType, base64 }, ...]
+  const parts = [{ text: prompt }];
+  if (imageData) {
+    const images = Array.isArray(imageData) ? imageData : [imageData];
+    for (const img of images) {
+      if (img?.mimeType && img?.base64) {
+        parts.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+      }
+    }
+  }
+  const payload = { contents: [{ parts }], generationConfig };
 
   // 시도 순서 = [명시 model] + DEFAULT_MODELS (중복 제거)
   const seen = new Set();

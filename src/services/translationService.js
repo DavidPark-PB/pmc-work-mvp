@@ -1,18 +1,14 @@
 /**
- * Translation Service — Auto-translate product data using Claude API.
+ * Translation Service — Auto-translate product data.
+ * 2026-08-08: Anthropic → Gemini 전환.
  * Stores results in `translations` table for caching and manual review.
- * Reuses the same Claude API pattern as aiRemarker.js.
  */
 require('dotenv').config({ path: require('path').join(__dirname, '../../config/.env') });
-const axios = require('axios');
-
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-sonnet-5';
-const MODEL_FALLBACK = 'claude-haiku-4-5-20251001';
+const geminiClient = require('./geminiClient');
 
 class TranslationService {
   constructor() {
-    this.apiKey = process.env.ANTHROPIC_API_KEY;
+    this.apiKey = process.env.GEMINI_API_KEY;
   }
 
   _getRepo() {
@@ -31,7 +27,7 @@ class TranslationService {
    */
   async translateProduct(productId, targetLang = 'en') {
     if (!this.apiKey) {
-      throw new Error('ANTHROPIC_API_KEY is not configured in config/.env');
+      throw new Error('GEMINI_API_KEY is not configured in config/.env');
     }
 
     // Load product
@@ -51,10 +47,10 @@ class TranslationService {
     const existing = await platRepo.getTranslation(productId, targetLang);
     if (existing && existing.title) return existing;
 
-    // Build prompt and call Claude API
+    // Build prompt and call Gemini
     const langName = this._getLangName(targetLang);
     const prompt = this._buildTranslationPrompt(title, description, keywords, langName);
-    const result = await this._callClaudeAPI(prompt);
+    const result = await this._callLLM(prompt);
 
     // Save to DB
     const translation = await platRepo.upsertTranslation(productId, targetLang, {
@@ -62,7 +58,7 @@ class TranslationService {
       title: result.title || '',
       description: result.description || '',
       keywords: result.keywords || [],
-      translated_by: 'claude',
+      translated_by: 'gemini',
       is_reviewed: false,
     });
 
@@ -126,35 +122,19 @@ Respond in valid JSON format only:
 }`;
   }
 
-  async _callClaudeAPI(prompt) {
-    const callAPI = async (model) => {
-      return axios.post(ANTHROPIC_API_URL, {
-        model,
-        max_tokens: 2000,
-        messages: [{ role: 'user', content: prompt }],
-      }, {
-        headers: {
-          'x-api-key': this.apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        timeout: 30000,
-      });
-    };
-
-    let response;
+  async _callLLM(prompt) {
+    let text;
     try {
-      response = await callAPI(MODEL);
-    } catch (err) {
-      console.error('Translation API primary failed:', err.response?.data?.error?.message || err.message);
-      try {
-        response = await callAPI(MODEL_FALLBACK);
-      } catch (err2) {
-        throw new Error(`Translation API failed: ${err2.response?.data?.error?.message || err2.message}`);
-      }
+      const r = await geminiClient.callGemini({
+        prompt,
+        maxTokens: 2000,
+        expectJson: true,
+        errCodePrefix: 'translation',
+      });
+      text = r.text;
+    } catch (e) {
+      throw new Error(`Translation API failed: ${e.message}`);
     }
-
-    const text = response.data?.content?.[0]?.text || '';
 
     // Parse JSON from response
     try {

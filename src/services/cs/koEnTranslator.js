@@ -6,13 +6,13 @@
  *
  * aiToneAdjuster.js 구조 그대로 차용:
  *   · Anthropic Claude (claude-sonnet-4-6)
- *   · CS_TRANSLATE_MOCK_MODE=true 또는 ANTHROPIC_API_KEY 미설정 시 mock
+ *   · CS_TRANSLATE_MOCK_MODE=true 또는 GEMINI_API_KEY 미설정 시 mock
  *   · 5xx 1회 retry, 4xx 즉시 실패
  *   · 비용 계산 (sonnet-4-6 단가)
  */
 'use strict';
 
-const geminiClient = require('./geminiClient');
+const geminiClient = require('../geminiClient');
 
 // 2026-08-08: Anthropic → Gemini 전환.
 const PROMPT_VERSION = 'cs-koen-v2-gemini';

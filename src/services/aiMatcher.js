@@ -17,11 +17,11 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '../../config/.env') });
 
-const Anthropic = require('@anthropic-ai/sdk');
+const geminiClient = require('./geminiClient');
 const { getClient } = require('../db/supabaseClient');
 const telegram = require('./telegramBot');
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// 2026-08-08: Anthropic → Gemini 전환.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 상수
@@ -31,7 +31,7 @@ const PENDING_THRESHOLD      = 0.45;  // 이상이면 pending (텔레그램 확�
 const SIM_FILTER_THRESHOLD   = 0.25;  // 1차 유사도 필터 컷오프
 const TOP_CANDIDATES         = 5;     // AI에 넘길 최대 후보 수
 const MAX_TELEGRAM_PER_RUN   = 10;    // 한 번에 텔레그램 요청 최대 건수
-const CLAUDE_MODEL           = 'claude-sonnet-5';
+const AI_MODEL               = process.env.AIMATCHER_DEFAULT_MODEL || geminiClient.DEFAULT_MODEL;
 
 // 하루 API 호출 상한 (사장님 지침 2026-07-09) — 폭발 방지.
 // env AIMATCHER_MAX_CALLS_PER_RUN 로 override 가능.
@@ -116,31 +116,36 @@ async function matchWithAI(compListing, ourProducts) {
     candidates,
   }, null, 2);
 
+  const systemPreamble = 'You are a product matching expert for Korean goods sold on eBay. ' +
+    'Compare competitor listings with our products and determine if they are the same product.';
+  // Gemini 는 별도 system 필드 없음 — user prompt 안에 넣기.
+  // JSON 강제 모드에서는 root 가 object 이어야 하므로 {"matches": [...]} 형태로 wrapping.
   const userPrompt =
+    systemPreamble + '\n\n' +
     'Compare the competitor listing with our product candidates and determine which (if any) is the same product.\n\n' +
     userContent +
-    '\n\nReturn a JSON array (one object per candidate):\n' +
-    '[{"sku":"...","is_same_product":true/false,"confidence":0.0-1.0,"reason":"..."}]';
+    '\n\nReturn JSON in this shape (root must be an object):\n' +
+    '{"matches": [{"sku":"...","is_same_product":true/false,"confidence":0.0-1.0,"reason":"..."}]}';
 
   try {
-    const response = await client.messages.create({
-      model:      CLAUDE_MODEL,
-      max_tokens: 500,
+    const r = await geminiClient.callGemini({
+      prompt: userPrompt,
+      model: AI_MODEL,
+      maxTokens: 500,
       temperature: 0,
-      system: 'You are a product matching expert for Korean goods sold on eBay. ' +
-              'Compare competitor listings with our products and determine if they are the same product.',
-      messages: [{ role: 'user', content: userPrompt }],
+      expectJson: true,
+      errCodePrefix: 'aiMatcher',
     });
 
-    const raw = response.content?.[0]?.text ?? '';
-
-    // JSON 파싱 — Claude 가 마크다운 코드블록으로 감쌀 수도 있으니 strip
+    const raw = r.text;
     const jsonStr = raw.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
-    const parsed  = JSON.parse(jsonStr);
+    const parsedRoot = JSON.parse(jsonStr);
+    // 결과가 배열이면 그대로, {matches:[...]} 이면 matches 사용
+    const parsed = Array.isArray(parsedRoot) ? parsedRoot :
+                   (Array.isArray(parsedRoot?.matches) ? parsedRoot.matches : []);
 
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    if (!parsed || parsed.length === 0) return null;
 
-    // 가장 confidence 높은 항목 반환
     const best = parsed
       .filter(r => r.is_same_product === true)
       .sort((a, b) => b.confidence - a.confidence)[0];
@@ -150,9 +155,8 @@ async function matchWithAI(compListing, ourProducts) {
     return { ...best, method: 'ai' };
 
   } catch (e) {
-    console.warn('[Matcher] Claude API 실패, title_similarity fallback:', e.message);
+    console.warn('[Matcher] Gemini API 실패, title_similarity fallback:', e.message);
 
-    // fallback: 최고 유사도 항목
     const top = scored[0];
     if (!top) return null;
     return {

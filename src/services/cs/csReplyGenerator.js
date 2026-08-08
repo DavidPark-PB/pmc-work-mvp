@@ -25,7 +25,7 @@
 'use strict';
 
 const riskPolicies = require('./csRiskPolicies');
-const geminiClient = require('./geminiClient');
+const geminiClient = require('../geminiClient');
 
 // 2026-08-08: Anthropic → Gemini 전환 (사장님 결정).
 const PROMPT_VERSION = 'cs-reply-gen-v2-gemini';

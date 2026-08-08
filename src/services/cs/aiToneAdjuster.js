@@ -5,7 +5,7 @@
  *   - 1차 mock — 인터페이스만 분리, 실제 호출은 환경변수 토글 시
  *   - aiDraftGenerator (PR R1) 패턴 차용:
  *     · Anthropic Claude (default: claude-sonnet-4-6)
- *     · CS_TONE_MOCK_MODE=true 또는 ANTHROPIC_API_KEY 미설정 시 mock 반환
+ *     · CS_TONE_MOCK_MODE=true 또는 GEMINI_API_KEY 미설정 시 mock 반환
  *     · cost cap (CS_TONE_DAILY_USD_CAP, default $3/day)
  *     · 5xx 1회 retry, 4xx 즉시 실패
  *   - 본 PR 의 1차 mock 동작:
@@ -20,7 +20,7 @@
  */
 'use strict';
 
-const geminiClient = require('./geminiClient');
+const geminiClient = require('../geminiClient');
 
 // 2026-08-08: Anthropic → Gemini 전환.
 const PROMPT_VERSION = 'cs-tone-v2-gemini';

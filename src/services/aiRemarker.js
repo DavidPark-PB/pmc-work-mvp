@@ -1,9 +1,9 @@
+/**
+ * AI Remarker — 경쟁사 상품 리메이크 + 이미지 기반 재구성.
+ * 2026-08-08: Anthropic → Gemini 전환.
+ */
 require('dotenv').config({ path: require('path').join(__dirname, '../../config/.env') });
-const axios = require('axios');
-
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-sonnet-5';
-const MODEL_FALLBACK = 'claude-haiku-4-5-20251001';
+const geminiClient = require('./geminiClient');
 
 // 영문 리스팅 고정 템플릿 — 간결 버전
 const ENGLISH_LISTING_FOOTER = `
@@ -19,7 +19,7 @@ const ENGLISH_LISTING_FOOTER = `
   <p style="margin-top:14px;font-size:11px;color:#888">All items 100% authentic & officially licensed. Questions? Send us a message anytime.</p>
 </div>`;
 
-// 빠른 모드용 plain text 버전 — 간결
+// 빠른 모드용 plain text 버전
 const ENGLISH_LISTING_FOOTER_TEXT = `
 
 ---
@@ -29,7 +29,7 @@ const ENGLISH_LISTING_FOOTER_TEXT = `
 Economy: 10-20 days (free, no tracking) | Standard: 7-14 days (tracked, additional fee)
 
 ◆ Duties & Taxes
-US: DDP (no extra fees) | EU: VAT via IOSS at checkout | Others: buyer responsibility (DAP)
+US: DDP (no extra fees) | EU: VAT collected via IOSS | Other: buyer pays duties
 
 ◆ Payment — PayPal only. Please pay within 3 days.
 
@@ -39,54 +39,26 @@ All items 100% authentic & officially licensed. Questions? Send us a message any
 
 class AIRemarker {
   constructor() {
-    this.apiKey = process.env.ANTHROPIC_API_KEY;
+    // 기존 apiKey 필드는 유지 (호출 코드 호환) — 실제 인증은 geminiClient 가 GEMINI_API_KEY 로.
+    this.apiKey = process.env.GEMINI_API_KEY;
   }
 
   /**
-   * 경쟁사 데이터를 AI로 리메이크
-   * @param {Object} data - getCompetitorItemFull() 결과
-   * @returns {Object} 리메이크된 상품 데이터
+   * 경쟁사 데이터를 AI로 리메이크.
    */
   async remake(data) {
     if (!this.apiKey) {
-      throw new Error('ANTHROPIC_API_KEY가 config/.env에 설정되지 않았습니다');
+      throw new Error('GEMINI_API_KEY 가 config/.env 에 설정되지 않았습니다');
     }
 
     const prompt = this._buildPrompt(data);
-
-    const callAPI = async (model) => {
-      return axios.post(ANTHROPIC_API_URL, {
-        model,
-        max_tokens: 4000,
-        messages: [{ role: 'user', content: prompt }]
-      }, {
-        headers: {
-          'x-api-key': this.apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json'
-        },
-        timeout: 60000
-      });
-    };
-
-    let response;
-    try {
-      response = await callAPI(MODEL);
-    } catch (err) {
-      const apiErr = err.response?.data?.error?.message || err.message;
-      console.error('Claude API 1차 실패:', apiErr);
-      console.log('Fallback 모델로 재시도:', MODEL_FALLBACK);
-      try {
-        response = await callAPI(MODEL_FALLBACK);
-      } catch (err2) {
-        const apiErr2 = err2.response?.data?.error?.message || err2.message;
-        console.error('Claude API 2차 실패:', apiErr2);
-        throw new Error(`AI API 호출 실패: ${apiErr2}`);
-      }
-    }
-
-    const text = response.data?.content?.[0]?.text || '';
-    return this._parseResponse(text, data);
+    const r = await geminiClient.callGemini({
+      prompt,
+      maxTokens: 4000,
+      expectJson: true,
+      errCodePrefix: 'aiRemarker',
+    });
+    return this._parseResponse(r.text, data);
   }
 
   _buildPrompt(data) {
@@ -100,7 +72,6 @@ class AIRemarker {
     const imagesText = (data.pictureURLs || [])
       .map((url, i) => `  Image ${i + 1}: ${url}`).join('\n') || '  (none)';
 
-    // description에서 HTML 태그 제거한 텍스트 (프롬프트 크기 절약)
     const descPlain = (data.description || '')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
@@ -168,70 +139,33 @@ RESPOND IN PURE JSON ONLY (no markdown, no explanation):
   }
 
   /**
-   * 업로드된 썸네일+상세페이지 HTML에서 핵심 추출 → 재구성
-   * @param {Object} data - { htmlContent, imageCount }
-   * @returns {Object} { title, description, extractedSpecs, brand, seoKeywords }
+   * 업로드된 썸네일+상세페이지 HTML에서 핵심 추출 → 재구성 (Vision).
    */
   async reconstruct(data) {
     if (!this.apiKey) {
-      throw new Error('ANTHROPIC_API_KEY가 config/.env에 설정되지 않았습니다');
+      throw new Error('GEMINI_API_KEY 가 config/.env 에 설정되지 않았습니다');
     }
 
     const isFast = data.mode === 'fast';
     const prompt = isFast ? this._buildFastPrompt(data) : this._buildReconstructPrompt(data);
 
-    // Vision API: 이미지 블록 + 텍스트 프롬프트
-    const content = [];
+    // Vision 인풋 준비 — imageData 배열
     const imagesToSend = isFast ? (data.images || []).slice(0, 1) : (data.images || []);
-    imagesToSend.forEach(img => {
-      content.push({
-        type: 'image',
-        source: { type: 'base64', media_type: img.mediaType, data: img.base64 }
-      });
-    });
-    content.push({ type: 'text', text: prompt });
+    const imageData = imagesToSend.map(img => ({
+      mimeType: img.mediaType,
+      base64: img.base64,
+    }));
 
-    const model = isFast ? MODEL_FALLBACK : MODEL;
     const maxTokens = isFast ? 1500 : 4000;
-    const timeout = isFast ? 30000 : 120000;
 
-    const callAPI = async (m) => {
-      return axios.post(ANTHROPIC_API_URL, {
-        model: m,
-        max_tokens: maxTokens,
-        messages: [{ role: 'user', content }]
-      }, {
-        headers: {
-          'x-api-key': this.apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json'
-        },
-        timeout
-      });
-    };
-
-    let response;
-    try {
-      response = await callAPI(model);
-    } catch (err) {
-      const apiErr = err.response?.data?.error?.message || err.message;
-      console.error('Reconstruct 1차 실패:', apiErr);
-      if (!isFast) {
-        console.log('Reconstruct Fallback:', MODEL_FALLBACK);
-        try {
-          response = await callAPI(MODEL_FALLBACK);
-        } catch (err2) {
-          const apiErr2 = err2.response?.data?.error?.message || err2.message;
-          console.error('Reconstruct 2차 실패:', apiErr2);
-          throw new Error(`AI API 호출 실패: ${apiErr2}`);
-        }
-      } else {
-        throw new Error(`AI API 호출 실패: ${apiErr}`);
-      }
-    }
-
-    const text = response.data?.content?.[0]?.text || '';
-    return this._parseReconstructResponse(text, data);
+    const r = await geminiClient.callGemini({
+      prompt,
+      maxTokens,
+      expectJson: true,
+      imageData: imageData.length ? imageData : null,
+      errCodePrefix: 'aiRemarker',
+    });
+    return this._parseReconstructResponse(r.text, data);
   }
 
   _buildFastPrompt(data) {
@@ -281,7 +215,6 @@ Rules: title=SEO optimized, description=plain text 2-3 sentences (NO HTML), spec
       sourceSection += `\nSOURCE DETAIL PAGE TEXT:\n${htmlPlain}\n`;
     }
 
-    // 언어별 지시
     let langInstruction = '';
     let jsonSchema = '';
 
@@ -379,7 +312,6 @@ ${jsonSchema}`;
   _parseReconstructResponse(text, data) {
     console.log('AI reconstruct 응답 길이:', text.length);
 
-    // 마크다운 코드펜스 제거
     let cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
 
     let parsed;
@@ -398,7 +330,6 @@ ${jsonSchema}`;
     const lang = data.lang || 'en';
     const isFast = data.mode === 'fast';
 
-    // 영문 description에 고정 템플릿 자동 붙이기
     const enFooter = isFast ? ENGLISH_LISTING_FOOTER_TEXT : ENGLISH_LISTING_FOOTER;
 
     if (lang === 'both') {
@@ -419,7 +350,6 @@ ${jsonSchema}`;
     }
 
     let desc = parsed.description || parsed.descriptionEn || parsed.descriptionKo || '';
-    // 영문 모드일 때만 고정 템플릿 추가 (한글 모드는 제외)
     if (lang === 'en' && desc) desc += enFooter;
 
     return {
@@ -436,11 +366,9 @@ ${jsonSchema}`;
   _parseResponse(text, original) {
     let parsed;
 
-    // JSON 파싱 시도
     try {
       parsed = JSON.parse(text);
     } catch {
-      // 마크다운 코드 펜스 제거 후 재시도
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
@@ -453,7 +381,6 @@ ${jsonSchema}`;
       }
     }
 
-    // 필수 필드 검증 + 기본값
     return {
       title: parsed.title || original.title,
       description: parsed.description || '',
@@ -464,7 +391,6 @@ ${jsonSchema}`;
       extractedPartNumber: parsed.extractedPartNumber || '',
       extractedCompatibility: parsed.extractedCompatibility || '',
       seoKeywords: Array.isArray(parsed.seoKeywords) ? parsed.seoKeywords : [],
-      // 원본 이미지 유지
       pictureURLs: original.pictureURLs || [],
       categoryId: original.categoryId || '',
       categoryName: original.categoryName || '',

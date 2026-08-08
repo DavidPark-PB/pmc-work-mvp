@@ -19,13 +19,13 @@
  *   - JSON 모드로 응답 강제, parse 실패 시 mock fallback
  *
  * 패턴은 aiToneAdjuster.js / koEnTranslator.js 와 동일
- *   · CS_ANALYZER_MOCK_MODE=true 또는 ANTHROPIC_API_KEY 미설정 시 mock
+ *   · CS_ANALYZER_MOCK_MODE=true 또는 GEMINI_API_KEY 미설정 시 mock
  *   · 5xx 1회 retry, 4xx 즉시 실패
  */
 'use strict';
 
 const riskPolicies = require('./csRiskPolicies');
-const geminiClient = require('./geminiClient');
+const geminiClient = require('../geminiClient');
 
 // 2026-08-08: Anthropic 크레딧 소진 → Gemini 로 전환 (사장님 결정).
 //   기존 GEMINI_API_KEY 재활용. 프롬프트/JSON 파싱/mock 로직 그대로.
