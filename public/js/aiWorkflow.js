@@ -37,7 +37,9 @@
     // default (백엔드 DEFAULT_PRESETS 와 동기화)
     return {
       ebay: {
-        categoryId: '183454', conditionId: '1000', currency: 'USD', quantity: 1,
+        // Trading Cards 는 1000(New) 를 안 받는 케이스 다수 → 1500(New other) 을 default 로.
+        // 사장님이 프리셋 편집에서 카테고리별로 조정 가능.
+        categoryId: '183454', conditionId: '1500', currency: 'USD', quantity: 1,
         itemSpecifics: { Brand: 'Pokemon', 'Country/Region of Manufacture': 'Korea, South', Language: 'English' },
       },
       shopify: {
@@ -655,12 +657,22 @@
             <details style="margin-top:6px;">
               <summary style="color:#7c4dff;font-size:11px;cursor:pointer;">▶ eBay 프리셋 편집</summary>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:11px;">
-                <label style="color:#aaa;">Category ID<br><input type="text" id="wf-preset-ebay-category" value="${esc(presets.ebay.categoryId || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Condition ID<br><input type="text" id="wf-preset-ebay-condition" value="${esc(presets.ebay.conditionId || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;grid-column:span 2;">Category ID
+                  <div style="display:flex;gap:4px;margin-top:2px;">
+                    <input type="text" id="wf-preset-ebay-category" value="${esc(presets.ebay.categoryId || '')}" style="flex:1;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+                    <button type="button" onclick="pmcAIWorkflow.suggestEbayCategory()" style="padding:4px 10px;background:#7c4dff;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">🔍 자동 추천</button>
+                  </div>
+                  <div id="wf-cat-suggest" style="margin-top:4px;font-size:10px;color:#888;"></div>
+                </label>
+                <label style="color:#aaa;">Condition ID
+                  <select id="wf-preset-ebay-condition" style="width:100%;margin-top:2px;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+                    ${_ebayConditionOptions(presets.ebay.conditionId)}
+                  </select>
+                </label>
+                <label style="color:#aaa;">Currency<br><input type="text" id="wf-preset-ebay-currency" value="${esc(presets.ebay.currency || 'USD')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Brand<br><input type="text" id="wf-preset-ebay-brand" value="${esc(presets.ebay.itemSpecifics?.Brand || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Country/Region<br><input type="text" id="wf-preset-ebay-country" value="${esc(presets.ebay.itemSpecifics?.['Country/Region of Manufacture'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Language<br><input type="text" id="wf-preset-ebay-lang" value="${esc(presets.ebay.itemSpecifics?.Language || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Currency<br><input type="text" id="wf-preset-ebay-currency" value="${esc(presets.ebay.currency || 'USD')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
               </div>
             </details>
           </div>
@@ -737,6 +749,52 @@
         </div>
       </div>
     `;
+  }
+
+  // eBay 카테고리별로 유효 conditionId 다름. Trading Cards (183454, 2611 등) 는 특히
+  // 'New' (1000) 를 안 받는 경우 많음 → 여러 옵션 dropdown 제공.
+  function _ebayConditionOptions(selected) {
+    const opts = [
+      { id: '1000',  label: 'New (신품)' },
+      { id: '1500',  label: 'New other (see details) — 개봉 미사용' },
+      { id: '1750',  label: 'New with defects' },
+      { id: '2000',  label: 'Manufacturer refurbished' },
+      { id: '2500',  label: 'Seller refurbished' },
+      { id: '3000',  label: 'Used' },
+      { id: '4000',  label: 'Very Good' },
+      { id: '5000',  label: 'Good' },
+      { id: '6000',  label: 'Acceptable' },
+      { id: '7000',  label: 'For parts or not working' },
+    ];
+    return opts.map(o => `<option value="${o.id}" ${String(selected) === o.id ? 'selected' : ''}>${o.label}</option>`).join('');
+  }
+
+  async function suggestEbayCategory() {
+    const title = state.remake?.title || state.competitor?.title || '';
+    if (!title) { alert('상품 제목이 필요합니다 (1단계 결과)'); return; }
+    const box = document.getElementById('wf-cat-suggest');
+    if (box) box.innerHTML = '<span style="color:#888;">검색 중...</span>';
+    try {
+      const r = await fetch('/api/categories/search?platform=ebay&query=' + encodeURIComponent(title.slice(0, 100)));
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+      const cats = j.categories || [];
+      if (cats.length === 0) { if (box) box.innerHTML = '<span style="color:#ff8a80;">추천 카테고리 없음</span>'; return; }
+      if (box) box.innerHTML = '추천: ' + cats.slice(0, 5).map(c => {
+        const cid = c.categoryId || c.id || c.CategoryID || '';
+        const cname = c.categoryName || c.name || c.CategoryName || '(no name)';
+        return `<a onclick="pmcAIWorkflow.pickEbayCategory('${cid}');return false;" style="color:#81d4fa;cursor:pointer;text-decoration:underline;margin-right:8px;">[${cid}] ${cname.slice(0, 30)}</a>`;
+      }).join('');
+    } catch (e) {
+      if (box) box.innerHTML = '<span style="color:#ff8a80;">에러: ' + esc(e.message) + '</span>';
+    }
+  }
+
+  function pickEbayCategory(cid) {
+    const inp = document.getElementById('wf-preset-ebay-category');
+    if (inp) inp.value = cid;
+    const box = document.getElementById('wf-cat-suggest');
+    if (box) box.innerHTML = '<span style="color:#81c784;">✓ 카테고리 ' + esc(cid) + ' 로 세팅됨. 프리셋 저장 후 재시도.</span>';
   }
 
   function savePresetsFromUI() {
@@ -890,5 +948,5 @@
   // ───────────────────────────────────────────────
   window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails,
     toggleImage, selectAllImages, clearImageSelection,
-    runPublish, savePresetsFromUI };
+    runPublish, savePresetsFromUI, suggestEbayCategory, pickEbayCategory };
 })();

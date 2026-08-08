@@ -24,7 +24,7 @@
 const DEFAULT_PRESETS = {
   ebay: {
     categoryId: '183454',       // Trading Card Games
-    conditionId: '1000',        // New
+    conditionId: '1500',        // New other — Trading Cards 는 1000 불허, 1500 이 안전 default
     currency: 'USD',
     quantity: 1,
     dispatchTimeMax: 3,
