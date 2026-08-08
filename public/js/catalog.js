@@ -681,8 +681,9 @@
 
   window.pmcCatalog = {
     load, refresh, onTabChange, setCategory,
-    // PR catalog-fix 2026-05: 일괄 저장 (savePrice 는 보존 — 호출처 없으면 dead code)
-    markDirty, saveAll, discardChanges, savePrice,
+    // 2026-08-08: savePrice 는 이전 리팩토링 때 함수 자체가 제거됐는데 export 만 남아
+    //   ReferenceError 로 IIFE 전체 실행 중단 → 카탈로그 페이지 완전 빈 화면 원인이었음.
+    markDirty, saveAll, discardChanges,
     openFxModal, closeFxModal, saveFx, resetFxAuto, editImage,
     onSearch, clearSearch,
     openAiImage, closeAiImage, runAiImage, copyAiUrl,
