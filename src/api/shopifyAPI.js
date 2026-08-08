@@ -219,8 +219,26 @@ class ShopifyAPI {
 
   /**
    * 상품 생성
+   * 2026-08-09: AI 워크플로우 4단계용 확장 — 다중 이미지, tags, status, quantity, base64 이미지 지원.
+   *
+   * @param {Object} opts
+   * @param {string} opts.title
+   * @param {string} [opts.sku]
+   * @param {string|number} [opts.price]
+   * @param {string} [opts.bodyHtml]
+   * @param {string} [opts.vendor='PMC']
+   * @param {string} [opts.productType='']
+   * @param {string} [opts.imageUrl]              단일 이미지 (legacy 호환)
+   * @param {Array}  [opts.images]                다중 이미지 배열: [{src: url}] 또는 [{attachment: base64, filename: 'x.png'}]
+   * @param {string|Array} [opts.tags]            CSV 문자열 or 배열
+   * @param {string} [opts.status='active']       'active' | 'draft' | 'archived'
+   * @param {number} [opts.quantity=1]            초기 재고
+   * @param {string} [opts.inventoryPolicy='deny']  'deny' | 'continue'
    */
-  async createProduct({ title, sku, price, bodyHtml, vendor, productType, imageUrl }) {
+  async createProduct({
+    title, sku, price, bodyHtml, vendor, productType, imageUrl,
+    images, tags, status, quantity, inventoryPolicy,
+  }) {
     try {
       const url = `${this.baseUrl}/products.json`;
       const productData = {
@@ -229,22 +247,38 @@ class ShopifyAPI {
           body_html: bodyHtml || '',
           vendor: vendor || 'PMC',
           product_type: productType || '',
+          status: status || 'active',
           variants: [{
             sku: sku || '',
             price: String(price),
             inventory_management: 'shopify',
-            inventory_quantity: 1,
-          }]
-        }
+            inventory_quantity: Number.isFinite(quantity) ? quantity : 1,
+            inventory_policy: inventoryPolicy || 'deny',
+          }],
+        },
       };
-      if (imageUrl) {
+      // tags: array → CSV
+      if (tags) {
+        productData.product.tags = Array.isArray(tags) ? tags.join(',') : String(tags);
+      }
+      // images: 배열 우선, 없으면 imageUrl 단일. 각 항목은 {src} or {attachment,filename} 형태.
+      if (Array.isArray(images) && images.length > 0) {
+        productData.product.images = images.map(img => {
+          if (typeof img === 'string') return { src: img };  // URL 문자열도 허용
+          return img;
+        });
+      } else if (imageUrl) {
         productData.product.images = [{ src: imageUrl }];
       }
       const response = await axios.post(url, productData, { headers: this.getHeaders() });
+      const p = response.data.product;
       return {
         success: true,
-        productId: response.data.product.id,
-        variantId: response.data.product.variants[0].id,
+        productId: p.id,
+        variantId: p.variants[0].id,
+        handle: p.handle,
+        adminUrl: `https://${this.storeUrl}/admin/products/${p.id}`,
+        publicUrl: `https://${this.storeUrl.replace('.myshopify.com','')}/products/${p.handle}`,
       };
     } catch (error) {
       return { success: false, error: error.response?.data?.errors || error.message };

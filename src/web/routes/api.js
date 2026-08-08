@@ -3285,6 +3285,36 @@ router.post('/remarker/fetch', async (req, res) => {
   }
 });
 
+// 2026-08-09: AI 워크플로우 4단계 — 멀티플랫폼 배포 (eBay + Shopify).
+//   body: { product: {...워크플로우 결과}, platforms: ['ebay','shopify'], presets: {ebay:{},shopify:{}} }
+//   response: { results: [{platform, success, listingUrl, error, ...}], totalRequested, totalSucceeded }
+router.post('/ai-workflow/publish', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인 필요' });
+    const { product, platforms, presets } = req.body || {};
+    if (!product || !product.title) return res.status(400).json({ error: 'product.title 필수' });
+    if (!Array.isArray(platforms) || platforms.length === 0) {
+      return res.status(400).json({ error: 'platforms 배열 필수 (예: ["ebay","shopify"])' });
+    }
+    const publisher = require('../../services/aiWorkflowPublisher');
+    const out = await publisher.publish({ product, platforms, presets: presets || {}, userId: req.user.id });
+    res.json(out);
+  } catch (e) {
+    console.error('[ai-workflow/publish] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET/PATCH /api/ai-workflow/presets — 사용자별 프리셋 (localStorage 우선, 나중에 DB 이관 여지).
+//   지금은 default 반환만 제공. 프론트가 localStorage 로 사장님 커스터마이즈 저장.
+router.get('/ai-workflow/presets', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인 필요' });
+    const publisher = require('../../services/aiWorkflowPublisher');
+    res.json({ defaults: publisher.DEFAULT_PRESETS });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // POST /api/remarker/remake — AI 리메이크
 router.post('/remarker/remake', async (req, res) => {
   try {

@@ -340,6 +340,45 @@ class EbayAPI {
   }
 
   /**
+   * 2026-08-09: AI 워크플로우 4단계용 — data URL / raw base64 를 EPS 로 업로드.
+   * 파일 저장 없이 base64 를 그대로 XML PictureData 로 전달.
+   * @param {Object} opts
+   * @param {string} opts.base64  'data:image/png;base64,...' 또는 raw base64
+   * @param {string} [opts.pictureName]
+   * @returns {Promise<{success, picture_url, errors}>}
+   */
+  async uploadBase64Picture({ base64, pictureName = 'ai-workflow' } = {}) {
+    if (!base64) throw new Error('base64 is required');
+    // data URL 이면 prefix 제거
+    const raw = String(base64).replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+    const requestBody = `
+  <PictureName>${EbayAPI.escapeXml(pictureName)}</PictureName>
+  <PictureSet>Supersize</PictureSet>
+  <PictureData>${raw}</PictureData>`;
+    const raw2 = await this.callTradingAPI('UploadSiteHostedPictures', requestBody);
+    const rawText = typeof raw2 === 'string' ? raw2 : JSON.stringify(raw2 || '');
+    const textOf = (tag) => {
+      const m = rawText.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+      return m ? m[1].trim() : null;
+    };
+    const ack = textOf('Ack') || 'Unknown';
+    const pictureUrl = textOf('FullURL') || textOf('PictureURL') || textOf('URL');
+    const errors = [...rawText.matchAll(/<Errors>([\s\S]*?)<\/Errors>/gi)].map(m => {
+      const read = t => {
+        const mm = m[1].match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)<\\/${t}>`, 'i'));
+        return mm ? mm[1].trim() : null;
+      };
+      return { code: read('ErrorCode'), message: read('LongMessage') || read('ShortMessage') };
+    });
+    return {
+      success: ['Success', 'Warning'].includes(ack) && Boolean(pictureUrl),
+      ack,
+      picture_url: pictureUrl,
+      errors,
+    };
+  }
+
+  /**
    * 연결 테스트
    */
   async testConnection() {

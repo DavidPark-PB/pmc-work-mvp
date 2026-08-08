@@ -22,9 +22,33 @@
     reconstruct: null,
     thumbnails: [],
     // 2026-08-08: 사장님 요청 — 원하는 이미지만 선택해서 후속 단계 사용.
-    // Set<url>. fetchCompetitor 시 전체 선택으로 초기화.
     selectedImageUrls: new Set(),
+    // 2026-08-09: 4단계 배포 상태
+    publish: null,   // { platforms:[], presets:{}, results:[], running:false }
   };
+
+  // 프리셋 (localStorage 로 사장님 커스터마이즈 저장. GET /presets 로 default 조회 가능)
+  const PRESET_STORAGE_KEY = 'pmcAIWorkflow.presets.v1';
+  function loadPresets() {
+    try {
+      const raw = localStorage.getItem(PRESET_STORAGE_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    // default (백엔드 DEFAULT_PRESETS 와 동기화)
+    return {
+      ebay: {
+        categoryId: '183454', conditionId: '1000', currency: 'USD', quantity: 1,
+        itemSpecifics: { Brand: 'Pokemon', 'Country/Region of Manufacture': 'Korea, South', Language: 'English' },
+      },
+      shopify: {
+        vendor: 'PMC', productType: 'Trading Card', status: 'active',
+        inventoryPolicy: 'deny', quantity: 1, tags: 'Pokemon,TCG,Trading Card,Korea',
+      },
+    };
+  }
+  function savePresets(p) {
+    try { localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(p)); } catch {}
+  }
 
   // 선택된 이미지만 반환 (없으면 빈 배열 — 후속 함수가 알아서 처리)
   function selectedImages() {
@@ -81,6 +105,7 @@
       { n: 1, label: '리메이커', icon: '🔮' },
       { n: 2, label: '상세페이지', icon: '📄' },
       { n: 3, label: '썸네일', icon: '🖼️' },
+      { n: 4, label: '배포', icon: '🚀' },
     ];
     host.innerHTML = `
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -110,6 +135,7 @@
     if (state.step === 1) renderStep1();
     else if (state.step === 2) renderStep2();
     else if (state.step === 3) renderStep3();
+    else if (state.step === 4) renderStep4();
   }
 
   function gotoStep(n) {
@@ -590,9 +616,217 @@
         <div style="display:flex;gap:8px;">
           <button type="button" onclick="pmcAIWorkflow.gotoStep(2)"
             style="padding:10px 18px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;">← 이전</button>
+          <button type="button" onclick="pmcAIWorkflow.gotoStep(4)"
+            style="padding:10px 18px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:700;">다음 (플랫폼 배포) 🚀 →</button>
         </div>
       </div>
     `;
+  }
+
+  // ───────────────────────────────────────────────
+  // STEP 4 — 멀티플랫폼 배포 (eBay + Shopify)
+  // ───────────────────────────────────────────────
+  function renderStep4() {
+    const host = document.getElementById('wf-body');
+    const presets = loadPresets();
+    const pub = state.publish;
+    const canPublish = !!(state.remake && (state.reconstruct?.htmlDescription || state.remake.description));
+
+    host.innerHTML = `
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;">
+        <h3 style="color:#fff;margin:0 0 12px;">4단계 · 멀티플랫폼 배포</h3>
+        <p style="color:#888;font-size:12px;margin:0 0 16px;">1~3단계 결과를 선택한 플랫폼에 자동 등록합니다. 프리셋은 브라우저에 저장되어 다음번에도 유지됩니다.</p>
+
+        ${!canPublish ? `<div style="padding:16px;background:#3a1a1a;color:#ff8a80;border-radius:6px;margin-bottom:12px;">
+          ⚠️ 1단계 리메이커 + 2단계 상세페이지가 완료되어야 배포 가능합니다.
+        </div>` : ''}
+
+        <!-- 플랫폼 선택 + 프리셋 -->
+        <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:14px;margin-bottom:12px;">
+          <div style="color:#888;font-size:11px;margin-bottom:10px;">배포할 플랫폼 (체크 선택)</div>
+
+          <!-- eBay -->
+          <div style="padding:10px;background:#1a1a2e;border-radius:6px;margin-bottom:8px;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="wf-pub-ebay" checked>
+              <span style="color:#fff;font-weight:600;">🛒 eBay</span>
+              <span style="color:#888;font-size:11px;">— Trading API (경매/고정가)</span>
+            </label>
+            <details style="margin-top:6px;">
+              <summary style="color:#7c4dff;font-size:11px;cursor:pointer;">▶ eBay 프리셋 편집</summary>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:11px;">
+                <label style="color:#aaa;">Category ID<br><input type="text" id="wf-preset-ebay-category" value="${esc(presets.ebay.categoryId || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Condition ID<br><input type="text" id="wf-preset-ebay-condition" value="${esc(presets.ebay.conditionId || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Brand<br><input type="text" id="wf-preset-ebay-brand" value="${esc(presets.ebay.itemSpecifics?.Brand || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Country/Region<br><input type="text" id="wf-preset-ebay-country" value="${esc(presets.ebay.itemSpecifics?.['Country/Region of Manufacture'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Language<br><input type="text" id="wf-preset-ebay-lang" value="${esc(presets.ebay.itemSpecifics?.Language || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Currency<br><input type="text" id="wf-preset-ebay-currency" value="${esc(presets.ebay.currency || 'USD')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+              </div>
+            </details>
+          </div>
+
+          <!-- Shopify -->
+          <div style="padding:10px;background:#1a1a2e;border-radius:6px;margin-bottom:8px;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="wf-pub-shopify" checked>
+              <span style="color:#fff;font-weight:600;">🛍 Shopify</span>
+              <span style="color:#888;font-size:11px;">— Admin REST</span>
+            </label>
+            <details style="margin-top:6px;">
+              <summary style="color:#7c4dff;font-size:11px;cursor:pointer;">▶ Shopify 프리셋 편집</summary>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:11px;">
+                <label style="color:#aaa;">Vendor<br><input type="text" id="wf-preset-shopify-vendor" value="${esc(presets.shopify.vendor || 'PMC')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Product Type<br><input type="text" id="wf-preset-shopify-type" value="${esc(presets.shopify.productType || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Status<br><select id="wf-preset-shopify-status" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+                  <option value="active" ${presets.shopify.status === 'active' ? 'selected' : ''}>active (즉시 게시)</option>
+                  <option value="draft" ${presets.shopify.status === 'draft' ? 'selected' : ''}>draft (초안)</option>
+                </select></label>
+                <label style="color:#aaa;">재고 정책<br><select id="wf-preset-shopify-invpolicy" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+                  <option value="deny" ${presets.shopify.inventoryPolicy === 'deny' ? 'selected' : ''}>deny (재고 없으면 판매중단)</option>
+                  <option value="continue" ${presets.shopify.inventoryPolicy === 'continue' ? 'selected' : ''}>continue (계속 판매)</option>
+                </select></label>
+                <label style="color:#aaa;grid-column:span 2;">Tags (콤마)<br><input type="text" id="wf-preset-shopify-tags" value="${esc(presets.shopify.tags || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+              </div>
+            </details>
+          </div>
+
+          <!-- 공통 -->
+          <div style="display:flex;gap:8px;align-items:center;padding:10px;background:#0f0f23;border:1px dashed #333;border-radius:6px;margin-top:8px;">
+            <label style="color:#aaa;font-size:11px;">판매가:</label>
+            <input type="number" id="wf-pub-price" value="${state.remake?.killPrice || 0}" step="0.01" style="width:100px;padding:5px 7px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:12px;">
+            <span style="color:#666;font-size:10px;">권장 킬가 자동 세팅</span>
+            <label style="color:#aaa;font-size:11px;margin-left:12px;">재고:</label>
+            <input type="number" id="wf-pub-qty" value="1" min="1" style="width:70px;padding:5px 7px;background:#1a1a2e;border:1px solid #333;border-radius:3px;color:#fff;font-size:12px;">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+          <button type="button" id="wf-publish-btn" onclick="pmcAIWorkflow.runPublish()" ${!canPublish || pub?.running ? 'disabled' : ''}
+            style="padding:12px 24px;background:${pub?.running ? '#555' : '#43a047'};border:0;border-radius:6px;color:#fff;cursor:${pub?.running ? 'wait' : 'pointer'};font-weight:700;font-size:14px;">
+            ${pub?.running ? '⏳ 배포 중...' : '🚀 선택된 플랫폼에 등록'}
+          </button>
+          <button type="button" onclick="pmcAIWorkflow.savePresetsFromUI()"
+            style="padding:8px 14px;background:#2a2a4a;border:1px solid #444;border-radius:6px;color:#aaa;cursor:pointer;font-size:11px;">💾 프리셋 저장</button>
+        </div>
+
+        <div id="wf-step4-status" style="color:#888;font-size:12px;margin-bottom:12px;"></div>
+
+        ${pub?.results ? `
+        <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:12px;margin-bottom:12px;">
+          <div style="color:#fff;font-size:13px;font-weight:600;margin-bottom:8px;">배포 결과 ${pub.results.filter(r => r.success).length}/${pub.results.length} 성공</div>
+          ${pub.results.map(r => `
+            <div style="padding:10px;background:#1a1a2e;border-left:3px solid ${r.success ? '#4caf50' : '#e94560'};border-radius:4px;margin-bottom:6px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="color:#fff;font-size:13px;font-weight:600;">
+                  ${r.success ? '✅' : '❌'} ${esc(r.platform)}
+                  ${r.elapsedMs ? ` <span style="color:#666;font-size:10px;font-weight:400;">(${(r.elapsedMs/1000).toFixed(1)}s)</span>` : ''}
+                </div>
+                ${r.listingUrl ? `<a href="${esc(r.listingUrl)}" target="_blank" rel="noopener" style="color:#81d4fa;font-size:11px;">🔗 열기</a>` : ''}
+              </div>
+              ${r.itemId || r.productId ? `<div style="color:#aaa;font-size:11px;margin-top:4px;">ID: ${esc(r.itemId || r.productId)}</div>` : ''}
+              ${r.thumbnailUploaded ? `<div style="color:#666;font-size:10px;margin-top:2px;">썸네일 ${r.thumbnailUploaded}장 업로드</div>` : ''}
+              ${r.error ? `<div style="color:#ff8a80;font-size:11px;margin-top:4px;white-space:pre-wrap;">${esc(String(r.error).slice(0, 300))}</div>` : ''}
+            </div>
+          `).join('')}
+        </div>
+        ` : ''}
+
+        <div style="display:flex;gap:8px;">
+          <button type="button" onclick="pmcAIWorkflow.gotoStep(3)"
+            style="padding:10px 18px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;">← 이전</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function savePresetsFromUI() {
+    const presets = {
+      ebay: {
+        categoryId:  document.getElementById('wf-preset-ebay-category')?.value?.trim() || '183454',
+        conditionId: document.getElementById('wf-preset-ebay-condition')?.value?.trim() || '1000',
+        currency:    document.getElementById('wf-preset-ebay-currency')?.value?.trim() || 'USD',
+        quantity:    1,
+        itemSpecifics: {
+          Brand:                                  document.getElementById('wf-preset-ebay-brand')?.value?.trim() || '',
+          'Country/Region of Manufacture':        document.getElementById('wf-preset-ebay-country')?.value?.trim() || '',
+          Language:                               document.getElementById('wf-preset-ebay-lang')?.value?.trim() || '',
+        },
+      },
+      shopify: {
+        vendor:          document.getElementById('wf-preset-shopify-vendor')?.value?.trim() || 'PMC',
+        productType:     document.getElementById('wf-preset-shopify-type')?.value?.trim() || '',
+        status:          document.getElementById('wf-preset-shopify-status')?.value || 'active',
+        inventoryPolicy: document.getElementById('wf-preset-shopify-invpolicy')?.value || 'deny',
+        tags:            document.getElementById('wf-preset-shopify-tags')?.value?.trim() || '',
+        quantity:        1,
+      },
+    };
+    savePresets(presets);
+    const status = document.getElementById('wf-step4-status');
+    if (status) { status.textContent = '✓ 프리셋 저장됨 (브라우저)'; setTimeout(() => { status.textContent = ''; }, 2000); }
+  }
+
+  async function runPublish() {
+    savePresetsFromUI();
+    const presets = loadPresets();
+    const platforms = [];
+    if (document.getElementById('wf-pub-ebay')?.checked) platforms.push('ebay');
+    if (document.getElementById('wf-pub-shopify')?.checked) platforms.push('shopify');
+    if (platforms.length === 0) { alert('플랫폼을 1개 이상 선택하세요'); return; }
+
+    const price = Number(document.getElementById('wf-pub-price')?.value) || state.remake?.killPrice || 0;
+    const qty = Number(document.getElementById('wf-pub-qty')?.value) || 1;
+    if (price <= 0) { alert('판매가는 0보다 커야 합니다'); return; }
+
+    state.publish = { platforms, presets, results: null, running: true };
+    renderStep4();
+    const status = document.getElementById('wf-step4-status');
+    if (status) status.textContent = `${platforms.join(', ')} 배포 중 (30~60초 각각)...`;
+
+    // 각 플랫폼 프리셋에 quantity 세팅
+    platforms.forEach(p => { presets[p] = { ...(presets[p] || {}), quantity: qty }; });
+
+    const product = {
+      title: state.remake?.title || state.competitor?.title || '',
+      description: state.reconstruct?.htmlDescription || state.remake?.description || '',
+      price,
+      quantity: qty,
+      imageUrls: Array.from(state.selectedImageUrls || []),
+      thumbnailsBase64: (state.thumbnails || []).map(t => ({ platform: t.platform, base64: t.url })),
+      itemSpecifics: state.competitor?.itemSpecifics || {},
+      competitorItemId: state.competitor?.itemId,
+      seoKeywords: state.remake?.seoKeywords || [],
+    };
+
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 180000);   // 3분 timeout (플랫폼 여러 개 병렬)
+    try {
+      const res = await fetch('/api/ai-workflow/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product, platforms, presets }),
+        signal: ctrl.signal,
+      });
+      let data;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) data = await res.json();
+      else {
+        const text = await res.text();
+        const m = text.match(/<pre>([\s\S]*?)<\/pre>/i);
+        throw new Error(`서버 오류 (${res.status}): ${m ? m[1].trim() : text.slice(0, 200)}`);
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      state.publish = { ...state.publish, results: data.results || [], running: false };
+      renderStep4();
+    } catch (e) {
+      const msg = e.name === 'AbortError' ? '3분 timeout — 서버 응답 없음' : e.message;
+      state.publish = { ...state.publish, results: null, running: false };
+      renderStep4();
+      const st = document.getElementById('wf-step4-status');
+      if (st) st.textContent = '에러: ' + msg;
+    } finally {
+      clearTimeout(to);
+    }
   }
 
   async function runThumbnails() {
@@ -655,5 +889,6 @@
 
   // ───────────────────────────────────────────────
   window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails,
-    toggleImage, selectAllImages, clearImageSelection };
+    toggleImage, selectAllImages, clearImageSelection,
+    runPublish, savePresetsFromUI };
 })();
