@@ -10,18 +10,45 @@ const service = require('../../services/catalogService');
 
 const router = express.Router();
 
+// Google Sheets 실패 원인 힌트 — 프론트가 "왜 안 되는지" 명확히 보여주게.
+function _hintFor(err) {
+  const msg = String(err?.message || '').toLowerCase();
+  if (msg.includes('gaxios') || msg.includes('invalid_grant') || msg.includes('no key or keyfile')) {
+    return 'Google Sheets 인증 실패 — 서버에 GOOGLE_CREDENTIALS_JSON 환경변수가 설정됐는지 확인 필요 (Railway → Variables).';
+  }
+  if (msg.includes('unable to parse') || msg.includes('json.parse')) {
+    return 'GOOGLE_CREDENTIALS_JSON 값이 유효한 JSON 이 아닙니다 (따옴표/줄바꿈 확인).';
+  }
+  if (msg.includes('permission') || msg.includes('403') || msg.includes('does not have permission')) {
+    return '서비스 계정이 해당 시트에 공유되지 않았습니다 (시트 공유 설정에서 서비스 계정 이메일 추가 필요).';
+  }
+  if (msg.includes('not found') || msg.includes('404')) {
+    return '시트 ID (SHEET_ID_USD/KRW/EURO) 가 잘못됐거나 삭제됐을 수 있습니다.';
+  }
+  if (msg.includes('timeout') || msg.includes('etimedout')) {
+    return 'Google Sheets API 응답 지연 — 잠시 후 재시도.';
+  }
+  return null;
+}
+
 router.get('/prices', async (req, res) => {
   try {
     const data = await service.getCatalog(req.query.tab);
     res.json(data);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('[catalog/prices] error:', e.message);
+    res.status(500).json({ error: e.message, hint: _hintFor(e) });
+  }
 });
 
 router.get('/tabs', async (req, res) => {
   try {
     const tabs = await service.listTabs();
     res.json({ tabs });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('[catalog/tabs] error:', e.message);
+    res.status(500).json({ error: e.message, hint: _hintFor(e) });
+  }
 });
 
 router.put('/prices', requireAdmin, async (req, res) => {

@@ -74,13 +74,49 @@
     content.innerHTML = '<div style="padding:60px;text-align:center;color:#888;">시트 읽는 중…</div>';
 
     const tab = state.tab || '';
-    const res = await fetch('/api/catalog/prices' + (tab ? ('?tab=' + encodeURIComponent(tab)) : ''));
-    if (!res.ok) { content.innerHTML = '<div style="padding:40px;color:#ff8a80;">조회 실패: ' + (await res.json()).error + '</div>'; return; }
-    const data = await res.json();
+    let res;
+    try {
+      res = await fetch('/api/catalog/prices' + (tab ? ('?tab=' + encodeURIComponent(tab)) : ''));
+    } catch (netErr) {
+      content.innerHTML = `<div style="padding:40px;color:#ff8a80;">
+        <div style="font-weight:700;margin-bottom:6px;">🌐 네트워크 오류</div>
+        <div style="font-size:12px;color:#ffab91;">${esc(netErr.message)}</div>
+      </div>`;
+      return;
+    }
+    if (!res.ok) {
+      let errMsg = `HTTP ${res.status}`, hint = '';
+      try {
+        const j = await res.json();
+        errMsg = j.error || errMsg;
+        if (j.hint) hint = j.hint;
+      } catch {}
+      // HTTP 상태별 이해 가능한 안내
+      const explain = res.status === 401 ? '로그인이 만료되었습니다. 새로고침 후 다시 로그인하세요.'
+        : res.status === 403 ? '이 페이지 접근 권한이 없습니다 (관리자만).'
+        : res.status === 500 ? 'Google Sheets 서버에 문제가 있습니다. 잠시 후 다시 시도하거나 관리자에게 문의하세요.'
+        : res.status === 502 || res.status === 503 ? 'Google Sheets API 일시 장애. 잠시 후 재시도.'
+        : '';
+      content.innerHTML = `<div style="padding:40px;color:#ff8a80;">
+        <div style="font-weight:700;margin-bottom:6px;">⚠️ 카탈로그 조회 실패 (${res.status})</div>
+        <div style="font-size:13px;color:#ffab91;margin-bottom:8px;">${esc(errMsg)}</div>
+        ${explain ? `<div style="font-size:12px;color:#ccc;margin-bottom:8px;">${esc(explain)}</div>` : ''}
+        ${hint ? `<div style="font-size:11px;color:#888;padding:8px;background:#0f0f23;border-radius:4px;">💡 힌트: ${esc(hint)}</div>` : ''}
+        <button onclick="pmcCatalog.refresh()" style="margin-top:12px;padding:6px 14px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">🔄 다시 시도</button>
+      </div>`;
+      return;
+    }
+    let data;
+    try {
+      data = await res.json();
+    } catch (parseErr) {
+      content.innerHTML = `<div style="padding:40px;color:#ff8a80;">응답 파싱 실패: ${esc(parseErr.message)}</div>`;
+      return;
+    }
     state.tab = data.tab;
-    state.tabs = data.tabs;
+    state.tabs = data.tabs || [];
     state.rates = data.rates;
-    state.items = data.items;
+    state.items = data.items || [];
     if (!state.category) {
       const cats = categoryList();
       state.category = cats[0] || '';
