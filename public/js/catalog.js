@@ -82,6 +82,7 @@
         <label style="color:#888;font-size:13px;">게임 탭:</label>
         <select id="cat-tab" onchange="pmcCatalog.onTabChange()" style="padding:6px 10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;"></select>
         <button onclick="pmcCatalog.refresh()" style="padding:6px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">🔄 새로고침</button>
+        <button onclick="pmcCatalog.importSheetImages()" title="Google Sheets 셀 안 이미지를 우리 시스템으로 자동 임포트 (현재 탭)" style="padding:6px 14px;background:#00838f;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">📥 시트 이미지 임포트</button>
         <div style="flex:1;min-width:200px;position:relative;">
           <input type="search" id="cat-search" placeholder="🔍 상품명 · 세트코드 검색…" oninput="pmcCatalog.onSearch(this.value)" style="width:100%;padding:7px 30px 7px 12px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:13px;">
           <button id="cat-search-clear" onclick="pmcCatalog.clearSearch()" style="display:none;position:absolute;right:4px;top:50%;transform:translateY(-50%);background:transparent;border:0;color:#888;cursor:pointer;font-size:14px;padding:2px 6px;">✕</button>
@@ -679,6 +680,33 @@
     catch { prompt('수동 복사:', url); }
   }
 
+  // 2026-08-08: Google Sheets 셀 안 이미지 자동 임포트 (현재 탭만).
+  //   xlsx export → drawings.xml 파싱 → Storage 업로드 → catalog_image_overrides upsert
+  async function importSheetImages() {
+    if (!state.tab) { alert('먼저 탭을 선택하세요'); return; }
+    if (!confirm(`"${state.tab}" 탭의 시트 이미지를 자동 임포트할까요?\n\n· 30초~1분 걸림\n· 셀 안 이미지가 있는 행에만 override 저장\n· 완료 후 자동 새로고침`)) return;
+    const btn = event && event.target;
+    const orig = btn && btn.textContent;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 임포트 중... (최대 1분)'; }
+    try {
+      const r = await fetch('/api/catalog/import-images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tab: state.tab }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+      const errCount = (j.errors && j.errors.length) || 0;
+      const firstErr = errCount > 0 ? ('\n\n첫 에러: ' + j.errors[0].error) : '';
+      alert('✅ 완료\n\n· 임포트 이미지: ' + j.imagesImported + '건\n· overrides 저장: ' + j.overridesUpserted + '건\n· 에러: ' + errCount + '건' + firstErr);
+      await refresh();
+    } catch (e) {
+      alert('❌ 임포트 실패: ' + e.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = orig || '📥 시트 이미지 임포트'; }
+    }
+  }
+
   window.pmcCatalog = {
     load, refresh, onTabChange, setCategory,
     // 2026-08-08: savePrice 는 이전 리팩토링 때 함수 자체가 제거됐는데 export 만 남아
@@ -687,5 +715,6 @@
     openFxModal, closeFxModal, saveFx, resetFxAuto, editImage,
     onSearch, clearSearch,
     openAiImage, closeAiImage, runAiImage, copyAiUrl,
+    importSheetImages,
   };
 })();

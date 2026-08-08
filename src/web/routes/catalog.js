@@ -122,4 +122,21 @@ router.put('/image', requireAdmin, async (req, res) => {
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// 2026-08-08: 시트 셀 안 이미지 자동 임포트 (xlsx export + drawings.xml 파싱).
+// admin only, long-running (~30s+ per 탭). 응답에 성공/실패 카운트 포함.
+router.post('/import-images', requireAdmin, async (req, res) => {
+  try {
+    const importer = require('../../services/catalogImageImporter');
+    const tabName = req.body?.tab || null;   // null → 전체 탭
+    const stats = await importer.importSheetImages({
+      tabName,
+      userId: req.user.id,
+    });
+    res.json({ ok: true, ...stats });
+  } catch (e) {
+    console.error('[catalog/import-images] error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;
