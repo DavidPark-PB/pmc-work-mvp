@@ -21,7 +21,8 @@
 'use strict';
 
 const PROMPT_VERSION = 'cs-tone-v1.0';
-const DEFAULT_MODEL = process.env.CS_TONE_DEFAULT_MODEL || 'claude-sonnet-4-6';
+// 2026-08-08: 'claude-sonnet-4-6' 은 존재하지 않는 모델 ID 였음 (Anthropic 400 반환).
+const DEFAULT_MODEL = process.env.CS_TONE_DEFAULT_MODEL || 'claude-sonnet-5';
 const MOCK_MODE = process.env.CS_TONE_MOCK_MODE === 'true';
 const MAX_OUTPUT_TOKENS = 1500;
 // PR CS-G3 후속: daily cap (mock 제외, 실 호출만 카운트)
@@ -98,7 +99,8 @@ async function callAnthropic({ prompt, model }) {
       try { response = await tryOnce(); }
       catch (e2) { throw new ProviderError(`Anthropic 5xx retry 실패`); }
     } else {
-      throw new ProviderError(`Anthropic ${e?.status || 'error'}`);
+      const detail = e?.error?.error?.message || e?.error?.message || e?.message || '';
+      throw new ProviderError(`Anthropic ${e?.status || 'error'}${detail ? ' — ' + detail : ''}`);
     }
   }
 

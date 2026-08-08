@@ -31,7 +31,7 @@ const PENDING_THRESHOLD      = 0.45;  // 이상이면 pending (텔레그램 확�
 const SIM_FILTER_THRESHOLD   = 0.25;  // 1차 유사도 필터 컷오프
 const TOP_CANDIDATES         = 5;     // AI에 넘길 최대 후보 수
 const MAX_TELEGRAM_PER_RUN   = 10;    // 한 번에 텔레그램 요청 최대 건수
-const CLAUDE_MODEL           = 'claude-sonnet-4-5';
+const CLAUDE_MODEL           = 'claude-sonnet-5';
 
 // 하루 API 호출 상한 (사장님 지침 2026-07-09) — 폭발 방지.
 // env AIMATCHER_MAX_CALLS_PER_RUN 로 override 가능.
@@ -178,7 +178,7 @@ async function matchWithAI(compListing, ourProducts) {
  * @param {boolean} [opts.dryRun]     - DB 쓰기 없이 결과만 확인
  * @returns {{ processed, autoApproved, pending, skipped, errors }}
  */
-async function runMatcher({ hours = 25, silent = false, dryRun = false, maxCalls } = {}) {
+async function runMatcher({ hours = 25, silent = false, dryRun = false, maxCalls, sellerId = null } = {}) {
   const MAX_CALLS = Math.max(1,
     parseInt(maxCalls) ||
     parseInt(process.env.AIMATCHER_MAX_CALLS_PER_RUN) ||
@@ -186,34 +186,32 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false, maxCalls
   );
   let callsUsed = 0;
   const db = getClient();
-  console.log(`[Matcher] ===== AI 매처 시작 (hours=${hours}, dryRun=${dryRun}) =====`);
+  console.log(`[Matcher] ===== AI 매처 시작 (hours=${hours}, dryRun=${dryRun}, sellerId=${sellerId || 'ALL'}) =====`);
 
-  // ── 1. 최근 N시간 competitor_listings 로드 (미매핑 건만) ─────────────────
-  const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-
-  const { data: listings, error: listErr } = await db
-    .from('competitor_listings')
-    .select('id, seller_id, ebay_item_id, title, price, shipping, item_specifics')
-    .gte('last_seen', since)
-    // product_matches에 already 처리된 건 제외
-    .not('ebay_item_id', 'in', `(
-      SELECT competitor_item_id FROM product_matches WHERE our_sku IS NOT NULL
-    )`);
-
-  // 위 서브쿼리가 지원 안 되면 아래 fallback 사용
-  // .not('id', 'in', subquery...)
-  // — Supabase PostgREST 는 서브쿼리를 지원하지 않으므로, 두 단계 쿼리 사용
-
-  let unmatched = listings || [];
-
-  if (listErr) {
-    // 서브쿼리 지원 안 되는 경우 두 단계로 fallback
-    console.warn('[Matcher] 복합 쿼리 실패, 두 단계 쿼리 사용:', listErr.message);
-
-    const { data: allListings } = await db
-      .from('competitor_listings')
-      .select('id, seller_id, ebay_item_id, title, price, shipping, item_specifics')
-      .gte('last_seen', since);
+  // ── 1. competitor_listings 로드 (미매핑 건만) ─────────────────────────────
+  //   2026-07-18 사장님 지침: CSV 임포트로 넣은 셀러(hello_kr 등)의 리스팅은
+  //   last_seen 이 며칠 전이라 hours=25 기본 필터에 걸림. sellerId 옵션으로
+  //   특정 셀러만 좁혀서 처리할 때는 hours 필터를 우회한다 (해당 셀러의
+  //   미매칭 전건을 대상으로).
+  let unmatched = [];
+  {
+    const applyHours = !sellerId; // sellerId 지정 시 hours 무시
+    let allListings = [];
+    let from = 0;
+    while (true) {
+      let q = db.from('competitor_listings')
+        .select('id, seller_id, ebay_item_id, title, price, shipping, item_specifics');
+      if (sellerId) q = q.eq('seller_id', sellerId);
+      if (applyHours) {
+        const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+        q = q.gte('last_seen', since);
+      }
+      const { data } = await q.range(from, from + 999);
+      if (!data || data.length === 0) break;
+      allListings = allListings.concat(data);
+      if (data.length < 1000) break;
+      from += 1000;
+    }
 
     const { data: matchedRows } = await db
       .from('product_matches')
@@ -221,7 +219,7 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false, maxCalls
       .not('our_sku', 'is', null);
 
     const matchedSet = new Set((matchedRows || []).map(r => r.competitor_item_id));
-    unmatched = (allListings || []).filter(l => !matchedSet.has(l.ebay_item_id));
+    unmatched = allListings.filter(l => !matchedSet.has(l.ebay_item_id));
   }
 
   console.log(`[Matcher] 처리 대상 리스팅: ${unmatched.length}개`);

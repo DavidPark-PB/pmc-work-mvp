@@ -11,7 +11,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../config/.
 
 const { buildSkuContext } = require('../services/skuContextBuilder');
 
-const CLAUDE_MODEL = 'claude-haiku-4-5';
+const CLAUDE_MODEL = 'claude-haiku-4-5-20251001';
 const PRICE_SIGNAL_TYPES = new Set(['competitor_lower_price', 'price_attack']);
 const VALID_RECOMMENDATIONS = new Set(['lower_price', 'hold', 'raise_price']);
 

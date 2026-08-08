@@ -27,7 +27,8 @@
 const riskPolicies = require('./csRiskPolicies');
 
 const PROMPT_VERSION = 'cs-reply-gen-v1.0';
-const DEFAULT_MODEL = process.env.CS_REPLY_DEFAULT_MODEL || 'claude-sonnet-4-6';
+// 2026-08-08: 'claude-sonnet-4-6' 은 존재하지 않는 모델 ID 였음 (Anthropic 400 반환).
+const DEFAULT_MODEL = process.env.CS_REPLY_DEFAULT_MODEL || 'claude-sonnet-5';
 const MOCK_MODE = process.env.CS_REPLY_MOCK_MODE === 'true';
 const MAX_OUTPUT_TOKENS = 1500;
 
@@ -143,7 +144,11 @@ async function callAnthropic({ prompt, model }) {
   catch (e) {
     if (e?.status >= 500) {
       try { response = await tryOnce(); } catch (e2) { throw new ProviderError('Anthropic 5xx retry 실패'); }
-    } else { throw new ProviderError(`Anthropic ${e?.status || 'error'}`); }
+    } else {
+      // 2026-08-08: 실제 에러 message (예: credit balance) 를 그대로 전달.
+      const detail = e?.error?.error?.message || e?.error?.message || e?.message || '';
+      throw new ProviderError(`Anthropic ${e?.status || 'error'}${detail ? ' — ' + detail : ''}`);
+    }
   }
   const text = response?.content?.[0]?.text || '';
   if (!text.trim()) throw new ProviderError('Anthropic 빈 응답');

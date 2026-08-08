@@ -7,7 +7,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../config/.
 const axios = require('axios');
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-sonnet-4-6';
+const MODEL = 'claude-sonnet-5';
 const MODEL_FALLBACK = 'claude-haiku-4-5-20251001';
 
 class TranslationService {

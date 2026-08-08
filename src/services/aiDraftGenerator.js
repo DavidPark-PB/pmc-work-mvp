@@ -32,7 +32,7 @@ const { getClient } = require('../db/supabaseClient');
 const safetyExec = require('./safetyExec');
 
 const PROMPT_VERSION = 'v1.0';
-const DEFAULT_MODEL = process.env.AI_DRAFT_DEFAULT_MODEL || 'claude-sonnet-4-6';
+const DEFAULT_MODEL = process.env.AI_DRAFT_DEFAULT_MODEL || 'claude-sonnet-5';
 const DAILY_USD_CAP = parseFloat(process.env.AI_DRAFT_DAILY_USD_CAP || '5.00');
 const MOCK_MODE = process.env.AI_DRAFT_MOCK_MODE === 'true';
 const MAX_OUTPUT_TOKENS = 1000;

@@ -6,7 +6,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '../../config/.
 const axios = require('axios');
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-sonnet-4-6';
+const MODEL = 'claude-sonnet-5';
 const MODEL_FALLBACK = 'claude-haiku-4-5-20251001';
 
 const PROMPT = `당신은 B2B 인보이스/견적서 파서입니다. 이미지 또는 PDF 에서 다음 JSON 스키마로 데이터를 추출하세요. 값이 명확하지 않으면 빈 문자열/0. 추측은 하지 마세요.
