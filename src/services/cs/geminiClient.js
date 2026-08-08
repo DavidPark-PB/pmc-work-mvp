@@ -1,23 +1,36 @@
 /**
- * Gemini API 공통 호출 클라이언트 — CS AI 서비스 4개 (analyzer / reply / tone / translator) 가 공유.
+ * Gemini API 공통 호출 클라이언트 — CS AI 서비스 4개가 공유.
  *
- * 2026-08-08: Anthropic 크레딧 소진 대비 Gemini API 전환 (사장님 결정).
- *   기존 프로젝트에 GEMINI_API_KEY 이미 존재 (legacy /api/cs/suggest 에서 사용) — 재활용.
+ * 2026-08-08: Anthropic → Gemini 전환 (사장님 결정).
+ *   기존 GEMINI_API_KEY 재활용 (legacy /api/cs/suggest 에서 사용 중이던 것).
  *
  * 특징:
- *   - JSON 응답 강제 (responseMimeType: 'application/json') → 각 서비스의 extractJson 그대로 동작
- *   - 실 에러 메시지를 그대로 throw (Anthropic 크레딧 사고 재발 방지)
- *   - usage tokens 지원 (Gemini 는 candidatesTokenCount 필드)
- *   - 5xx 는 1회 retry, 4xx 는 즉시 실패
+ *   - 모델 fallback 리스트: 첫 모델이 429/404 반환 시 다음 모델 자동 시도
+ *     (신규 API key 는 특정 모델 무료 티어 접근 못 하는 케이스 대응)
+ *   - JSON 응답 강제 (expectJson=true 시)
+ *   - 실 에러 메시지 그대로 throw (Anthropic 크레딧 사고 재발 방지)
+ *   - usage tokens 지원
+ *   - 5xx 는 1회 retry, 4xx (재시도 무의미) 는 즉시 fallback
  */
 'use strict';
 
 const axios = require('axios');
 
-// 2026-08-08: 'gemini-2.5-flash' 는 신규 API 사용자에게 404 반환됨.
-//   'gemini-2.0-flash' 는 안정 · 무료 티어 지원 · 신규 계정 OK.
-const DEFAULT_MODEL = process.env.CS_GEMINI_DEFAULT_MODEL || 'gemini-2.0-flash';
+// 2026-08-08: 무료 티어 지원 순서로 fallback.
+//   - 2.0-flash: 최신 안정, 대부분 계정 무료 티어 지원
+//   - 1.5-flash: 구형, 무료 티어 가장 폭넓게 지원 (신규 프로젝트에서도 잘 됨)
+//   - 1.5-flash-8b: 더 저렴한 소형 모델, 무료 티어 확실
+// CS_GEMINI_MODEL_FALLBACK env 로 override 가능 (콤마 구분).
+const DEFAULT_MODELS = (process.env.CS_GEMINI_MODEL_FALLBACK ||
+  'gemini-2.0-flash,gemini-1.5-flash,gemini-1.5-flash-8b')
+  .split(',').map(s => s.trim()).filter(Boolean);
+const DEFAULT_MODEL = process.env.CS_GEMINI_DEFAULT_MODEL || DEFAULT_MODELS[0];
+
 const API_URL_TPL = 'https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent';
+
+// 이 status 는 다음 모델로 자동 fallback (재시도 무의미):
+//   404 = 모델 없음 · 429 = quota/rate · 400 = 모델 미지원 (특정 메시지)
+const FALLBACK_STATUSES = new Set([400, 404, 429]);
 
 class ProviderError extends Error {
   constructor(m, code) { super(m); this.code = code || 'gemini/provider_failed'; }
@@ -26,63 +39,84 @@ class ConfigError extends Error {
   constructor(m, code) { super(m); this.code = code || 'gemini/config_error'; }
 }
 
+async function _postOnce({ apiKey, model, payload }) {
+  const url = API_URL_TPL.replace('{MODEL}', model);
+  return axios.post(`${url}?key=${apiKey}`, payload, {
+    timeout: 30000,
+    validateStatus: () => true,
+  });
+}
+
 /**
  * @param {Object} opts
- * @param {string} opts.prompt      - 프롬프트 전문 (JSON 강제 지시 포함해야 함)
- * @param {string} [opts.model]     - 기본: CS_GEMINI_DEFAULT_MODEL or 'gemini-2.5-flash'
- * @param {number} [opts.maxTokens] - 기본 2500
- * @param {number} [opts.temperature] - 기본 0.2
- * @param {string} [opts.errCodePrefix] - 각 서비스별 에러 code prefix (예: 'csAnalyzer')
+ * @param {string} opts.prompt
+ * @param {string} [opts.model]       - 명시하면 fallback 리스트 맨 앞에 삽입
+ * @param {number} [opts.maxTokens]
+ * @param {number} [opts.temperature]
+ * @param {boolean} [opts.expectJson] - true 시 responseMimeType='application/json'
+ * @param {string} [opts.errCodePrefix]
  * @returns {Promise<{text, inputTokens, outputTokens, model}>}
  */
-async function callGemini({ prompt, model = DEFAULT_MODEL, maxTokens = 2500, temperature = 0.2, expectJson = true, errCodePrefix = 'gemini' } = {}) {
+async function callGemini({ prompt, model, maxTokens = 2500, temperature = 0.2, expectJson = true, errCodePrefix = 'gemini' } = {}) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new ConfigError('GEMINI_API_KEY 미설정', `${errCodePrefix}/config_error`);
   if (!prompt || !String(prompt).trim()) throw new ProviderError('빈 프롬프트', `${errCodePrefix}/validation`);
 
-  const url = API_URL_TPL.replace('{MODEL}', model);
-  const generationConfig = {
-    temperature,
-    maxOutputTokens: maxTokens,
-  };
+  const generationConfig = { temperature, maxOutputTokens: maxTokens };
   if (expectJson) generationConfig.responseMimeType = 'application/json';
-  const payload = {
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig,
-  };
+  const payload = { contents: [{ parts: [{ text: prompt }] }], generationConfig };
 
-  async function tryOnce() {
-    return axios.post(`${url}?key=${apiKey}`, payload, {
-      timeout: 30000,
-      validateStatus: () => true,
-    });
-  }
+  // 시도 순서 = [명시 model] + DEFAULT_MODELS (중복 제거)
+  const seen = new Set();
+  const attempts = [];
+  if (model) { attempts.push(model); seen.add(model); }
+  for (const m of DEFAULT_MODELS) if (!seen.has(m)) { attempts.push(m); seen.add(m); }
 
-  let r = await tryOnce();
-  // 5xx retry 1회
-  if (r.status >= 500 && r.status < 600) {
-    r = await tryOnce();
-  }
-  if (r.status !== 200) {
+  const failures = [];  // 각 모델별 실패 이유 (모두 실패 시 종합 리포트)
+
+  for (const attemptModel of attempts) {
+    let r = await _postOnce({ apiKey, model: attemptModel, payload });
+    // 5xx 는 같은 모델에서 1회 retry
+    if (r.status >= 500 && r.status < 600) {
+      r = await _postOnce({ apiKey, model: attemptModel, payload });
+    }
+
+    if (r.status === 200) {
+      const text = r.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (!text.trim()) {
+        failures.push(`${attemptModel}: 빈 응답`);
+        continue;  // 다음 모델 시도
+      }
+      const usage = r.data?.usageMetadata || {};
+      return {
+        text: text.trim(),
+        inputTokens: usage.promptTokenCount || 0,
+        outputTokens: usage.candidatesTokenCount || 0,
+        model: attemptModel,
+      };
+    }
+
     const detail = r.data?.error?.message || r.data?.error?.status || `HTTP ${r.status}`;
-    throw new ProviderError(`Gemini ${r.status} — ${detail}`, `${errCodePrefix}/provider_failed`);
-  }
-  const text = r.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  if (!text.trim()) throw new ProviderError('Gemini 빈 응답', `${errCodePrefix}/provider_failed`);
+    failures.push(`${attemptModel} [${r.status}]: ${String(detail).slice(0, 200)}`);
 
-  const usage = r.data?.usageMetadata || {};
-  return {
-    text: text.trim(),
-    inputTokens: usage.promptTokenCount || 0,
-    outputTokens: usage.candidatesTokenCount || 0,
-    model,
-  };
+    // fallback 대상이 아니면 즉시 실패 (401/403 등 credential 문제 → 재시도 무의미하지만 fallback 도 안 됨)
+    if (!FALLBACK_STATUSES.has(r.status)) {
+      throw new ProviderError(`Gemini ${r.status} — ${detail}`, `${errCodePrefix}/provider_failed`);
+    }
+    // 그 외 (400/404/429) 는 다음 모델로 자동 fallback
+  }
+
+  // 모든 모델 실패
+  throw new ProviderError(
+    `모든 Gemini 모델 실패. 시도: ${attempts.join(', ')} | ${failures.join(' || ')}`,
+    `${errCodePrefix}/provider_failed`
+  );
 }
 
-// Gemini 2.5 Flash 단가 (2026 기준 추정) — Sonnet 대비 훨씬 저렴
+// gemini-2.0-flash / 1.5-flash 무료 티어 or 저가. 대략 추정.
 function estimateCost(inputTokens, outputTokens) {
-  const PRICE_PER_MTOK_INPUT  = 0.075;   // $0.075 / M input tokens
-  const PRICE_PER_MTOK_OUTPUT = 0.30;    // $0.30 / M output tokens
+  const PRICE_PER_MTOK_INPUT  = 0.075;
+  const PRICE_PER_MTOK_OUTPUT = 0.30;
   return Math.round(
     ((inputTokens / 1_000_000) * PRICE_PER_MTOK_INPUT +
      (outputTokens / 1_000_000) * PRICE_PER_MTOK_OUTPUT) * 100000
@@ -95,4 +129,5 @@ module.exports = {
   ProviderError,
   ConfigError,
   DEFAULT_MODEL,
+  DEFAULT_MODELS,
 };
