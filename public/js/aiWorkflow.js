@@ -177,7 +177,13 @@
         throw new Error(`서버 오류 (${res.status}): ${m ? m[1].trim() : text.slice(0, 200)}`);
       }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      state.competitor = { ...data.item, itemId };
+      // 2026-08-08: 서버는 pictureURLs 필드로 반환, 프론트는 images 참조 → alias 로 정리.
+      const item = data.item || {};
+      state.competitor = {
+        ...item,
+        itemId,
+        images: item.images || item.pictureURLs || [],
+      };
       state.remake = null;
       renderStep1();
     } catch (e) {
