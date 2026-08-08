@@ -23,8 +23,11 @@
 // 사장님 대부분 상품이 TCG 카드라 아래가 안전한 default. 필요시 preset 으로 override.
 const DEFAULT_PRESETS = {
   ebay: {
-    categoryId: '183454',       // Trading Card Games
-    conditionId: '1500',        // New other — Trading Cards 는 1000 불허, 1500 이 안전 default
+    // Pokemon Individual Cards (183454) default:
+    //   conditionId=4000 (Ungraded) — 낱장 카드 표준. Grade aspect 로 상태 명시.
+    //   박스/팩 등록 시 프리셋에서 1000(New) 로 조정 필요.
+    categoryId: '183454',
+    conditionId: '4000',
     currency: 'USD',
     quantity: 1,
     dispatchTimeMax: 3,
@@ -33,6 +36,7 @@ const DEFAULT_PRESETS = {
       Brand: 'Pokemon',
       'Country/Region of Manufacture': 'Korea, South',
       Language: 'English',
+      Grade: 'Mint',
     },
   },
   shopify: {

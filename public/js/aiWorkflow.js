@@ -37,10 +37,15 @@
     // default (백엔드 DEFAULT_PRESETS 와 동기화)
     return {
       ebay: {
-        // Trading Cards 는 1000(New) 를 안 받는 케이스 다수 → 1500(New other) 을 default 로.
-        // 사장님이 프리셋 편집에서 카테고리별로 조정 가능.
-        categoryId: '183454', conditionId: '1500', currency: 'USD', quantity: 1,
-        itemSpecifics: { Brand: 'Pokemon', 'Country/Region of Manufacture': 'Korea, South', Language: 'English' },
+        // Pokemon Individual Cards (183454) default: conditionId=4000(Ungraded), Grade=Mint.
+        // 사장님이 박스/팩 상품 등록 시 프리셋에서 1000(New) 로 조정.
+        categoryId: '183454', conditionId: '4000', currency: 'USD', quantity: 1,
+        itemSpecifics: {
+          Brand: 'Pokemon',
+          'Country/Region of Manufacture': 'Korea, South',
+          Language: 'English',
+          Grade: 'Mint',
+        },
       },
       shopify: {
         vendor: 'PMC', productType: 'Trading Card', status: 'active',
@@ -669,6 +674,11 @@
                     ${_ebayConditionOptions(presets.ebay.conditionId)}
                   </select>
                 </label>
+                <label style="color:#aaa;">Card Grade (Trading Cards 전용)
+                  <select id="wf-preset-ebay-grade" style="width:100%;margin-top:2px;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+                    ${_gradeOptions(presets.ebay.itemSpecifics?.Grade || 'Mint')}
+                  </select>
+                </label>
                 <label style="color:#aaa;">Currency<br><input type="text" id="wf-preset-ebay-currency" value="${esc(presets.ebay.currency || 'USD')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Brand<br><input type="text" id="wf-preset-ebay-brand" value="${esc(presets.ebay.itemSpecifics?.Brand || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Country/Region<br><input type="text" id="wf-preset-ebay-country" value="${esc(presets.ebay.itemSpecifics?.['Country/Region of Manufacture'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
@@ -751,22 +761,31 @@
     `;
   }
 
-  // eBay 카테고리별로 유효 conditionId 다름. Trading Cards (183454, 2611 등) 는 특히
-  // 'New' (1000) 를 안 받는 경우 많음 → 여러 옵션 dropdown 제공.
+  // eBay condition ID — 카테고리별로 유효값 다름.
+  //   일반 상품:      1000 (New) / 1500 (New other) / 3000-7000 (Used tiers)
+  //   Trading Cards: 4000 (Ungraded) / 2750 (Graded) ← Pokemon Individual Cards 등 대부분
+  //   Booster Box:   1000 (New)
   function _ebayConditionOptions(selected) {
     const opts = [
-      { id: '1000',  label: 'New (신품)' },
-      { id: '1500',  label: 'New other (see details) — 개봉 미사용' },
+      { id: '4000',  label: 'Ungraded — Trading Cards 낱장 (기본)' },
+      { id: '2750',  label: 'Graded — 등급 매김 카드 (PSA/BGS 등)' },
+      { id: '1000',  label: 'New — 신품 (박스/팩)' },
+      { id: '1500',  label: 'New other — 개봉 미사용' },
       { id: '1750',  label: 'New with defects' },
       { id: '2000',  label: 'Manufacturer refurbished' },
       { id: '2500',  label: 'Seller refurbished' },
       { id: '3000',  label: 'Used' },
-      { id: '4000',  label: 'Very Good' },
       { id: '5000',  label: 'Good' },
       { id: '6000',  label: 'Acceptable' },
       { id: '7000',  label: 'For parts or not working' },
     ];
     return opts.map(o => `<option value="${o.id}" ${String(selected) === o.id ? 'selected' : ''}>${o.label}</option>`).join('');
+  }
+
+  // Trading Cards 는 Grade aspect 로 상태 표시 (Item Specifics)
+  const CARD_GRADES = ['Mint', 'Near Mint', 'Excellent', 'Very Good', 'Good', 'Light Play', 'Played', 'Damaged'];
+  function _gradeOptions(selected) {
+    return CARD_GRADES.map(g => `<option value="${g}" ${selected === g ? 'selected' : ''}>${g}</option>`).join('');
   }
 
   async function suggestEbayCategory() {
@@ -801,13 +820,14 @@
     const presets = {
       ebay: {
         categoryId:  document.getElementById('wf-preset-ebay-category')?.value?.trim() || '183454',
-        conditionId: document.getElementById('wf-preset-ebay-condition')?.value?.trim() || '1000',
+        conditionId: document.getElementById('wf-preset-ebay-condition')?.value?.trim() || '4000',
         currency:    document.getElementById('wf-preset-ebay-currency')?.value?.trim() || 'USD',
         quantity:    1,
         itemSpecifics: {
           Brand:                                  document.getElementById('wf-preset-ebay-brand')?.value?.trim() || '',
           'Country/Region of Manufacture':        document.getElementById('wf-preset-ebay-country')?.value?.trim() || '',
           Language:                               document.getElementById('wf-preset-ebay-lang')?.value?.trim() || '',
+          Grade:                                  document.getElementById('wf-preset-ebay-grade')?.value || 'Mint',
         },
       },
       shopify: {
