@@ -158,19 +158,33 @@
     const status = document.getElementById('wf-step1-status');
     if (btn) { btn.disabled = true; btn.textContent = '가져오는 중…'; }
     if (status) status.textContent = '경쟁사 페이지 호출 중…';
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 30000);
     try {
       const res = await fetch('/api/remarker/fetch', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ itemId }),
+        signal: ctrl.signal,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '실패');
+      let data;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        const m = text.match(/<pre>([\s\S]*?)<\/pre>/i);
+        throw new Error(`서버 오류 (${res.status}): ${m ? m[1].trim() : text.slice(0, 200)}`);
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       state.competitor = { ...data.item, itemId };
       state.remake = null;
       renderStep1();
     } catch (e) {
-      if (status) status.textContent = '에러: ' + e.message;
+      const msg = e.name === 'AbortError' ? '30초 timeout' : e.message;
+      if (status) status.textContent = '에러: ' + msg;
     } finally {
+      clearTimeout(to);
       if (btn) { btn.disabled = false; btn.textContent = '가져오기'; }
     }
   }
@@ -180,21 +194,39 @@
     const btn = document.getElementById('wf-remake-btn');
     const status = document.getElementById('wf-step1-status');
     if (btn) { btn.disabled = true; btn.textContent = 'AI 리메이크 중…'; }
-    if (status) status.textContent = '제목·설명·킬가 생성 중 (10~30초)…';
+    if (status) status.textContent = '제목·설명·킬가 생성 중 (10~60초)…';
+    // 60초 client-side timeout — Gemini fallback 리스트 순회 대비.
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 60000);
     try {
       const res = await fetch('/api/remarker/remake', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ competitorData: state.competitor }),
+        signal: ctrl.signal,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '실패');
+      // 응답이 JSON 이 아닌 케이스 (413 HTML, 502 gateway HTML 등) 방어.
+      let data;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        // HTML 에러 페이지에서 pre 태그 내용만 추출 (fallback 은 앞 200자)
+        const m = text.match(/<pre>([\s\S]*?)<\/pre>/i);
+        const msg = m ? m[1].trim() : text.slice(0, 200);
+        throw new Error(`서버 오류 (${res.status}): ${msg}`);
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       state.remake = data.remake;
       if (status) status.textContent = '';
       renderStep1();
     } catch (e) {
-      if (status) status.textContent = '에러: ' + e.message;
+      const msg = e.name === 'AbortError' ? '60초 timeout — 서버 응답 없음. 다시 시도.' : e.message;
+      if (status) status.textContent = '에러: ' + msg;
     } finally {
-      if (btn) { btn.disabled = false; }
+      clearTimeout(to);
+      if (btn) { btn.disabled = false; btn.textContent = '🪄 AI 리메이크'; }
     }
   }
 
