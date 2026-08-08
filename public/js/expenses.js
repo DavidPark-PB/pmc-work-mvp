@@ -348,11 +348,24 @@
   function renderList() {
     const c = document.getElementById('exp-list');
     if (!c) return;
-    if (cached.length === 0) {
-      c.innerHTML = '<div style="padding:40px;text-align:center;color:#888;">이달 등록된 지출이 없습니다.</div>';
+    // 2026-08-08: 재료비는 '상품 구매' 탭으로 통합 이동. 필터 미지정 시 여기선 숨김.
+    //   사용자가 카테고리 필터에서 명시적으로 '재료비' 선택하면 그때만 표시 (역호환).
+    const activeCatFilter = document.getElementById('exp-filter-cat')?.value || '';
+    const filtered = activeCatFilter === '재료비'
+      ? cached
+      : cached.filter(e => e.category !== '재료비');
+    const hiddenCount = cached.length - filtered.length;
+    const notice = (hiddenCount > 0 && activeCatFilter !== '재료비')
+      ? `<div style="padding:8px 12px;background:#0a1f3a;border-left:3px solid #64b5f6;color:#90caf9;font-size:11px;margin-bottom:10px;border-radius:3px;">
+          💡 재료비 ${hiddenCount}건은 <b>상품 구매 탭</b>으로 통합됐습니다.
+          <a onclick="pmcExpenses.switchTab('orders');return false;" style="color:#4dd0e1;cursor:pointer;text-decoration:underline;">→ 이동</a>
+        </div>`
+      : '';
+    if (filtered.length === 0) {
+      c.innerHTML = notice + '<div style="padding:40px;text-align:center;color:#888;">이달 등록된 지출이 없습니다.</div>';
       return;
     }
-    c.innerHTML = cached.map(e => {
+    c.innerHTML = notice + filtered.map(e => {
       const info = categoryMap[e.category] || { label: e.category, color: '#8d6e63' };
       const srcLabel = { manual: '수동', csv: 'CSV', recurring: '정기' }[e.source] || e.source;
       // 2026-05 fix: admin 도 항상 finance 권한 (전체 조회/수정/삭제)
@@ -1240,12 +1253,41 @@
     const list = document.getElementById('pl-list');
     if (!list) return;
     try {
-      // 최근 구매 완료된 것만 (statusGroup=completed) 최대 30건
-      const r = await fetch('/api/purchase-requests?statusGroup=completed&limit=30');
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-      purchaseLog = j.data || [];
-      _sortPurchaseLog();  // 구매일 기준 재정렬 (API 기본은 requested_at + status rank)
+      // 두 소스 병렬 조회:
+      //   1) purchase_requests (신규 상품 구매 흐름)
+      //   2) expenses.category='재료비' (지출관리에서 직접 등록한 상품 구매 — 사장님 지침)
+      //      source_type='purchase_order' 는 이미 1번에서 커버됨 → 중복 방지 위해 필터.
+      const [ordersRes, expsRes] = await Promise.all([
+        fetch('/api/purchase-requests?statusGroup=completed&limit=200'),
+        fetch('/api/expenses?category=재료비&limit=1000&' + new URLSearchParams({
+          from: '2020-01-01',
+          to:   new Date().toISOString().slice(0, 10),
+        })),
+      ]);
+      const ordersJson = await ordersRes.json();
+      const expsJson   = await expsRes.json();
+      if (!ordersRes.ok) throw new Error(ordersJson.error || `orders HTTP ${ordersRes.status}`);
+      if (!expsRes.ok)   throw new Error(expsJson.error   || `expenses HTTP ${expsRes.status}`);
+
+      const orders = (ordersJson.data || []).map(o => ({ ...o, _source: 'order' }));
+      const exps = (expsJson.data || [])
+        .filter(e => e.sourceType !== 'purchase_order')  // 자동생성분 중복 방지
+        .map(e => ({
+          id: `exp-${e.id}`,
+          product_name: (e.memo && e.memo.trim()) || e.merchant || '(제품명 없음)',
+          quantity: 1,
+          unit: '',
+          merchant: e.merchant || null,
+          actual_price: e.amount,
+          purchased_at: e.paidAt || e.paid_at,
+          expense_id: e.id,
+          orderer: e.createdByName ? { display_name: e.createdByName } :
+                   e.paidByName    ? { display_name: e.paidByName }    : null,
+          _source: 'expense',
+        }));
+
+      purchaseLog = [...orders, ...exps];
+      _sortPurchaseLog();
       list.innerHTML = renderPurchaseLogRows();
     } catch (e) {
       list.innerHTML = `<div style="padding:20px;color:#ef5350;font-size:12px;">목록 로드 실패: ${esc(e.message)}</div>`;
@@ -1267,11 +1309,20 @@
         아직 구매 기록이 없습니다. 위에서 첫 구매를 기록해보세요.
       </div>`;
     }
+    const totalAmt = purchaseLog.reduce((s, p) => s + Number(p.actual_price || 0), 0);
+    const orderCount = purchaseLog.filter(p => p._source === 'order').length;
+    const expCount   = purchaseLog.filter(p => p._source === 'expense').length;
     return `
+      <div style="margin-bottom:8px;padding:6px 10px;background:#0f0f1e;border-radius:4px;font-size:11px;color:#888;">
+        총 ${purchaseLog.length}건 · 합계 ₩${Math.round(totalAmt).toLocaleString()}
+        · <span style="color:#81c784;">📦 발주 ${orderCount}</span>
+        · <span style="color:#64b5f6;">💸 지출 ${expCount}</span>
+      </div>
       <table style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead>
           <tr style="border-bottom:1px solid #333;color:#888;">
             <th style="text-align:left;padding:8px 6px;">날짜</th>
+            <th style="text-align:left;padding:8px 6px;">소스</th>
             <th style="text-align:left;padding:8px 6px;">구매자</th>
             <th style="text-align:left;padding:8px 6px;">상품</th>
             <th style="text-align:right;padding:8px 6px;">수량</th>
@@ -1286,12 +1337,16 @@
             const day = d ? String(d).slice(5, 10).replace('-', '/') : '-';
             const who = p.orderer?.display_name || p.requester?.display_name || '-';
             const amount = p.actual_price != null ? Math.round(Number(p.actual_price)).toLocaleString() : '-';
+            const srcBadge = p._source === 'order'
+              ? `<span title="발주-구매 흐름으로 등록" style="padding:2px 6px;background:#0f2a1a;color:#81c784;border-radius:4px;font-size:9px;">📦 발주</span>`
+              : `<span title="지출관리에서 재료비로 등록 (지금은 상품 구매 탭으로 통합)" style="padding:2px 6px;background:#0a1f3a;color:#64b5f6;border-radius:4px;font-size:9px;">💸 지출</span>`;
             return `
               <tr style="border-bottom:1px solid #222;">
                 <td style="padding:8px 6px;color:#aaa;">${esc(day)}</td>
+                <td style="padding:8px 6px;">${srcBadge}</td>
                 <td style="padding:8px 6px;color:#e0e0e0;">${esc(who)}</td>
                 <td style="padding:8px 6px;color:#fff;">${esc(p.product_name || '-')}</td>
-                <td style="padding:8px 6px;text-align:right;color:#e0e0e0;">${p.quantity}${esc(p.unit || '개')}</td>
+                <td style="padding:8px 6px;text-align:right;color:#e0e0e0;">${p.quantity || 1}${esc(p.unit || '')}</td>
                 <td style="padding:8px 6px;color:#e0e0e0;">${esc(p.merchant || '-')}</td>
                 <td style="padding:8px 6px;text-align:right;color:#fff;font-weight:600;">₩${amount}</td>
                 <td style="padding:8px 6px;">
