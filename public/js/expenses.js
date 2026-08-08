@@ -1157,6 +1157,18 @@
   const MERCHANT_PRESETS = ['쿠팡', '네이버', '이베이', '알리바바', '알리익스프레스', '아마존', '오프라인', '기타'];
   const PAYMENT_METHODS = ['법인카드', '개인카드', '현금', '계좌이체', '기타'];
   let purchaseLog = [];
+  let purchaseSort = 'desc';  // 'desc' (최신순) | 'asc' (오래된순) — 구매일 기준
+
+  function _purchaseDate(p) {
+    // 구매일 우선순위: purchased_at → ordered_at → requested_at
+    const d = p.purchased_at || p.ordered_at || p.requested_at;
+    return d ? new Date(d).getTime() : 0;
+  }
+
+  function _sortPurchaseLog() {
+    const dir = purchaseSort === 'asc' ? 1 : -1;
+    purchaseLog.sort((a, b) => (_purchaseDate(a) - _purchaseDate(b)) * dir);
+  }
 
   function renderPurchaseTab() {
     const el = document.getElementById('purchase-log-body');
@@ -1208,6 +1220,8 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
           <h3 style="color:#fff;font-size:14px;margin:0;">📋 최근 상품 구매</h3>
           <div style="display:flex;gap:6px;">
+            <button type="button" id="pl-sort-btn" onclick="pmcExpenses.togglePurchaseSort()" title="구매일 정렬 방향 전환"
+              style="padding:5px 10px;background:transparent;border:1px solid #444;border-radius:4px;color:#aaa;cursor:pointer;font-size:11px;">${purchaseSort === 'desc' ? '📅 최신순 ↓' : '📅 오래된순 ↑'}</button>
             <button type="button" onclick="pmcExpenses.refreshPurchaseLog()" title="새로고침"
               style="padding:5px 10px;background:transparent;border:1px solid #333;border-radius:4px;color:#aaa;cursor:pointer;font-size:11px;">🔄</button>
             <button type="button" onclick="pmcExpenses.openApprovalRequest()" title="큰 금액/특수 구매는 사장 승인이 필요한 경우"
@@ -1231,10 +1245,20 @@
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
       purchaseLog = j.data || [];
+      _sortPurchaseLog();  // 구매일 기준 재정렬 (API 기본은 requested_at + status rank)
       list.innerHTML = renderPurchaseLogRows();
     } catch (e) {
       list.innerHTML = `<div style="padding:20px;color:#ef5350;font-size:12px;">목록 로드 실패: ${esc(e.message)}</div>`;
     }
+  }
+
+  function togglePurchaseSort() {
+    purchaseSort = purchaseSort === 'desc' ? 'asc' : 'desc';
+    _sortPurchaseLog();
+    const list = document.getElementById('pl-list');
+    if (list) list.innerHTML = renderPurchaseLogRows();
+    const btn = document.getElementById('pl-sort-btn');
+    if (btn) btn.textContent = purchaseSort === 'desc' ? '📅 최신순 ↓' : '📅 오래된순 ↑';
   }
 
   function renderPurchaseLogRows() {
@@ -1924,5 +1948,6 @@
     purOnReceiptPick, purViewReceipt, purDelete, purEdit,
     // 상품 구매 (2026-08-08 재설계)
     submitPurchase, refreshPurchaseLog, openApprovalRequest, openLegacyOrders,
+    togglePurchaseSort,
   };
 })();
