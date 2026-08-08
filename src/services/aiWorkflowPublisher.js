@@ -23,9 +23,10 @@
 // 사장님 대부분 상품이 TCG 카드라 아래가 안전한 default. 필요시 preset 으로 override.
 const DEFAULT_PRESETS = {
   ebay: {
-    // Pokemon Individual Cards (183454) default:
-    //   conditionId=4000 (Ungraded) — 낱장 카드 표준. Grade aspect 로 상태 명시.
-    //   박스/팩 등록 시 프리셋에서 1000(New) 로 조정 필요.
+    // 2026-08-09: 사장님 실제 성공 리스팅 206202404025 값 그대로 복사.
+    //   category 183454 (CCG Individual Cards), condition 4000 (Ungraded),
+    //   itemSpecifics: Game/Type/Manufacturer/Language/Age Level/Country of Origin.
+    //   Brand/Grade 는 실제 리스팅에 없어서 제외 (있으면 오히려 required 검증 실패).
     categoryId: '183454',
     conditionId: '4000',
     currency: 'USD',
@@ -33,10 +34,12 @@ const DEFAULT_PRESETS = {
     dispatchTimeMax: 3,
     listingDuration: 'GTC',
     itemSpecifics: {
-      Brand: 'Pokemon',
-      'Country/Region of Manufacture': 'Korea, South',
-      Language: 'English',
-      Grade: 'Mint',
+      Game: 'Pokémon TCG',
+      Type: 'Booster Box',
+      Manufacturer: 'The Pokémon Company',
+      Language: 'Korean',
+      'Age Level': '6+',
+      'Country of Origin': 'Korea, Republic of',
     },
   },
   shopify: {

@@ -28,23 +28,30 @@
   };
 
   // 프리셋 (localStorage 로 사장님 커스터마이즈 저장. GET /presets 로 default 조회 가능)
-  const PRESET_STORAGE_KEY = 'pmcAIWorkflow.presets.v1';
+  // 2026-08-09: v1 → v3 — 옛 프리셋 (잘못된 conditionId 등) 자동 무효화.
+  //   default 는 사장님 실제 성공 리스팅 (206202404025) 에서 그대로 복사.
+  const PRESET_STORAGE_KEY = 'pmcAIWorkflow.presets.v3';
   function loadPresets() {
     try {
+      // 옛 버전 자동 제거 (한번만)
+      localStorage.removeItem('pmcAIWorkflow.presets.v1');
+      localStorage.removeItem('pmcAIWorkflow.presets.v2');
       const raw = localStorage.getItem(PRESET_STORAGE_KEY);
       if (raw) return JSON.parse(raw);
     } catch {}
-    // default (백엔드 DEFAULT_PRESETS 와 동기화)
     return {
       ebay: {
-        // Pokemon Individual Cards (183454) default: conditionId=4000(Ungraded), Grade=Mint.
-        // 사장님이 박스/팩 상품 등록 시 프리셋에서 1000(New) 로 조정.
+        // 사장님 실제 리스팅 206202404025 검증값 (2026-08-09 fetch):
+        //   category=183454 (CCG Individual Cards), condition=4000 (Ungraded)
+        //   itemSpecifics: Game/Type/Manufacturer/Language/Age Level/Country
         categoryId: '183454', conditionId: '4000', currency: 'USD', quantity: 1,
         itemSpecifics: {
-          Brand: 'Pokemon',
-          'Country/Region of Manufacture': 'Korea, South',
-          Language: 'English',
-          Grade: 'Mint',
+          Game: 'Pokémon TCG',
+          Type: 'Booster Box',
+          Manufacturer: 'The Pokémon Company',
+          Language: 'Korean',
+          'Age Level': '6+',
+          'Country of Origin': 'Korea, Republic of',
         },
       },
       shopify: {
@@ -683,15 +690,13 @@
                     ${_ebayConditionOptions(presets.ebay.conditionId)}
                   </select>
                 </label>
-                <label style="color:#aaa;">Card Grade (Trading Cards 전용)
-                  <select id="wf-preset-ebay-grade" style="width:100%;margin-top:2px;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
-                    ${_gradeOptions(presets.ebay.itemSpecifics?.Grade || 'Mint')}
-                  </select>
-                </label>
                 <label style="color:#aaa;">Currency<br><input type="text" id="wf-preset-ebay-currency" value="${esc(presets.ebay.currency || 'USD')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Brand<br><input type="text" id="wf-preset-ebay-brand" value="${esc(presets.ebay.itemSpecifics?.Brand || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Country/Region<br><input type="text" id="wf-preset-ebay-country" value="${esc(presets.ebay.itemSpecifics?.['Country/Region of Manufacture'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Game (필수)<br><input type="text" id="wf-preset-ebay-game" value="${esc(presets.ebay.itemSpecifics?.Game || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Type (필수)<br><input type="text" id="wf-preset-ebay-type" value="${esc(presets.ebay.itemSpecifics?.Type || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Manufacturer (필수)<br><input type="text" id="wf-preset-ebay-mfr" value="${esc(presets.ebay.itemSpecifics?.Manufacturer || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Age Level (필수)<br><input type="text" id="wf-preset-ebay-age" value="${esc(presets.ebay.itemSpecifics?.['Age Level'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Language<br><input type="text" id="wf-preset-ebay-lang" value="${esc(presets.ebay.itemSpecifics?.Language || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
+                <label style="color:#aaa;">Country of Origin<br><input type="text" id="wf-preset-ebay-country" value="${esc(presets.ebay.itemSpecifics?.['Country of Origin'] || presets.ebay.itemSpecifics?.['Country/Region of Manufacture'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
               </div>
             </details>
           </div>
@@ -841,10 +846,12 @@
       set('wf-preset-ebay-category', p.categoryId);
       set('wf-preset-ebay-condition', p.conditionId);
       set('wf-preset-ebay-currency', p.currency);
-      set('wf-preset-ebay-brand', p.itemSpecifics?.Brand);
-      set('wf-preset-ebay-country', p.itemSpecifics?.['Country/Region of Manufacture']);
+      set('wf-preset-ebay-game', p.itemSpecifics?.Game || j.raw?.specifics?.Game);
+      set('wf-preset-ebay-type', p.itemSpecifics?.Type || j.raw?.specifics?.Type);
+      set('wf-preset-ebay-mfr', p.itemSpecifics?.Manufacturer || j.raw?.specifics?.Manufacturer);
+      set('wf-preset-ebay-age', p.itemSpecifics?.['Age Level'] || j.raw?.specifics?.['Age Level']);
       set('wf-preset-ebay-lang', p.itemSpecifics?.Language);
-      set('wf-preset-ebay-grade', p.itemSpecifics?.Grade);
+      set('wf-preset-ebay-country', p.itemSpecifics?.['Country of Origin'] || j.raw?.specifics?.['Country of Origin']);
       // 자동 저장
       savePresetsFromUI();
       if (status) {
@@ -865,10 +872,12 @@
         currency:    document.getElementById('wf-preset-ebay-currency')?.value?.trim() || 'USD',
         quantity:    1,
         itemSpecifics: {
-          Brand:                                  document.getElementById('wf-preset-ebay-brand')?.value?.trim() || '',
-          'Country/Region of Manufacture':        document.getElementById('wf-preset-ebay-country')?.value?.trim() || '',
-          Language:                               document.getElementById('wf-preset-ebay-lang')?.value?.trim() || '',
-          Grade:                                  document.getElementById('wf-preset-ebay-grade')?.value || 'Mint',
+          Game:                document.getElementById('wf-preset-ebay-game')?.value?.trim() || '',
+          Type:                document.getElementById('wf-preset-ebay-type')?.value?.trim() || '',
+          Manufacturer:        document.getElementById('wf-preset-ebay-mfr')?.value?.trim() || '',
+          'Age Level':         document.getElementById('wf-preset-ebay-age')?.value?.trim() || '',
+          Language:            document.getElementById('wf-preset-ebay-lang')?.value?.trim() || '',
+          'Country of Origin': document.getElementById('wf-preset-ebay-country')?.value?.trim() || '',
         },
       },
       shopify: {
