@@ -12,9 +12,11 @@
  */
 'use strict';
 
-const PROMPT_VERSION = 'cs-koen-v1.0';
-// 2026-08-08: 'claude-sonnet-4-6' 은 존재하지 않는 모델 ID 였음 (Anthropic 400 반환).
-const DEFAULT_MODEL = process.env.CS_TRANSLATE_DEFAULT_MODEL || 'claude-sonnet-5';
+const geminiClient = require('./geminiClient');
+
+// 2026-08-08: Anthropic → Gemini 전환.
+const PROMPT_VERSION = 'cs-koen-v2-gemini';
+const DEFAULT_MODEL = process.env.CS_TRANSLATE_DEFAULT_MODEL || geminiClient.DEFAULT_MODEL;
 const MOCK_MODE = process.env.CS_TRANSLATE_MOCK_MODE === 'true';
 const MAX_OUTPUT_TOKENS = 1500;
 
@@ -53,47 +55,17 @@ ${String(text).slice(0, 3000)}
 """`;
 }
 
-async function callAnthropic({ prompt, model }) {
-  let Anthropic;
+async function callLLM({ prompt, model }) {
   try {
-    Anthropic = require('@anthropic-ai/sdk');
-  } catch (e) {
-    throw new ConfigError('@anthropic-ai/sdk dependency 미설치');
-  }
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new ConfigError('ANTHROPIC_API_KEY 미설정');
-
-  const client = new Anthropic({ apiKey });
-  const messages = [{ role: 'user', content: prompt }];
-
-  async function tryOnce() {
-    return client.messages.create({
-      model,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      messages,
+    return await geminiClient.callGemini({
+      prompt, model, maxTokens: MAX_OUTPUT_TOKENS,
+      expectJson: false,   // 번역은 순수 텍스트 반환
+      errCodePrefix: 'csTranslate',
     });
-  }
-
-  let response;
-  try {
-    response = await tryOnce();
   } catch (e) {
-    if (e?.status >= 500) {
-      try { response = await tryOnce(); }
-      catch (e2) { throw new ProviderError(`Anthropic 5xx retry 실패`); }
-    } else {
-      const detail = e?.error?.error?.message || e?.error?.message || e?.message || '';
-      throw new ProviderError(`Anthropic ${e?.status || 'error'}${detail ? ' — ' + detail : ''}`);
-    }
+    if (e.code === 'csTranslate/config_error') throw new ConfigError(e.message);
+    throw new ProviderError(e.message);
   }
-
-  const text = response?.content?.[0]?.text || '';
-  if (!text.trim()) throw new ProviderError('Anthropic 빈 응답');
-  return {
-    text: text.trim(),
-    inputTokens: response?.usage?.input_tokens || 0,
-    outputTokens: response?.usage?.output_tokens || 0,
-  };
 }
 
 function mockTranslate(text, targetLang) {
@@ -123,27 +95,21 @@ async function translate({ text, targetLang = 'en' } = {}) {
     throw new ValidationError(`지원하지 않는 도착 언어: ${targetLang}`);
   }
 
-  if (MOCK_MODE || !process.env.ANTHROPIC_API_KEY) {
+  if (MOCK_MODE || !process.env.GEMINI_API_KEY) {
     return { ...mockTranslate(text, targetLang), mock: true };
   }
 
   const prompt = buildPrompt(text, targetLang);
-  const { text: out, inputTokens, outputTokens } = await callAnthropic({
+  const { text: out, inputTokens, outputTokens } = await callLLM({
     prompt,
     model: DEFAULT_MODEL,
   });
 
-  // claude-sonnet-4-6 단가 (aiToneAdjuster 와 동일)
-  const PRICE_PER_MTOK_INPUT  = 3.00;
-  const PRICE_PER_MTOK_OUTPUT = 15.00;
-  const costUsd = Math.round(
-    ((inputTokens / 1_000_000) * PRICE_PER_MTOK_INPUT +
-     (outputTokens / 1_000_000) * PRICE_PER_MTOK_OUTPUT) * 10000
-  ) / 10000;
+  const costUsd = geminiClient.estimateCost(inputTokens, outputTokens);
 
   return {
     text: out,
-    provider: 'anthropic',
+    provider: 'gemini',
     model: DEFAULT_MODEL,
     inputTokens,
     outputTokens,

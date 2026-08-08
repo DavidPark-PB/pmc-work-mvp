@@ -25,11 +25,12 @@
 'use strict';
 
 const riskPolicies = require('./csRiskPolicies');
+const geminiClient = require('./geminiClient');
 
-const PROMPT_VERSION = 'cs-analyzer-v1.0';
-// 2026-08-08: 'claude-sonnet-4-6' 은 존재하지 않는 모델 ID 였음 (Anthropic 400 반환).
-//   현재 유효한 최신: claude-sonnet-5 · claude-opus-5 · claude-haiku-4-5-20251001
-const DEFAULT_MODEL = process.env.CS_ANALYZER_DEFAULT_MODEL || 'claude-sonnet-5';
+// 2026-08-08: Anthropic 크레딧 소진 → Gemini 로 전환 (사장님 결정).
+//   기존 GEMINI_API_KEY 재활용. 프롬프트/JSON 파싱/mock 로직 그대로.
+const PROMPT_VERSION = 'cs-analyzer-v2-gemini';
+const DEFAULT_MODEL = process.env.CS_ANALYZER_DEFAULT_MODEL || geminiClient.DEFAULT_MODEL;
 const MOCK_MODE = process.env.CS_ANALYZER_MOCK_MODE === 'true';
 const MAX_OUTPUT_TOKENS = 2500;
 
@@ -86,43 +87,18 @@ ${String(message).slice(0, 4000)}
 Return ONLY the JSON object.`;
 }
 
-async function callAnthropic({ prompt, model }) {
-  let Anthropic;
-  try { Anthropic = require('@anthropic-ai/sdk'); }
-  catch (e) { throw new ConfigError('@anthropic-ai/sdk dependency 미설치'); }
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new ConfigError('ANTHROPIC_API_KEY 미설정');
-
-  const client = new Anthropic({ apiKey });
-
-  async function tryOnce() {
-    return client.messages.create({
-      model,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      messages: [{ role: 'user', content: prompt }],
+// 2026-08-08: Gemini 로 전환 — 공통 클라이언트 wrapper.
+async function callLLM({ prompt, model }) {
+  try {
+    return await geminiClient.callGemini({
+      prompt, model, maxTokens: MAX_OUTPUT_TOKENS,
+      errCodePrefix: 'csAnalyzer',
     });
+  } catch (e) {
+    // geminiClient 의 에러 코드를 그대로 전달 (route 가 status 매핑 유지)
+    if (e.code === 'csAnalyzer/config_error') throw new ConfigError(e.message);
+    throw new ProviderError(e.message);
   }
-
-  let response;
-  try { response = await tryOnce(); }
-  catch (e) {
-    if (e?.status >= 500) {
-      try { response = await tryOnce(); }
-      catch (e2) { throw new ProviderError('Anthropic 5xx retry 실패'); }
-    } else {
-      // 2026-08-08: 실제 에러 message (예: "credit balance too low") 를 그대로 전달.
-      const detail = e?.error?.error?.message || e?.error?.message || e?.message || '';
-      throw new ProviderError(`Anthropic ${e?.status || 'error'}${detail ? ' — ' + detail : ''}`);
-    }
-  }
-
-  const text = response?.content?.[0]?.text || '';
-  if (!text.trim()) throw new ProviderError('Anthropic 빈 응답');
-  return {
-    text: text.trim(),
-    inputTokens: response?.usage?.input_tokens || 0,
-    outputTokens: response?.usage?.output_tokens || 0,
-  };
 }
 
 // JSON 추출 — Claude 가 가끔 코드펜스로 감싸기 때문
@@ -190,7 +166,7 @@ async function analyze({ message } = {}) {
   const policyHits = policyDetect.matched;
 
   // 2) Mock 모드면 즉시 반환
-  if (MOCK_MODE || !process.env.ANTHROPIC_API_KEY) {
+  if (MOCK_MODE || !process.env.GEMINI_API_KEY) {
     return {
       analysis: _mockAnalyze(message, policyHits),
       policyHits,
@@ -204,9 +180,9 @@ async function analyze({ message } = {}) {
     };
   }
 
-  // 3) Claude 호출
+  // 3) LLM 호출 (Gemini)
   const prompt = buildPrompt(message, policyHits);
-  const { text, inputTokens, outputTokens } = await callAnthropic({ prompt, model: DEFAULT_MODEL });
+  const { text, inputTokens, outputTokens } = await callLLM({ prompt, model: DEFAULT_MODEL });
 
   let parsed;
   try { parsed = extractJson(text); }
@@ -232,18 +208,12 @@ async function analyze({ message } = {}) {
     if (!safe.risk_tags.includes(p.tag)) safe.risk_tags.push(p.tag);
   }
 
-  // 비용 계산 (sonnet-4-6 단가)
-  const PRICE_PER_MTOK_INPUT = 3.00;
-  const PRICE_PER_MTOK_OUTPUT = 15.00;
-  const costUsd = Math.round(
-    ((inputTokens / 1_000_000) * PRICE_PER_MTOK_INPUT +
-     (outputTokens / 1_000_000) * PRICE_PER_MTOK_OUTPUT) * 10000
-  ) / 10000;
+  const costUsd = geminiClient.estimateCost(inputTokens, outputTokens);
 
   return {
     analysis: safe,
     policyHits,
-    provider: 'anthropic',
+    provider: 'gemini',
     model: DEFAULT_MODEL,
     inputTokens,
     outputTokens,

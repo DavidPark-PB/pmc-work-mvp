@@ -20,9 +20,11 @@
  */
 'use strict';
 
-const PROMPT_VERSION = 'cs-tone-v1.0';
-// 2026-08-08: 'claude-sonnet-4-6' 은 존재하지 않는 모델 ID 였음 (Anthropic 400 반환).
-const DEFAULT_MODEL = process.env.CS_TONE_DEFAULT_MODEL || 'claude-sonnet-5';
+const geminiClient = require('./geminiClient');
+
+// 2026-08-08: Anthropic → Gemini 전환.
+const PROMPT_VERSION = 'cs-tone-v2-gemini';
+const DEFAULT_MODEL = process.env.CS_TONE_DEFAULT_MODEL || geminiClient.DEFAULT_MODEL;
 const MOCK_MODE = process.env.CS_TONE_MOCK_MODE === 'true';
 const MAX_OUTPUT_TOKENS = 1500;
 // PR CS-G3 후속: daily cap (mock 제외, 실 호출만 카운트)
@@ -70,47 +72,17 @@ ${String(text).slice(0, 3000)}
  * Anthropic Claude API 호출. 1차 PR 에서는 MOCK_MODE 또는 미설정 시 호출 안 함.
  * 실 호출 활성화 시 cs_responses.cost_usd 컬럼 + cap query 추가 필요.
  */
-async function callAnthropic({ prompt, model }) {
-  let Anthropic;
+async function callLLM({ prompt, model }) {
   try {
-    Anthropic = require('@anthropic-ai/sdk');
-  } catch (e) {
-    throw new ConfigError('@anthropic-ai/sdk dependency 미설치');
-  }
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new ConfigError('ANTHROPIC_API_KEY 미설정');
-
-  const client = new Anthropic({ apiKey });
-  const messages = [{ role: 'user', content: prompt }];
-
-  async function tryOnce() {
-    return client.messages.create({
-      model,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      messages,
+    return await geminiClient.callGemini({
+      prompt, model, maxTokens: MAX_OUTPUT_TOKENS,
+      expectJson: false,   // 톤 다듬기는 순수 텍스트 반환
+      errCodePrefix: 'csTone',
     });
-  }
-
-  let response;
-  try {
-    response = await tryOnce();
   } catch (e) {
-    if (e?.status >= 500) {
-      try { response = await tryOnce(); }
-      catch (e2) { throw new ProviderError(`Anthropic 5xx retry 실패`); }
-    } else {
-      const detail = e?.error?.error?.message || e?.error?.message || e?.message || '';
-      throw new ProviderError(`Anthropic ${e?.status || 'error'}${detail ? ' — ' + detail : ''}`);
-    }
+    if (e.code === 'csTone/config_error') throw new ConfigError(e.message);
+    throw new ProviderError(e.message);
   }
-
-  const text = response?.content?.[0]?.text || '';
-  if (!text.trim()) throw new ProviderError('Anthropic 빈 응답');
-  return {
-    text: text.trim(),
-    inputTokens: response?.usage?.input_tokens || 0,
-    outputTokens: response?.usage?.output_tokens || 0,
-  };
 }
 
 /**
@@ -157,8 +129,8 @@ async function adjustTone({ text, language } = {}) {
     throw new ValidationError('다듬을 본문이 비어있습니다');
   }
 
-  // MOCK_MODE 또는 ANTHROPIC_API_KEY 미설정 시 mock 반환 (안전 fallback)
-  if (MOCK_MODE || !process.env.ANTHROPIC_API_KEY) {
+  // MOCK_MODE 또는 GEMINI_API_KEY 미설정 시 mock 반환 (안전 fallback)
+  if (MOCK_MODE || !process.env.GEMINI_API_KEY) {
     return { ...mockAdjust(text), mock: true };
   }
 
@@ -168,24 +140,18 @@ async function adjustTone({ text, language } = {}) {
     throw new UsageCapError(`오늘 AI 톤 다듬기 비용 cap 초과 ($${used.toFixed(4)} / $${DAILY_USD_CAP.toFixed(2)}). 내일 다시 시도하세요.`);
   }
 
-  // 실제 호출 (환경 변수 활성 + key 존재 시)
+  // 실제 호출 (Gemini)
   const prompt = buildPrompt(text, language);
-  const { text: polished, inputTokens, outputTokens } = await callAnthropic({
+  const { text: polished, inputTokens, outputTokens } = await callLLM({
     prompt,
     model: DEFAULT_MODEL,
   });
 
-  // cost 계산 (aiDraftGenerator 와 동일 단가 — claude-sonnet-4-6 기준)
-  const PRICE_PER_MTOK_INPUT  = 3.00;
-  const PRICE_PER_MTOK_OUTPUT = 15.00;
-  const costUsd = Math.round(
-    ((inputTokens / 1_000_000) * PRICE_PER_MTOK_INPUT +
-     (outputTokens / 1_000_000) * PRICE_PER_MTOK_OUTPUT) * 10000
-  ) / 10000;
+  const costUsd = geminiClient.estimateCost(inputTokens, outputTokens);
 
   return {
     text: polished,
-    provider: 'anthropic',
+    provider: 'gemini',
     model: DEFAULT_MODEL,
     inputTokens,
     outputTokens,

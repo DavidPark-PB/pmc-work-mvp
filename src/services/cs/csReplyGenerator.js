@@ -25,10 +25,11 @@
 'use strict';
 
 const riskPolicies = require('./csRiskPolicies');
+const geminiClient = require('./geminiClient');
 
-const PROMPT_VERSION = 'cs-reply-gen-v1.0';
-// 2026-08-08: 'claude-sonnet-4-6' 은 존재하지 않는 모델 ID 였음 (Anthropic 400 반환).
-const DEFAULT_MODEL = process.env.CS_REPLY_DEFAULT_MODEL || 'claude-sonnet-5';
+// 2026-08-08: Anthropic → Gemini 전환 (사장님 결정).
+const PROMPT_VERSION = 'cs-reply-gen-v2-gemini';
+const DEFAULT_MODEL = process.env.CS_REPLY_DEFAULT_MODEL || geminiClient.DEFAULT_MODEL;
 const MOCK_MODE = process.env.CS_REPLY_MOCK_MODE === 'true';
 const MAX_OUTPUT_TOKENS = 1500;
 
@@ -124,39 +125,16 @@ ${refinementSection}
 NO markdown. NO explanation outside JSON. Just the JSON object.`;
 }
 
-async function callAnthropic({ prompt, model }) {
-  let Anthropic;
-  try { Anthropic = require('@anthropic-ai/sdk'); }
-  catch (e) { throw new ConfigError('@anthropic-ai/sdk dependency 미설치'); }
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new ConfigError('ANTHROPIC_API_KEY 미설정');
-
-  const client = new Anthropic({ apiKey });
-  async function tryOnce() {
-    return client.messages.create({
-      model,
-      max_tokens: MAX_OUTPUT_TOKENS,
-      messages: [{ role: 'user', content: prompt }],
+async function callLLM({ prompt, model }) {
+  try {
+    return await geminiClient.callGemini({
+      prompt, model, maxTokens: MAX_OUTPUT_TOKENS,
+      errCodePrefix: 'csReplyGen',
     });
+  } catch (e) {
+    if (e.code === 'csReplyGen/config_error') throw new ConfigError(e.message);
+    throw new ProviderError(e.message);
   }
-  let response;
-  try { response = await tryOnce(); }
-  catch (e) {
-    if (e?.status >= 500) {
-      try { response = await tryOnce(); } catch (e2) { throw new ProviderError('Anthropic 5xx retry 실패'); }
-    } else {
-      // 2026-08-08: 실제 에러 message (예: credit balance) 를 그대로 전달.
-      const detail = e?.error?.error?.message || e?.error?.message || e?.message || '';
-      throw new ProviderError(`Anthropic ${e?.status || 'error'}${detail ? ' — ' + detail : ''}`);
-    }
-  }
-  const text = response?.content?.[0]?.text || '';
-  if (!text.trim()) throw new ProviderError('Anthropic 빈 응답');
-  return {
-    text: text.trim(),
-    inputTokens: response?.usage?.input_tokens || 0,
-    outputTokens: response?.usage?.output_tokens || 0,
-  };
 }
 
 function extractJson(text) {
@@ -213,7 +191,7 @@ async function generateReply({ analysis, koreanDraft, tone, purpose, previousRep
   // 사전 가드 — uncovered_policies 도 반환 (라우트가 경고 표시)
   const uncoveredPolicies = preflightCheck(koreanDraft, analysis);
 
-  if (MOCK_MODE || !process.env.ANTHROPIC_API_KEY) {
+  if (MOCK_MODE || !process.env.GEMINI_API_KEY) {
     const mock = _mockReply({ analysis, koreanDraft, tone: resolvedTone, purpose });
     return {
       ...mock,
@@ -227,18 +205,13 @@ async function generateReply({ analysis, koreanDraft, tone, purpose, previousRep
   }
 
   const prompt = buildPrompt({ analysis, koreanDraft, tone: resolvedTone, purpose, previousReply, refinementInstruction });
-  const { text, inputTokens, outputTokens } = await callAnthropic({ prompt, model: DEFAULT_MODEL });
+  const { text, inputTokens, outputTokens } = await callLLM({ prompt, model: DEFAULT_MODEL });
 
   let parsed;
   try { parsed = extractJson(text); }
   catch (e) { throw new ProviderError('AI 응답 JSON 파싱 실패: ' + e.message); }
 
-  const PRICE_PER_MTOK_INPUT = 3.00;
-  const PRICE_PER_MTOK_OUTPUT = 15.00;
-  const costUsd = Math.round(
-    ((inputTokens / 1_000_000) * PRICE_PER_MTOK_INPUT +
-     (outputTokens / 1_000_000) * PRICE_PER_MTOK_OUTPUT) * 10000
-  ) / 10000;
+  const costUsd = geminiClient.estimateCost(inputTokens, outputTokens);
 
   return {
     reply_text: parsed.reply_text || '',
@@ -246,7 +219,7 @@ async function generateReply({ analysis, koreanDraft, tone, purpose, previousRep
     uncoveredPolicies,
     tone: resolvedTone,
     purpose: purpose || null,
-    provider: 'anthropic',
+    provider: 'gemini',
     model: DEFAULT_MODEL,
     inputTokens, outputTokens, costUsd,
     mock: false,
@@ -361,7 +334,7 @@ async function generateOutbound({ situationType, situationDetail, koreanIntent, 
   // purpose 결정 — explicit > situation default > null
   const resolvedPurpose = purpose || sit.defaultPurpose || null;
 
-  if (MOCK_MODE || !process.env.ANTHROPIC_API_KEY) {
+  if (MOCK_MODE || !process.env.GEMINI_API_KEY) {
     const mock = _mockOutbound({ situationType, situationDetail, koreanIntent, tone: resolvedTone, purpose: resolvedPurpose });
     return {
       ...mock,
@@ -375,18 +348,13 @@ async function generateOutbound({ situationType, situationDetail, koreanIntent, 
   }
 
   const prompt = buildOutboundPrompt({ situationType, situationDetail, koreanIntent, tone: resolvedTone, purpose: resolvedPurpose });
-  const { text, inputTokens, outputTokens } = await callAnthropic({ prompt, model: DEFAULT_MODEL });
+  const { text, inputTokens, outputTokens } = await callLLM({ prompt, model: DEFAULT_MODEL });
 
   let parsed;
   try { parsed = extractJson(text); }
   catch (e) { throw new ProviderError('AI 응답 JSON 파싱 실패: ' + e.message); }
 
-  const PRICE_PER_MTOK_INPUT = 3.00;
-  const PRICE_PER_MTOK_OUTPUT = 15.00;
-  const costUsd = Math.round(
-    ((inputTokens / 1_000_000) * PRICE_PER_MTOK_INPUT +
-     (outputTokens / 1_000_000) * PRICE_PER_MTOK_OUTPUT) * 10000
-  ) / 10000;
+  const costUsd = geminiClient.estimateCost(inputTokens, outputTokens);
 
   return {
     reply_text: parsed.reply_text || '',
@@ -396,7 +364,7 @@ async function generateOutbound({ situationType, situationDetail, koreanIntent, 
     situationType,
     tone: resolvedTone,
     purpose: resolvedPurpose,
-    provider: 'anthropic',
+    provider: 'gemini',
     model: DEFAULT_MODEL,
     inputTokens, outputTokens, costUsd,
     mock: false,
