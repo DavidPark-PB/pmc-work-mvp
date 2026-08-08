@@ -280,31 +280,58 @@ async function findImageForCode(code) {
 }
 
 async function attachImages(items, tab) {
-  // 1) 수동 override 우선 적용
+  // 우선순위:
+  //   1) 수동 override (catalog_image_overrides 테이블) — imageSource='manual'
+  //   2) 시트 IMAGE 셀 값 (C열/J열) — imageSource='sheet'
+  //   3) [선택] platform_listings 자동 매칭 — imageSource='auto'
+  //        · CATALOG_AUTO_IMAGE_MATCH=true 일 때만 활성 (기본 OFF, 2026-08-08)
+  //        · setCode ilike 검색이 loose 해서 엉뚱한 상품 이미지 매칭 사례 다수
+  //        · 사장님 지시: 시트/수동 override 값이 없으면 그냥 '이미지 없음' 표시
+  //
+  // 시트에 이미지가 있어 보이지만 API 에는 안 잡히는 경우:
+  //   Google Sheets 의 "셀 위에 삽입한 이미지" 는 values API 로 URL 추출 불가.
+  //   해결: 시트에서 =IMAGE("url") 함수로 넣거나, 우리 UI 의 [수정] 버튼으로 override.
+  const AUTO_MATCH = process.env.CATALOG_AUTO_IMAGE_MATCH === 'true';
+
   const overrides = await getImageOverrides(tab);
 
-  // 2) SET CODE 기반 매칭 (override 없는 것만)
-  const needMatching = items.filter(it => !overrides.has(`${it.rowIndex}-${it.side}`));
-  const uniqueCodes = [...new Set(needMatching.map(it => it.setCode).filter(Boolean))];
-  const pairs = await Promise.all(uniqueCodes.map(async c => [c.toLowerCase(), await findImageForCode(c)]));
-  const codeMap = new Map(pairs);
+  let codeMap = new Map();
+  if (AUTO_MATCH) {
+    const needMatching = items.filter(it =>
+      !overrides.has(`${it.rowIndex}-${it.side}`) && !it.image
+    );
+    const uniqueCodes = [...new Set(needMatching.map(it => it.setCode).filter(Boolean))];
+    const pairs = await Promise.all(uniqueCodes.map(async c => [c.toLowerCase(), await findImageForCode(c)]));
+    codeMap = new Map(pairs);
+  }
 
   for (const it of items) {
     const ovKey = `${it.rowIndex}-${it.side}`;
+    // 1) manual override
     if (overrides.has(ovKey)) {
       it.image = overrides.get(ovKey);
       it.imageSource = 'manual';
-    } else {
-      const codeKey = (it.setCode || '').toLowerCase();
-      if (codeMap.has(codeKey) && codeMap.get(codeKey)) {
-        it.image = codeMap.get(codeKey);
-        it.imageSource = 'auto';
-      } else if (!it.image && it.name) {
-        const nameKey = it.name.split(/\s+/).slice(0, 3).join(' ').toLowerCase();
-        if (nameKey.length > 5) {
-          const byName = await findImageForCode(nameKey);
-          if (byName) { it.image = byName; it.imageSource = 'auto'; }
-        }
+      continue;
+    }
+    // 2) 시트 IMAGE 셀 값 (사장님이 시트에 직접 URL/=IMAGE() 함수로 넣은 것)
+    if (it.image) {
+      it.imageSource = 'sheet';
+      continue;
+    }
+    if (!AUTO_MATCH) continue;   // 자동 매칭 비활성 시 여기서 종료 — image=''
+    // 3) set code 자동 매칭 (opt-in)
+    const codeKey = (it.setCode || '').toLowerCase();
+    if (codeMap.has(codeKey) && codeMap.get(codeKey)) {
+      it.image = codeMap.get(codeKey);
+      it.imageSource = 'auto';
+      continue;
+    }
+    // 4) 이름 자동 매칭 (마지막 fallback, opt-in)
+    if (it.name) {
+      const nameKey = it.name.split(/\s+/).slice(0, 3).join(' ').toLowerCase();
+      if (nameKey.length > 5) {
+        const byName = await findImageForCode(nameKey);
+        if (byName) { it.image = byName; it.imageSource = 'auto'; }
       }
     }
   }
