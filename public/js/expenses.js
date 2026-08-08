@@ -98,10 +98,10 @@
     await refreshKnownCards();
     renderShell();
     await refresh();
-    // 2026-08-08: 통합 후 기본 탭 = 상품 구매. orders.js 즉시 로드.
-    if (activeTab === 'orders' && window.pmcOrders && !ordersLoaded) {
-      window.pmcOrders.load();
-      ordersLoaded = true;
+    // 2026-08-08: 통합 후 기본 탭 = 상품 구매. 새 심플 UI (renderPurchaseTab) 즉시 로드.
+    if (activeTab === 'orders' && !purchaseLogLoaded) {
+      renderPurchaseTab();
+      purchaseLogLoaded = true;
     }
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
@@ -138,8 +138,12 @@
         <button type="button" id="tab-btn-purchases" onclick="pmcExpenses.switchTab('purchases')" style="padding:10px 18px;background:transparent;border:0;border-bottom:2px solid transparent;color:#888;cursor:pointer;font-size:13px;">🃏 카드 매입</button>
       </div>
 
-      <!-- 상품 구매 탭 body — 통합된 orders.js 가 여기에 mount (id=page-orders 유지) -->
-      <div id="tab-orders"><div id="page-orders" class="page active"></div></div>
+      <!-- 상품 구매 탭 — 심플 UI (구매 기록 + 최근 목록). orders.js 는 접힘 안 or 승인 요청 모달로만 사용. -->
+      <div id="tab-orders">
+        <div id="purchase-log-body"></div>
+        <!-- 승인/과거 조회용 접힘 컨테이너 — display:none 기본. renderPurchaseTab 이 필요 시 채움. -->
+        <div id="page-orders" class="page" style="display:none;"></div>
+      </div>
 
       <div id="tab-expenses" style="display:none;">
 
@@ -1110,7 +1114,7 @@
   // ──────────────────────────────────────────────────────────
   let activeTab = 'orders';   // 2026-08-08: 통합 후 상품 구매가 기본
   let purchasesLoaded = false;
-  let ordersLoaded = false;
+  let purchaseLogLoaded = false;
 
   function switchTab(key) {
     activeTab = key;
@@ -1136,10 +1140,220 @@
       refreshPurchases();
       purchasesLoaded = true;
     }
-    if (key === 'orders' && !ordersLoaded && window.pmcOrders) {
-      window.pmcOrders.load();
-      ordersLoaded = true;
+    if (key === 'orders' && !purchaseLogLoaded) {
+      renderPurchaseTab();
+      purchaseLogLoaded = true;
     }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // 상품 구매 탭 (2026-08-08 사장님 재지침: 완전 새 심플 UI)
+  //
+  // 원칙:
+  //   "직원이 물건을 산 뒤 한 번만 기록하면 구매+지출+활동 로그가 동시에 남는다"
+  //   승인 workflow / 상태 카드 / 큰 발주요청 폼 은 메인에서 제거.
+  //   기존 orders.js 는 접힘 안 or 승인 요청 모달로만 재사용.
+  // ══════════════════════════════════════════════════════════════
+  const MERCHANT_PRESETS = ['쿠팡', '네이버', '이베이', '알리바바', '알리익스프레스', '아마존', '오프라인', '기타'];
+  const PAYMENT_METHODS = ['법인카드', '개인카드', '현금', '계좌이체', '기타'];
+  let purchaseLog = [];
+
+  function renderPurchaseTab() {
+    const el = document.getElementById('purchase-log-body');
+    if (!el) return;
+    el.innerHTML = `
+      <!-- 심플 구매 입력 폼 (항상 열림) -->
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:14px;">
+        <h3 style="color:#fff;font-size:14px;margin:0 0 12px;">🛒 구매 기록</h3>
+        <form id="pl-form" style="display:grid;grid-template-columns:2fr 80px 130px 1fr;gap:8px;">
+          <input type="text" id="pl-name" placeholder="상품명 *" required
+            style="padding:9px 10px;background:#0f0f1e;border:1px solid #333;border-radius:5px;color:#fff;font-size:13px;">
+          <input type="number" id="pl-qty" placeholder="수량 *" required min="1" value="1"
+            style="padding:9px 10px;background:#0f0f1e;border:1px solid #333;border-radius:5px;color:#fff;font-size:13px;">
+          <input type="number" id="pl-amount" placeholder="₩ 실제금액 *" required min="0" step="1"
+            style="padding:9px 10px;background:#0f0f1e;border:1px solid #333;border-radius:5px;color:#fff;font-size:13px;">
+          <input type="text" id="pl-merchant" placeholder="구매처 * (쿠팡·네이버·기타)" required list="pl-merchant-list"
+            style="padding:9px 10px;background:#0f0f1e;border:1px solid #333;border-radius:5px;color:#fff;font-size:13px;">
+          <datalist id="pl-merchant-list">${MERCHANT_PRESETS.map(m => `<option value="${m}">`).join('')}</datalist>
+        </form>
+
+        <details style="margin-top:10px;">
+          <summary style="cursor:pointer;color:#888;font-size:11px;padding:4px 0;user-select:none;">▶ 선택 항목 (SKU · 결제수단 · 카드4자리 · 메모)</summary>
+          <div style="display:grid;grid-template-columns:1fr 1fr 100px 2fr;gap:8px;margin-top:8px;">
+            <input type="text" id="pl-sku" placeholder="SKU (선택)"
+              style="padding:8px 10px;background:#0f0f1e;border:1px solid #333;border-radius:5px;color:#fff;font-size:12px;">
+            <select id="pl-payment" style="padding:8px 10px;background:#0f0f1e;border:1px solid #333;border-radius:5px;color:#fff;font-size:12px;">
+              <option value="">결제수단 (선택)</option>
+              ${PAYMENT_METHODS.map(p => `<option value="${p}">${p}</option>`).join('')}
+            </select>
+            <input type="text" id="pl-card" placeholder="카드 뒷 4" maxlength="4"
+              style="padding:8px 10px;background:#0f0f1e;border:1px solid #333;border-radius:5px;color:#fff;font-size:12px;">
+            <input type="text" id="pl-memo" placeholder="메모 (선택)"
+              style="padding:8px 10px;background:#0f0f1e;border:1px solid #333;border-radius:5px;color:#fff;font-size:12px;">
+          </div>
+        </details>
+
+        <div style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;">
+          <div style="font-size:11px;color:#666;">구매자: <b style="color:#aaa;">${esc(user?.displayName || '나')}</b> · 시각: <b style="color:#aaa;">자동</b></div>
+          <button type="button" id="pl-submit" onclick="pmcExpenses.submitPurchase()"
+            style="padding:10px 24px;background:#43a047;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:14px;font-weight:700;">
+            ✅ 구매 완료
+          </button>
+        </div>
+        <div id="pl-msg" style="margin-top:10px;font-size:12px;"></div>
+      </div>
+
+      <!-- 최근 구매 목록 -->
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <h3 style="color:#fff;font-size:14px;margin:0;">📋 최근 상품 구매</h3>
+          <div style="display:flex;gap:6px;">
+            <button type="button" onclick="pmcExpenses.refreshPurchaseLog()" title="새로고침"
+              style="padding:5px 10px;background:transparent;border:1px solid #333;border-radius:4px;color:#aaa;cursor:pointer;font-size:11px;">🔄</button>
+            <button type="button" onclick="pmcExpenses.openApprovalRequest()" title="큰 금액/특수 구매는 사장 승인이 필요한 경우"
+              style="padding:5px 10px;background:transparent;border:1px solid #7c4dff;border-radius:4px;color:#b39ddb;cursor:pointer;font-size:11px;">⚠️ 구매 전 승인 요청</button>
+            <button type="button" onclick="pmcExpenses.openLegacyOrders()" title="pending/approved/rejected 발주 이력"
+              style="padding:5px 10px;background:transparent;border:1px solid #444;border-radius:4px;color:#888;cursor:pointer;font-size:11px;">📁 과거 발주 내역</button>
+          </div>
+        </div>
+        <div id="pl-list">로딩...</div>
+      </div>
+    `;
+    refreshPurchaseLog();
+  }
+
+  async function refreshPurchaseLog() {
+    const list = document.getElementById('pl-list');
+    if (!list) return;
+    try {
+      // 최근 구매 완료된 것만 (statusGroup=completed) 최대 30건
+      const r = await fetch('/api/purchase-requests?statusGroup=completed&limit=30');
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      purchaseLog = j.data || [];
+      list.innerHTML = renderPurchaseLogRows();
+    } catch (e) {
+      list.innerHTML = `<div style="padding:20px;color:#ef5350;font-size:12px;">목록 로드 실패: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderPurchaseLogRows() {
+    if (!purchaseLog.length) {
+      return `<div style="padding:30px;text-align:center;color:#666;font-size:12px;">
+        아직 구매 기록이 없습니다. 위에서 첫 구매를 기록해보세요.
+      </div>`;
+    }
+    return `
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead>
+          <tr style="border-bottom:1px solid #333;color:#888;">
+            <th style="text-align:left;padding:8px 6px;">날짜</th>
+            <th style="text-align:left;padding:8px 6px;">구매자</th>
+            <th style="text-align:left;padding:8px 6px;">상품</th>
+            <th style="text-align:right;padding:8px 6px;">수량</th>
+            <th style="text-align:left;padding:8px 6px;">구매처</th>
+            <th style="text-align:right;padding:8px 6px;">금액</th>
+            <th style="text-align:left;padding:8px 6px;">지출</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${purchaseLog.map(p => {
+            const d = p.purchased_at || p.ordered_at || p.requested_at;
+            const day = d ? String(d).slice(5, 10).replace('-', '/') : '-';
+            const who = p.orderer?.display_name || p.requester?.display_name || '-';
+            const amount = p.actual_price != null ? Math.round(Number(p.actual_price)).toLocaleString() : '-';
+            return `
+              <tr style="border-bottom:1px solid #222;">
+                <td style="padding:8px 6px;color:#aaa;">${esc(day)}</td>
+                <td style="padding:8px 6px;color:#e0e0e0;">${esc(who)}</td>
+                <td style="padding:8px 6px;color:#fff;">${esc(p.product_name || '-')}</td>
+                <td style="padding:8px 6px;text-align:right;color:#e0e0e0;">${p.quantity}${esc(p.unit || '개')}</td>
+                <td style="padding:8px 6px;color:#e0e0e0;">${esc(p.merchant || '-')}</td>
+                <td style="padding:8px 6px;text-align:right;color:#fff;font-weight:600;">₩${amount}</td>
+                <td style="padding:8px 6px;">
+                  ${p.expense_id
+                    ? `<span onclick="pmcExpenses.switchTab('expenses');setTimeout(()=>window.scrollTo(0,0),50)" title="지출관리로 이동" style="padding:2px 8px;background:#0f2a1a;color:#81c784;border-radius:8px;font-size:10px;cursor:pointer;">✅ #${p.expense_id}</span>`
+                    : `<span style="color:#666;font-size:10px;">미연결</span>`}
+                </td>
+              </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  async function submitPurchase() {
+    const btn = document.getElementById('pl-submit');
+    const msg = document.getElementById('pl-msg');
+    const productName = document.getElementById('pl-name').value.trim();
+    const quantity = Number(document.getElementById('pl-qty').value);
+    const actualPrice = Number(document.getElementById('pl-amount').value);
+    const merchant = document.getElementById('pl-merchant').value.trim();
+    if (!productName) { msg.innerHTML = '<span style="color:#ef5350;">상품명을 입력하세요</span>'; return; }
+    if (!Number.isFinite(quantity) || quantity <= 0) { msg.innerHTML = '<span style="color:#ef5350;">수량은 1 이상</span>'; return; }
+    if (!Number.isFinite(actualPrice) || actualPrice <= 0) { msg.innerHTML = '<span style="color:#ef5350;">실제 구매금액을 입력하세요</span>'; return; }
+    if (!merchant) { msg.innerHTML = '<span style="color:#ef5350;">구매처를 입력하세요</span>'; return; }
+
+    const body = {
+      productName, quantity, actualPrice, merchant,
+      sku:           document.getElementById('pl-sku').value.trim() || undefined,
+      paymentMethod: document.getElementById('pl-payment').value || undefined,
+      cardLast4:     document.getElementById('pl-card').value.replace(/\D/g, '').slice(-4) || undefined,
+      memo:          document.getElementById('pl-memo').value.trim() || undefined,
+    };
+
+    btn.disabled = true;
+    btn.textContent = '⏳ 저장 중...';
+    msg.innerHTML = '';
+    try {
+      const r = await fetch('/api/purchase-requests/completed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      const eid = j.expenseId || j.data?.expense_id;
+      msg.innerHTML = `<span style="color:#81c784;">✅ 구매 기록 저장됨 · 지출 자동생성${eid ? ' expense #' + eid : ' 실패 (수동 등록 필요)'}</span>`;
+      // 폼 초기화
+      document.getElementById('pl-form').reset();
+      document.getElementById('pl-qty').value = '1';
+      document.getElementById('pl-sku').value = '';
+      document.getElementById('pl-payment').value = '';
+      document.getElementById('pl-card').value = '';
+      document.getElementById('pl-memo').value = '';
+      // 목록 새로고침
+      await refreshPurchaseLog();
+      setTimeout(() => { msg.innerHTML = ''; }, 4000);
+    } catch (e) {
+      msg.innerHTML = `<span style="color:#ef5350;">❌ ${esc(e.message)}</span>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '✅ 구매 완료';
+    }
+  }
+
+  // 보조 액션: 승인 요청 & 과거 발주 조회 — 기존 orders.js 재사용, 접힘 영역에 렌더.
+  function openLegacyOrders() {
+    const legacy = document.getElementById('page-orders');
+    if (!legacy) return;
+    const isOpen = legacy.style.display !== 'none';
+    if (isOpen) {
+      legacy.style.display = 'none';
+      return;
+    }
+    legacy.style.display = 'block';
+    legacy.classList.add('active');
+    if (window.pmcOrders && !window.__pmcOrdersLoaded) {
+      window.pmcOrders.load();
+      window.__pmcOrdersLoaded = true;
+    }
+    setTimeout(() => legacy.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+  }
+
+  function openApprovalRequest() {
+    // 승인 요청 = 기존 orders.js 의 발주 요청 폼. 접힘 영역을 열고 스크롤.
+    openLegacyOrders();
   }
 
   // ──────────────────────────────────────────────────────────
@@ -1708,5 +1922,7 @@
     purAddEmptyLine, purRemoveLine, purUpdateLine, purToggleOverride,
     purOpenCatalogSearch, closeCatalogSearch, loadCatalogTab, filterCatalog, pickCatalogItem,
     purOnReceiptPick, purViewReceipt, purDelete, purEdit,
+    // 상품 구매 (2026-08-08 재설계)
+    submitPurchase, refreshPurchaseLog, openApprovalRequest, openLegacyOrders,
   };
 })();

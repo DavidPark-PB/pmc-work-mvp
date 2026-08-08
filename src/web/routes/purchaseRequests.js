@@ -71,7 +71,7 @@ async function autoCreateExpense(pr, executedBy) {
     amount,                                     // 실제 구매금액만
     currency: 'KRW',
     category: '재료비',                          // 발주는 재고 매입 → 재료비 카테고리 (수정 가능)
-    merchant: null,                              // 거래처는 supplier_id 기반. 지금은 null.
+    merchant: pr.merchant || null,               // 2026-08-08: purchase_requests.merchant 를 그대로 노출.
     memo,
     source: 'manual',                            // legacy 필드
     cardLast4: pr.card_last4 || null,
@@ -335,12 +335,11 @@ router.post('/', async (req, res) => {
   }
 });
 
-// POST /api/purchase-requests/completed — 사후 구매 원클릭 기록 (2026-08-08 사장님 지침)
-//   이미 결제한 소액/일상 구매를 발주 요청/승인 절차 없이 바로 완료 상태로 등록.
-//   자동으로 status='ordered' + expense 자동생성. 전 직원 사용 가능.
+// POST /api/purchase-requests/completed — 상품 구매 원클릭 기록 (2026-08-08 사장님 재지침)
+//   승인 절차 없이 바로 완료 상태로 등록 + expense 자동생성. 전 직원 기본 흐름.
 //
-//   필수: productName, quantity, actualPrice, paymentMethod
-//   선택: purchasedAt(기본 now), cardLast4, sku, memo, currentStock
+//   필수: productName, quantity, actualPrice, merchant (구매처)
+//   선택: purchasedAt(기본 now), paymentMethod, cardLast4, sku, memo
 router.post('/completed', async (req, res) => {
   const b = req.body || {};
   if (!b.productName || !String(b.productName).trim()) return res.status(400).json({ error: '상품명을 입력하세요' });
@@ -348,7 +347,7 @@ router.post('/completed', async (req, res) => {
   if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ error: '수량은 1 이상이어야 합니다' });
   const actualPrice = Number(b.actualPrice);
   if (!Number.isFinite(actualPrice) || actualPrice <= 0) return res.status(400).json({ error: '실제 구매금액은 0 이상 숫자여야 합니다' });
-  if (!b.paymentMethod || !String(b.paymentMethod).trim()) return res.status(400).json({ error: '결제수단을 선택하세요' });
+  if (!b.merchant || !String(b.merchant).trim()) return res.status(400).json({ error: '구매처를 입력하세요' });
 
   const executedBy = req.user.id;
 
@@ -389,10 +388,11 @@ router.post('/completed', async (req, res) => {
       decision_at: now,
       ordered_by: executedBy,
       ordered_at: now,
-      // 실제 구매 정보 (사장님 지침 필수)
+      // 실제 구매 정보
       actual_price: actualPrice,
       purchased_at: purchasedAt,
-      payment_method: String(b.paymentMethod).slice(0, 50),
+      merchant: String(b.merchant).trim().slice(0, 200),
+      payment_method: b.paymentMethod ? String(b.paymentMethod).slice(0, 50) : null,
       card_last4: b.cardLast4 ? String(b.cardLast4).replace(/\D/g, '').slice(-4) : null,
     });
 
