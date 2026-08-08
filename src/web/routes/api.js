@@ -3315,6 +3315,55 @@ router.get('/ai-workflow/presets', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 2026-08-09: 성공한 이베이 리스팅에서 프리셋 자동 추출.
+//   사장님이 잘 팔리는 상품 아이템 ID 입력 → 그 리스팅의 categoryId/conditionId/itemSpecifics
+//   를 그대로 반환. 프론트가 preset 편집 필드에 자동 채움.
+//   GET /api/ai-workflow/preset-from-listing?itemId=206202404025
+router.get('/ai-workflow/preset-from-listing', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인 필요' });
+    const itemId = String(req.query.itemId || '').trim();
+    if (!/^\d{9,15}$/.test(itemId)) return res.status(400).json({ error: 'eBay Item ID 9~15자리 숫자 필요' });
+
+    const ebay = getEbayAPI();
+    const item = await ebay.getCompetitorItemFull(itemId);
+    if (!item) return res.status(404).json({ error: '상품을 찾을 수 없습니다' });
+
+    // preset shape 로 변환 (프론트 loadPresets 형식과 동기)
+    const specs = item.itemSpecifics || {};
+    res.json({
+      itemId,
+      title: item.title,
+      preset: {
+        ebay: {
+          categoryId:  item.categoryId || '',
+          conditionId: item.conditionId || '',
+          currency:    item.currency || 'USD',
+          quantity:    1,
+          itemSpecifics: {
+            Brand:                             specs.Brand || '',
+            'Country/Region of Manufacture':   specs['Country/Region of Manufacture'] || specs.Country || '',
+            Language:                          specs.Language || '',
+            Grade:                             specs.Grade || specs.CardCondition || '',
+            Type:                              specs.Type || '',
+            Game:                              specs.Game || '',
+            Manufacturer:                      specs.Manufacturer || '',
+            'Age Level':                       specs['Age Level'] || '',
+          },
+        },
+      },
+      raw: {
+        categoryName: item.categoryName || '',
+        conditionDisplayName: item.conditionDisplayName || '',
+        specifics: specs,
+      },
+    });
+  } catch (e) {
+    console.error('[ai-workflow/preset-from-listing]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/remarker/remake — AI 리메이크
 router.post('/remarker/remake', async (req, res) => {
   try {

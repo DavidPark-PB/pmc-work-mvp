@@ -659,8 +659,17 @@
               <span style="color:#fff;font-weight:600;">🛒 eBay</span>
               <span style="color:#888;font-size:11px;">— Trading API (경매/고정가)</span>
             </label>
-            <details style="margin-top:6px;">
+            <details style="margin-top:6px;" open>
               <summary style="color:#7c4dff;font-size:11px;cursor:pointer;">▶ eBay 프리셋 편집</summary>
+              <!-- 성공한 리스팅에서 프리셋 자동 복사 -->
+              <div style="margin-top:6px;padding:8px;background:#0a1f3a;border:1px dashed #1976d2;border-radius:4px;">
+                <div style="font-size:11px;color:#90caf9;margin-bottom:4px;">💡 이미 잘 팔리는 이베이 리스팅에서 프리셋 자동 복사</div>
+                <div style="display:flex;gap:4px;">
+                  <input type="text" id="wf-preset-source-item" placeholder="이베이 Item ID (예: 206202404025)" style="flex:1;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+                  <button type="button" onclick="pmcAIWorkflow.importPresetFromListing()" style="padding:4px 10px;background:#1976d2;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:11px;">📥 프리셋 복사</button>
+                </div>
+                <div id="wf-preset-source-status" style="font-size:10px;color:#888;margin-top:4px;"></div>
+              </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:11px;">
                 <label style="color:#aaa;grid-column:span 2;">Category ID
                   <div style="display:flex;gap:4px;margin-top:2px;">
@@ -816,6 +825,38 @@
     if (box) box.innerHTML = '<span style="color:#81c784;">✓ 카테고리 ' + esc(cid) + ' 로 세팅됨. 프리셋 저장 후 재시도.</span>';
   }
 
+  // 성공한 이베이 리스팅에서 프리셋 자동 복사 (실수 없이 검증된 값 사용).
+  async function importPresetFromListing() {
+    const itemId = (document.getElementById('wf-preset-source-item')?.value || '').trim();
+    if (!/^\d{9,15}$/.test(itemId)) { alert('이베이 Item ID 9~15자리 숫자 입력'); return; }
+    const status = document.getElementById('wf-preset-source-status');
+    if (status) status.textContent = '조회 중...';
+    try {
+      const r = await fetch('/api/ai-workflow/preset-from-listing?itemId=' + encodeURIComponent(itemId));
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+      const p = j.preset?.ebay || {};
+      // 프리셋 편집 필드에 자동 채움
+      const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+      set('wf-preset-ebay-category', p.categoryId);
+      set('wf-preset-ebay-condition', p.conditionId);
+      set('wf-preset-ebay-currency', p.currency);
+      set('wf-preset-ebay-brand', p.itemSpecifics?.Brand);
+      set('wf-preset-ebay-country', p.itemSpecifics?.['Country/Region of Manufacture']);
+      set('wf-preset-ebay-lang', p.itemSpecifics?.Language);
+      set('wf-preset-ebay-grade', p.itemSpecifics?.Grade);
+      // 자동 저장
+      savePresetsFromUI();
+      if (status) {
+        const cat = j.raw?.categoryName || p.categoryId;
+        const cond = j.raw?.conditionDisplayName || p.conditionId;
+        status.innerHTML = `<span style="color:#81c784;">✓ 복사됨 — 카테고리: ${esc(cat)} · 컨디션: ${esc(cond)} · 저장됨</span>`;
+      }
+    } catch (e) {
+      if (status) status.innerHTML = '<span style="color:#ff8a80;">에러: ' + esc(e.message) + '</span>';
+    }
+  }
+
   function savePresetsFromUI() {
     const presets = {
       ebay: {
@@ -968,5 +1009,6 @@
   // ───────────────────────────────────────────────
   window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails,
     toggleImage, selectAllImages, clearImageSelection,
-    runPublish, savePresetsFromUI, suggestEbayCategory, pickEbayCategory };
+    runPublish, savePresetsFromUI, suggestEbayCategory, pickEbayCategory,
+    importPresetFromListing };
 })();
