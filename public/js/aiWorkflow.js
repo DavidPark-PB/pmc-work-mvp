@@ -248,21 +248,39 @@
           </div>
         </div>
 
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
-          <label style="color:#888;font-size:12px;">언어:</label>
-          <select id="wf-lang" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
-            <option value="en">English</option>
-            <option value="ko">한국어</option>
-            <option value="both">English + 한국어</option>
-          </select>
-          <label style="color:#888;font-size:12px;margin-left:12px;">모드:</label>
-          <select id="wf-mode" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
-            <option value="standard">표준 (이미지 5장)</option>
-            <option value="fast">빠름 (이미지 1장)</option>
-          </select>
-          <button type="button" onclick="pmcAIWorkflow.runReconstruct()" id="wf-reconstruct-btn"
-            style="padding:10px 18px;background:#e94560;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">${r ? '🔄 재구성 다시' : '🤖 상세페이지 재구성'}</button>
+        <!-- 방식 1: PMC 표준 템플릿 (사장님 실제 흐름) — AI 호출 없이 즉시 -->
+        <div style="background:#0f2a1a;border:1px solid #1a6a4a;border-radius:8px;padding:12px;margin-bottom:12px;">
+          <div style="color:#81c784;font-size:12px;font-weight:600;margin-bottom:8px;">⚡ PMC 표준 템플릿 <span style="font-weight:400;color:#666;">— eBay/Shopee/Qoo10 용. 제목만 갈아끼움, 즉시 생성</span></div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:8px;">
+            <label style="color:#aaa;font-size:11px;">Brand<br><input type="text" id="wf-t-brand" value="Pokemon" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
+            <label style="color:#aaa;font-size:11px;">Origin<br><input type="text" id="wf-t-origin" value="Korea, South" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
+            <label style="color:#aaa;font-size:11px;">Color<br><input type="text" id="wf-t-color" value="Multiple Color" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
+            <label style="color:#aaa;font-size:11px;">Material<br><input type="text" id="wf-t-material" value="PP, Paper" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
+            <label style="color:#aaa;font-size:11px;">Condition<br><input type="text" id="wf-t-condition" value="New" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
+          </div>
+          <button type="button" onclick="pmcAIWorkflow.runTemplate()"
+            style="padding:9px 20px;background:#43a047;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">⚡ 표준 템플릿으로 즉시 생성</button>
         </div>
+
+        <!-- 방식 2: AI 재구성 (Vision 이미지 or 텍스트) — 국내 상품용 -->
+        <details style="margin-bottom:12px;">
+          <summary style="color:#888;font-size:12px;cursor:pointer;padding:6px 0;">▶ AI 재구성 (선택) — 국내 (쿠팡/네이버) 상품 이미지 리치 상세페이지</summary>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;padding:10px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;">
+            <label style="color:#888;font-size:12px;">언어:</label>
+            <select id="wf-lang" style="padding:8px;background:#1a1a2e;border:1px solid #333;border-radius:6px;color:#fff;">
+              <option value="en">English</option>
+              <option value="ko">한국어</option>
+              <option value="both">English + 한국어</option>
+            </select>
+            <label style="color:#888;font-size:12px;margin-left:12px;">모드:</label>
+            <select id="wf-mode" style="padding:8px;background:#1a1a2e;border:1px solid #333;border-radius:6px;color:#fff;">
+              <option value="standard">표준 (이미지 5장)</option>
+              <option value="fast">빠름 (이미지 1장)</option>
+            </select>
+            <button type="button" onclick="pmcAIWorkflow.runReconstruct()" id="wf-reconstruct-btn"
+              style="padding:9px 16px;background:#e94560;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">${r ? '🔄 재구성 다시' : '🤖 AI 재구성'}</button>
+          </div>
+        </details>
         <div id="wf-step2-status" style="color:#888;font-size:12px;margin-bottom:12px;"></div>
 
         ${r ? `
@@ -291,6 +309,102 @@
       const iframe = document.getElementById('wf-recon-preview');
       if (iframe) iframe.srcdoc = r.htmlDescription || '';
     }
+  }
+
+  // ⚡ PMC 표준 템플릿 — 사장님 실제 eBay 상세페이지 (2026-08-08 사장님 보내준 원본 그대로).
+  //   AI 호출 없이 즉시. 제목/브랜드/원산지/컬러/재질/컨디션 6개 필드만 갈아끼움.
+  //   나머지 (배송·결제·반품·about) 는 boilerplate 고정.
+  const PMC_TEMPLATE = ({ title, brand, origin, color, material, condition }) => `
+<div style="max-width:800px;margin:0 auto;font-family:Arial,sans-serif;color:#333;font-size:13px;line-height:1.6;">
+  <div style="border-bottom:2px solid #1a1a2e;padding-bottom:12px;margin-bottom:16px;">
+    <div style="font-size:11px;color:#888;letter-spacing:1px;">DESCRIPTION</div>
+    <h2 style="margin:6px 0 0;color:#1a1a2e;font-size:18px;">${_esc(title)}</h2>
+    <div style="margin-top:6px;color:#e94560;font-size:12px;font-weight:600;">100% Official Licensed Genuine Item</div>
+  </div>
+
+  <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
+    <tbody>
+      <tr><td style="padding:6px 0;color:#666;width:120px;">Brand</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(brand)}</td></tr>
+      <tr><td style="padding:6px 0;color:#666;">Origin</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(origin)}</td></tr>
+      <tr><td style="padding:6px 0;color:#666;">Color</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(color)}</td></tr>
+      <tr><td style="padding:6px 0;color:#666;">Material</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(material)}</td></tr>
+      <tr><td style="padding:6px 0;color:#666;">Condition</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(condition)}</td></tr>
+    </tbody>
+  </table>
+
+  <p style="color:#999;font-size:11px;font-style:italic;margin:16px 0;">
+    * Colour in the picture might be slightly different due to the lighting when picture is taken.
+  </p>
+
+  <hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0;">
+
+  <h3 style="color:#1a1a2e;font-size:14px;margin:16px 0 8px;">◆ Shipping</h3>
+  <p style="margin:0 0 10px;">
+    All items will be shipped from Korea, South.<br>
+    Basically, We provide Free Economy Shipping (Tracking Not Available).<br>
+    If you want to use Registered mail, please add <b>$3 more for Standard Shipping</b>.<br>
+    At least items will arrive around <b>10~15 days</b> with economic shipping.<br>
+    We do very careful packing. Your item will be shipped out within <b>2 business days</b>.
+  </p>
+
+  <h3 style="color:#1a1a2e;font-size:14px;margin:16px 0 8px;">◆ Payment</h3>
+  <p style="margin:0 0 10px;">
+    We only accept <b>PayPal</b> payments.<br>
+    Please pay within <b>3 days</b> after auction is finished.
+  </p>
+
+  <h3 style="color:#1a1a2e;font-size:14px;margin:16px 0 8px;">◆ Import Duties & Taxes</h3>
+  <p style="margin:0 0 10px;">
+    Import duties, taxes and charges are <b>not included</b> in the item price or shipping charges.
+    These charges are the <b>buyer's responsibility</b>. Please check with your country's customs office
+    to determine what these additional costs will be prior to bidding/buying.
+  </p>
+
+  <h3 style="color:#1a1a2e;font-size:14px;margin:16px 0 8px;">◆ Returns</h3>
+  <p style="margin:0 0 10px;">
+    <b>Money back guarantee within 30 days</b> if returned by customer.
+  </p>
+
+  <hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0;">
+
+  <h3 style="color:#1a1a2e;font-size:14px;margin:16px 0 8px;">◆ About Us</h3>
+  <p style="margin:0 0 10px;">
+    Thank you for looking.<br>
+    I'll send your goods quickly with care.<br>
+    All items are <b>"AUTHENTIC"</b>.<br>
+    If you have any questions, please e-mail or message me. I will do my best to help you!
+  </p>
+
+  <div style="margin-top:20px;padding-top:12px;border-top:2px solid #1a1a2e;text-align:center;font-size:11px;color:#888;">
+    <b style="color:#1a1a2e;">PMC Corporation</b> — Premium Quality Verified
+  </div>
+</div>`.trim();
+
+  function _esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ⚡ 즉시 템플릿 생성 — AI 호출 없음
+  function runTemplate() {
+    const title = state.remake?.seoTitle || state.remake?.title || state.competitor?.title || '';
+    if (!title) { alert('1단계에서 상품 정보를 먼저 가져오세요'); return; }
+    const fields = {
+      title,
+      brand:     document.getElementById('wf-t-brand')?.value?.trim()     || 'Pokemon',
+      origin:    document.getElementById('wf-t-origin')?.value?.trim()    || 'Korea, South',
+      color:     document.getElementById('wf-t-color')?.value?.trim()     || 'Multiple Color',
+      material:  document.getElementById('wf-t-material')?.value?.trim()  || 'PP, Paper',
+      condition: document.getElementById('wf-t-condition')?.value?.trim() || 'New',
+    };
+    const html = PMC_TEMPLATE(fields);
+    state.reconstruct = {
+      htmlDescription: html,
+      raw: { source: 'template', fields },
+      originalImages: (state.competitor?.images || []).slice(0, 5),
+      lang: 'en',
+      mode: 'template',
+    };
+    renderStep2();
   }
 
   async function runReconstruct() {
@@ -495,5 +609,5 @@
   }
 
   // ───────────────────────────────────────────────
-  window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, copyHtml, runThumbnails };
+  window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails };
 })();
