@@ -20,6 +20,11 @@ const { BLOCK_TASK_TYPE } = require('../engines/priceEngine');
 const EVENT_TYPES = Object.freeze([
   'PriceRecommendationCreated', 'PriceApproved', 'PriceApplied',
   'CompetitorChanged', 'PriceUpdated', 'PriceReverted',
+  // Phase 1 Commit 2 (PriceExecutionGate lifecycle):
+  //   PriceBlocked — gate rejected (kill_switch / invalid data / auto_apply_disabled / etc.)
+  //   PriceFailed  — gate passed, marketplace API rejected or crashed.
+  //                  ebay_products.price_usd MUST NOT be updated when this is written.
+  'PriceBlocked', 'PriceFailed',
 ]);
 
 /**
