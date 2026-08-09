@@ -1955,30 +1955,22 @@ router.post('/sku-scores/retirement/execute', async (req, res) => {
     const result = { sku, action, success: false };
 
     if (action === 'price_increase_5pct') {
-      // eBay 가격 5% 인상
+      // Phase 1 Commit 5D: gate 이관. 기존 +5% 계산 그대로 유지,
+      // Supabase eBay Item ID 조회는 route 에 남기고 계산 결과만 service 위임.
       const currentPrice = parseFloat(scoreData.rawData?.sellingPrice) || 0;
-      if (currentPrice > 0) {
-        const newPrice = +(currentPrice * 1.05).toFixed(2);
-        try {
-          // Supabase에서 eBay Item ID 조회
-          const { getClient } = require('../../db/supabaseClient');
-          const { data: prod } = await getClient().from('products').select('ebay_item_id').eq('sku', sku).single();
-          const ebayItemId = prod?.ebay_item_id;
-          if (ebayItemId) {
-            const ebay = getEbayAPI();
-            await ebay.updateItem(ebayItemId, { price: newPrice });
-            result.success = true;
-            result.oldPrice = currentPrice;
-            result.newPrice = newPrice;
-          } else {
-            result.error = 'eBay Item ID 없음';
-          }
-        } catch (e) {
-          result.error = e.message;
-        }
-      } else {
-        result.error = '현재 가격 정보 없음';
-      }
+      let ebayItemId = null;
+      try {
+        const { getClient } = require('../../db/supabaseClient');
+        const { data: prod } = await getClient().from('products').select('ebay_item_id').eq('sku', sku).single();
+        ebayItemId = prod?.ebay_item_id;
+      } catch { /* handled below */ }
+
+      const { executeRetirementAction } = require('../../services/retirementActionService');
+      const svcResult = await executeRetirementAction(
+        { sku, action, currentPrice, ebayItemId },
+        { userId: req.user?.id, actor: req.user ? `user:${req.user.id}` : 'system:retirement' },
+      );
+      Object.assign(result, svcResult);
     } else if (action === 'deactivate') {
       // 플래그만 기록 (실제 비활성화는 각 플랫폼 API 필요)
       result.success = true;

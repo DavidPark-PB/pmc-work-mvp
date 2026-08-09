@@ -1,6 +1,7 @@
 'use strict';
 
 const { getClient } = require('../db/supabaseClient');
+const priceExecutionGate = require('./priceExecutionGate');
 
 const MY_SHIPPING = 3.90;
 const KILL_PRICE_UNDERCUT = 2.00;
@@ -10,18 +11,36 @@ const DEFAULT_FLOOR_PCT = 60; // Floor = 60% of current price if not set
 const COMPETITOR_CRASH_THRESHOLD = 50; // Skip if competitor dropped >50%
 
 /**
+ * Deterministic idempotency key for automated repricing.
+ * Same SKU + itemId + direction + rounded price + same calendar day (UTC)
+ * → same key → gate short-circuits duplicate execution.
+ * Different price or different day → different key.
+ */
+function _autoRepricerRequestId({ sku, itemId, direction, newPrice, dateStr }) {
+  return `autoRepricer:${dateStr}:${direction}:${sku || 'nosku'}:${itemId}:${Number(newPrice).toFixed(2)}`;
+}
+
+/**
  * Auto Repricer — safe automatic price adjustment
  * @param {boolean} dryRun - true = simulate only, false = actually change prices
+ * @param {object} [deps]  dependency injection (tests)
+ *   deps.db, deps.ebay, deps.gateExecute, deps.gateDeps
  */
-async function runAutoRepricer(dryRun = true) {
+async function runAutoRepricer(dryRun = true, deps = {}) {
+  // Owner directive (2026-08-10, Phase 1 Commit 5A):
+  //   Keep the forced dryRun in place. PriceExecutionGate is wired below as a
+  //   second-line defence, but this line is the primary guard until every
+  //   caller across the codebase is proven safe.
   if (!dryRun) {
     console.warn('[AutoRepricer] LIVE 요청 차단 — Hermes v1에서는 가격 쓰기가 비활성화되어 DRY_RUN으로 강제 전환합니다.');
     dryRun = true;
   }
 
-  const db = getClient();
-  const EbayAPI = require('../api/ebayAPI');
-  const ebay = new EbayAPI();
+  const db = deps.db || getClient();
+  const ebay = deps.ebay || (() => {
+    const EbayAPI = require('../api/ebayAPI');
+    return new EbayAPI();
+  })();
   const report = { processed: 0, changed: 0, skipped: [], errors: [], changes: [], mode: dryRun ? 'dry_run' : 'live' };
 
   console.log(`[AutoRepricer] Starting (${dryRun ? 'DRY RUN' : 'LIVE'})...`);
@@ -154,11 +173,26 @@ async function runAutoRepricer(dryRun = true) {
             report.changes.push(change);
             report.changed++;
           } else if (report.changed < MAX_DAILY_CHANGES - todayChanges) {
+            // Live path (currently unreachable due to forced dryRun above) —
+            // routed through PriceExecutionGate. Never touches ebay.updateItem
+            // or ebay_products directly from here.
             try {
-              const result = await ebay.updateItem(myItem.itemId, { price: finalRaise });
-              change.status = result.success ? 'applied' : 'failed';
-              if (result.success) { report.changed++; await new Promise(r => setTimeout(r, 500)); }
-              else { change.error = result.error; report.errors.push(change); }
+              const gateOutcome = await _applyViaGate({
+                sku, itemId: myItem.itemId, oldPrice: myPrice, newPrice: finalRaise,
+                direction: 'raise', reason: change.reason, dateStr: today,
+                deps,
+              });
+              change.status = _statusFromGate(gateOutcome);
+              if (gateOutcome.outcome === priceExecutionGate.OUTCOME.APPLIED) {
+                report.changed++; await new Promise(r => setTimeout(r, 500));
+              } else if (gateOutcome.outcome === priceExecutionGate.OUTCOME.FAILED) {
+                change.error = gateOutcome.error; report.errors.push(change);
+              } else if (gateOutcome.outcome === priceExecutionGate.OUTCOME.BLOCKED) {
+                change.blocked_reason = gateOutcome.reasonCode;
+                report.skipped.push({ sku, reason: 'gate_blocked', detail: gateOutcome.reasonCode });
+              }
+              change.gate_run_id = gateOutcome.runId;
+              change.gate_event_id = gateOutcome.eventId;
             } catch (e) { change.status = 'error'; change.error = e.message; report.errors.push(change); }
             report.changes.push(change);
           }
@@ -233,20 +267,28 @@ async function runAutoRepricer(dryRun = true) {
       report.changes.push(change);
       report.changed++;
     } else {
-      // Actually apply the price change
+      // Live path (currently unreachable due to forced dryRun) — via gate.
       try {
-        const result = await ebay.updateItem(myItem.itemId, { price: killPriceRounded });
-        if (result.success) {
-          change.status = 'applied';
+        const gateOutcome = await _applyViaGate({
+          sku, itemId: myItem.itemId, oldPrice: myPrice, newPrice: killPriceRounded,
+          direction: 'kill', reason: `vs ${comp.seller_id || 'unknown'} ($${compTotal})`,
+          dateStr: today,
+          deps,
+        });
+        change.status = _statusFromGate(gateOutcome);
+        if (gateOutcome.outcome === priceExecutionGate.OUTCOME.APPLIED) {
           report.changes.push(change);
           report.changed++;
-          // Rate limit
           await new Promise(r => setTimeout(r, 500));
-        } else {
-          change.status = 'failed';
-          change.error = result.error;
+        } else if (gateOutcome.outcome === priceExecutionGate.OUTCOME.FAILED) {
+          change.error = gateOutcome.error;
           report.errors.push(change);
+        } else if (gateOutcome.outcome === priceExecutionGate.OUTCOME.BLOCKED) {
+          change.blocked_reason = gateOutcome.reasonCode;
+          report.skipped.push({ sku, reason: 'gate_blocked', detail: gateOutcome.reasonCode });
         }
+        change.gate_run_id = gateOutcome.runId;
+        change.gate_event_id = gateOutcome.eventId;
       } catch (e) {
         change.status = 'error';
         change.error = e.message;
@@ -272,4 +314,42 @@ async function runAutoRepricer(dryRun = true) {
   return report;
 }
 
-module.exports = { runAutoRepricer };
+/**
+ * Route a live-mode price change through PriceExecutionGate.
+ * Context = AUTO (cron-driven repricing with no human in the loop):
+ *   - AUTO requires kill_switch=false AND auto_apply_enabled=true.
+ *   - Same-day deterministic idempotency key deduplicates retries.
+ */
+async function _applyViaGate({ sku, itemId, oldPrice, newPrice, direction, reason, dateStr, deps }) {
+  const gateFn = deps.gateExecute || priceExecutionGate.executePriceWrite;
+  const requestId = _autoRepricerRequestId({ sku, itemId, direction, newPrice, dateStr });
+  return await gateFn({
+    sku: sku || `unknown-sku-${itemId}`,
+    itemId: String(itemId),
+    oldPrice: oldPrice != null ? Number(oldPrice) : null,
+    newPrice: Number(newPrice),
+    reasonCode: 'AUTO_UNDERCUT_SAFE',
+    requestId,
+    context: 'AUTO',
+    actor: 'system:autoRepricer',
+    currency: 'USD',
+    // reason string is preserved via safetyExec input_snapshot metadata:
+    // deps.gateDeps can carry additional context, but we don't need it here.
+  }, deps.gateDeps || {});
+}
+
+/** Map gate outcome enum to autoRepricer's legacy status vocabulary. */
+function _statusFromGate(outcome) {
+  if (outcome.outcome === priceExecutionGate.OUTCOME.APPLIED) return 'applied';
+  if (outcome.outcome === priceExecutionGate.OUTCOME.FAILED) return 'failed';
+  if (outcome.outcome === priceExecutionGate.OUTCOME.BLOCKED) return 'blocked';
+  if (outcome.outcome === priceExecutionGate.OUTCOME.IDEMPOTENT_REPLAY) {
+    return outcome.reasonCode === 'PRIOR_SUCCESS' ? 'applied_replay' : 'failed_replay';
+  }
+  return 'unknown';
+}
+
+module.exports = {
+  runAutoRepricer,
+  _internal: { _autoRepricerRequestId, _applyViaGate, _statusFromGate },
+};
