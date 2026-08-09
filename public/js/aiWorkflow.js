@@ -1071,8 +1071,14 @@
       if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
 
       // 결과 표시 — publish 결과 영역 재사용
-      const errList = (j.criticalErrors || []).map(e => `❌ ${esc(e.longMessage || e.shortMessage || 'unknown')}${e.code ? ` (${e.code})` : ''}`);
-      const warnList = (j.warnings || []).map(e => `⚠️ ${esc(e.longMessage || e.shortMessage || 'unknown')}`);
+      const fmtErr = e => {
+        const msg = e.longMessage || e.shortMessage || 'unknown';
+        const codeStr = e.code ? ` [code=${e.code}]` : '';
+        const paramStr = (e.params && e.params.length) ? ` [param: ${e.params.join(', ')}]` : '';
+        return esc(msg) + codeStr + paramStr;
+      };
+      const errList = (j.criticalErrors || []).map(e => '❌ ' + fmtErr(e));
+      const warnList = (j.warnings || []).map(e => '⚠️ ' + fmtErr(e));
       state.publish = {
         platforms: ['ebay'], presets, running: false,
         results: [{

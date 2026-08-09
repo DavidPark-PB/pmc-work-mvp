@@ -693,11 +693,15 @@ class EbayAPI {
         const mm = block.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)<\\/${t}>`, 'i'));
         return mm ? mm[1].trim() : null;
       };
+      // ErrorParameters 안 Value 도 추출 (예: "40001" 같은 aspect id, "AddFixedPriceItem" 같은 resource)
+      const params = [...block.matchAll(/<ErrorParameters[^>]*>[\s\S]*?<Value>([\s\S]*?)<\/Value>[\s\S]*?<\/ErrorParameters>/g)]
+        .map(m => m[1].trim());
       errors.push({
         code: read('ErrorCode'),
         severity: read('SeverityCode'),
         shortMessage: read('ShortMessage'),
         longMessage: read('LongMessage'),
+        params,
       });
     }
     return errors;
