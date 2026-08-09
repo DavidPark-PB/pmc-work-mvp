@@ -751,7 +751,11 @@
           </div>
         </div>
 
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+          <button type="button" id="wf-verify-btn" onclick="pmcAIWorkflow.runVerify()" ${!canPublish || pub?.running ? 'disabled' : ''}
+            style="padding:10px 18px;background:#1976d2;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;" title="실제 등록 없이 payload 검증만. rate limit 소진 X — 무제한 시행착오 가능">
+            🔍 사전 검증 (실 등록 X)
+          </button>
           <button type="button" id="wf-publish-btn" onclick="pmcAIWorkflow.runPublish()" ${!canPublish || pub?.running ? 'disabled' : ''}
             style="padding:12px 24px;background:${pub?.running ? '#555' : '#43a047'};border:0;border-radius:6px;color:#fff;cursor:${pub?.running ? 'wait' : 'pointer'};font-weight:700;font-size:14px;">
             ${pub?.running ? '⏳ 배포 중...' : '🚀 선택된 플랫폼에 등록'}
@@ -759,6 +763,7 @@
           <button type="button" onclick="pmcAIWorkflow.savePresetsFromUI()"
             style="padding:8px 14px;background:#2a2a4a;border:1px solid #444;border-radius:6px;color:#aaa;cursor:pointer;font-size:11px;">💾 프리셋 저장</button>
         </div>
+        <div style="font-size:11px;color:#888;margin-bottom:8px;">💡 <b>[🔍 사전 검증]</b> 먼저 눌러서 에러 없는지 확인 → 통과되면 <b>[🚀 등록]</b>. 검증은 rate limit 안 씀.</div>
 
         <div id="wf-step4-status" style="color:#888;font-size:12px;margin-bottom:12px;"></div>
 
@@ -940,6 +945,55 @@
     if (status) { status.textContent = '✓ 프리셋 저장됨 (브라우저)'; setTimeout(() => { status.textContent = ''; }, 2000); }
   }
 
+  // 2026-08-09: 실 등록 없이 사전 검증. VerifyAddFixedPriceItem — rate limit 안 소진.
+  async function runVerify() {
+    savePresetsFromUI();
+    const presets = loadPresets();
+    const price = Number(document.getElementById('wf-pub-price')?.value) || state.remake?.killPrice || 0;
+    const qty = Number(document.getElementById('wf-pub-qty')?.value) || 1;
+    const status = document.getElementById('wf-step4-status');
+    if (status) status.textContent = '🔍 eBay 검증 중 (5~10초)...';
+
+    const product = {
+      title: state.remake?.title || state.competitor?.title || '',
+      description: state.reconstruct?.htmlDescription || state.remake?.description || '',
+      price, quantity: qty,
+      imageUrls: Array.from(state.selectedImageUrls || []),
+      itemSpecifics: state.competitor?.itemSpecifics || {},
+      competitorItemId: state.competitor?.itemId,
+    };
+
+    try {
+      const r = await fetch('/api/ai-workflow/verify-ebay', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product, preset: { ...presets.ebay, quantity: qty } }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+
+      // 결과 표시 — publish 결과 영역 재사용
+      const errList = (j.criticalErrors || []).map(e => `❌ ${esc(e.longMessage || e.shortMessage || 'unknown')}${e.code ? ` (${e.code})` : ''}`);
+      const warnList = (j.warnings || []).map(e => `⚠️ ${esc(e.longMessage || e.shortMessage || 'unknown')}`);
+      state.publish = {
+        platforms: ['ebay'], presets, running: false,
+        results: [{
+          platform: 'ebay',
+          verify: true,
+          success: j.success,
+          error: errList.length ? errList.concat(warnList).join('\n') : null,
+          elapsedMs: j.elapsedMs,
+        }],
+      };
+      renderStep4();
+      if (status) {
+        if (j.success) status.innerHTML = '<span style="color:#81c784;">✅ 검증 통과 — 이제 [🚀 등록] 클릭</span>';
+        else status.innerHTML = `<span style="color:#ff8a80;">❌ 검증 실패 ${errList.length}건 — 프리셋 수정 후 다시 검증 (실 등록 안 됐음)</span>`;
+      }
+    } catch (e) {
+      if (status) status.textContent = '에러: ' + e.message;
+    }
+  }
+
   async function runPublish() {
     savePresetsFromUI();
     const presets = loadPresets();
@@ -1065,5 +1119,5 @@
   window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails,
     toggleImage, selectAllImages, clearImageSelection,
     runPublish, savePresetsFromUI, suggestEbayCategory, pickEbayCategory,
-    importPresetFromListing, checkEbayAspects };
+    importPresetFromListing, checkEbayAspects, runVerify };
 })();

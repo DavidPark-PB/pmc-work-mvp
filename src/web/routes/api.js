@@ -3315,6 +3315,25 @@ router.get('/ai-workflow/presets', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 2026-08-09: eBay 사전 검증 (VerifyAddFixedPriceItem) — rate limit 소진 없이 payload 검증.
+//   body: { product, preset }  응답: { success, errors, criticalErrors, warnings, ack }
+router.post('/ai-workflow/verify-ebay', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인 필요' });
+    const { product, preset } = req.body || {};
+    if (!product || !product.title) return res.status(400).json({ error: 'product.title 필수' });
+    const publisher = require('../../services/aiWorkflowPublisher');
+    const mergedPreset = { ...publisher.DEFAULT_PRESETS.ebay, ...(preset || {}),
+      itemSpecifics: { ...(publisher.DEFAULT_PRESETS.ebay.itemSpecifics || {}), ...(preset?.itemSpecifics || {}) },
+    };
+    const out = await publisher.verifyEbay(product, mergedPreset);
+    res.json(out);
+  } catch (e) {
+    console.error('[ai-workflow/verify-ebay]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 2026-08-09: eBay 카테고리별 필수/추천 aspect 목록 조회.
 //   시행착오 없이 사전에 어떤 aspect 가 required 인지 알 수 있음.
 //   GET /api/ai-workflow/ebay-aspects?categoryId=183454

@@ -636,24 +636,19 @@ class EbayAPI {
   }
 
   /**
-   * 상품 등록 (AddFixedPriceItem)
+   * 2026-08-09: Item payload XML builder — createProduct 와 verifyProduct 공유.
    */
-  async createProduct({ title, description, price, quantity, sku, categoryId, conditionId, imageUrls, imageUrl, currency, itemSpecifics }) {
-    try {
-      // Build PictureDetails with multiple images
-      const allImages = imageUrls || (imageUrl ? [imageUrl] : []);
-      const pictureXml = allImages.length > 0
-        ? `<PictureDetails>${allImages.map(u => `<PictureURL>${this.escapeXml(u)}</PictureURL>`).join('')}</PictureDetails>`
-        : '';
-
-      // Build ItemSpecifics XML
-      const specs = itemSpecifics || {};
-      const specsEntries = Object.entries(specs);
-      const specsXml = specsEntries.length > 0
-        ? `<ItemSpecifics>${specsEntries.map(([k, v]) => `<NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(String(v))}</Value></NameValueList>`).join('')}</ItemSpecifics>`
-        : '';
-
-      const requestBody = `
+  _buildItemXml({ title, description, price, quantity, sku, categoryId, conditionId, imageUrls, imageUrl, currency, itemSpecifics }) {
+    const allImages = imageUrls || (imageUrl ? [imageUrl] : []);
+    const pictureXml = allImages.length > 0
+      ? `<PictureDetails>${allImages.map(u => `<PictureURL>${this.escapeXml(u)}</PictureURL>`).join('')}</PictureDetails>`
+      : '';
+    const specs = itemSpecifics || {};
+    const specsEntries = Object.entries(specs).filter(([_, v]) => v != null && String(v).trim() !== '');
+    const specsXml = specsEntries.length > 0
+      ? `<ItemSpecifics>${specsEntries.map(([k, v]) => `<NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(String(v))}</Value></NameValueList>`).join('')}</ItemSpecifics>`
+      : '';
+    return `
   <Item>
     <Title>${this.escapeXml(title)}</Title>
     <Description><![CDATA[${description || title}]]></Description>
@@ -686,22 +681,71 @@ class EbayAPI {
     ${specsXml}
     ${pictureXml}
   </Item>`;
+  }
 
+  _parseErrors(response) {
+    const errors = [];
+    const re = /<Errors>([\s\S]*?)<\/Errors>/g;
+    let m;
+    while ((m = re.exec(response)) !== null) {
+      const block = m[1];
+      const read = t => {
+        const mm = block.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)<\\/${t}>`, 'i'));
+        return mm ? mm[1].trim() : null;
+      };
+      errors.push({
+        code: read('ErrorCode'),
+        severity: read('SeverityCode'),
+        shortMessage: read('ShortMessage'),
+        longMessage: read('LongMessage'),
+      });
+    }
+    return errors;
+  }
+
+  /**
+   * 2026-08-09: 상품 등록 사전 검증 — VerifyAddFixedPriceItem.
+   * 실제 등록 안 하고 payload 검증만. AddFixedPriceItem 의 rate limit 카운트 안 됨
+   * (별도 endpoint) — 사장님이 실패 시행착오 할 때 실 quota 소진 방지.
+   */
+  async verifyProduct(params) {
+    try {
+      const requestBody = this._buildItemXml(params);
+      const response = await this.callTradingAPI('VerifyAddFixedPriceItem', requestBody);
+      const ack = (response.match(/<Ack>(.*?)<\/Ack>/) || [])[1] || 'Unknown';
+      const errors = this._parseErrors(response);
+      const fee = (response.match(/<Fees>[\s\S]*?<Fee>[\s\S]*?<Fee>[\s\S]*?<\/Fee>/) || [''])[0];  // 참고: fee 미리 알 수 있음
+      return {
+        success: ack === 'Success' || ack === 'Warning',
+        ack,
+        errors,
+        warnings: errors.filter(e => (e.severity || '').toLowerCase() === 'warning'),
+        criticalErrors: errors.filter(e => (e.severity || '').toLowerCase() === 'error'),
+      };
+    } catch (e) {
+      return { success: false, ack: 'Error', errors: [{ longMessage: e.message }], criticalErrors: [{ longMessage: e.message }], warnings: [] };
+    }
+  }
+
+  /**
+   * 상품 등록 (AddFixedPriceItem)
+   */
+  async createProduct(params) {
+    try {
+      const requestBody = this._buildItemXml(params);
       const response = await this.callTradingAPI('AddFixedPriceItem', requestBody);
       console.log('[eBay createProduct] response:', response.substring(0, 3000));
       const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
       const ack = ackMatch ? ackMatch[1] : 'Unknown';
       const itemIdMatch = response.match(/<ItemID>(.*?)<\/ItemID>/);
-
       if (ack === 'Success' || ack === 'Warning') {
         console.log('[eBay createProduct] SUCCESS itemId:', itemIdMatch ? itemIdMatch[1] : 'NONE');
         return { success: true, itemId: itemIdMatch ? itemIdMatch[1] : null };
       } else {
-        const longMatch = response.match(/<LongMessage>(.*?)<\/LongMessage>/);
-        const errMatch = response.match(/<ShortMessage>(.*?)<\/ShortMessage>/);
-        const errMsg = longMatch ? longMatch[1] : (errMatch ? errMatch[1] : 'Unknown error');
+        const errors = this._parseErrors(response);
+        const errMsg = errors[0]?.longMessage || errors[0]?.shortMessage || 'Unknown error';
         console.log('[eBay createProduct] FAILED:', errMsg);
-        return { success: false, error: errMsg };
+        return { success: false, error: errMsg, errors };
       }
     } catch (error) {
       return { success: false, error: error.message };

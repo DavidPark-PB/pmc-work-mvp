@@ -80,6 +80,46 @@ function _getEbay() {
   return _ebayInstance;
 }
 
+function _buildEbayParams(product, preset, thumbnailUrls) {
+  const allImages = [...thumbnailUrls, ...(product.imageUrls || [])].slice(0, 12);
+  return {
+    title: String(product.title || '').slice(0, 80),
+    description: product.description || product.title || '',
+    price: Number(product.price) || 0,
+    quantity: preset.quantity || product.quantity || 1,
+    sku: product.sku || _generateSku(product.competitorItemId || product.title),
+    categoryId: preset.categoryId,
+    conditionId: preset.conditionId,
+    imageUrls: allImages,
+    currency: preset.currency || 'USD',
+    itemSpecifics: {
+      ...(preset.itemSpecifics || {}),
+      ...(product.itemSpecifics || {}),
+    },
+  };
+}
+
+/**
+ * 2026-08-09: eBay 사전 검증 (VerifyAddFixedPriceItem) — 실 등록 X, rate limit 안 소진.
+ * verifyOnly=true 면 EPS 업로드도 스킵 (이미지 없이 검증).
+ */
+async function verifyEbay(product, preset, { skipImageUpload = true } = {}) {
+  const ebay = _getEbay();
+  const t0 = Date.now();
+  const params = _buildEbayParams(product, preset, skipImageUpload ? (product.imageUrls || []).slice(0, 1) : []);
+  const r = await ebay.verifyProduct(params);
+  return {
+    platform: 'ebay',
+    verify: true,
+    success: r.success,
+    ack: r.ack,
+    errors: r.errors,
+    criticalErrors: r.criticalErrors,
+    warnings: r.warnings,
+    elapsedMs: Date.now() - t0,
+  };
+}
+
 async function publishToEbay(product, preset) {
   const ebay = _getEbay();
   const t0 = Date.now();
@@ -96,24 +136,8 @@ async function publishToEbay(product, preset) {
     }
   }
 
-  // 2) 등록. imageUrls 순서: 썸네일 먼저 (썸네일이 갤러리 첫 이미지가 됨) + 원본 이미지
-  const allImages = [...thumbnailUrls, ...(product.imageUrls || [])].slice(0, 12);  // eBay 12장 제한
-
-  const result = await ebay.createProduct({
-    title: String(product.title || '').slice(0, 80),
-    description: product.description || product.title || '',
-    price: Number(product.price) || 0,
-    quantity: preset.quantity || product.quantity || 1,
-    sku: product.sku || _generateSku(product.competitorItemId || product.title),
-    categoryId: preset.categoryId,
-    conditionId: preset.conditionId,
-    imageUrls: allImages,
-    currency: preset.currency || 'USD',
-    itemSpecifics: {
-      ...(preset.itemSpecifics || {}),
-      ...(product.itemSpecifics || {}),
-    },
-  });
+  const params = _buildEbayParams(product, preset, thumbnailUrls);
+  const result = await ebay.createProduct(params);
 
   return {
     platform: 'ebay',
@@ -122,6 +146,7 @@ async function publishToEbay(product, preset) {
     listingUrl: result?.itemId ? `https://www.ebay.com/itm/${result.itemId}` : null,
     thumbnailUploaded: thumbnailUrls.length,
     error: result?.success ? null : (result?.error || 'unknown'),
+    errors: result?.errors || [],
     elapsedMs: Date.now() - t0,
   };
 }
@@ -197,5 +222,6 @@ module.exports = {
   publish,
   publishToEbay,
   publishToShopify,
+  verifyEbay,
   DEFAULT_PRESETS,
 };
