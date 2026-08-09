@@ -641,7 +641,9 @@
     <div class="menu-item" data-page="products">전체 상품</div>
     <!-- 상품 등록 메뉴 제거 — automation에서 처리 -->
     <div class="menu-item" data-page="ai-workflow" style="color:#ffd54f;font-weight:700">🪄 AI 상품 제작 (통합)</div>
-    <div class="menu-item" data-page="remarker" style="color:#7c4dff;font-weight:600">AI 리메이커</div>
+    <!-- 2026-08-09: AI 리메이커 기능은 'AI 상품 제작 (통합)' 1단계에 흡수 (파일 업로드 모드 추가).
+         기존 페이지/route/데이터는 유지, 사이드바 링크만 숨김. 필요 시 이 줄만 되돌리면 복구. -->
+    <div class="menu-item" data-page="remarker" style="display:none;color:#7c4dff;font-weight:600">AI 리메이커</div>
     <div class="menu-item" data-page="reconstruct" style="color:#e94560;font-weight:600">상세페이지 재구성</div>
     <div class="menu-item" data-page="thumbnail" style="color:#ff9800;font-weight:600">썸네일 만들기</div>
     <div class="menu-title">배송</div>
@@ -3572,7 +3574,7 @@
   <script src="/js/opportunityInbox.js?v=20260511a"></script>
   <script src="/js/shippingRecs.js?v=20260623auto"></script>
   <script src="/js/shippingRecsWms.js?v=20260513p4a"></script>
-  <script src="/js/aiWorkflow.js?v=20260809verify"></script>
+  <script src="/js/aiWorkflow.js?v=20260809files"></script>
   <script>
   // ===== Inline cost editing for master products =====
   document.addEventListener('click', async (e) => {

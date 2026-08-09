@@ -170,15 +170,40 @@
     const host = document.getElementById('wf-body');
     const c = state.competitor;
     const r = state.remake;
+    const mode = state.sourceMode || 'ebay';   // 'ebay' | 'files'
     host.innerHTML = `
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;">
-        <h3 style="color:#fff;margin:0 0 12px;">1단계 · 경쟁사 상품 가져오기</h3>
+        <h3 style="color:#fff;margin:0 0 12px;">1단계 · 상품 정보 가져오기</h3>
+
+        <!-- 소스 모드 토글 -->
+        <div style="display:flex;gap:0;margin-bottom:12px;border:1px solid #2a2a4a;border-radius:6px;overflow:hidden;width:fit-content;">
+          <button type="button" onclick="pmcAIWorkflow.setSourceMode('ebay')"
+            style="padding:8px 16px;background:${mode === 'ebay' ? '#7c4dff' : 'transparent'};border:0;color:${mode === 'ebay' ? '#fff' : '#888'};cursor:pointer;font-size:12px;font-weight:${mode === 'ebay' ? '700' : '400'};">🔗 eBay Item ID</button>
+          <button type="button" onclick="pmcAIWorkflow.setSourceMode('files')"
+            style="padding:8px 16px;background:${mode === 'files' ? '#7c4dff' : 'transparent'};border:0;color:${mode === 'files' ? '#fff' : '#888'};cursor:pointer;font-size:12px;font-weight:${mode === 'files' ? '700' : '400'};">📁 이미지 파일 업로드</button>
+        </div>
+
+        ${mode === 'ebay' ? `
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
           <input type="text" id="wf-item-id" placeholder="eBay Item ID (9~15자리)" value="${esc(c?.itemId || '')}"
             style="flex:1;min-width:240px;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
           <button type="button" onclick="pmcAIWorkflow.fetchCompetitor()" id="wf-fetch-btn"
             style="padding:10px 18px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">가져오기</button>
         </div>
+        ` : `
+        <div style="background:#0f0f23;border:2px dashed #444;border-radius:8px;padding:20px;text-align:center;margin-bottom:12px;">
+          <input type="file" id="wf-file-input" accept="image/*" multiple style="display:none;" onchange="pmcAIWorkflow.onFilesPicked(this.files)">
+          <button type="button" onclick="document.getElementById('wf-file-input').click()"
+            style="padding:12px 24px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">📁 이미지 파일 선택 (최대 5장)</button>
+          <div style="color:#666;font-size:11px;margin-top:8px;">JPG / PNG. AI 가 이미지에서 상품명·설명·특징을 자동 추출합니다.</div>
+          <div id="wf-file-list" style="margin-top:10px;font-size:11px;color:#aaa;text-align:left;"></div>
+          <div style="margin-top:10px;">
+            <input type="text" id="wf-file-title" placeholder="(선택) 상품명 힌트를 알고 있다면 입력" style="width:100%;padding:8px 10px;background:#1a1a2e;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;">
+          </div>
+          <button type="button" id="wf-file-submit" onclick="pmcAIWorkflow.submitFiles()" disabled
+            style="margin-top:10px;padding:10px 20px;background:#43a047;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;opacity:0.5;">🤖 AI 분석 시작</button>
+        </div>
+        `}
         <div id="wf-step1-status" style="color:#888;font-size:12px;margin-bottom:12px;"></div>
 
         ${c ? `
@@ -228,6 +253,80 @@
         ` : ''}
       </div>
     `;
+  }
+
+  // 2026-08-09: 파일 업로드 모드 (AI 리메이커 흡수)
+  const _uploadedFiles = [];  // File[] — 사장님 로컬 이미지
+  function setSourceMode(m) {
+    state.sourceMode = m;
+    renderStep1();
+  }
+  function onFilesPicked(fileList) {
+    _uploadedFiles.length = 0;
+    for (const f of fileList) if (f && f.size > 0) _uploadedFiles.push(f);
+    _uploadedFiles.splice(5);  // 최대 5장
+    const list = document.getElementById('wf-file-list');
+    if (list) list.innerHTML = _uploadedFiles.map(f => `📷 ${esc(f.name)} <span style="color:#666;">(${(f.size/1024).toFixed(0)}KB)</span>`).join('<br>');
+    const btn = document.getElementById('wf-file-submit');
+    if (btn) { btn.disabled = _uploadedFiles.length === 0; btn.style.opacity = _uploadedFiles.length ? '1' : '0.5'; }
+  }
+  async function submitFiles() {
+    if (_uploadedFiles.length === 0) { alert('이미지 파일을 최소 1장 선택하세요'); return; }
+    const btn = document.getElementById('wf-file-submit');
+    const status = document.getElementById('wf-step1-status');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ AI 분석 중 (30~60초)...'; }
+    if (status) status.textContent = '이미지에서 상품 정보 추출 중...';
+
+    const titleHint = document.getElementById('wf-file-title')?.value?.trim() || '';
+
+    try {
+      // /api/remarker/reconstruct 를 호출 (AI 리메이커와 같은 백엔드).
+      //   images multipart + htmlContent (제목 힌트만) → Gemini Vision 이 상품 정보 추출.
+      const fd = new FormData();
+      _uploadedFiles.forEach(f => fd.append('images', f, f.name));
+      fd.append('htmlContent', titleHint ? '상품명 힌트: ' + titleHint : '');
+      fd.append('lang', 'en');
+      fd.append('mode', 'standard');
+      const res = await fetch('/api/remarker/reconstruct', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+
+      // reconstruct 응답을 competitor + remake 형태로 매핑
+      //   originalImages 는 서버가 CDN 업로드하거나 URL 유지한 결과 반환
+      const imgs = data.originalImages || [];
+      state.competitor = {
+        itemId: null,
+        title: data.title || titleHint || '(파일 업로드)',
+        description: data.description || '',
+        price: 0,
+        currency: 'USD',
+        images: imgs,
+        itemSpecifics: data.extractedSpecs || {},
+        categoryId: '',
+        categoryName: '',
+        conditionId: '',
+        conditionDisplayName: '',
+      };
+      state.remake = {
+        title: data.title || titleHint || '',
+        description: data.description || '',
+        killPrice: 0,
+        seoKeywords: data.seoKeywords || [],
+      };
+      state.reconstruct = {
+        htmlDescription: data.description || '',
+        raw: data,
+        originalImages: imgs,
+        lang: 'en',
+        mode: 'standard',
+      };
+      state.selectedImageUrls = new Set(imgs);
+      if (status) status.innerHTML = '<span style="color:#81c784;">✅ AI 분석 완료 — 판매가는 4단계에서 직접 입력하세요.</span>';
+      renderStep1();
+    } catch (e) {
+      if (status) status.textContent = '에러: ' + e.message;
+      if (btn) { btn.disabled = false; btn.textContent = '🤖 AI 분석 시작'; btn.style.opacity = '1'; }
+    }
   }
 
   async function fetchCompetitor() {
@@ -1119,5 +1218,6 @@
   window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails,
     toggleImage, selectAllImages, clearImageSelection,
     runPublish, savePresetsFromUI, suggestEbayCategory, pickEbayCategory,
-    importPresetFromListing, checkEbayAspects, runVerify };
+    importPresetFromListing, checkEbayAspects, runVerify,
+    setSourceMode, onFilesPicked, submitFiles };
 })();
