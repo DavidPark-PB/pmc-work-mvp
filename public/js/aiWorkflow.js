@@ -28,24 +28,22 @@
   };
 
   // 프리셋 (localStorage 로 사장님 커스터마이즈 저장. GET /presets 로 default 조회 가능)
-  // 2026-08-09: v1 → v3 — 옛 프리셋 (잘못된 conditionId 등) 자동 무효화.
-  //   default 는 사장님 실제 성공 리스팅 (206202404025) 에서 그대로 복사.
-  const PRESET_STORAGE_KEY = 'pmcAIWorkflow.presets.v4';
+  // 2026-08-09 v5: VerifyAdd 로 실 통과 조합 확정 —
+  //   183456 (CCG Sealed Booster Boxes) + conditionId=1000 (New) + Set aspect.
+  //   기존 183454 (Single Cards) 는 eBay 정책 위반 (Booster Box 를 Single 카테고리에 못 올림).
+  const PRESET_STORAGE_KEY = 'pmcAIWorkflow.presets.v5';
   function loadPresets() {
     try {
-      // 옛 버전 자동 제거 (Card Condition 추가 전 버전들)
-      localStorage.removeItem('pmcAIWorkflow.presets.v1');
-      localStorage.removeItem('pmcAIWorkflow.presets.v2');
-      localStorage.removeItem('pmcAIWorkflow.presets.v3');
+      // 옛 버전 자동 제거 (모든 v1~v4 폐기 — 이전 값이 신규 등록 시 튕겨서)
+      ['v1', 'v2', 'v3', 'v4'].forEach(v => localStorage.removeItem('pmcAIWorkflow.presets.' + v));
       const raw = localStorage.getItem(PRESET_STORAGE_KEY);
       if (raw) return JSON.parse(raw);
     } catch {}
     return {
       ebay: {
-        // 사장님 실제 리스팅 206202404025 검증값 (2026-08-09 fetch):
-        //   category=183454 (CCG Individual Cards), condition=4000 (Ungraded)
-        //   Card Condition aspect (40001) 필수 — "Near mint or better" 가 실제 값.
-        categoryId: '183454', conditionId: '4000', currency: 'USD', quantity: 1,
+        // 2026-08-09 VerifyAdd 통과 확정 조합.
+        // 다른 카테고리 참고: 183455 = Sealed Booster Packs / 183454 = Single Cards (구 리스팅)
+        categoryId: '183456', conditionId: '1000', currency: 'USD', quantity: 1,
         itemSpecifics: {
           Game: 'Pokémon TCG',
           Type: 'Booster Box',
@@ -53,7 +51,7 @@
           Language: 'Korean',
           'Age Level': '6+',
           'Country of Origin': 'Korea, Republic of',
-          'Card Condition': 'Near mint or better',
+          Set: 'Scarlet & Violet',
         },
       },
       shopify: {
@@ -818,11 +816,10 @@
                 <label style="color:#aaa;">Age Level (필수)<br><input type="text" id="wf-preset-ebay-age" value="${esc(presets.ebay.itemSpecifics?.['Age Level'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Language<br><input type="text" id="wf-preset-ebay-lang" value="${esc(presets.ebay.itemSpecifics?.Language || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
                 <label style="color:#aaa;">Country of Origin<br><input type="text" id="wf-preset-ebay-country" value="${esc(presets.ebay.itemSpecifics?.['Country of Origin'] || presets.ebay.itemSpecifics?.['Country/Region of Manufacture'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;grid-column:span 2;">Card Condition (필수 — aspect 40001)
-                  <select id="wf-preset-ebay-cardcond" style="width:100%;margin-top:2px;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
-                    ${['Near mint or better','Excellent','Very Good','Good','Light Play','Poor'].map(v => `<option value="${v}" ${(presets.ebay.itemSpecifics?.['Card Condition'] || 'Near mint or better') === v ? 'selected' : ''}>${v}</option>`).join('')}
-                  </select>
+                <label style="color:#aaa;grid-column:span 2;">Set (필수 — 상품마다 다름)
+                  <input type="text" id="wf-preset-ebay-set" value="${esc(presets.ebay.itemSpecifics?.Set || '')}" placeholder="예: Scarlet & Violet, Legends, Mega Festa 2026" style="width:100%;margin-top:2px;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
                 </label>
+                <div style="grid-column:span 2;color:#666;font-size:10px;">💡 Booster Box=183456 / Booster Pack=183455 / Single Card=183454</div>
               </div>
             </details>
           </div>
@@ -965,7 +962,7 @@
   //   Trading Cards 는 여기에 안 뜨는 필드도 필수인 경우 있음 (Card Condition aspect 40001)
   //   → 알려진 특수 케이스 추가로 표시.
   async function checkEbayAspects() {
-    const cid = document.getElementById('wf-preset-ebay-category')?.value?.trim() || '183454';
+    const cid = document.getElementById('wf-preset-ebay-category')?.value?.trim() || '183456';
     const box = document.getElementById('wf-aspect-list');
     if (box) box.innerHTML = '<span style="color:#888;">조회 중...</span>';
     try {
@@ -975,13 +972,9 @@
       const asp = j.aspects || [];
       const required = asp.filter(a => a.required);
       const recommended = asp.filter(a => !a.required).slice(0, 8);
-      // Trading Cards 특수: Card Condition 도 사실상 필수
-      const TC_EXTRA = ['Card Condition'];
-      const extraNote = /^(1834|2611|61587|61588)/.test(cid) ? `<br><span style="color:#ffab91;">⚠ Trading Cards 특수 필수: <b>${TC_EXTRA.join(', ')}</b> (Taxonomy API 에 안 뜨지만 aspect 40001 로 강제됨)</span>` : '';
       const html = `
         <div style="color:#81c784;font-weight:600;margin-bottom:2px;">필수 (${required.length}):</div>
         ${required.length > 0 ? `<ul style="margin:0 0 4px 16px;padding:0;color:#c8e6c9;">${required.map(a => `<li>${esc(a.name)} <span style="color:#888;">(${a.mode})</span></li>`).join('')}</ul>` : '<div style="color:#666;margin-bottom:4px;">(공식 API 상 없음)</div>'}
-        ${extraNote}
         <div style="color:#90caf9;font-weight:600;margin-top:6px;margin-bottom:2px;">추천 (권장):</div>
         <div style="color:#aaa;">${recommended.map(a => esc(a.name)).join(' · ') || '(없음)'}</div>
       `;
@@ -1028,8 +1021,8 @@
   function savePresetsFromUI() {
     const presets = {
       ebay: {
-        categoryId:  document.getElementById('wf-preset-ebay-category')?.value?.trim() || '183454',
-        conditionId: document.getElementById('wf-preset-ebay-condition')?.value?.trim() || '4000',
+        categoryId:  document.getElementById('wf-preset-ebay-category')?.value?.trim() || '183456',
+        conditionId: document.getElementById('wf-preset-ebay-condition')?.value?.trim() || '1000',
         currency:    document.getElementById('wf-preset-ebay-currency')?.value?.trim() || 'USD',
         quantity:    1,
         itemSpecifics: {
@@ -1039,7 +1032,7 @@
           'Age Level':         document.getElementById('wf-preset-ebay-age')?.value?.trim() || '',
           Language:            document.getElementById('wf-preset-ebay-lang')?.value?.trim() || '',
           'Country of Origin': document.getElementById('wf-preset-ebay-country')?.value?.trim() || '',
-          'Card Condition':    document.getElementById('wf-preset-ebay-cardcond')?.value || 'Near mint or better',
+          Set:                 document.getElementById('wf-preset-ebay-set')?.value?.trim() || '',
         },
       },
       shopify: {

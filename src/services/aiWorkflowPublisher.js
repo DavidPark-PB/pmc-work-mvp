@@ -23,12 +23,13 @@
 // 사장님 대부분 상품이 TCG 카드라 아래가 안전한 default. 필요시 preset 으로 override.
 const DEFAULT_PRESETS = {
   ebay: {
-    // 2026-08-09: 사장님 실제 성공 리스팅 206202404025 값 그대로 복사.
-    //   category 183454 (CCG Individual Cards), condition 4000 (Ungraded),
-    //   itemSpecifics: Game/Type/Manufacturer/Language/Age Level/Country of Origin.
-    //   Brand/Grade 는 실제 리스팅에 없어서 제외 (있으면 오히려 required 검증 실패).
-    categoryId: '183454',
-    conditionId: '4000',
+    // 2026-08-09: 사장님 성공 리스팅 (183454) 은 옛날 리스팅이라 살아있지만, eBay 는 이제
+    //   Single Cards 카테고리에 Booster Box 신규 등록을 정책 위반으로 거부함. VerifyAdd 로
+    //   183456 (CCG Sealed Booster Boxes) + conditionId=1000 (New) + Set aspect 조합만
+    //   통과 확인됨. Card Condition/ConditionDescriptor 는 New 상품엔 불필요.
+    //   Booster Pack 이면 183455 (Sealed Booster Packs) / Type='Booster Pack'.
+    categoryId: '183456',
+    conditionId: '1000',
     currency: 'USD',
     quantity: 1,
     dispatchTimeMax: 3,
@@ -40,7 +41,7 @@ const DEFAULT_PRESETS = {
       Language: 'Korean',
       'Age Level': '6+',
       'Country of Origin': 'Korea, Republic of',
-      'Card Condition': 'Near mint or better',   // aspect 40001 필수
+      Set: 'Scarlet & Violet',   // 상품마다 다름 — UI 에서 수정
     },
   },
   shopify: {
