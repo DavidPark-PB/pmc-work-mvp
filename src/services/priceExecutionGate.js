@@ -52,6 +52,10 @@ const GATE_REASON = Object.freeze({
   INVALID_PRICE: 'GATE_INVALID_PRICE',
   UNSUPPORTED_CURRENCY: 'GATE_UNSUPPORTED_CURRENCY',
   MARKETPLACE_FAILED: 'GATE_MARKETPLACE_FAILED',
+  // 2026-08-10 owner directive: a re-issued request_id whose prior run
+  // is still pending/started is NOT the same failure mode as a guardrail
+  // read failure. Callers can retry after the concurrent run settles.
+  EXECUTION_IN_PROGRESS: 'GATE_EXECUTION_IN_PROGRESS',
 });
 
 /** Terminal automation_runs.status values the gate treats as "already settled".
@@ -135,7 +139,7 @@ async function executePriceWrite(req, deps = {}) {
     // Postgres error code 23505 = unique_violation.
     const code = insertRes.error.code || '';
     if (code === '23505' || /duplicate key|unique constraint/i.test(insertRes.error.message || '')) {
-      return replayPriorRun({ db, requestId: req.requestId });
+      return replayPriorRun({ db, requestId: req.requestId, req, deps });
     }
     // Any other insert failure = infra unreachable → fail-closed BLOCK.
     return {
@@ -341,7 +345,7 @@ async function markRun(db, runId, status, when, extra = {}) {
   }
 }
 
-async function replayPriorRun({ db, requestId }) {
+async function replayPriorRun({ db, requestId, req, deps }) {
   const { data, error } = await db
     .from('automation_runs')
     .select('id, status, output_snapshot, error_message')
@@ -377,10 +381,19 @@ async function replayPriorRun({ db, requestId }) {
   }
   // status === 'pending' or 'started' → another gate is executing right now.
   // Refuse to double-execute; caller can retry after a moment.
+  // Emit a PriceBlocked event so operators see the concurrent-collision.
+  const eventId = await safePublish(deps || {}, {
+    event_type: 'PriceBlocked',
+    sku: (req && req.sku) || null, item_id: (req && req.itemId) || null,
+    old_price: req && req.oldPrice, new_price: req && req.newPrice,
+    currency: (req && req.currency) || 'USD',
+    actor: (req && req.actor) || 'system',
+    reason_code_gate: GATE_REASON.EXECUTION_IN_PROGRESS,
+  });
   return {
     outcome: OUTCOME.BLOCKED,
-    reasonCode: GATE_REASON.GUARDRAIL_READ_FAILED,
-    runId: null, priorRunId: data.id, eventId: null,
+    reasonCode: GATE_REASON.EXECUTION_IN_PROGRESS,
+    runId: null, priorRunId: data.id, eventId,
     error: `concurrent execution in progress (status=${data.status})`,
   };
 }

@@ -2177,73 +2177,35 @@ router.post('/battle/refresh', async (req, res) => {
   }
 });
 
-// POST /api/battle/kill-price — 킬 프라이스 적용
+// POST /api/battle/kill-price — 킬 프라이스 적용 (Phase 1 Commit 3)
+//   Legacy ebay.updateItem/ebay_products.update 직접 호출은 완전 제거됨.
+//   모든 mutation 은 PriceExecutionGate 통과 (context=MANUAL_APPROVED,
+//   kill_switch/idempotency/audit 강제).
+//   가격 결정/pre-check 로직은 battleKillPriceService 안에 보존.
 router.post('/battle/kill-price', async (req, res) => {
   try {
-    const { itemId, newPrice, sku } = req.body;
+    const { executeBattleKillPrice } = require('../../services/battleKillPriceService');
+    const outcome = await executeBattleKillPrice(
+      req.body || {},
+      { userId: req.user?.id, actor: req.user ? `user:${req.user.id}` : 'system' },
+    );
 
-    if (!itemId || !newPrice) {
-      return res.status(400).json({ error: 'itemId와 newPrice 필수' });
-    }
-
-    const price = parseFloat(newPrice);
-
-    // Check for suspicious competitor (price crash > 50%) — only active competitors with real item IDs
-    if (sku) {
-      const { getClient } = require('../../db/supabaseClient');
-      const cpDb = getClient();
-      const { data: comps } = await cpDb.from('competitor_prices')
-        .select('competitor_price, prev_price, status, competitor_id')
-        .eq('sku', sku)
-        .neq('competitor_id', '')
-        .order('competitor_price', { ascending: true });
-
-      // Check if ALL active competitors are ended
-      const activeComps = (comps || []).filter(c => c.status !== 'ended' && c.competitor_id);
-      if (activeComps.length === 0 && comps && comps.length > 0) {
-        // All competitors ended — warn but don't block
-        console.log('[kill-price] Warning: all competitors ended for', sku);
-      }
-
-      // Check for price crash on active competitors only
-      const cheapest = activeComps[0];
-      if (cheapest && cheapest.prev_price && cheapest.competitor_price) {
-        const drop = (cheapest.prev_price - cheapest.competitor_price) / cheapest.prev_price * 100;
-        if (drop >= 50) {
-          return res.json({ success: false, error: `경쟁사 가격이 ${drop.toFixed(0)}% 폭락 — 비정상 가격, 따라가지 마세요 (이전: $${cheapest.prev_price}, 현재: $${cheapest.competitor_price})` });
-        }
+    // Legacy products.price_usd sync — best-effort, gate 성공 시에만.
+    //   전투 상황판은 ebay_products (gate 가 이미 갱신) 를 읽으므로 필수 아님.
+    //   다만 다른 legacy 화면이 products 를 참조할 수 있어 계속 유지.
+    if (outcome.ok && req.body?.sku) {
+      try {
+        await dataSource.updateProduct('sku', req.body.sku, { priceUSD: parseFloat(req.body.newPrice) });
+      } catch (e) {
+        console.warn('[kill-price] legacy products.price_usd sync failed:', e.message);
       }
     }
-
-    const ebay = getEbayAPI();
-    const result = await ebay.updateItem(itemId, { price });
-
-    if (result.success) {
-      // Update price in Supabase — BOTH tables:
-      //   products (legacy)          — dataSource.updateProduct 는 이것만 함
-      //   ebay_products (전투 상황판) — v_battle_dashboard_rows 가 읽는 진짜 소스
-      //
-      // 2026-07-19 사장님 지적: 킬프라이스 후 계속 "지고 있는 상품" 으로 보임.
-      //   원인: ebay_products 는 크론 (03:00 KST) 이 돌기 전까지 안 갱신 →
-      //   전투 상황판은 옛날 가격으로 losing 판정 유지. Fix: 여기서 즉시 UPDATE.
-      if (sku) {
-        await dataSource.updateProduct('sku', sku, { priceUSD: parseFloat(newPrice) });
-      }
-      if (itemId) {
-        const { getClient } = require('../../db/supabaseClient');
-        const epDb = getClient();
-        await epDb.from('ebay_products').update({
-          price_usd: parseFloat(newPrice),
-          updated_at: new Date().toISOString(),
-        }).eq('item_id', String(itemId));
-      }
-
+    if (outcome.ok) {
       battleCache = null;
       analysisCache = null;
-      res.json({ success: true, itemId, newPrice: parseFloat(newPrice) });
-    } else {
-      res.json({ success: false, error: result.error });
     }
+
+    res.status(outcome.httpStatus).json(outcome.body);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

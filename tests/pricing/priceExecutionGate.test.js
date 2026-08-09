@@ -359,7 +359,7 @@ test('14. Same request_id after prior FAILURE → IDEMPOTENT_REPLAY (PRIOR_FAILU
   assert.equal(m.ebayCalls.length, 1);                    // 실패건도 재시도 안 함 (요청자가 새 request_id 로 재시도해야)
 });
 
-test('15. Concurrent execution: pending row exists → BLOCKED', async () => {
+test('15. Concurrent execution: pending row exists → BLOCKED with EXECUTION_IN_PROGRESS', async () => {
   // Simulate that a run with this request_id already exists in pending state
   // (another gate is mid-flight). Insert one manually then try to reuse.
   const m = makeMocks();
@@ -368,8 +368,13 @@ test('15. Concurrent execution: pending row exists → BLOCKED', async () => {
   });
   const r = await executePriceWrite({ ...HEALTHY_REQ(), requestId: 'concurrent-key' }, m.deps);
   assert.equal(r.outcome, OUTCOME.BLOCKED);
+  assert.equal(r.reasonCode, GATE_REASON.EXECUTION_IN_PROGRESS);
   assert.match(r.error || '', /concurrent execution/);
   assert.equal(m.ebayCalls.length, 0);
+  // PriceBlocked event emitted with the accurate gate reason.
+  const blocked = m.priceEvents.filter(e => e.event_type === 'PriceBlocked');
+  assert.equal(blocked.length, 1);
+  assert.equal(blocked[0].confidence_snapshot.gate_reason, GATE_REASON.EXECUTION_IN_PROGRESS);
 });
 
 test('15b. Same request_id after prior CANCELLED (blocked) → IDEMPOTENT_REPLAY (PRIOR_BLOCKED)', async () => {
