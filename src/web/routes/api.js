@@ -3315,6 +3315,23 @@ router.get('/ai-workflow/presets', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 2026-08-09: eBay 카테고리별 필수/추천 aspect 목록 조회.
+//   시행착오 없이 사전에 어떤 aspect 가 required 인지 알 수 있음.
+//   GET /api/ai-workflow/ebay-aspects?categoryId=183454
+router.get('/ai-workflow/ebay-aspects', async (req, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ error: '로그인 필요' });
+    const categoryId = String(req.query.categoryId || '').trim();
+    if (!categoryId) return res.status(400).json({ error: 'categoryId 필수' });
+    const ebay = getEbayAPI();
+    const aspects = await ebay.getRequiredAspects(categoryId);
+    res.json({ categoryId, aspects, requiredCount: aspects.filter(a => a.required).length });
+  } catch (e) {
+    console.error('[ai-workflow/ebay-aspects]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 2026-08-09: 성공한 이베이 리스팅에서 프리셋 자동 추출.
 //   사장님이 잘 팔리는 상품 아이템 ID 입력 → 그 리스팅의 categoryId/conditionId/itemSpecifics
 //   를 그대로 반환. 프론트가 preset 편집 필드에 자동 채움.

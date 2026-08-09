@@ -587,6 +587,46 @@ class EbayAPI {
   }
 
   /**
+   * 2026-08-09: 카테고리별 필수/추천 aspect 목록 조회.
+   * REST Taxonomy API 사용 — 시행착오 없이 사전에 필수 aspect 알 수 있음.
+   * @param {string} categoryId
+   * @returns {Promise<Array<{name, required, mode, values, cardinality}>>}
+   */
+  async getRequiredAspects(categoryId) {
+    if (!categoryId) return [];
+    try {
+      // 1) marketplace 별 category_tree_id (EBAY_US = 0)
+      // 2) get_item_aspects_for_category
+      const marketplaceId = process.env.EBAY_MARKETPLACE_ID || 'EBAY_US';
+      const treeId = ({ EBAY_US: '0', EBAY_UK: '3', EBAY_DE: '77', EBAY_AU: '15' })[marketplaceId] || '0';
+      await this._ensureToken();
+      const token = this.userToken;
+      if (!token) throw new Error('eBay access token 없음 — OAuth 인증 필요');
+      const axios = require('axios');
+      const url = `https://api.ebay.com/commerce/taxonomy/v1/category_tree/${treeId}/get_item_aspects_for_category?category_id=${encodeURIComponent(categoryId)}`;
+      const r = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en-US' },
+        timeout: 15000, validateStatus: () => true,
+      });
+      if (r.status !== 200) {
+        console.warn('[getRequiredAspects] HTTP', r.status, JSON.stringify(r.data).slice(0, 200));
+        return [];
+      }
+      const aspects = r.data?.aspects || [];
+      return aspects.map(a => ({
+        name: a.localizedAspectName,
+        required: a.aspectConstraint?.aspectRequired === true,
+        mode: a.aspectConstraint?.aspectMode,  // FREE_TEXT / SELECTION_ONLY
+        cardinality: a.aspectConstraint?.itemToAspectCardinality,  // SINGLE / MULTI
+        values: (a.aspectValues || []).map(v => v.localizedValue).slice(0, 50),  // top 50 suggestions
+      })).sort((a, b) => (b.required - a.required));   // 필수 먼저
+    } catch (e) {
+      console.error('[getRequiredAspects]', e.message);
+      return [];
+    }
+  }
+
+  /**
    * XML 특수문자 이스케이프
    */
   escapeXml(str) {

@@ -679,6 +679,14 @@
                 </div>
                 <div id="wf-preset-source-status" style="font-size:10px;color:#888;margin-top:4px;"></div>
               </div>
+              <!-- 카테고리 필수 aspect 사전 조회 (rate limit 낭비 방지) -->
+              <div style="margin-top:6px;padding:8px;background:#2a1a3a;border:1px dashed #7c4dff;border-radius:4px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                  <div style="font-size:11px;color:#b39ddb;">🔎 카테고리 필수 aspect 미리 확인 (등록 실패 낭비 방지)</div>
+                  <button type="button" onclick="pmcAIWorkflow.checkEbayAspects()" style="padding:3px 10px;background:#7c4dff;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px;">🔎 조회</button>
+                </div>
+                <div id="wf-aspect-list" style="font-size:10px;color:#888;"></div>
+              </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;font-size:11px;">
                 <label style="color:#aaa;grid-column:span 2;">Category ID
                   <div style="display:flex;gap:4px;margin-top:2px;">
@@ -835,6 +843,36 @@
     if (inp) inp.value = cid;
     const box = document.getElementById('wf-cat-suggest');
     if (box) box.innerHTML = '<span style="color:#81c784;">✓ 카테고리 ' + esc(cid) + ' 로 세팅됨. 프리셋 저장 후 재시도.</span>';
+  }
+
+  // 카테고리별 필수 aspect 사전 조회 → 어떤 필드가 반드시 필요한지 미리 확인.
+  //   Trading Cards 는 여기에 안 뜨는 필드도 필수인 경우 있음 (Card Condition aspect 40001)
+  //   → 알려진 특수 케이스 추가로 표시.
+  async function checkEbayAspects() {
+    const cid = document.getElementById('wf-preset-ebay-category')?.value?.trim() || '183454';
+    const box = document.getElementById('wf-aspect-list');
+    if (box) box.innerHTML = '<span style="color:#888;">조회 중...</span>';
+    try {
+      const r = await fetch('/api/ai-workflow/ebay-aspects?categoryId=' + encodeURIComponent(cid));
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+      const asp = j.aspects || [];
+      const required = asp.filter(a => a.required);
+      const recommended = asp.filter(a => !a.required).slice(0, 8);
+      // Trading Cards 특수: Card Condition 도 사실상 필수
+      const TC_EXTRA = ['Card Condition'];
+      const extraNote = /^(1834|2611|61587|61588)/.test(cid) ? `<br><span style="color:#ffab91;">⚠ Trading Cards 특수 필수: <b>${TC_EXTRA.join(', ')}</b> (Taxonomy API 에 안 뜨지만 aspect 40001 로 강제됨)</span>` : '';
+      const html = `
+        <div style="color:#81c784;font-weight:600;margin-bottom:2px;">필수 (${required.length}):</div>
+        ${required.length > 0 ? `<ul style="margin:0 0 4px 16px;padding:0;color:#c8e6c9;">${required.map(a => `<li>${esc(a.name)} <span style="color:#888;">(${a.mode})</span></li>`).join('')}</ul>` : '<div style="color:#666;margin-bottom:4px;">(공식 API 상 없음)</div>'}
+        ${extraNote}
+        <div style="color:#90caf9;font-weight:600;margin-top:6px;margin-bottom:2px;">추천 (권장):</div>
+        <div style="color:#aaa;">${recommended.map(a => esc(a.name)).join(' · ') || '(없음)'}</div>
+      `;
+      if (box) box.innerHTML = html;
+    } catch (e) {
+      if (box) box.innerHTML = '<span style="color:#ff8a80;">에러: ' + esc(e.message) + '</span>';
+    }
   }
 
   // 성공한 이베이 리스팅에서 프리셋 자동 복사 (실수 없이 검증된 값 사용).
@@ -1027,5 +1065,5 @@
   window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails,
     toggleImage, selectAllImages, clearImageSelection,
     runPublish, savePresetsFromUI, suggestEbayCategory, pickEbayCategory,
-    importPresetFromListing };
+    importPresetFromListing, checkEbayAspects };
 })();
