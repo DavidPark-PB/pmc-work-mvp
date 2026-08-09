@@ -5579,11 +5579,21 @@ router.get('/repricing/evaluate/:sku', async (req, res) => {
   }
 });
 
-// POST /api/repricing/execute/:sku — execute repricing
+// POST /api/repricing/execute/:sku — execute repricing (Phase 1 Commit 6)
+//   Legacy flow (products.price_usd UPDATE + price_change_log INSERT +
+//   direct api.updatePrice) is now routed through PriceExecutionGate.
+//   Route response contract preserved (adds gateRunId/gateEventId fields).
 router.post('/repricing/execute/:sku', async (req, res) => {
   try {
     const repricing = new RepricingService();
-    const result = await repricing.executeRepricing(req.params.sku, req.query.platform || 'ebay');
+    const result = await repricing.executeRepricing(
+      req.params.sku,
+      req.query.platform || 'ebay',
+      {
+        actor: req.user ? `user:${req.user.id}` : 'system:repricing',
+        requestId: req.body?.requestId,
+      },
+    );
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });

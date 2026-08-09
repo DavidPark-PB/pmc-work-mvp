@@ -5,7 +5,18 @@
  */
 const platformRegistry = require('./platformRegistry');
 const pricingEngine = require('./pricingEngine');
+const priceExecutionGate = require('./priceExecutionGate');
 const { getClient } = require('../db/supabaseClient');
+
+/**
+ * Deterministic idempotency key for legacy repricing execution.
+ *   repricing:manual:${sku}:${platform}:${YYYY-MM-DDTHH}:${price.toFixed(2)}
+ * — Same SKU + same platform + same hour + same recommended price collapses
+ *   accidental re-clicks. Different hour or different price → new key.
+ */
+function _repricingRequestId({ sku, itemId, platform, price, hourBucket }) {
+  return `repricing:manual:${sku}:${itemId}:${platform}:${hourBucket}:${Number(price).toFixed(2)}`;
+}
 
 class RepricingService {
   _getPlatformRepo() {
@@ -119,62 +130,138 @@ class RepricingService {
   }
 
   /**
-   * Execute repricing: evaluate + update price via platform API + log
+   * Execute repricing: evaluate + route through PriceExecutionGate.
+   *
+   * Phase 1 Commit 6: direct api.updatePrice call removed. All marketplace
+   * writes now go through the gate. Legacy tables (products.price_usd,
+   * price_change_log) are still updated as a best-effort mirror AFTER gate
+   * success — never before, never on failure.
+   *
+   * @param {string} sku
+   * @param {string} [platform='ebay']
+   * @param {object} [opts]           — { requestId, actor, deps, evaluation }
+   *   opts.evaluation — override evaluateRepricing() (tests only)
+   *   opts.deps.gateExecute — override the gate (tests)
+   *   opts.deps.db — override Supabase client (tests)
+   *   opts.deps.now — () → Date (tests: freeze hour bucket)
+   *   opts.deps.platformObj — pre-loaded platform row
+   *   opts.deps.itemId — pre-loaded platform item id
    */
-  async executeRepricing(sku, platform = 'ebay') {
-    const evaluation = await this.evaluateRepricing(sku, platform);
+  async executeRepricing(sku, platform = 'ebay', opts = {}) {
+    const deps = opts.deps || {};
+    const evaluation = opts.evaluation || await this.evaluateRepricing(sku, platform);
     if (!evaluation || evaluation.action === 'no_change' ||
         evaluation.action === 'no_competitor_data' || evaluation.action === 'no_rules') {
       return { sku, ...evaluation, executed: false };
     }
 
-    const repo = this._getPlatformRepo();
-    const db = getClient();
-
-    try {
-      // Update price via platform API
-      const api = platformRegistry.getApiInstance(platform);
-
-      // Get platform item ID from export status
-      const platformObj = await platformRegistry.getPlatform(platform);
-      const { data: product } = await db.from('products').select('id').eq('sku', sku).single();
-      if (!product || !platformObj) throw new Error('Product or platform not found');
-
-      const exportStatus = await repo.getExportStatus(product.id, platformObj.id);
-      const itemId = exportStatus?.platform_item_id;
-      if (!itemId) throw new Error('No platform item ID found — product not yet exported');
-
-      // Call API to update price
-      if (platform === 'ebay') {
-        await api.updatePrice(itemId, evaluation.recommendedPrice);
-      }
-
-      // Update product price in DB
-      await db.from('products').update({ price_usd: evaluation.recommendedPrice })
-        .eq('sku', sku);
-
-      // Log price change
-      await repo.logPriceChange(
-        sku, platform,
-        evaluation.currentPrice, evaluation.recommendedPrice,
-        `${evaluation.strategy}_${evaluation.action}`,
-        evaluation.competitorTotal
-      );
-
+    // This phase only routes eBay through the gate. Other marketplaces
+    // stay on the legacy path (owner directive: eBay-only for now).
+    if (platform !== 'ebay') {
       return {
-        sku,
-        ...evaluation,
-        executed: true,
-        newPrice: evaluation.recommendedPrice,
-      };
-    } catch (err) {
-      return {
-        sku,
-        ...evaluation,
-        executed: false,
-        error: err.message,
+        sku, ...evaluation, executed: false,
+        error: `gate ${platform} 지원 안 함 (this phase: eBay only)`,
       };
     }
+
+    const repo = this._getPlatformRepo();
+    const db = deps.db || getClient();
+
+    // Resolve platform item id from legacy export_status table (unchanged).
+    let itemId = deps.itemId || null;
+    if (!itemId) {
+      try {
+        const platformObj = deps.platformObj || await platformRegistry.getPlatform(platform);
+        const { data: product } = await db.from('products').select('id').eq('sku', sku).single();
+        if (!product || !platformObj) {
+          return { sku, ...evaluation, executed: false, error: 'Product or platform not found' };
+        }
+        const exportStatus = await repo.getExportStatus(product.id, platformObj.id);
+        itemId = exportStatus?.platform_item_id;
+      } catch (e) {
+        return { sku, ...evaluation, executed: false, error: e.message };
+      }
+    }
+    if (!itemId) {
+      return { sku, ...evaluation, executed: false, error: 'No platform item ID found — product not yet exported' };
+    }
+
+    // Gate.
+    const now = (deps.now || (() => new Date()))();
+    const hourBucket = now.toISOString().slice(0, 13); // YYYY-MM-DDTHH
+    const requestId = opts.requestId || _repricingRequestId({
+      sku, itemId, platform, price: evaluation.recommendedPrice, hourBucket,
+    });
+    const gateFn = deps.gateExecute || priceExecutionGate.executePriceWrite;
+    const outcome = await gateFn({
+      sku,
+      itemId: String(itemId),
+      oldPrice: evaluation.currentPrice,
+      newPrice: evaluation.recommendedPrice,
+      reasonCode: 'AUTO_UNDERCUT_SAFE',
+      requestId,
+      context: 'MANUAL_APPROVED',
+      actor: opts.actor || 'system:repricing',
+      currency: 'USD',
+    }, deps.gateDeps || {});
+
+    // Marketplace-write outcome tallies (used by tests / observability).
+    const gateMarketplaceCalls =
+      outcome.outcome === priceExecutionGate.OUTCOME.APPLIED ||
+      outcome.outcome === priceExecutionGate.OUTCOME.FAILED
+        ? 1 : 0;
+
+    if (outcome.outcome === priceExecutionGate.OUTCOME.APPLIED) {
+      // Legacy mirror sync — best-effort, must NEVER precede marketplace success.
+      let legacyPriceSync = false;
+      try {
+        const { error } = await db.from('products')
+          .update({ price_usd: evaluation.recommendedPrice }).eq('sku', sku);
+        legacyPriceSync = !error;
+      } catch { /* keep gate outcome as truth */ }
+
+      let legacyLogWrote = false;
+      try {
+        await repo.logPriceChange(
+          sku, platform,
+          evaluation.currentPrice, evaluation.recommendedPrice,
+          `${evaluation.strategy}_${evaluation.action}`,
+          evaluation.competitorTotal
+        );
+        legacyLogWrote = true;
+      } catch { /* legacy compat only */ }
+
+      return {
+        sku, ...evaluation,
+        executed: true, newPrice: evaluation.recommendedPrice,
+        gateRunId: outcome.runId, gateEventId: outcome.eventId,
+        legacyPriceSync, legacyLogWrote, marketplaceCalls: gateMarketplaceCalls,
+      };
+    }
+    if (outcome.outcome === priceExecutionGate.OUTCOME.IDEMPOTENT_REPLAY) {
+      return {
+        sku, ...evaluation,
+        executed: outcome.reasonCode === 'PRIOR_SUCCESS',
+        idempotent: true, priorReason: outcome.reasonCode,
+        gateRunId: outcome.priorRunId, gateEventId: outcome.eventId,
+        marketplaceCalls: 0,
+      };
+    }
+    if (outcome.outcome === priceExecutionGate.OUTCOME.BLOCKED) {
+      return {
+        sku, ...evaluation,
+        executed: false, blocked: true, blockReason: outcome.reasonCode,
+        gateRunId: outcome.runId, marketplaceCalls: 0,
+      };
+    }
+    // FAILED
+    return {
+      sku, ...evaluation,
+      executed: false,
+      error: outcome.error || 'marketplace failed',
+      gateRunId: outcome.runId, gateEventId: outcome.eventId,
+      marketplaceCalls: gateMarketplaceCalls,
+    };
   }
 
   /**
@@ -544,3 +631,4 @@ class RepricingService {
 }
 
 module.exports = RepricingService;
+module.exports._internal = { _repricingRequestId };
