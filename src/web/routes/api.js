@@ -1315,47 +1315,20 @@ router.put('/master-products/:sku', async (req, res) => {
 // 가격/재고 수정 엔드포인트 (NEW)
 // ===========================
 
-// PUT /api/products/ebay/:itemId — eBay 가격/수량 수정 + Supabase 동기화
+// PUT /api/products/ebay/:itemId — eBay 가격/수량 수정 (Phase 1 Commit 4)
+//   Price mutation 은 PriceExecutionGate 통과 (context=MANUAL_DIRECT).
+//   Quantity 는 이번 phase 범위 밖 — legacy path 유지.
+//   Route 안에 getEbayAPI().updateItem 이나 ebay_products.update 직접 호출 없음.
 router.put('/products/ebay/:itemId', async (req, res) => {
   try {
-    const { itemId } = req.params;
-    const { price, quantity, sku } = req.body;
-
-    if (price === undefined && quantity === undefined) {
-      return res.status(400).json({ error: '가격 또는 수량을 입력하세요' });
-    }
-
-    const api = getEbayAPI();
-    const updates = {};
-    if (price !== undefined) updates.price = parseFloat(price);
-    if (quantity !== undefined) updates.quantity = parseInt(quantity);
-
-    const result = await api.updateItem(itemId, updates);
-    platformCache = null;
-
-    // Sync to Supabase (products table)
-    const dbUpdates = {};
-    if (price !== undefined) dbUpdates.priceUSD = price;
-    if (quantity !== undefined) dbUpdates.stock = quantity;
-    const dbResult = await dataSource.updateProduct('itemId', itemId, dbUpdates, sku);
-
-    // Sync to ebay_products table
-    const { getClient } = require('../../db/supabaseClient');
-    const ebayDb = getClient();
-    const ebayUpdates = {};
-    if (price !== undefined) ebayUpdates.price_usd = parseFloat(price);
-    if (quantity !== undefined) ebayUpdates.stock = parseInt(quantity);
-    ebayUpdates.updated_at = new Date().toISOString();
-    await ebayDb.from('ebay_products').update(ebayUpdates).eq('item_id', itemId);
-
-    res.json({
-      success: result.success,
-      platform: 'eBay',
-      itemId,
-      updates,
-      dbSync: dbResult.success,
-      error: result.error
-    });
+    const { executeEbayProductEdit } = require('../../services/ebayProductEditService');
+    const outcome = await executeEbayProductEdit(
+      { itemId: req.params.itemId, ...(req.body || {}) },
+      { userId: req.user?.id, actor: req.user ? `user:${req.user.id}` : 'system' },
+      { dataSource },     // legacy products.price_usd sync 유지
+    );
+    if (outcome.ok) platformCache = null;
+    res.status(outcome.httpStatus).json(outcome.body);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
