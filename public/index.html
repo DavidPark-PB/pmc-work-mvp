@@ -641,11 +641,14 @@
     <div class="menu-item" data-page="products">전체 상품</div>
     <!-- 상품 등록 메뉴 제거 — automation에서 처리 -->
     <div class="menu-item" data-page="ai-workflow" style="color:#ffd54f;font-weight:700">🪄 AI 상품 제작 (통합)</div>
-    <!-- 2026-08-09: AI 리메이커 기능은 'AI 상품 제작 (통합)' 1단계에 흡수 (파일 업로드 모드 추가).
-         기존 페이지/route/데이터는 유지, 사이드바 링크만 숨김. 필요 시 이 줄만 되돌리면 복구. -->
+    <!-- 2026-08-09: AI 리메이커/상세페이지 재구성/썸네일 만들기 3종 모두 'AI 상품 제작 (통합)' 에 흡수됨.
+         - AI 리메이커        → 1단계 (eBay ID or 파일 업로드)
+         - 상세페이지 재구성  → 2단계 (PMC 표준 or AI 재구성)
+         - 썸네일 만들기      → 3단계 (플랫폼별 자동 생성)
+         페이지 div/route 는 유지, 사이드바 링크만 숨김. 필요 시 display:none 만 제거하면 복구. -->
     <div class="menu-item" data-page="remarker" style="display:none;color:#7c4dff;font-weight:600">AI 리메이커</div>
-    <div class="menu-item" data-page="reconstruct" style="color:#e94560;font-weight:600">상세페이지 재구성</div>
-    <div class="menu-item" data-page="thumbnail" style="color:#ff9800;font-weight:600">썸네일 만들기</div>
+    <div class="menu-item" data-page="reconstruct" style="display:none;color:#e94560;font-weight:600">상세페이지 재구성</div>
+    <div class="menu-item" data-page="thumbnail" style="display:none;color:#ff9800;font-weight:600">썸네일 만들기</div>
     <div class="menu-title">배송</div>
     <div class="menu-item" data-page="shipping" style="color:#0288d1;font-weight:600">배송 관리</div>
     <!-- 사장님 결정 2026-06-23: 모든 배송 기능 (견적 비교 + 페덱스 + 무게 수정) 을 '배송 관리' 한 화면에 통합.
