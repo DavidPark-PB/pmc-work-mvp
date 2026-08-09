@@ -299,7 +299,10 @@ app.listen(PORT, () => {
   console.log(`SKU 점수 자동 업데이트: ${next2AM.toLocaleString('ko-KR')} 예약됨`);
 });
 
-// Competitor Monitor — every 2 hours (가격·재고 정확도 개선, Browse API 무료)
+// Competitor Monitor — every 24 hours.
+// 2026-08-09: 2h → 24h. eBay Browse API 일일 쿼터를 이 잡이 종일 소진해서
+// AI 상품 제작 1단계 fetch (같은 Browse API) 가 errorId 2001 로 막힘.
+// 사장님 지침: 여유분 확보 우선, 정확도는 매일 1회로 충분.
 setInterval(async () => {
   try {
     const { runCompetitorMonitor } = require('./src/services/competitorMonitor');
@@ -308,7 +311,7 @@ setInterval(async () => {
   } catch (e) {
     console.error('[CompetitorMonitor] error:', e.message);
   }
-}, 2 * 60 * 60 * 1000);
+}, 24 * 60 * 60 * 1000);
 
 // ===== AI Agent Scheduling (margin / sourcing / operations) =====
 // 2026-04 정리: 8개 → 3개. 나머지 5개는 실질 가치 부족으로 제거.

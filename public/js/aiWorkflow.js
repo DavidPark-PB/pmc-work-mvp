@@ -354,7 +354,19 @@
         const m = text.match(/<pre>([\s\S]*?)<\/pre>/i);
         throw new Error(`서버 오류 (${res.status}): ${m ? m[1].trim() : text.slice(0, 200)}`);
       }
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!res.ok) {
+        // 2026-08-09: quota 초과 시 파일 업로드 모드로 자동 전환 안내
+        if (data && data.errorId === 2001) {
+          if (status) {
+            status.innerHTML = '<span style="color:#ff8a80;">' + (data.error || 'eBay 조회 한도 초과') + '</span>'
+              + ' <button id="wf-switch-files" style="margin-left:8px;padding:4px 10px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;">→ 파일 업로드 모드</button>';
+            const sw = document.getElementById('wf-switch-files');
+            if (sw) sw.onclick = () => setSourceMode('files');
+          }
+          return;
+        }
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
       // 2026-08-08: 서버는 pictureURLs 필드로 반환, 프론트는 images 참조 → alias 로 정리.
       const item = data.item || {};
       state.competitor = {

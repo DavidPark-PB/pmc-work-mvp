@@ -3281,7 +3281,23 @@ router.post('/remarker/fetch', async (req, res) => {
 
     res.json({ success: true, item });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // 2026-08-09: errorId 별 사용자 친화 메시지 (지금까지 "The request limit..." 원문만 노출됨)
+    // 2001=Too many requests, 3004=Not found, 1001=인증 실패
+    const eid = error.errorId;
+    if (eid === 2001) {
+      return res.status(429).json({
+        error: 'eBay 일일 조회 한도 초과 (24시간 후 자동 리셋). 지금 필요하면 [이미지 파일 업로드] 모드로 우회 가능합니다.',
+        errorId: 2001,
+        hint: 'file_upload_fallback',
+      });
+    }
+    if (eid === 11001 || /not found|no matches/i.test(error.message || '')) {
+      return res.status(404).json({ error: '해당 Item ID 를 eBay 에서 찾을 수 없습니다 (판매 종료됐거나 ID 오타).', errorId: eid });
+    }
+    if (eid === 1001 || eid === 1002) {
+      return res.status(502).json({ error: 'eBay 인증 오류 — 토큰 갱신이 필요합니다.', errorId: eid });
+    }
+    res.status(500).json({ error: error.message, errorId: eid });
   }
 });
 

@@ -1210,25 +1210,12 @@ class EbayAPI {
    * AI 리메이커용 - Shopping API 우선, 실패 시 Browse API fallback
    */
   async getCompetitorItemFull(itemId) {
-    // 1차: Shopping API 시도
-    try {
-      const data = await this.callShoppingAPI('GetSingleItem', {
-        ItemID: itemId,
-        IncludeSelector: 'Details,Description,ShippingCosts,ItemSpecifics'
-      });
-
-      if (data.Ack === 'Success' || data.Ack === 'Warning') {
-        return this._parseShoppingItem(data.Item);
-      }
-    } catch (shoppingErr) {
-      console.warn('Shopping API 실패, Browse API fallback 시도:', shoppingErr.message);
-    }
-
-    // 2차: Browse API fallback
+    // 2026-08-09: Shopping API (open.api.ebay.com) 는 서비스 종료로 DNS 소멸됨.
+    // 매번 ENOTFOUND 로 실패하고 로그만 지저분해져서 시도 자체 제거. Browse API 하나만 사용.
     try {
       return await this._fetchViaBrowseAPI(itemId);
     } catch (browseErr) {
-      console.error('Browse API도 실패:', browseErr.message);
+      console.error('Browse API 실패:', browseErr.message);
       throw browseErr;
     }
   }
@@ -1328,6 +1315,16 @@ class EbayAPI {
     let item;          // 대표 변형 (single 이거나 item group 의 첫 번째)
     let variants = []; // 모든 변형 (multi-variant 인 경우 채워짐)
 
+    // 2026-08-09: quota 초과 등 에러가 위로 전파될 때 code 를 유지하기 위한 헬퍼.
+    // errorId 2001 = Too many requests, 3004 = Not found 등 route 층에서 분기 가능.
+    const wrap = (data, fallbackMsg) => {
+      const e = data?.errors?.[0];
+      const err = new Error(e?.longMessage || e?.message || fallbackMsg || 'Browse API error');
+      if (e?.errorId != null) err.errorId = e.errorId;
+      if (e?.domain) err.domain = e.domain;
+      return err;
+    };
+
     try {
       const response = await axios.get(url, { headers, timeout: 15000 });
       item = response.data;
@@ -1352,11 +1349,11 @@ class EbayAPI {
         } catch (groupErr) {
           const gErrData = groupErr.response?.data;
           console.error('Browse API Group 에러:', JSON.stringify(gErrData || groupErr.message));
-          throw new Error(gErrData?.errors?.[0]?.longMessage || groupErr.message);
+          throw wrap(gErrData, groupErr.message);
         }
       } else {
         console.error('Browse API 상세 에러:', JSON.stringify(errData || err.message));
-        throw new Error(errMsg || err.message);
+        throw wrap(errData, err.message);
       }
     }
 
