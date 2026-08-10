@@ -70,18 +70,25 @@ function getConflictColumn(platform) {
 
 function mapToRow(platform, item) {
   if (platform === 'ebay') {
+    // Phase 1 Commit 8: ebay_api_stock preserves UNKNOWN as null.
+    // Previously `parseInt(item.quantity) || 0` silently converted null /
+    // missing / non-numeric quantities to 0, feeding fake sold-out signals
+    // downstream. inventoryStatus.toDbValue writes null when the API did
+    // not give us a valid non-negative integer.
+    const { toDbValue } = require('../pricing/inventoryStatus');
     const row = {
       item_id: String(item.itemId),
       sku: item.sku || String(item.itemId),
       title: (item.title || '').slice(0, 500),
       price_usd: parseFloat(item.price) || 0,
-      ebay_api_stock: parseInt(item.quantity) || 0,
+      ebay_api_stock: toDbValue(item.quantity),
       sales_count: parseInt(item.salesCount) || 0,
       status: 'active',
       image_url: item.imageUrl || '',
       // NOTE: stock is NOT included — preserves manual edits
       // ebay_api_stock tracks eBay's actual quantity separately
     };
+    if (row.ebay_api_stock === null) delete row.ebay_api_stock; // preserve prior value on UNKNOWN
     // shipping_usd 은 Trading API 가 정확한 값 못 줄 때 (null/0) omit → 기존 DB 값 유지.
     // /api/battle/listing/:itemId/refresh (Browse API) 로 별도 갱신.
     // 2026-07-19 사장님 지적: `> 0` 필터 안 하면 8,198개 shipping 이 0 으로 덮어씌워짐

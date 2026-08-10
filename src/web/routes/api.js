@@ -726,36 +726,30 @@ router.get('/anomalies', async (req, res) => {
     anomalies.lowMargin.sort((a, b) => a.margin - b.margin);
     anomalies.lowStock.sort((a, b) => a.stock - b.stock);
 
-    // 품절 복구 필요: ebay_api_stock이 0이고 이전에 재고가 있었던 상품
+    // Phase 1 Commit 8: 품절 복구 리스트는 오직 eBay 가 확정한 sold-out 만 표시.
+    //   ebay_api_stock IS NULL (UNKNOWN) 은 sold-out 이 아니고 미지 상태 → 제외.
+    //   이전에는 컬럼 read 실패 시 stock=0 fallback 조회했으나, 그건
+    //   UNKNOWN 인 상품을 out-of-stock 로 오표시하는 silent corruption 이라 제거.
     const { getClient } = require('../../db/supabaseClient');
     const anomDb = getClient();
     let outOfStock = [];
+    let outOfStockError = null;
     try {
-      const { data: oosData } = await anomDb.from('ebay_products')
+      const { data: oosData, error } = await anomDb.from('ebay_products')
         .select('item_id, sku, title, stock, ebay_api_stock')
-        .eq('ebay_api_stock', 0)
+        .eq('ebay_api_stock', 0)       // 확정 0 만 — NULL(UNKNOWN)은 제외
         .neq('status', 'ended')
-        .gt('stock', 0)
+        .gt('stock', 0)                // 로컬로는 재고 있는 걸로 아는 상품 (미스매치)
         .limit(50);
+      if (error) throw error;
       outOfStock = (oosData || []).map(r => ({
         itemId: r.item_id, sku: r.sku, title: (r.title || '').slice(0, 60),
         prevStock: r.stock, status: 'eBay에서 품절'
       }));
-    } catch (e) {}
-
-    // ebay_api_stock 컬럼이 없으면 stock=0인 상품으로 대체
-    if (outOfStock.length === 0) {
-      try {
-        const { data: oosData2 } = await anomDb.from('ebay_products')
-          .select('item_id, sku, title, stock')
-          .eq('stock', 0)
-          .neq('status', 'ended')
-          .limit(50);
-        outOfStock = (oosData2 || []).map(r => ({
-          itemId: r.item_id, sku: r.sku, title: (r.title || '').slice(0, 60),
-          prevStock: 0, status: '재고 0'
-        }));
-      } catch (e) {}
+    } catch (e) {
+      // 스키마 미스매치는 조용히 삼키지 않고 노출 — silent 0 fallback 금지
+      outOfStockError = { code: e.code || null, message: e.message || String(e) };
+      console.warn('[anomalies] ebay_api_stock query failed:', outOfStockError.message);
     }
 
     // 경쟁사 이상: competitor_alerts 최근 50개

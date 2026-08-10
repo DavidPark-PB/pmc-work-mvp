@@ -194,7 +194,17 @@ function dbOrderToCanonical(row) {
 
 function dbInventoryToCanonical(row) {
   if (!row) return null;
-  const available = toInteger(row.ebay_api_stock ?? row.stock, 0);
+  // Phase 1 Commit 8: distinguish UNKNOWN from 0. `ebay_api_stock` is the
+  // marketplace snapshot; `stock` is the local editable field. Do NOT
+  // coalesce one into the other — that mixing is what let historical
+  // UNKNOWN rows look like sold-out.
+  const { fromEbayProductsRow, STATUS } = require('../pricing/inventoryStatus');
+  const classified = fromEbayProductsRow(row);
+  const available = classified.quantity;       // null when UNKNOWN / INVALID
+  const stockStatus =
+    classified.status === STATUS.KNOWN_STOCK ? 'in_stock' :
+    classified.status === STATUS.OUT_OF_STOCK ? 'out_of_stock' :
+    'unknown';
   const sold = toInteger(row.sales_count, 0);
   return {
     platform: 'ebay',
@@ -202,7 +212,7 @@ function dbInventoryToCanonical(row) {
     internal_sku: row.sku || String(row.item_id || ''),
     available_quantity: available,
     sold_quantity: sold,
-    stock_status: normalizeStockStatus(available),
+    stock_status: stockStatus,
     raw: row,
   };
 }
@@ -337,4 +347,7 @@ module.exports = {
   buildSkuContext,
   buildSkuContextFromCanonical,
   buildSkuContexts,
+  // exported for Phase 1 Commit 8 tests
+  dbInventoryToCanonical,
+  normalizeStockStatus,
 };

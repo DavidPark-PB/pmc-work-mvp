@@ -14197,7 +14197,20 @@ function phase17AAdditionalSignals(context, sourceRow = {}) {
   const detectedAt = new Date().toISOString();
   const price = phase17AToNumber(context?.pricing?.current_price || context?.platforms?.ebay?.price, 0) || 0;
   const cost = phase17AToNumber(sourceRow.cost_usd ?? sourceRow.cost ?? sourceRow.unit_cost ?? sourceRow.purchase_cost ?? context?.pricing?.cost, null);
-  const available = phase17AToInteger(context?.inventory?.total_available ?? sourceRow.ebay_api_stock ?? sourceRow.stock, 0);
+  // Phase 1 Commit 8: distinguish UNKNOWN inventory from confirmed 0. When
+  // ebay_api_stock is UNKNOWN (null), we suppress overstock / slow_mover
+  // signals rather than emitting them at "available=0" — the historical
+  // behaviour that fired false alarms on unsynced SKUs.
+  const { fromEbayProductsRow, STATUS } = require('../pricing/inventoryStatus');
+  const rowStatus = fromEbayProductsRow(sourceRow);
+  let available;
+  if (context?.inventory?.total_available != null) {
+    available = phase17AToInteger(context.inventory.total_available, 0);
+  } else if (rowStatus.status === STATUS.KNOWN_STOCK || rowStatus.status === STATUS.OUT_OF_STOCK) {
+    available = rowStatus.quantity;
+  } else {
+    available = null; // UNKNOWN / INVALID — inventory-based signals will short-circuit below
+  }
   const recentSales = phase17AToInteger(context?.sales?.units_30d ?? sourceRow.sales_count_30d ?? 0, 0);
   const totalSales = phase17AToInteger(sourceRow.sales_count ?? sourceRow.sold_quantity ?? context?.platforms?.ebay?.sold_quantity, 0);
   if (cost != null && cost > 0 && price > 0) {
@@ -14215,14 +14228,14 @@ function phase17AAdditionalSignals(context, sourceRow = {}) {
       });
     }
   }
-  if (available >= 10 && recentSales === 0) {
+  if (available != null && available >= 10 && recentSales === 0) {
     signals.push({
       type: 'overstock',
       severity: available >= 30 ? 'warning' : 'info',
       value: { available_quantity: available, recent_sales: recentSales, window_days: 30 },
       detected_at: detectedAt,
     });
-  } else if (available > 0 && totalSales <= 1 && recentSales === 0) {
+  } else if (available != null && available > 0 && totalSales <= 1 && recentSales === 0) {
     signals.push({
       type: 'slow_mover',
       severity: 'info',
@@ -14236,18 +14249,32 @@ function phase17AAdditionalSignals(context, sourceRow = {}) {
 function phase17AOpportunityFromContext(context, sourceRow = {}) {
   const currentPrice = phase17AToNumber(context?.pricing?.current_price || context?.platforms?.ebay?.price, 0) || 0;
   const cost = phase17AToNumber(sourceRow.cost_usd ?? sourceRow.cost ?? sourceRow.unit_cost ?? sourceRow.purchase_cost ?? context?.pricing?.cost, null);
-  const availableQuantity = phase17AToInteger(context?.inventory?.total_available ?? sourceRow.ebay_api_stock ?? sourceRow.stock, 0);
+  // Phase 1 Commit 8: UNKNOWN inventory stays null through scoring/reasoning.
+  // Downstream arithmetic (Math.min ...availableQuantity) tolerates 0 for
+  // score buckets but reasoning distinguishes "unknown" from "0".
+  const { fromEbayProductsRow, STATUS } = require('../pricing/inventoryStatus');
+  const rowStatus = fromEbayProductsRow(sourceRow);
+  let availableQuantity;
+  if (context?.inventory?.total_available != null) {
+    availableQuantity = phase17AToInteger(context.inventory.total_available, 0);
+  } else if (rowStatus.status === STATUS.KNOWN_STOCK || rowStatus.status === STATUS.OUT_OF_STOCK) {
+    availableQuantity = rowStatus.quantity;
+  } else {
+    availableQuantity = null;
+  }
+  const availableForScore = availableQuantity == null ? 0 : availableQuantity;
+  const availableForText = availableQuantity == null ? 'unknown' : availableQuantity;
   const recentSales = phase17AToInteger(context?.sales?.units_30d ?? 0, 0);
   const signals = [...(context?.signals || []), ...phase17AAdditionalSignals(context, sourceRow)];
   const actionableTypes = new Set(['dead_stock', 'no_recent_sales', 'stock_risk', 'missing_cost', 'competitor_lower_price', 'price_attack', 'low_margin_risk', 'overstock', 'slow_mover']);
   const filteredSignals = signals.filter(signal => actionableTypes.has(signal.type));
   const opportunityType = phase17AOpportunityType(filteredSignals);
   const marginPct = cost != null && cost > 0 && currentPrice > 0 ? ((currentPrice - cost) / currentPrice) * 100 : null;
-  const estimatedImpact = phase17AEstimatedImpact({ opportunityType, availableQuantity, currentPrice, recentSales, marginPct });
+  const estimatedImpact = phase17AEstimatedImpact({ opportunityType, availableQuantity: availableForScore, currentPrice, recentSales, marginPct });
   const signalTypes = filteredSignals.map(signal => signal.type);
   const reasoning = [
     `Signals: ${signalTypes.join(', ') || 'none'}.`,
-    `Current price ${phase17ARoundMoney(currentPrice)}, cost ${cost == null ? 'unknown' : phase17ARoundMoney(cost)}, available quantity ${availableQuantity}, recent sales ${recentSales}.`,
+    `Current price ${phase17ARoundMoney(currentPrice)}, cost ${cost == null ? 'unknown' : phase17ARoundMoney(cost)}, available quantity ${availableForText}, recent sales ${recentSales}.`,
     opportunityType === 'missing_cost' ? 'Cost data is missing, so margin-sensitive actions require cost review before any pricing decision.' : null,
     ['competitor_lower_price', 'price_attack'].includes(opportunityType) ? 'Competitor pressure exists; any price action requires human review and a later approval-gated phase.' : null,
     ['dead_stock', 'no_recent_sales', 'overstock', 'slow_mover'].includes(opportunityType) ? 'Inventory is not moving quickly based on cached sales/inventory context; review inventory or merchandising before action.' : null,
@@ -14262,7 +14289,7 @@ function phase17AOpportunityFromContext(context, sourceRow = {}) {
     signals: filteredSignals,
     current_price: phase17ARoundMoney(currentPrice),
     cost: cost == null ? 0 : phase17ARoundMoney(cost),
-    available_quantity: availableQuantity,
+    available_quantity: availableQuantity,   // null preserved when UNKNOWN
     recent_sales: recentSales,
     estimated_impact: estimatedImpact,
     recommended_next_action: phase17ANextAction(opportunityType),
@@ -14271,7 +14298,7 @@ function phase17AOpportunityFromContext(context, sourceRow = {}) {
     reasoning,
     _score: filteredSignals.reduce((sum, signal) => sum + phase17ASignalPriority(signal.type), 0)
       + (estimatedImpact === 'high' ? 40 : estimatedImpact === 'medium' ? 20 : 0)
-      + Math.min(50, Math.max(0, availableQuantity))
+      + Math.min(50, Math.max(0, availableForScore))
       + Math.min(30, Math.max(0, currentPrice)),
   };
 }
@@ -14305,7 +14332,15 @@ async function buildProfitInventoryOpportunityPlan({ limit = 50 } = {}) {
       const fallbackContext = {
         sku,
         platforms: { ebay: { listing_id: String(row.item_id || ''), title: row.title || '', price: row.price_usd || row.price || 0 } },
-        inventory: { total_available: phase17AToInteger(row.ebay_api_stock ?? row.stock, 0) },
+        inventory: {
+          // Phase 1 Commit 8: preserve UNKNOWN from marketplace snapshot.
+          // Local `stock` (row.stock) is a separate concept — do NOT coalesce.
+          total_available: (() => {
+            const { fromEbayProductsRow, STATUS } = require('../pricing/inventoryStatus');
+            const s = fromEbayProductsRow(row);
+            return (s.status === STATUS.KNOWN_STOCK || s.status === STATUS.OUT_OF_STOCK) ? s.quantity : null;
+          })(),
+        },
         sales: { units_30d: 0, orders_30d: 0 },
         pricing: { current_price: phase17AToNumber(row.price_usd ?? row.price, 0), estimated_margin_pct: null, needs_cost_data: true },
         competitors: [],
