@@ -87,7 +87,23 @@ class EbayPriceShippingSync {
 }
 
 async function syncEbayPriceShipping(options = {}) {
-  const { dryRun = false, limit = 0 } = options;
+  // Phase 1 Commit 7 (owner directive 2026-08-10):
+  //   dryRun default is TRUE. To actually write, caller must pass
+  //   { dryRun: false } AND set live=true. CLI requires --live flag.
+  //   Reason: this CLI drives up to ~8k ReviseItem calls (price+shipping
+  //   atomic). Full gate wiring is deferred until the shipping domain is
+  //   folded in (Phase 2), so until then a missed --dry-run must NOT
+  //   silently trigger a bulk marketplace write.
+  const dryRunRaw = options.dryRun;
+  const live = options.live === true;
+  const dryRun = live ? false : (dryRunRaw !== undefined ? dryRunRaw : true);
+  const limit = options.limit || 0;
+
+  if (!dryRun) {
+    console.warn('\n⚠️  LIVE MODE: bulk ReviseItem 이 실제 실행됩니다. (--live 확인됨)');
+    console.warn('   Gate 이관 이월 상태이므로 이 CLI 는 PriceExecutionGate 를 통과하지 않습니다.');
+    console.warn('   중단하려면 지금 Ctrl+C. 계속하려면 5초 대기...\n');
+  }
 
   console.log('='.repeat(70));
   console.log('📦 eBay 가격 + 배송비 동기화 (30% 마진 고정)');
@@ -96,6 +112,10 @@ async function syncEbayPriceShipping(options = {}) {
 
   if (dryRun) {
     console.log('⚠️  DRY RUN 모드 - 실제 업데이트 없이 확인만 합니다.\n');
+  }
+
+  if (!dryRun) {
+    await new Promise(r => setTimeout(r, 5000));
   }
 
   try {
@@ -262,10 +282,12 @@ async function syncEbayPriceShipping(options = {}) {
   }
 }
 
-// CLI 실행
+// CLI 실행. --live 없으면 dryRun 강제 true (Phase 1 Commit 7).
 const args = process.argv.slice(2);
 const options = {
-  dryRun: args.includes('--dry-run'),
+  // dryRun 기본 true. --live 있으면 dryRun=false. --dry-run 은 명시적 dry.
+  dryRun: args.includes('--dry-run') ? true : !args.includes('--live'),
+  live: args.includes('--live'),
   limit: parseInt(args.find(a => a.startsWith('--limit='))?.split('=')[1] || '0')
 };
 
@@ -277,21 +299,39 @@ if (args.includes('--help')) {
   node sync-ebay-price-shipping.js [옵션]
 
 옵션:
-  --dry-run     실제 업데이트 없이 확인만
+  --live        [위험] 실제 marketplace write 실행 (기본은 dryRun)
+  --dry-run     명시적 dry-run (기본 동작과 동일)
   --limit=N     최대 N개 상품만 업데이트
   --help        도움말 표시
 
+기본 동작:
+  --live 를 명시하지 않으면 항상 DRY RUN 모드로 동작.
+  실수로 --dry-run 을 빼먹어도 안전.
+
 예시:
-  node sync-ebay-price-shipping.js --dry-run
-  node sync-ebay-price-shipping.js --limit=10
-  node sync-ebay-price-shipping.js
+  node sync-ebay-price-shipping.js                 (dryRun, 안전)
+  node sync-ebay-price-shipping.js --dry-run       (dryRun)
+  node sync-ebay-price-shipping.js --limit=10      (dryRun)
+  node sync-ebay-price-shipping.js --live --limit=10  (실 write, 5초 대기 후 실행)
 
 설명:
   - J열(eBay 가격): 30% 마진 보장 가격
   - K열(배송비): $3.9 고정
   - 마진율 30% = (J+K)×1400 - 총원가 / 총원가
+
+⚠️ Phase 1 Commit 7: 이 CLI 는 PriceExecutionGate 를 아직 통과하지 않습니다.
+    Price+Shipping 이 ReviseItem atomic 요청이라 shipping domain 통합 (Phase 2)
+    시까지 gate 이관은 이월됨. --live 사용 시 kill_switch / guardrail 검사
+    없이 즉시 8k rows 를 씁니다. 반드시 --dry-run 으로 먼저 미리 확인.
 `);
   process.exit(0);
 }
 
-syncEbayPriceShipping(options);
+// require() 로만 이 파일이 로드되어도 body 가 자동 실행되지 않도록 가드.
+// 직접 CLI 로 실행할 때만 (require.main === module) 시작.
+if (require.main === module) {
+  syncEbayPriceShipping(options);
+}
+
+// 테스트/외부 재사용용 export
+module.exports = { syncEbayPriceShipping, EbayPriceShippingSync };
