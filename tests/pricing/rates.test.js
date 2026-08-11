@@ -155,21 +155,25 @@ test('AUDIT: operations.js /profit fee_rate now percent-safe', () => {
   assert.match(src, /Phase 2-1B/);
 });
 
-/* ─────────────────────────── 4. Log-only contract wiring (2-1C) ─────────────────────────── */
+/* ─────────────────────────── 4. Contract enforcement (2-2A) ─────────────────────────── */
+// Phase 2-1C shipped log-only; Phase 2-2A promoted it to hard enforcement
+// with a 3-way classifier (VALID / INVALID_DATA / MISSING_DATA / NO_ROW).
+// See tests/pricing/contractEnforcement.test.js for the behavioural
+// contract; the audit below just pins that the old log-only markers are
+// gone and the new enforcement markers are present.
 
-test('AUDIT: engine1DryRunJob wires log-only contract validation', () => {
+test('AUDIT: engine1DryRunJob promoted from log-only to hard enforcement (2-2A)', () => {
   const src = readSrc('src/jobs/engine1DryRunJob.js');
   assert.match(src, /require\(['"]\.\.\/pricing\/contract['"]\)/);
-  assert.match(src, /_logOnlyContractCheck/);
-  assert.match(src, /_flushContractViolations/);
-  assert.match(src, /Phase 2-1C/);
-  // Must be log-only — no BLOCK / return / throw inside the check
-  const helperStart = src.indexOf('function _logOnlyContractCheck');
-  const helperRest = src.slice(helperStart);
-  const helperEnd = helperRest.indexOf('function _flushContractViolations');
-  const helperBody = helperRest.slice(0, helperEnd);
-  assert.equal(/throw\s+/.test(helperBody), false,
-    'log-only helper must not throw');
-  assert.equal(/\breturn\s+\{[\s\S]*action[\s\S]*BLOCK/.test(helperBody), false,
-    'log-only helper must not construct a BLOCK decision');
+  // Legacy log-only markers removed
+  assert.equal(/_logOnlyContractCheck/.test(src), false,
+    'log-only helper should be gone in Phase 2-2A');
+  assert.equal(/_flushContractViolations/.test(src), false,
+    'log-only flush should be gone in Phase 2-2A');
+  // New enforcement markers
+  assert.match(src, /classifyPricingInputs/);
+  assert.match(src, /classifySharedParams/);
+  assert.match(src, /_flushCoverageTelemetry/);
+  assert.match(src, /Phase 2-2A/);
+  assert.match(src, /REASON\.BLOCK_CONTRACT_VIOLATION/);
 });

@@ -1,0 +1,39 @@
+-- 077_price_reason_block_contract_violation.sql
+--
+-- Phase 2-2A: introduce BLOCK_CONTRACT_VIOLATION as a distinct BLOCK reason
+-- for Engine 1 pricing decisions.
+--
+-- Rationale (owner directive 2026-08-11):
+--   MISSING_DATA (cost/weight not filled yet — 99.7% of catalogue today)
+--   is a data-quality gap, not a contract violation. Engine 1 already
+--   emits BLOCK_LANDING_COST_UNKNOWN for that case, and Commit 2-2A now
+--   emits it as SKIP telemetry (no price_events row) to avoid burying
+--   the log with 9,000+ events per dry-run.
+--
+--   INVALID_DATA (negative cost, non-integer weight, ambiguous fee scale,
+--   NaN/Infinity, unsupported currency) is a real corruption event.
+--   Engine 1 must BLOCK it with a distinct reason so downstream KPIs
+--   can separate "data missing" (fix later) from "data corrupt"
+--   (fix now, or reject the row entirely).
+--
+-- This enum extension is non-destructive: ALTER TYPE ADD VALUE only
+-- appends. Existing rows and callers are unaffected.
+--
+-- Preflight (owner runs in SQL editor):
+--   SELECT enumlabel FROM pg_enum
+--   WHERE enumtypid = 'price_reason_code'::regtype
+--   ORDER BY enumsortorder;
+--   -- expect 12 values from migration 068. If BLOCK_CONTRACT_VIOLATION
+--   -- already appears, this migration is a no-op.
+--
+-- Rollback: PostgreSQL does NOT support removing enum values without
+-- rebuilding the type. If rollback is required, the safe path is to
+-- stop emitting the new value in code — the enum value can stay unused.
+
+ALTER TYPE price_reason_code ADD VALUE IF NOT EXISTS 'BLOCK_CONTRACT_VIOLATION';
+
+-- Post-apply verification:
+--   SELECT enumlabel FROM pg_enum
+--   WHERE enumtypid = 'price_reason_code'::regtype
+--   ORDER BY enumsortorder;
+--   -- expect 13 values, last one = BLOCK_CONTRACT_VIOLATION

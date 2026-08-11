@@ -39,51 +39,118 @@ const CONFIG = {
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
-// Phase 2-1C: log-only pricing contract validation. Runs at decideSku entry
-// point per SKU. Failures are counted and logged but do NOT alter engine
-// output — this is a measurement phase. Owner will decide whether to
-// promote violations to hard BLOCKs after seeing the counts.
+// Phase 2-2A: contract enforcement + 3-way data classification.
+//
+// Owner directive (2026-08-11):
+//   VALID         → Engine 1 decision as usual
+//   INVALID_DATA  → HARD BLOCK (BLOCK_CONTRACT_VIOLATION) + price_events row
+//   MISSING_DATA  → SKIP (no price_events row, no marketplace path)
+//   NO_ROW        → SKIP (needs sku_master seed, tracked in coverage telemetry)
+//
+// MUST NOT conflate MISSING with INVALID — 99.7% of catalogue is MISSING
+// today and burying them as "contract violations" would pollute the audit
+// trail and make the real corruption events invisible.
 const contract = require('../pricing/contract');
-const _contractViolations = { count: 0, byField: {}, samples: [] };
-function _logOnlyContractCheck({ sku, feeRateFromEbayProductsRaw, usdKrwRaw, costKrwRaw, weightGramRaw }) {
-  const inputs = {};
-  if (feeRateFromEbayProductsRaw != null) {
-    // NOTE: ASSUMPTIONS.ebay_fee_pct is 0.18 (decimal). Validate via the
-    // platforms adapter, not the ebay_products adapter, because it's a
-    // decimal in this codepath.
-    inputs.feeRate = { source: 'platforms', raw: feeRateFromEbayProductsRaw };
+const { ACTION, REASON, BLOCK_TASK_TYPE } = engine;
+
+const CLASS = Object.freeze({
+  VALID:         'VALID',           // proceeds to engine.decideSku
+  INVALID_DATA:  'INVALID_DATA',    // BLOCK_CONTRACT_VIOLATION event
+  MISSING_DATA:  'MISSING_DATA',    // skip, no event
+  NO_ROW:        'NO_ROW',          // skip, no event (needs sku_master seed)
+});
+
+/**
+ * Classify a single SKU's pricing inputs into VALID / INVALID_DATA /
+ * MISSING_DATA / NO_ROW.
+ *
+ * @param {object|null} sm   sku_master row (null → NO_ROW)
+ * @returns {{status, errors: [], missing: [], details: object}}
+ */
+function classifyPricingInputs(sm) {
+  if (!sm) {
+    return {
+      status: CLASS.NO_ROW,
+      errors: [],
+      missing: ['sku_master'],
+      details: { reason: 'no sku_master row for this SKU' },
+    };
   }
-  if (usdKrwRaw != null) inputs.exchangeRate = usdKrwRaw;
-  if (costKrwRaw != null) inputs.costKrw = costKrwRaw;
-  if (weightGramRaw != null) {
-    // Only validate if a positive integer was supplied — sku_master rows with
-    // no weight yet (99.7% of catalogue per 2026-08-11 preflight) show up as
-    // UNKNOWN in Engine 1's landing-cost check and are already handled.
-    if (weightGramRaw > 0 && Number.isInteger(weightGramRaw)) {
-      inputs.weight = { source: 'weight_gram', raw: weightGramRaw };
+  const missing = [];
+  const errors = [];
+
+  // Cost — must exist and be non-negative integer KRW
+  if (sm.cost_krw == null) {
+    missing.push('cost_krw');
+  } else {
+    const r = contract.costKrw(sm.cost_krw);
+    if (!r.ok) errors.push({ field: 'costKrw', code: r.error, detail: r.detail });
+    else if (r.value <= 0) missing.push('cost_krw');
+  }
+
+  // Weight — must exist and be positive integer grams
+  const totalWeight = (Number(sm.weight_gram) || 0) + (Number(sm.default_packaging_weight_g) || 0);
+  if (sm.weight_gram == null && sm.default_packaging_weight_g == null) {
+    missing.push('weight_gram');
+  } else if (totalWeight <= 0) {
+    missing.push('weight_gram');
+  } else {
+    const r = contract.weightGram(sm.weight_gram || 0, { allowZero: true });
+    if (!r.ok) errors.push({ field: 'weight', code: r.error, detail: r.detail });
+    // packaging weight sanity — must not be negative if present
+    if (sm.default_packaging_weight_g != null && sm.default_packaging_weight_g < 0) {
+      errors.push({ field: 'weight', code: 'CONTRACT_NEGATIVE', detail: 'default_packaging_weight_g' });
     }
   }
-  const r = contract.validatePricingInputs(inputs);
-  if (!r.ok) {
-    _contractViolations.count += 1;
-    for (const err of r.errors) {
-      _contractViolations.byField[err.field] = (_contractViolations.byField[err.field] || 0) + 1;
-    }
-    if (_contractViolations.samples.length < 10) {
-      _contractViolations.samples.push({ sku, errors: r.errors });
-    }
-  }
+
+  if (errors.length > 0) return { status: CLASS.INVALID_DATA, errors, missing, details: {} };
+  if (missing.length > 0) return { status: CLASS.MISSING_DATA, errors, missing, details: {} };
+  return { status: CLASS.VALID, errors: [], missing: [], details: {} };
 }
-function _flushContractViolations() {
-  if (_contractViolations.count === 0) {
-    console.log('[engine1] contract check: 0 violations (all SKUs pass unit/currency contract)');
-    return;
-  }
-  console.warn('[engine1] contract violations:', {
-    total: _contractViolations.count,
-    byField: _contractViolations.byField,
-    samples: _contractViolations.samples.slice(0, 5),
-  });
+
+/**
+ * Classify the shared pricing parameters (exchange rate, fee rate) once
+ * per run — these are per-run, not per-SKU. If either is INVALID we
+ * BLOCK the whole run.
+ */
+function classifySharedParams({ usdKrw, ebayFeePct }) {
+  const errors = [];
+  const rEx = contract.exchangeRateKrwPerUsd(usdKrw);
+  if (!rEx.ok) errors.push({ field: 'exchangeRate', code: rEx.error, detail: rEx.detail });
+  const rFee = contract.feeRateFromPlatforms(ebayFeePct);
+  if (!rFee.ok) errors.push({ field: 'feeRate', code: rFee.error, detail: rFee.detail });
+  return { ok: errors.length === 0, errors };
+}
+
+/** Coverage telemetry accumulator — one instance per run. */
+function makeCoverageTelemetry() {
+  return {
+    valid: 0,
+    invalid_data: 0,
+    missing_data: 0,
+    no_sku_master: 0,
+    decision_produced: 0,
+    blocked_contract: 0,
+    skipped_incomplete: 0,
+    invalid_samples: [],   // first 10 for observability
+    missing_samples: [],   // first 10
+    no_row_samples: [],    // first 10
+  };
+}
+
+function _flushCoverageTelemetry(t) {
+  console.log('[engine1] coverage:', JSON.stringify({
+    valid: t.valid,
+    invalid_data: t.invalid_data,
+    missing_data: t.missing_data,
+    no_sku_master: t.no_sku_master,
+    decision_produced: t.decision_produced,
+    blocked_contract: t.blocked_contract,
+    skipped_incomplete: t.skipped_incomplete,
+  }));
+  if (t.invalid_samples.length) console.warn('[engine1] INVALID_DATA samples:', t.invalid_samples.slice(0, 5));
+  if (t.missing_samples.length) console.log('[engine1] MISSING_DATA samples:', t.missing_samples.slice(0, 5));
+  if (t.no_row_samples.length) console.log('[engine1] NO_ROW samples:', t.no_row_samples.slice(0, 5));
 }
 
 /** 승인된 매칭 로드 — our_sku별 [{competitor_item_id, seller_id, confidence}] */
@@ -194,6 +261,18 @@ async function runEngine1DryRun() {
   const skus = [...matchesBySku.keys()].slice(0, CONFIG.MAX_SKUS);
   console.log(`[engine1] 승인된 매칭 SKU ${skus.length}개 — 데이터 로드 중...`);
 
+  // Phase 2-2A: shared-parameter contract check runs ONCE per run.
+  // If exchange rate or fee rate are corrupt, the entire run BLOCKs;
+  // per-SKU classification is not attempted.
+  const shared = classifySharedParams({
+    usdKrw: ASSUMPTIONS.usd_krw,
+    ebayFeePct: ASSUMPTIONS.ebay_fee_pct,
+  });
+  if (!shared.ok) {
+    console.error('[engine1] SHARED CONTRACT VIOLATION — aborting run before per-SKU work:', shared.errors);
+    return { total_skus: 0, aborted: 'shared_contract_violation', errors: shared.errors };
+  }
+
   const allCompIds = [...new Set([].concat(...skus.map((s) => matchesBySku.get(s).map((m) => String(m.competitor_item_id)))))];
   const listingCache = await loadCompetitorListings(db, allCompIds);
   const prevTotals = await loadPrevCompetitorTotals(db, allCompIds);
@@ -216,10 +295,58 @@ async function runEngine1DryRun() {
   }
 
   const decisions = [];
+  const coverage = makeCoverageTelemetry();
+  const skippedIncomplete = [];  // per-SKU record for data-fill queue
+
   for (const sku of skus) {
     const matches = matchesBySku.get(sku);
     const my = myPrices.get(sku);
     const sm = skuMaster.get(sku);
+
+    // Phase 2-2A: 3-way classify BEFORE any decision math.
+    const cls = classifyPricingInputs(sm);
+    if (cls.status === CLASS.NO_ROW) {
+      coverage.no_sku_master += 1;
+      coverage.skipped_incomplete += 1;
+      if (coverage.no_row_samples.length < 10) coverage.no_row_samples.push({ sku, missing: cls.missing });
+      skippedIncomplete.push({ sku, status: CLASS.NO_ROW, missing: cls.missing });
+      continue;
+    }
+    if (cls.status === CLASS.MISSING_DATA) {
+      coverage.missing_data += 1;
+      coverage.skipped_incomplete += 1;
+      if (coverage.missing_samples.length < 10) coverage.missing_samples.push({ sku, missing: cls.missing });
+      skippedIncomplete.push({ sku, status: CLASS.MISSING_DATA, missing: cls.missing });
+      continue;
+    }
+    if (cls.status === CLASS.INVALID_DATA) {
+      coverage.invalid_data += 1;
+      coverage.blocked_contract += 1;
+      if (coverage.invalid_samples.length < 10) coverage.invalid_samples.push({ sku, errors: cls.errors });
+      // Emit a BLOCK decision with reason BLOCK_CONTRACT_VIOLATION.
+      // This will be published to price_events as a hard block record
+      // and routed to a data_corruption team_task.
+      decisions.push({
+        sku,
+        item_id: my ? my.itemId : null,
+        action: ACTION.BLOCK,
+        reason_code: REASON.BLOCK_CONTRACT_VIOLATION,
+        recommended_price: null,
+        floor: null,
+        target: null,
+        confidence_snapshot: null,
+        rule_version: 'engine1-v1.0.0',
+        current_total: my ? my.total : null,
+        landing_cost_usd: null,
+        missing_data: cls.missing,
+        contract_errors: cls.errors,
+        competitor_ref: null,
+      });
+      continue;
+    }
+
+    // VALID branch — original Engine 1 path, unchanged formula.
+    coverage.valid += 1;
 
     // 경쟁 최저 총액 (전 셀러 min) + 신선도 + 참조
     let best = null;
@@ -238,28 +365,14 @@ async function runEngine1DryRun() {
       }
     }
 
-    const landing = sm
-      ? engine.computeLandingCost({
-          costKrw: sm.cost_krw,
-          intlShippingKrw: intlShippingKrw(sm),
-          usdKrw: ASSUMPTIONS.usd_krw,
-        })
-      : { complete: false, missing: ['sku_master'], baseCostUsd: null };
+    const landing = engine.computeLandingCost({
+      costKrw: sm.cost_krw,
+      intlShippingKrw: intlShippingKrw(sm),
+      usdKrw: ASSUMPTIONS.usd_krw,
+    });
 
     const rule = rules.bySku.get(sku) || rules.global || {};
     const todayDropPctUsed = todayDropMap.get(sku) || 0;
-
-    // Phase 2-1C: log-only contract validation at the calculator entry point.
-    // Failures are logged but do NOT block the decision this run — we're
-    // measuring how much real data violates the contract before promoting
-    // this to a hard BLOCK in a later phase.
-    _logOnlyContractCheck({
-      sku,
-      feeRateFromEbayProductsRaw: ASSUMPTIONS.ebay_fee_pct,
-      usdKrwRaw: ASSUMPTIONS.usd_krw,
-      costKrwRaw: sm ? sm.cost_krw : null,
-      weightGramRaw: sm ? (sm.weight_gram || 0) + (sm.default_packaging_weight_g || 0) : null,
-    });
 
     const d = engine.decideSku({
       sku,
@@ -285,6 +398,7 @@ async function runEngine1DryRun() {
       ? { seller_id: best.seller_id, competitor_item_id: best.competitor_item_id, competitor_total: best.total }
       : null;
     decisions.push(d);
+    coverage.decision_produced += 1;
   }
 
   // 이벤트 발행 (추천만 — 가격 변경 없음)
@@ -316,7 +430,17 @@ async function runEngine1DryRun() {
     ms: Date.now() - started,
   };
   console.log('[engine1] Dry-run 완료:', JSON.stringify(summary));
-  _flushContractViolations();
+  _flushCoverageTelemetry(coverage);
+  summary.coverage = {
+    valid: coverage.valid,
+    invalid_data: coverage.invalid_data,
+    missing_data: coverage.missing_data,
+    no_sku_master: coverage.no_sku_master,
+    decision_produced: coverage.decision_produced,
+    blocked_contract: coverage.blocked_contract,
+    skipped_incomplete: coverage.skipped_incomplete,
+  };
+  summary.data_fill_queue_size = skippedIncomplete.length;
 
   if (CONFIG.PUSH_TELEGRAM) {
     try {
@@ -332,7 +456,11 @@ async function runEngine1DryRun() {
   return summary;
 }
 
-module.exports = { runEngine1DryRun, CONFIG };
+module.exports = {
+  runEngine1DryRun, CONFIG,
+  // Phase 2-2A: exported for unit tests only.
+  _internal: { classifyPricingInputs, classifySharedParams, CLASS },
+};
 
 if (require.main === module) {
   runEngine1DryRun().then(() => process.exit(0)).catch((e) => {

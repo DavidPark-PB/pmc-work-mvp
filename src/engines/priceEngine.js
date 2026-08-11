@@ -39,6 +39,11 @@ const REASON = Object.freeze({
   BLOCK_MAP: 'BLOCK_MAP',
   BLOCK_API_ERROR: 'BLOCK_API_ERROR',
   BLOCK_STALE_COMPETITOR: 'BLOCK_STALE_COMPETITOR',
+  // Phase 2-2A: real data corruption (negative cost, non-integer weight,
+  // ambiguous fee scale, NaN/Infinity, unsupported currency). Distinct
+  // from MISSING_DATA (which stays as BLOCK_LANDING_COST_UNKNOWN or is
+  // emitted as SKIP telemetry without a price_events row).
+  BLOCK_CONTRACT_VIOLATION: 'BLOCK_CONTRACT_VIOLATION',
 });
 
 /** BLOCK reason → 직원 데이터 태스크 타입 (exceptionTask.js 라우팅) */
@@ -48,6 +53,7 @@ const BLOCK_TASK_TYPE = Object.freeze({
   BLOCK_MAP: 'MAP_POLICY_CHECK',                           // MAP 정책 등록/해제
   BLOCK_STALE_COMPETITOR: 'COMPETITOR_DATA_STALE',         // 크롤 재수집
   BLOCK_API_ERROR: 'AUTOMATION_FAILED',                    // 기존 타입 재사용
+  BLOCK_CONTRACT_VIOLATION: 'DATA_CORRUPTION_REVIEW',      // 원가/무게/수수료/환율 등 invalid 값
 });
 
 const DEFAULTS = Object.freeze({
