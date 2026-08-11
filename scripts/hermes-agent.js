@@ -320,8 +320,13 @@ async function main() {
       printUsage();
       throw new Error('file is required');
     }
+    // Phase 2-2C: pull usdKrw from the pricing safety SoT
+    // (margin_settings.exchange_rate_usd, currently 1300). Fail-closed —
+    // the calculator now throws if usdKrw is missing / invalid.
+    const { getPricingSafetyExchangeRate } = require('../src/pricing/rates');
+    const usdKrw = await getPricingSafetyExchangeRate({ bypassCache: true });
     const { calculateListingProfitability } = require('../src/services/listingProfitabilityCalculator');
-    const result = calculateListingProfitability({ file });
+    const result = calculateListingProfitability({ file, usdKrw });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
@@ -363,8 +368,11 @@ async function main() {
       printUsage();
       throw new Error('listings and overlay are required');
     }
+    // Phase 2-2C: SoT usdKrw
+    const { getPricingSafetyExchangeRate } = require('../src/pricing/rates');
+    const usdKrw = await getPricingSafetyExchangeRate({ bypassCache: true });
     const { calculateListingProfitabilityOverlay } = require('../src/services/listingProfitabilityCalculator');
-    const result = calculateListingProfitabilityOverlay({ listings, overlay });
+    const result = calculateListingProfitabilityOverlay({ listings, overlay, usdKrw });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
@@ -376,8 +384,11 @@ async function main() {
       printUsage();
       throw new Error('listings and overlay are required');
     }
+    // Phase 2-2C: SoT usdKrw
+    const { getPricingSafetyExchangeRate } = require('../src/pricing/rates');
+    const usdKrw = await getPricingSafetyExchangeRate({ bypassCache: true });
     const { calculateListingProfitabilityOverlayFilled } = require('../src/services/listingProfitabilityCalculator');
-    const result = calculateListingProfitabilityOverlayFilled({ listings, overlay });
+    const result = calculateListingProfitabilityOverlayFilled({ listings, overlay, usdKrw });
     console.log(JSON.stringify(result, null, 2));
     return;
   }

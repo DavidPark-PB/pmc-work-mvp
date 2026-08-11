@@ -26,6 +26,11 @@ const EbayAPI = require('../api/ebayAPI');
 const engine = require('../engines/priceEngine');
 const events = require('../services/priceEventService');
 const { getShippingQuotes, ASSUMPTIONS } = require('../services/listingProfitabilityCalculator');
+// Phase 2-2C: pricing safety exchange rate SoT (margin_settings.exchange_rate_usd
+// via platformRegistry, currently 1300 KRW/USD per owner policy). The stale
+// ASSUMPTIONS.usd_krw hardcode of 1450 is gone; Engine 1 pulls the live SoT
+// once per run and forwards it into landing-cost math.
+const { getPricingSafetyExchangeRate } = require('../pricing/rates');
 
 const CONFIG = {
   // 기본 false — CompetitorMonitor가 2h마다 갱신하는 competitor_listings 캐시 사용.
@@ -261,17 +266,31 @@ async function runEngine1DryRun() {
   const skus = [...matchesBySku.keys()].slice(0, CONFIG.MAX_SKUS);
   console.log(`[engine1] 승인된 매칭 SKU ${skus.length}개 — 데이터 로드 중...`);
 
+  // Phase 2-2C: load pricing safety exchange rate SoT once per run.
+  // Fail-closed: if the DB read fails or returns garbage, the helper
+  // itself returns the module-level fallback (1400) — but we run the
+  // value through classifySharedParams below, which will reject
+  // NaN/negative/out-of-range and abort the entire run.
+  let usdKrw;
+  try {
+    usdKrw = await getPricingSafetyExchangeRate({ bypassCache: true });
+  } catch (e) {
+    console.error('[engine1] pricing safety exchange rate load failed — aborting run:', e.message);
+    return { total_skus: 0, aborted: 'exchange_rate_load_failed', error: e.message };
+  }
+
   // Phase 2-2A: shared-parameter contract check runs ONCE per run.
   // If exchange rate or fee rate are corrupt, the entire run BLOCKs;
   // per-SKU classification is not attempted.
   const shared = classifySharedParams({
-    usdKrw: ASSUMPTIONS.usd_krw,
+    usdKrw,
     ebayFeePct: ASSUMPTIONS.ebay_fee_pct,
   });
   if (!shared.ok) {
     console.error('[engine1] SHARED CONTRACT VIOLATION — aborting run before per-SKU work:', shared.errors);
     return { total_skus: 0, aborted: 'shared_contract_violation', errors: shared.errors };
   }
+  console.log(`[engine1] pricing safety rate = ${usdKrw} KRW/USD (margin_settings SoT)`);
 
   const allCompIds = [...new Set([].concat(...skus.map((s) => matchesBySku.get(s).map((m) => String(m.competitor_item_id)))))];
   const listingCache = await loadCompetitorListings(db, allCompIds);
@@ -368,7 +387,7 @@ async function runEngine1DryRun() {
     const landing = engine.computeLandingCost({
       costKrw: sm.cost_krw,
       intlShippingKrw: intlShippingKrw(sm),
-      usdKrw: ASSUMPTIONS.usd_krw,
+      usdKrw,   // Phase 2-2C SoT (owner-controlled pricing safety rate)
     });
 
     const rule = rules.bySku.get(sku) || rules.global || {};

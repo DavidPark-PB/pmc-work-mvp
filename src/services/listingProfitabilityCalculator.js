@@ -11,11 +11,38 @@ const fs = require('fs');
 const path = require('path');
 const Papa = require('papaparse');
 
+// Phase 2-2C (2026-08-11): usd_krw is no longer a per-file constant.
+// Callers MUST supply { usdKrw } via calculateListingProfitability*
+// opts, sourced from getPricingSafetyExchangeRate() (margin_settings
+// SoT, currently 1300 KRW/USD — owner-controlled conservative
+// pricing safety rate, NOT market rate).
+//
+// The field remains in ASSUMPTIONS at null for backward-compatible
+// enumeration; deleting the key would break existing readers of
+// module.exports.ASSUMPTIONS in report emitters. Reading the null
+// value in a calculation is a bug — callers get a fail-closed throw.
 const ASSUMPTIONS = {
-  usd_krw: 1450,
-  ebay_fee_pct: 0.18,
+  usd_krw: null,               // DEPRECATED — supply via opts.usdKrw
+  ebay_fee_pct: 0.18,          // decimal (0.18 = 18%); shared platform default
   destination_country: '미국',
 };
+
+function _requireUsdKrw(opts) {
+  const v = opts && opts.usdKrw;
+  if (v == null) {
+    throw new Error(
+      'listingProfitabilityCalculator: opts.usdKrw is required (Phase 2-2C). ' +
+      'Supply the value from getPricingSafetyExchangeRate() — do not fall back to 1450 or 1400.'
+    );
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 500 || n > 5000) {
+    throw new Error(
+      `listingProfitabilityCalculator: opts.usdKrw = ${v} is out of plausible range 500..5000 (fail-closed).`
+    );
+  }
+  return n;
+}
 
 const INPUT_COLUMNS = [
   'item_id',
@@ -218,10 +245,14 @@ function buildEmptyValidation(errors = []) {
 }
 
 function baseOutput(extra = {}) {
+  // Phase 2-2C: report the effective usd_krw actually used by the caller,
+  // not the deprecated null in ASSUMPTIONS. Report emitters expect a
+  // numeric value; caller passes { usdKrw } through baseOutput extras.
+  const effectiveUsdKrw = extra && extra.usdKrw != null ? Number(extra.usdKrw) : null;
   return {
     phase: PHASE,
     mode: 'read_only',
-    assumptions: { ...ASSUMPTIONS },
+    assumptions: { ...ASSUMPTIONS, usd_krw: effectiveUsdKrw },
     rows_scanned: 0,
     rows_calculated: 0,
     blocked_rows: 0,
@@ -398,7 +429,8 @@ function getShippingQuotes({ weightKg, lengthCm, widthCm, heightCm, destinationC
   return quotes.map((quote, index) => ({ ...quote, recommended: index === 0 }));
 }
 
-function calculateListingProfitability({ file } = {}) {
+function calculateListingProfitability({ file, usdKrw } = {}) {
+  const _usdKrw = _requireUsdKrw({ usdKrw });
   const validationResult = validateListingProfitabilityInput({ file });
   const { absolutePath, rows } = parseCsvFile(file);
   const invalidRowNumbers = new Set((validationResult.validation.errors || []).map(error => error.row).filter(row => row > 1));
@@ -413,7 +445,7 @@ function calculateListingProfitability({ file } = {}) {
     const heightCm = toNumber(row.height_cm, 0) || 0;
     const shippingQuotes = getShippingQuotes({ weightKg, lengthCm, widthCm, heightCm });
     const recommended = shippingQuotes[0] || null;
-    const revenueKrw = roundMoney(currentPriceUsd * ASSUMPTIONS.usd_krw);
+    const revenueKrw = roundMoney(currentPriceUsd * _usdKrw);
     const ebayFeeKrw = roundMoney(revenueKrw * ASSUMPTIONS.ebay_fee_pct);
     const shippingKrw = recommended ? recommended.total_krw : 0;
     const estimatedProfitKrw = revenueKrw - ebayFeeKrw - shippingKrw - productCostKrw;
@@ -454,6 +486,7 @@ function calculateListingProfitability({ file } = {}) {
   }, {});
 
   return baseOutput({
+    usdKrw: _usdKrw,
     operation: 'listing_profitability_calculate',
     file: absolutePath,
     rows_scanned: rows.length,
@@ -623,7 +656,8 @@ function validateListingProfitabilityOverlay({ file, listings = DEFAULT_LISTINGS
   });
 }
 
-function calculateListingProfitabilityOverlay({ listings, overlay } = {}) {
+function calculateListingProfitabilityOverlay({ listings, overlay, usdKrw } = {}) {
+  const _usdKrw = _requireUsdKrw({ usdKrw });
   if (!listings) throw new Error('listings is required');
   if (!overlay) throw new Error('overlay is required');
   const validationResult = validateListingProfitabilityOverlay({ file: overlay, listings });
@@ -658,7 +692,7 @@ function calculateListingProfitabilityOverlay({ listings, overlay } = {}) {
     const heightCm = toNumber(row.height_cm, 0) || 0;
     const shippingQuotes = getShippingQuotes({ weightKg, lengthCm, widthCm, heightCm });
     const recommended = shippingQuotes[0] || null;
-    const revenueKrw = roundMoney(currentPriceUsd * ASSUMPTIONS.usd_krw);
+    const revenueKrw = roundMoney(currentPriceUsd * _usdKrw);
     const ebayFeeKrw = roundMoney(revenueKrw * ASSUMPTIONS.ebay_fee_pct);
     const shippingKrw = recommended ? recommended.total_krw : 0;
     const estimatedProfitKrw = revenueKrw - ebayFeeKrw - shippingKrw - productCostKrw;
@@ -699,6 +733,7 @@ function calculateListingProfitabilityOverlay({ listings, overlay } = {}) {
   }, {});
 
   return baseOutput({
+    usdKrw: _usdKrw,
     phase: '18B',
     operation: 'listing_profitability_calculate_overlay',
     listings_file: path.resolve(listings),
@@ -715,7 +750,8 @@ function calculateListingProfitabilityOverlay({ listings, overlay } = {}) {
   });
 }
 
-function calculateListingProfitabilityOverlayFilled({ listings, overlay } = {}) {
+function calculateListingProfitabilityOverlayFilled({ listings, overlay, usdKrw } = {}) {
+  const _usdKrw = _requireUsdKrw({ usdKrw });
   if (!listings) throw new Error('listings is required');
   if (!overlay) throw new Error('overlay is required');
   const validationResult = validateListingProfitabilityOverlay({ file: overlay, listings, filledOnly: true });
@@ -761,7 +797,7 @@ function calculateListingProfitabilityOverlayFilled({ listings, overlay } = {}) 
     const heightCm = toNumber(row.height_cm, 0) || 0;
     const shippingQuotes = getShippingQuotes({ weightKg, lengthCm, widthCm, heightCm });
     const recommended = shippingQuotes[0] || null;
-    const revenueKrw = roundMoney(currentPriceUsd * ASSUMPTIONS.usd_krw);
+    const revenueKrw = roundMoney(currentPriceUsd * _usdKrw);
     const ebayFeeKrw = roundMoney(revenueKrw * ASSUMPTIONS.ebay_fee_pct);
     const shippingKrw = recommended ? recommended.total_krw : 0;
     const estimatedProfitKrw = revenueKrw - ebayFeeKrw - shippingKrw - productCostKrw;
@@ -802,6 +838,7 @@ function calculateListingProfitabilityOverlayFilled({ listings, overlay } = {}) 
   }, {});
 
   return baseOutput({
+    usdKrw: _usdKrw,
     phase: '18C',
     operation: 'listing_profitability_calculate_overlay_filled',
     listings_file: path.resolve(listings),
