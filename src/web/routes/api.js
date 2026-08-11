@@ -390,8 +390,9 @@ router.get('/revenue/summary', async (req, res) => {
       })(),
     ]);
 
-    const rates = await platformRegistry.getExchangeRates();
-    const exchangeRate = rates.usd || 1400; // USD → KRW from DB
+    // Phase 2-1A: use central pricing safety rate helper (same DB source).
+    const { getPricingSafetyExchangeRate } = require('../../pricing/rates');
+    const exchangeRate = await getPricingSafetyExchangeRate();
     const platforms = {};
     const platformNames = ['Shopify', 'eBay', 'Naver', 'Shopee'];
 

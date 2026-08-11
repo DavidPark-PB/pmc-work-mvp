@@ -903,13 +903,12 @@ router.get('/profit', async (req, res) => {
     const { page, limit, offset } = parsePagination(req.query);
     const { q, platform } = req.query;
 
-    // Fetch exchange rate from margin_settings
-    const { data: settings } = await supabase
-      .from('margin_settings')
-      .select('setting_key, setting_value')
-      .in('setting_key', ['exchange_rate_usd']);
-
-    const exchangeRate = settings?.find(s => s.setting_key === 'exchange_rate_usd')?.setting_value || 1400;
+    // Phase 2-1A: use the central pricing safety rate helper instead of
+    // an inline || 1400 fallback. Same value today (both read
+    // margin_settings.exchange_rate_usd); helper is where owner will
+    // flip to 1300 later without touching this route.
+    const { getPricingSafetyExchangeRate } = require('../../pricing/rates');
+    const exchangeRate = await getPricingSafetyExchangeRate();
 
     let query = supabase
       .from('products')
@@ -940,7 +939,16 @@ router.get('/profit', async (req, res) => {
         : listings[0];
 
       const salePrice = targetListing?.price || p.price_usd || 0;
-      const feeRate = targetListing?.fee_rate || 0.18; // eBay default 18%
+      // Phase 2-1B: platform_listings.fee_rate is stored as percent (5.5, 9,
+      // 3, or 0 fallback per 2026-08-11 preflight). Previously this route
+      // used the raw value as if it were decimal (0.18 fallback), which
+      // would compute a 13× overcharge the moment eBay/Shopify rows get
+      // populated with real percent values. Now: divide raw percent by 100
+      // when present, else fall back to the canonical decimal 0.18.
+      const rawFeeRate = targetListing?.fee_rate;
+      const feeRate = (Number.isFinite(rawFeeRate) && rawFeeRate > 0)
+        ? Number(rawFeeRate) / 100
+        : 0.18;
       const platformFee = +(salePrice * feeRate).toFixed(2);
       const shippingCost = p.shipping_usd || 0;
       const costUsd = +((p.cost_price || 0) / exchangeRate).toFixed(2);

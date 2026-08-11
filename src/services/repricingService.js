@@ -61,7 +61,11 @@ class RepricingService {
 
     // Calculate minimum allowed price based on margin floor
     const fees = await platformRegistry.getFeeRates();
-    const rates = await platformRegistry.getExchangeRates();
+    // Phase 2-1A: pricing exchange rate goes through the safety helper.
+    // No behaviour change today — helper returns margin_settings.exchange_rate_usd
+    // (currently 1400). Owner will update margin_settings when policy shifts
+    // to 1300; hardcode fallback stays at 1400 to preserve prior behaviour.
+    const { getPricingSafetyExchangeRate } = require('../pricing/rates');
     const purchasePrice = parseFloat(product.purchase_price || product.cost_price || 0);
     const weight = parseFloat(product.weight || 0);
     const shippingKRW = pricingEngine.estimateShippingKRW(weight);
@@ -69,7 +73,7 @@ class RepricingService {
     const totalCostKRW = purchasePrice + shippingKRW + tax;
 
     const feeRate = fees[platform] || 0.18;
-    const exchangeRate = rates.usd || 1400;
+    const exchangeRate = await getPricingSafetyExchangeRate();
     const minMargin = parseFloat(rule.min_margin_pct) / 100 || 0.10;
     const minDivisor = 1 - feeRate - minMargin;
     const minPriceFromMargin = minDivisor > 0

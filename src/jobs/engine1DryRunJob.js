@@ -39,6 +39,53 @@ const CONFIG = {
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+// Phase 2-1C: log-only pricing contract validation. Runs at decideSku entry
+// point per SKU. Failures are counted and logged but do NOT alter engine
+// output — this is a measurement phase. Owner will decide whether to
+// promote violations to hard BLOCKs after seeing the counts.
+const contract = require('../pricing/contract');
+const _contractViolations = { count: 0, byField: {}, samples: [] };
+function _logOnlyContractCheck({ sku, feeRateFromEbayProductsRaw, usdKrwRaw, costKrwRaw, weightGramRaw }) {
+  const inputs = {};
+  if (feeRateFromEbayProductsRaw != null) {
+    // NOTE: ASSUMPTIONS.ebay_fee_pct is 0.18 (decimal). Validate via the
+    // platforms adapter, not the ebay_products adapter, because it's a
+    // decimal in this codepath.
+    inputs.feeRate = { source: 'platforms', raw: feeRateFromEbayProductsRaw };
+  }
+  if (usdKrwRaw != null) inputs.exchangeRate = usdKrwRaw;
+  if (costKrwRaw != null) inputs.costKrw = costKrwRaw;
+  if (weightGramRaw != null) {
+    // Only validate if a positive integer was supplied — sku_master rows with
+    // no weight yet (99.7% of catalogue per 2026-08-11 preflight) show up as
+    // UNKNOWN in Engine 1's landing-cost check and are already handled.
+    if (weightGramRaw > 0 && Number.isInteger(weightGramRaw)) {
+      inputs.weight = { source: 'weight_gram', raw: weightGramRaw };
+    }
+  }
+  const r = contract.validatePricingInputs(inputs);
+  if (!r.ok) {
+    _contractViolations.count += 1;
+    for (const err of r.errors) {
+      _contractViolations.byField[err.field] = (_contractViolations.byField[err.field] || 0) + 1;
+    }
+    if (_contractViolations.samples.length < 10) {
+      _contractViolations.samples.push({ sku, errors: r.errors });
+    }
+  }
+}
+function _flushContractViolations() {
+  if (_contractViolations.count === 0) {
+    console.log('[engine1] contract check: 0 violations (all SKUs pass unit/currency contract)');
+    return;
+  }
+  console.warn('[engine1] contract violations:', {
+    total: _contractViolations.count,
+    byField: _contractViolations.byField,
+    samples: _contractViolations.samples.slice(0, 5),
+  });
+}
+
 /** 승인된 매칭 로드 — our_sku별 [{competitor_item_id, seller_id, confidence}] */
 async function loadApprovedMatches(db) {
   const { data, error } = await db.from('product_matches')
@@ -202,6 +249,18 @@ async function runEngine1DryRun() {
     const rule = rules.bySku.get(sku) || rules.global || {};
     const todayDropPctUsed = todayDropMap.get(sku) || 0;
 
+    // Phase 2-1C: log-only contract validation at the calculator entry point.
+    // Failures are logged but do NOT block the decision this run — we're
+    // measuring how much real data violates the contract before promoting
+    // this to a hard BLOCK in a later phase.
+    _logOnlyContractCheck({
+      sku,
+      feeRateFromEbayProductsRaw: ASSUMPTIONS.ebay_fee_pct,
+      usdKrwRaw: ASSUMPTIONS.usd_krw,
+      costKrwRaw: sm ? sm.cost_krw : null,
+      weightGramRaw: sm ? (sm.weight_gram || 0) + (sm.default_packaging_weight_g || 0) : null,
+    });
+
     const d = engine.decideSku({
       sku,
       itemId: my ? my.itemId : null,
@@ -257,6 +316,7 @@ async function runEngine1DryRun() {
     ms: Date.now() - started,
   };
   console.log('[engine1] Dry-run 완료:', JSON.stringify(summary));
+  _flushContractViolations();
 
   if (CONFIG.PUSH_TELEGRAM) {
     try {
