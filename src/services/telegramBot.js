@@ -30,15 +30,20 @@ async function sendMessage(text, options = {}) {
 
   try {
     const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    // 8C-1 hotfix: allow explicit parseMode:null (plain text). Legacy callers
+    // that pass no parseMode still get 'Markdown' behavior. Matches the
+    // sendWithButtons convention already used in this file.
+    const body = {
+      chat_id: CHAT_ID,
+      text: text.substring(0, 4096), // Telegram limit
+      disable_web_page_preview: true,
+    };
+    const pm = options.parseMode !== undefined ? options.parseMode : 'Markdown';
+    if (pm) body.parse_mode = pm;
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: CHAT_ID,
-        text: text.substring(0, 4096), // Telegram limit
-        parse_mode: options.parseMode || 'Markdown',
-        disable_web_page_preview: true,
-      }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!data.ok) {
@@ -49,6 +54,40 @@ async function sendMessage(text, options = {}) {
   } catch (e) {
     console.error('[Telegram] Error:', e.message);
     return null;
+  }
+}
+
+/**
+ * 8C-1 hotfix: plain-text send with structured delivery result.
+ *   Never uses parse_mode → immune to Markdown/HTML entity errors.
+ *   Returns { ok, error, description } — no `null` swallowing.
+ *   No secrets (chat_id / bot_token) in the returned object.
+ */
+async function sendPlain(text) {
+  if (!isConfigured()) return { ok: false, error: 'not_configured', description: null };
+  try {
+    const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: CHAT_ID,
+        text: String(text || '').substring(0, 4096),
+        disable_web_page_preview: true,
+        // parse_mode intentionally omitted · plain text delivery
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      const description = String(data.description || 'unknown_error');
+      console.error('[Telegram] sendPlain failed:', description);
+      return { ok: false, error: `bot_api_${data.error_code || 'unknown'}`, description };
+    }
+    return { ok: true, error: null, description: null };
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : String(e);
+    console.error('[Telegram] sendPlain error:', msg);
+    return { ok: false, error: 'network_or_runtime', description: msg };
   }
 }
 
@@ -233,4 +272,5 @@ async function getWebhookInfo() {
 module.exports = {
   sendMessage, sendAlert, sendProfitReport, sendMorningBriefing, isConfigured,
   sendWithButtons, answerCallbackQuery, editMessage, setWebhook, getWebhookInfo,
+  sendPlain,   // 8C-1
 };

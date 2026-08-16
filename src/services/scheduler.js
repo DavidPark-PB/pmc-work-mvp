@@ -161,6 +161,24 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // 매일 오전 9시 15분 — OMS Inventory Exceptions Daily (Phase 8D)
+  // 이미 프로덕션 검증된 Phase 8C/8C-2c 오케스트레이터를 그대로 호출한다.
+  // 여기서는 어떤 business logic 도 새로 만들지 않는다.
+  //   · 인벤토리 판정 / 알림 delivery / dedup / fingerprint 는 잡 내부 소관
+  //   · scheduler 는 실패 격리(잡 자체가 audit + 부분실패 처리 담당)만 wrap
+  //   · commit=true · concurrency=4 (Owner 지시)
+  cron.schedule('15 9 * * *', async () => {
+    try {
+      const { runInventoryExceptionsDaily } = require('../jobs/inventoryExceptionsDailyJob');
+      const result = await runInventoryExceptionsDaily({ commit: true, concurrency: 4 });
+      const status = result?.run_status || result?.audit_row?.status || 'completed';
+      const alertKind = result?.alert_plan?.alert_kind || 'unknown';
+      console.log(`[scheduler] InventoryExceptionsDaily: status=${status} alert=${alertKind}`);
+    } catch (e) {
+      console.error('[scheduler] InventoryExceptionsDaily error:', e.message);
+    }
+  }, { timezone: TZ });
+
   // 매일 오후 5시 정각 — 사장 미완료 요약
   cron.schedule('0 17 * * *', () => {
     sendEveningOwnerSummary().catch(e => console.error('[scheduler] evening error:', e));
@@ -383,7 +401,7 @@ function start() {
   }, { timezone: TZ });
 
   scheduled = true;
-  console.log('[scheduler] 활성화 — 9시(digest)·17시(summary)·4시(platform sync)·10/22시(eBay sync)·0/6/12/18시(경쟁사 모니터+리프라이싱)·3시(recurring)·3:30(uploads cleanup)');
+  console.log('[scheduler] 활성화 — 9시(digest)·9:15(Inventory Exceptions)·17시(summary)·4시(platform sync)·10/22시(eBay sync)·0/6/12/18시(경쟁사 모니터+리프라이싱)·3시(recurring)·3:30(uploads cleanup)');
 }
 
 module.exports = { start, sendMorningDigest, sendEveningOwnerSummary };

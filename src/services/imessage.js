@@ -318,10 +318,24 @@ async function sendSalesReport(data) {
   return sendMessage(lines.join('\n'));
 }
 
+/**
+ * 8C-1 hotfix: plain-text send with structured delivery result.
+ *   No formatting semantics · immune to Markdown/HTML parse issues.
+ *   Returns { ok, error, description } — never `null` swallowing.
+ *   Does NOT expose IMESSAGE_TO destination in the returned object.
+ */
+async function sendPlain(text) {
+  if (!isConfigured()) return { ok: false, error: 'not_configured', description: null };
+  const res = await sendMessage(String(text || ''));
+  if (res === true) return { ok: true, error: null, description: null };
+  return { ok: false, error: 'osascript_send_failed', description: null };
+}
+
 module.exports = {
   sendMessage, sendAlert,
   sendProfitReport, sendMorningBriefing,
   sendBattleReport, sendOpsReport,
   sendMarketingReport, sendSalesReport,
   isConfigured,
+  sendPlain,   // 8C-1
 };
