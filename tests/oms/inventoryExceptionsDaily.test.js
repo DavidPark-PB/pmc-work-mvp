@@ -356,7 +356,13 @@ test('N1. Telegram plain-text digest sends OK when digest contains underscores/b
   };
   process.env.TELEGRAM_BOT_TOKEN = 'stub';
   process.env.TELEGRAM_CHAT_ID = '123';
+  // P0 (2026-08-17) response: gateway blocks non-production sends by default.
+  // Test explicitly opts in — the underlying transport is still the stubbed
+  // fetch, so NO real Telegram API is contacted.
+  process.env.ALLOW_TELEGRAM_IN_DEV = 'true';
+  delete require.cache[require.resolve('../../src/services/telegramGateway')];
   delete require.cache[require.resolve('../../src/services/telegramBot')];
+  require('../../src/services/telegramGateway')._resetForTest();
   const tg = require('../../src/services/telegramBot');
   try {
     const res = await tg.sendPlain(tricky);
@@ -365,6 +371,7 @@ test('N1. Telegram plain-text digest sends OK when digest contains underscores/b
     assert.equal(payload.text.includes('PROTECT_STOCK=0'), true);
   } finally {
     global.fetch = origFetch;
+    delete process.env.ALLOW_TELEGRAM_IN_DEV;
   }
 });
 
@@ -377,7 +384,10 @@ test('N2. underscores + asterisks in digest do not trigger parse error (plain te
   };
   process.env.TELEGRAM_BOT_TOKEN = 'stub';
   process.env.TELEGRAM_CHAT_ID = '123';
+  process.env.ALLOW_TELEGRAM_IN_DEV = 'true';   // P0 gateway opt-in (still stubbed fetch)
+  delete require.cache[require.resolve('../../src/services/telegramGateway')];
   delete require.cache[require.resolve('../../src/services/telegramBot')];
+  require('../../src/services/telegramGateway')._resetForTest();
   const tg = require('../../src/services/telegramBot');
   try {
     const r = await tg.sendPlain('one_underscore *asterisk* [bracket] `backtick`');
@@ -385,6 +395,7 @@ test('N2. underscores + asterisks in digest do not trigger parse error (plain te
     assert.equal(capturedBodies[0].parse_mode, undefined);
   } finally {
     global.fetch = origFetch;
+    delete process.env.ALLOW_TELEGRAM_IN_DEV;
   }
 });
 

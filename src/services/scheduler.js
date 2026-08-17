@@ -111,6 +111,16 @@ let scheduled = false;
 function start() {
   if (scheduled) { console.log('[scheduler] 이미 시작됨'); return; }
 
+  // P0 (2026-08-17) 대응: 대량 Telegram 발송 사고 이후 scheduler kill switch
+  //   env 를 명시적으로 켜면 cron 자체가 등록되지 않는다. 발송 gateway와
+  //   별개의 층 방어. (테스트 호환을 위해 자동 dev-block은 하지 않음 —
+  //   dev 에서 발송은 gateway가 이미 non-production 기본 차단으로 방어.)
+  if (process.env.SCHEDULER_DISABLED === 'true' || process.env.DISABLE_SCHEDULER === 'true') {
+    console.log('[scheduler] 🛑 SCHEDULER_DISABLED=true — 모든 cron 등록 SKIP (P0 안전장치)');
+    scheduled = true;   // 재호출도 무해하도록 마킹
+    return;
+  }
+
   // Kill switch (2026-07-15): EBAY_API_LOCKED=true 면 eBay Browse API 를 소비하는
   // 크론 3종 (RepricingPipeline, CompetitorCrawler, MyListingRefresher) 등록 스킵.
   //   배경: Buy > Browse API default 5,000 calls/day. 크론이 6h마다 대량 호출 →

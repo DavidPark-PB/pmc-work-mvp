@@ -334,55 +334,38 @@ async function sendTelegramReport({ monitorResult, proposals, repricerReport, dr
   summaryLines.push('');
   summaryLines.push(dryRun ? '_[시뮬레이션 — 버튼으로 개별 승인]_' : '_[가격 변경 적용 완료]_');
 
-  await telegram.sendMessage(summaryLines.join('\n'));
-
-  // dryRun=true일 때만 승인 버튼 발송 (실적용 모드는 이미 변경됨)
-  if (!dryRun) return;
-
-  // === proposal별 인라인 버튼 메시지 ===
-  const actionProposals = [...raises, ...drops].slice(0, CONFIG.REPORT_TOP_N);
-
-  for (const p of actionProposals) {
-    const icon = p.action === 'raise' ? '📈' : '📉';
-    const actionLabel = p.action === 'raise' ? '인상' : '인하';
-    const itemId = p.itemId || 'null';
-
-    const skuShort = (p.sku || '').slice(0, 20);
-    const priceStr = String(p.proposedPrice);
-
-    // Markdown 특수문자 없이 plain text로 구성 (parse_mode 없음)
-    const text = [
-      `${icon} ${actionLabel} 제안`,
-      `SKU: ${p.sku}`,
-      `현재: $${p.myPrice} → 제안: $${p.proposedPrice}`,
-      `경쟁사: $${p.compPrice} (${p.seller || '-'})`,
-      `사유: ${p.reason.slice(0, 120)}`,
-    ].join('\n');
-
-    const approveData = `reprice:approve:${skuShort}:${itemId}:${priceStr}`;
-    const rejectData = `reprice:reject:${skuShort}`;
-
-    if (CONFIG.PRICE_WRITES_ENABLED && approveData.length <= 64) {
-      await telegram.sendWithButtons(text, [[
-        { text: '✅ 승인 (가격 변경)', callback_data: approveData },
-        { text: '❌ 거부', callback_data: rejectData },
-      ]], { parseMode: null });
-    } else {
-      await telegram.sendMessage(text + '\n\nℹ️ Hermes v1: 가격 변경은 비활성화되어 있습니다. 추천만 제공됩니다.');
+  // P0 (2026-08-17) — proposal 별 개별 발송 → 잡당 1건 요약 aggregate.
+  //   기존: summary(1) + proposal N개 개별 sendWithButtons/sendMessage
+  //   변경: summary + proposal 요약 리스트를 1건에 병합
+  //   Rationale: 폭주 방지. 승인은 대시보드/CLI로 이관.
+  //
+  //   dryRun=false (실적용 모드) 에서는 summary만 발송 · 원래 로직 유지.
+  if (dryRun) {
+    const actionProposals = [...raises, ...drops].slice(0, CONFIG.REPORT_TOP_N);
+    if (actionProposals.length > 0) {
+      summaryLines.push('');
+      summaryLines.push('*[제안 요약]* (개별 승인 버튼 P0 이후 대시보드로 이관)');
+      for (const p of actionProposals) {
+        const icon = p.action === 'raise' ? '📈' : '📉';
+        summaryLines.push(`${icon} \`${p.sku}\` $${p.myPrice}→$${p.proposedPrice} (경쟁 $${p.compPrice}) — ${(p.reason || '').slice(0, 60)}`);
+      }
+      const total = raises.length + drops.length;
+      if (total > actionProposals.length) {
+        summaryLines.push(`… +${total - actionProposals.length}건 생략`);
+      }
     }
-
-    await new Promise(r => setTimeout(r, 300));
+    // 급락 경고도 같은 message로 병합
+    const crashes = proposals.filter(p => p.alertType === 'price_crash');
+    if (crashes.length > 0) {
+      summaryLines.push('');
+      summaryLines.push('*⚠️ 비정상 가격 급락 (무시 권장)*');
+      crashes.slice(0, 5).forEach(p => {
+        summaryLines.push(`• \`${p.sku}\` ${p.seller}: $${p.oldCompPrice}→$${p.compPrice} (-${p.changePct}%)`);
+      });
+    }
   }
 
-  // 급락 경고
-  const crashes = proposals.filter(p => p.alertType === 'price_crash');
-  if (crashes.length > 0) {
-    const crashLines = ['*⚠️ 비정상 가격 급락 (무시 권장)*'];
-    crashes.slice(0, 5).forEach(p => {
-      crashLines.push(`• \`${p.sku}\` ${p.seller}: $${p.oldCompPrice}→$${p.compPrice} (-${p.changePct}%)`);
-    });
-    await telegram.sendMessage(crashLines.join('\n'));
-  }
+  await telegram.sendMessage(summaryLines.join('\n'), { jobName: 'repricingPipeline' });
 }
 
 

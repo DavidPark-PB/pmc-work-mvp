@@ -298,20 +298,33 @@ async function runAutoMapper({ sellerIds, silent = false } = {}) {
     await new Promise(r => setTimeout(r, 1500));
   }
 
-  // 5. 텔레그램 확인 요청 (최대 MAX_ASK_PER_RUN개)
+  // 5. 텔레그램 확인 요청
+  //   P0 (2026-08-17) — per-item ask 발송 폐지. 잡당 1건 요약으로 집계.
+  //   기존: header + N개 개별 sendWithButtons (askTelegram)
+  //   변경: 요약 1건에 상위 후보 목록 embedding. 실제 승인은 대시보드/CLI로.
+  //   totalAsked 는 "요약에 포함된 후보 수"로 재정의.
   if (!silent && toAsk.length > 0) {
     const batch = toAsk.slice(0, MAX_ASK_PER_RUN);
     console.log(`[AutoMapper] 텔레그램 확인 요청: ${batch.length}개`);
 
     if (telegram.isConfigured()) {
-      await telegram.sendMessage(
-        `🔍 경쟁셀러 매핑 확인 요청 ${batch.length}건\n자동 매핑 완료: ${totalMapped}건`
-      );
+      const lines = [
+        `🔍 경쟁셀러 매핑 확인 요청 ${batch.length}건 (요약)`,
+        `자동 매핑 완료: ${totalMapped}건`,
+        `(개별 승인 버튼 P0 이후 대시보드/CLI로 이관)`,
+        '',
+      ];
       for (const match of batch) {
-        await askTelegram(match);
-        totalAsked++;
-        await new Promise(r => setTimeout(r, 400));
+        const my = match.myProduct;
+        const it = match.sellerItem;
+        lines.push(
+          `❓ ${(match.score * 100).toFixed(0)}% · ${(my.title || my.sku || my.item_id || '?').slice(0, 60)}`
+          + ` ↔ [${it.seller}] ${(it.title || '?').slice(0, 60)}`
+        );
       }
+      if (toAsk.length > batch.length) lines.push(`… +${toAsk.length - batch.length}건 생략`);
+      await telegram.sendMessage(lines.join('\n'), { jobName: 'competitorAutoMapper' });
+      totalAsked = batch.length;
     }
   }
 

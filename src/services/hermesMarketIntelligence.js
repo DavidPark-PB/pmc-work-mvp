@@ -445,12 +445,24 @@ async function buildDailyReport({ date = todayKstDate(), hours = 24, save = true
 
 async function sendDailyReportToTelegram(report) {
   if (!telegram.isConfigured()) return null;
+  // P0 (2026-08-17) — chunk 수 상한 3. 초과분은 메시지로 보내지 않고 dropped
+  //   카운터만 마지막 chunk 에 남긴다. 이전 구현: 상한 없음 → 리포트가
+  //   길어질수록 chunk 배열이 무제한 확장 (폭주 원인).
+  const HERMES_MAX_CHUNKS = 3;
   const chunks = [];
   const text = report.markdown || '';
-  for (let i = 0; i < text.length; i += 3900) chunks.push(text.slice(i, i + 3900));
+  for (let i = 0; i < text.length; i += 3900) {
+    if (chunks.length >= HERMES_MAX_CHUNKS) break;
+    chunks.push(text.slice(i, i + 3900));
+  }
+  const totalNeeded = Math.ceil(text.length / 3900);
+  const dropped = totalNeeded - chunks.length;
+  if (dropped > 0 && chunks.length > 0) {
+    chunks[chunks.length - 1] += `\n\n… (+${dropped} chunk(s) truncated · P0 안전장치)`;
+  }
   let first = null;
   for (let i = 0; i < chunks.length; i++) {
-    const sent = await telegram.sendMessage(chunks[i], { parseMode: null });
+    const sent = await telegram.sendMessage(chunks[i], { parseMode: null, jobName: 'hermesMarketIntelligence' });
     if (i === 0) first = sent;
     await new Promise(r => setTimeout(r, 300));
   }

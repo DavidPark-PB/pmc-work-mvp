@@ -297,12 +297,22 @@ async function buildProductIntelligenceReport({ date = todayKstDate(), days = 30
 
 async function sendProductIntelligenceToTelegram(report) {
   if (!telegram.isConfigured()) return null;
+  // P0 (2026-08-17) — chunk 상한 3. 초과분 dropped 표기.
+  const HERMES_MAX_CHUNKS = 3;
   const text = report.markdown || '';
   const chunks = [];
-  for (let i = 0; i < text.length; i += 3900) chunks.push(text.slice(i, i + 3900));
+  for (let i = 0; i < text.length; i += 3900) {
+    if (chunks.length >= HERMES_MAX_CHUNKS) break;
+    chunks.push(text.slice(i, i + 3900));
+  }
+  const totalNeeded = Math.ceil(text.length / 3900);
+  const dropped = totalNeeded - chunks.length;
+  if (dropped > 0 && chunks.length > 0) {
+    chunks[chunks.length - 1] += `\n\n… (+${dropped} chunk(s) truncated · P0 안전장치)`;
+  }
   let first = null;
   for (let i = 0; i < chunks.length; i++) {
-    const sent = await telegram.sendMessage(chunks[i], { parseMode: null });
+    const sent = await telegram.sendMessage(chunks[i], { parseMode: null, jobName: 'hermesProductIntelligence' });
     if (i === 0) first = sent;
     await new Promise(r => setTimeout(r, 300));
   }

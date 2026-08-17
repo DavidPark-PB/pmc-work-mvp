@@ -340,41 +340,28 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false, maxCalls
   }
 
   // ── 5. Pending 건 텔레그램 승인 요청 ──────────────────────────────────────
+  //   P0 (2026-08-17) — 개별 승인 발송 폐지. 잡당 요약 1건으로 집계.
+  //   승인은 대시보드/CLI 로 이관 예정.
   if (!silent && pendingRows.length > 0 && telegram.isConfigured()) {
     const batch = pendingRows.slice(0, MAX_TELEGRAM_PER_RUN);
-    console.log(`[Matcher] 텔레그램 승인 요청: ${batch.length}건`);
-
-    await telegram.sendMessage(
-      `🔍 *경쟁상품 매핑 승인 요청* ${batch.length}건\n자동 승인 완료: ${autoApproved}건`
-    );
-
+    console.log(`[Matcher] 텔레그램 승인 요청 (요약): ${batch.length}건`);
+    const lines = [
+      `🔍 *경쟁상품 매핑 승인 요청* ${batch.length}건`,
+      `자동 승인 완료: ${autoApproved}건`,
+      `(개별 승인 P0 이후 대시보드/CLI 로 이관)`,
+      ``,
+    ];
     for (const row of batch) {
-      const { matchId, matchRow } = row;
-      // UUID 앞 8자만 callback_data에 사용
-      const shortId = matchId ? String(matchId).slice(0, 8) : 'unknown';
-
+      const { matchRow } = row;
       const ourProd = ourProducts.find(p => (p.sku || p.item_id) === matchRow.our_sku);
       const ourTitle = ourProd?.title ?? matchRow.our_sku;
-
-      const text = [
-        `❓ *같은 상품인가요?* (신뢰도 ${(matchRow.confidence * 100).toFixed(0)}%)`,
-        ``,
-        `📦 *경쟁상품*`,
-        `  제목: ${row.title?.slice(0, 80)}`,
-        `  가격: $${row.price} + 배송 $${row.shipping}`,
-        ``,
-        `🏷 *우리 상품*`,
-        `  제목: ${ourTitle?.slice(0, 80)}`,
-        `  매핑 방법: ${matchRow.match_method}`,
-      ].join('\n');
-
-      await telegram.sendWithButtons(text, [[
-        { text: '✅ 같은 상품', callback_data: `map:yes:${shortId}` },
-        { text: '❌ 다른 상품', callback_data: `map:no:${shortId}` },
-      ]], { parseMode: 'Markdown' });
-
-      await sleep(400);
+      lines.push(
+        `❓ ${(matchRow.confidence * 100).toFixed(0)}% · [경쟁] ${(row.title || '?').slice(0, 60)}`
+        + ` ↔ [우리] ${(ourTitle || '?').slice(0, 60)}`
+      );
     }
+    if (pendingRows.length > batch.length) lines.push(`… +${pendingRows.length - batch.length}건 생략`);
+    await telegram.sendMessage(lines.join('\n'), { jobName: 'aiMatcher' });
   }
 
   const summary = {

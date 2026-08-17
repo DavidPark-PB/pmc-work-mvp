@@ -145,7 +145,33 @@ async function detectSourcing(db, ebay) {
     }
   }
   out.sort((a, b) => b.sold - a.sold);
-  return out.slice(0, CONFIG.REPORT_TOP);
+  const top = out.slice(0, CONFIG.REPORT_TOP);
+  await enrichCrossPlatform(db, top); // 내 타 플랫폼(Shopify) 등록 여부 확인
+  return top;
+}
+
+/** 소싱기회 상품이 내 타 플랫폼(현재 Shopify)에 이미 있는지 표시.
+ *  없으면 crossPlatformGap=true → "순수 신규 기회" (여기+타 플랫폼 둘 다 없음). */
+async function enrichCrossPlatform(db, items) {
+  if (!items || !items.length) return;
+  try {
+    const { data: shop } = await db.from('shopify_products').select('title').limit(10000);
+    const idx = (shop || []).map(s => new Set(
+      (s.title || '').toLowerCase().replace(/[^a-z0-9가-힣\s]/g, ' ').split(/\s+/).filter(w => w.length > 2)
+    ));
+    for (const it of items) {
+      const t = new Set((it.title || '').toLowerCase().replace(/[^a-z0-9가-힣\s]/g, ' ').split(/\s+/).filter(w => w.length > 2));
+      let onShopify = false;
+      for (const s of idx) {
+        let n = 0; for (const w of t) if (s.has(w)) n++;
+        if (n >= 4) { onShopify = true; break; } // 제목 4단어+ 일치 = 동일 상품 간주
+      }
+      it.onShopify = onShopify;
+      it.crossPlatformGap = !onShopify; // eBay·Shopify 둘 다 없음 = 순수 신규
+    }
+  } catch (e) {
+    console.warn('[killPricing] 크로스플랫폼 확인 실패(무시):', e.message);
+  }
 }
 
 /** 소싱기회를 opportunity_inbox에 저장 (중복 방지) */
@@ -184,6 +210,8 @@ async function saveSourcingOpportunities(db, sourcing) {
             total: s.total,
             seller: s.seller,
             url: s.url,
+            on_shopify: !!s.onShopify,
+            cross_platform_gap: !!s.crossPlatformGap, // eBay·Shopify 둘 다 없음 = 순수 신규
             source: 'killPricingDailyJob',
           },
         },
@@ -217,27 +245,31 @@ async function pushTelegram(recs, sourcing) {
   if (sourcing.length) {
     header.push('*🟡 소싱기회(내가 없는데 잘 팔림)*');
     sourcing.slice(0, 8).forEach((s) => {
-      header.push(`• ${s.sold} sold · $${s.total} — ${s.title}`);
+      const gap = s.crossPlatformGap ? ' 🆕순수신규' : (s.onShopify ? ' (Shopify엔 있음)' : '');
+      header.push(`• ${s.sold} sold · $${s.total} — ${s.title}${gap}`);
     });
     header.push('');
   }
-  header.push(lowers.length ? '아래 인하 권장 건을 승인/거부로 처리하세요 ↓' : '오늘 인하 권장 없음.');
-  await telegram.sendMessage(header.join('\n'));
-
-  // 인하 권장: 개별 메시지 + 승인/거부 버튼 (기존 reprice 콜백 재사용)
-  for (const r of lowers.slice(0, CONFIG.REPORT_TOP)) {
-    const text = [
-      `🔴 *인하 권장* — ${r.title}`,
-      `내 총액 $${r.myTotal}  vs  경쟁 총액 $${r.compTotal}`,
-      `👉 상품가를 *$${r.newPrice}* 로 (킬프라이스, 경쟁−$${CONFIG.UNDERCUT})`,
-      r.sold ? `경쟁사 판매 ${r.sold}개` : '',
-    ].filter(Boolean).join('\n');
-    const keyboard = [[
-      { text: `✅ $${r.newPrice}로 적용`, callback_data: `reprice:approve:${r.sku}:${r.myItemId}:${r.newPrice}` },
-      { text: '❌ 거부', callback_data: `reprice:reject:${r.sku}:${r.myItemId}:${r.newPrice}` },
-    ]];
-    await telegram.sendWithButtons(text, keyboard);
+  // P0 (2026-08-17) — 개별 항목별 발송 → 잡당 1건 요약으로 집계.
+  //   기존: header + N개 개별 sendWithButtons (N=최대 REPORT_TOP=12)
+  //   변경: header + 인하 요약 1건 (버튼 없음 · 승인은 대시보드/CLI에서)
+  //   Rationale: 폭주 방지가 우선. 인라인 승인 버튼은 후속 phase에서
+  //     dashboard 승인 UI 로 이관.
+  const lowersSlice = lowers.slice(0, CONFIG.REPORT_TOP);
+  if (lowersSlice.length > 0) {
+    header.push('아래 인하 권장 건 요약 ↓');
+    header.push('(개별 승인은 대시보드 / CLI 에서 처리 — P0 이후 인라인 버튼 비활성)');
+    header.push('');
+    for (const r of lowersSlice) {
+      header.push(`🔴 ${r.title} — 내 $${r.myTotal} / 경쟁 $${r.compTotal} → *$${r.newPrice}* (SKU ${r.sku})`);
+    }
+    if (lowers.length > lowersSlice.length) {
+      header.push(`… +${lowers.length - lowersSlice.length}건 생략`);
+    }
+  } else {
+    header.push('오늘 인하 권장 없음.');
   }
+  await telegram.sendMessage(header.join('\n'), { jobName: 'killPricingDaily' });
 }
 
 async function runKillPricingDaily(opts = {}) {
@@ -265,7 +297,7 @@ async function runKillPricingDaily(opts = {}) {
     return summary;
   } catch (e) {
     console.error('[killPricing] 잡 실패:', e.message);
-    try { await telegram.sendMessage(`⚠️ 킬프라이스 데일리 잡 실패: ${e.message}`); } catch (_) {}
+    try { await telegram.sendMessage(`⚠️ 킬프라이스 데일리 잡 실패: ${e.message}`, { jobName: 'killPricingDaily' }); } catch (_) {}
     return { error: e.message };
   }
 }

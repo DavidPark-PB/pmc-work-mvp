@@ -245,9 +245,15 @@ app.listen(PORT, () => {
   // 업무관리 알림 스케줄러 (Phase 5 — 매일 오전 9시, 오후 5시)
   require('./src/services/scheduler').start();
 
-  // 텔레그램 webhook 등록 (Railway 공개 URL)
+  // 텔레그램 webhook 등록 — P0 (2026-08-17) 대응: 원인 조사 종료 및
+  //   Owner 승인 전에는 자동 등록을 하지 않는다. `TELEGRAM_ENABLE_WEBHOOK=true`
+  //   env를 명시적으로 켜야만 등록된다. 발송 gateway와 별개의 kill switch.
   setTimeout(async () => {
     try {
+      if (process.env.TELEGRAM_ENABLE_WEBHOOK !== 'true') {
+        console.log('[Telegram] Webhook 자동 등록 SKIP (TELEGRAM_ENABLE_WEBHOOK != true · P0 안전장치)');
+        return;
+      }
       const telegram = require('./src/services/telegramBot');
       const appUrl = process.env.APP_PUBLIC_URL;
       if (telegram.isConfigured() && appUrl) {
@@ -279,6 +285,15 @@ app.listen(PORT, () => {
     }
   })().catch(e => console.warn('[TokenStore] DB token load failed:', e.message));
 
+  // P0 (2026-08-17) — AGENTS_DISABLED=true 이면 서버 부팅 시 모든 background
+  //   agent · interval · scheduleDaily 등록을 건너뛴다. scheduler.js 의
+  //   SCHEDULER_DISABLED 와 별개의 방어층.
+  const AGENTS_DISABLED = process.env.AGENTS_DISABLED === 'true' || process.env.DISABLE_AGENTS === 'true';
+  if (AGENTS_DISABLED) {
+    console.log('[Agents] 🛑 AGENTS_DISABLED=true — background agents / intervals / scheduleDaily 전부 SKIP (P0 안전장치)');
+    return;
+  }
+
   // OAuth 토큰 자동 갱신 (3시간마다 — Shopee 4h, eBay 2h 만료)
   const { refreshAllTokens } = require('./src/jobs/tokenRefresh');
   refreshAllTokens(); // 서버 시작 시 즉시 1회 실행
@@ -299,50 +314,58 @@ app.listen(PORT, () => {
   console.log(`SKU 점수 자동 업데이트: ${next2AM.toLocaleString('ko-KR')} 예약됨`);
 });
 
-// Competitor Monitor — every 24 hours.
-// 2026-08-09: 2h → 24h. eBay Browse API 일일 쿼터를 이 잡이 종일 소진해서
-// AI 상품 제작 1단계 fetch (같은 Browse API) 가 errorId 2001 로 막힘.
-// 사장님 지침: 여유분 확보 우선, 정확도는 매일 1회로 충분.
-setInterval(async () => {
-  try {
-    const { runCompetitorMonitor } = require('./src/services/competitorMonitor');
-    const result = await runCompetitorMonitor();
-    console.log(`[CompetitorMonitor] ${result.alerts?.length || 0} alerts, ${result.checked || 0} checked`);
-  } catch (e) {
-    console.error('[CompetitorMonitor] error:', e.message);
-  }
-}, 24 * 60 * 60 * 1000);
+// P0 (2026-08-17) — module-level agent / interval schedules are gated by
+//   AGENTS_DISABLED=true (or DISABLE_AGENTS=true). Complements the listen-scope
+//   AGENTS_DISABLED gate above so nothing runs even during module load. Both
+//   layers required: this scope hits code paths that fire BEFORE app.listen.
+if (process.env.AGENTS_DISABLED === 'true' || process.env.DISABLE_AGENTS === 'true') {
+  console.log('[Agents] 🛑 AGENTS_DISABLED=true — module-level intervals + scheduleDaily 전부 SKIP (P0 안전장치)');
+} else {
+  // Competitor Monitor — every 24 hours.
+  // 2026-08-09: 2h → 24h. eBay Browse API 일일 쿼터를 이 잡이 종일 소진해서
+  // AI 상품 제작 1단계 fetch (같은 Browse API) 가 errorId 2001 로 막힘.
+  // 사장님 지침: 여유분 확보 우선, 정확도는 매일 1회로 충분.
+  setInterval(async () => {
+    try {
+      const { runCompetitorMonitor } = require('./src/services/competitorMonitor');
+      const result = await runCompetitorMonitor();
+      console.log(`[CompetitorMonitor] ${result.alerts?.length || 0} alerts, ${result.checked || 0} checked`);
+    } catch (e) {
+      console.error('[CompetitorMonitor] error:', e.message);
+    }
+  }, 24 * 60 * 60 * 1000);
 
-// ===== AI Agent Scheduling (margin / sourcing / operations) =====
-// 2026-04 정리: 8개 → 3개. 나머지 5개는 실질 가치 부족으로 제거.
-// - margin-agent:     eBay 가격 자동 조정 (auto-approved는 즉시 eBay 반영)
-// - sourcing-agent:   경쟁사 배틀 리포트 (텔레그램 알림)
-// - operations-agent: 재고/단종 탐지 → team_tasks 자동 생성 (업무관리 화면에 노출)
+  // ===== AI Agent Scheduling (margin / sourcing / operations) =====
+  // 2026-04 정리: 8개 → 3개. 나머지 5개는 실질 가치 부족으로 제거.
+  // - margin-agent:     eBay 가격 자동 조정 (auto-approved는 즉시 eBay 반영)
+  // - sourcing-agent:   경쟁사 배틀 리포트 (텔레그램 알림)
+  // - operations-agent: 재고/단종 탐지 → team_tasks 자동 생성 (업무관리 화면에 노출)
 
-// Margin Agent — every 4 hours
-setInterval(async () => {
-  try {
-    const { MarginAgent } = require('./src/agents/margin-agent');
-    const recs = await new MarginAgent().run();
-    console.log(`[MarginAgent] ${recs.length} recommendations`);
-  } catch (e) { console.error('[MarginAgent] error:', e.message); }
-}, 4 * 60 * 60 * 1000);
+  // Margin Agent — every 4 hours
+  setInterval(async () => {
+    try {
+      const { MarginAgent } = require('./src/agents/margin-agent');
+      const recs = await new MarginAgent().run();
+      console.log(`[MarginAgent] ${recs.length} recommendations`);
+    } catch (e) { console.error('[MarginAgent] error:', e.message); }
+  }, 4 * 60 * 60 * 1000);
 
-// Daily agents
-const scheduleDaily = (hour, name, factory) => {
-  const now = new Date();
-  const next = new Date(now);
-  next.setHours(hour, 0, 0, 0);
-  if (next <= now) next.setDate(next.getDate() + 1);
-  setTimeout(() => {
-    (async () => { try { await factory(); } catch (e) { console.error(`[${name}] error:`, e.message); } })();
-    setInterval(async () => { try { await factory(); } catch (e) { console.error(`[${name}] error:`, e.message); } }, 24 * 60 * 60 * 1000);
-  }, next - now);
-  console.log(`[${name}] 예약: ${next.toLocaleString('ko-KR')}`);
-};
+  // Daily agents
+  const scheduleDaily = (hour, name, factory) => {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(hour, 0, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    setTimeout(() => {
+      (async () => { try { await factory(); } catch (e) { console.error(`[${name}] error:`, e.message); } })();
+      setInterval(async () => { try { await factory(); } catch (e) { console.error(`[${name}] error:`, e.message); } }, 24 * 60 * 60 * 1000);
+    }, next - now);
+    console.log(`[${name}] 예약: ${next.toLocaleString('ko-KR')}`);
+  };
 
-scheduleDaily(3, 'SourcingAgent', async () => { const { SourcingAgent } = require('./src/agents/sourcing-agent'); await new SourcingAgent().run(); });
-scheduleDaily(6, 'OperationsAgent', async () => { const { OperationsAgent } = require('./src/agents/operations-agent'); await new OperationsAgent().run(); });
+  scheduleDaily(3, 'SourcingAgent', async () => { const { SourcingAgent } = require('./src/agents/sourcing-agent'); await new SourcingAgent().run(); });
+  scheduleDaily(6, 'OperationsAgent', async () => { const { OperationsAgent } = require('./src/agents/operations-agent'); await new OperationsAgent().run(); });
 
-console.log('[Agents] active: margin-agent (4h), sourcing-agent (03:00), operations-agent (06:00)');
+  console.log('[Agents] active: margin-agent (4h), sourcing-agent (03:00), operations-agent (06:00)');
+}
 
