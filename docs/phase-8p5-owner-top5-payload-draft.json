@@ -1,0 +1,144 @@
+{
+  "$schema": "physicalProductReviewQueue.creation_review_plan.plan[].decision_template + physicalCanonicalWriter.planDecision input",
+  "generated_by": "phase-8p5-owner-top5-payload-draft.json",
+  "generated_intent": "Draft payload for the top-5 leverage SKUs from Phase 8P-4. Owner reviews each, sets owner_confirmed=true only after physical identity is verified via exact deterministic evidence. This file is NEVER auto-consumed by any writer. Zero writes.",
+  "writer_interface_version_expected": "v8p5.rpc1",
+  "safety": {
+    "owner_confirmed_default": false,
+    "phase_8p5_writes_this_payload": "NO — dry-run only until Owner explicitly triggers a separate apply phase",
+    "bp_invariant_locked": {
+      "physical_product_id": 1,
+      "locked_sku_master_ids": [2194, 3120]
+    }
+  },
+  "top_5_candidates": [
+    {
+      "rank": 1,
+      "sku_master_id": 2944,
+      "cohort_hint": "See live output of scripts/oms-physical-product-review-queue.js for creation_candidate_id + cohort_bridge",
+      "completed_sale_items": 128,
+      "decision_template": {
+        "review_target_type": "physical_creation_candidate",
+        "creation_candidate_id": "<REQUIRED · from live 8P-4 output>",
+        "sku_master_ids": [2944],
+        "owner_decision": "CREATE_NEW_PHYSICAL",
+        "confirmed_sku_master_ids": [2944],
+        "target_physical_product_id": null,
+        "proposed_display_name": "<REQUIRED · Owner-approved product name · NOT a fuzzy title match>",
+        "owner_authoritative_bridge": null,
+        "owner_confirmed": false,
+        "owner_confirmation_id": "<REQUIRED · Owner-supplied audit id · e.g. 'owner-2026-08-19-top5-01'>",
+        "note": null,
+        "auto_create_allowed": false,
+        "auto_link_allowed": false,
+        "persisted": false,
+        "writer_interface_version": "v8p4.plan"
+      },
+      "checklist_before_setting_owner_confirmed_true": [
+        "Confirm product exists as a real physical merchandise",
+        "Confirm proposed_display_name matches the intended canonical_title",
+        "Confirm sku_master_id 2944 truly represents this physical (via exact listing/product identifier)",
+        "Confirm no existing physical_products row already represents this product",
+        "Set owner_confirmation_id",
+        "Set owner_confirmed: true"
+      ]
+    },
+    {
+      "rank": 2,
+      "sku_master_id": 1944,
+      "franchise_caveat_expected": "Title may contain NIKKE. NIKKE physical exists (id=2). Franchise/brand match is NOT authoritative — Owner MUST verify with an exact identifier bridge before choosing LINK_TO_EXISTING_PHYSICAL. Default recommendation is CREATE.",
+      "completed_sale_items": 36,
+      "decision_template": {
+        "review_target_type": "physical_creation_candidate",
+        "creation_candidate_id": "<REQUIRED · from live output>",
+        "sku_master_ids": [1944],
+        "owner_decision": "CREATE_NEW_PHYSICAL",
+        "confirmed_sku_master_ids": [1944],
+        "target_physical_product_id": null,
+        "proposed_display_name": "<REQUIRED · Owner-approved · do NOT copy NIKKE physical#2 title unless it is factually the same physical>",
+        "owner_authoritative_bridge": null,
+        "owner_confirmed": false,
+        "owner_confirmation_id": null,
+        "note": "Franchise caveat: NIKKE title similarity is not authoritative. Only choose LINK_TO_EXISTING_PHYSICAL target=2 if Owner supplies an exact identifier bridge (e.g. listing:<id> · product:<id>) proving this SKU represents the same physical merchandise as NIKKE physical#2.",
+        "auto_create_allowed": false,
+        "auto_link_allowed": false,
+        "persisted": false,
+        "writer_interface_version": "v8p4.plan"
+      }
+    },
+    {
+      "rank": 3,
+      "sku_master_id": 3180,
+      "completed_sale_items": 33,
+      "decision_template": {
+        "review_target_type": "physical_creation_candidate",
+        "creation_candidate_id": "<REQUIRED · from live output>",
+        "sku_master_ids": [3180],
+        "owner_decision": "CREATE_NEW_PHYSICAL",
+        "confirmed_sku_master_ids": [3180],
+        "target_physical_product_id": null,
+        "proposed_display_name": "<REQUIRED · Owner-approved>",
+        "owner_authoritative_bridge": null,
+        "owner_confirmed": false,
+        "owner_confirmation_id": null,
+        "note": null,
+        "auto_create_allowed": false,
+        "auto_link_allowed": false,
+        "persisted": false,
+        "writer_interface_version": "v8p4.plan"
+      }
+    },
+    {
+      "rank": 4,
+      "sku_master_id": 574,
+      "completed_sale_items": 24,
+      "decision_template": {
+        "review_target_type": "physical_creation_candidate",
+        "creation_candidate_id": "<REQUIRED · from live output>",
+        "sku_master_ids": [574],
+        "owner_decision": "CREATE_NEW_PHYSICAL",
+        "confirmed_sku_master_ids": [574],
+        "target_physical_product_id": null,
+        "proposed_display_name": "<REQUIRED · Owner-approved>",
+        "owner_authoritative_bridge": null,
+        "owner_confirmed": false,
+        "owner_confirmation_id": null,
+        "note": null,
+        "auto_create_allowed": false,
+        "auto_link_allowed": false,
+        "persisted": false,
+        "writer_interface_version": "v8p4.plan"
+      }
+    },
+    {
+      "rank": 5,
+      "sku_master_id": 40,
+      "completed_sale_items": 24,
+      "decision_template": {
+        "review_target_type": "physical_creation_candidate",
+        "creation_candidate_id": "<REQUIRED · from live output>",
+        "sku_master_ids": [40],
+        "owner_decision": "CREATE_NEW_PHYSICAL",
+        "confirmed_sku_master_ids": [40],
+        "target_physical_product_id": null,
+        "proposed_display_name": "<REQUIRED · Owner-approved>",
+        "owner_authoritative_bridge": null,
+        "owner_confirmed": false,
+        "owner_confirmation_id": null,
+        "note": null,
+        "auto_create_allowed": false,
+        "auto_link_allowed": false,
+        "persisted": false,
+        "writer_interface_version": "v8p4.plan"
+      }
+    }
+  ],
+  "how_to_use": [
+    "1. Run scripts/oms-physical-product-review-queue.js against production to obtain live creation_candidate_id + cohort_bridge for each rank",
+    "2. Fill in the <REQUIRED> fields per candidate (creation_candidate_id, proposed_display_name, owner_confirmation_id)",
+    "3. Verify checklist for each entry · especially SKU 1944 franchise caveat",
+    "4. Once Owner is satisfied · set owner_confirmed: true for those entries",
+    "5. Run scripts/oms-physical-canonical-writer-dry-run.js --input <this-file> to see the exact transaction plan · zero writes",
+    "6. Owner reviews dry-run output · if all clear · triggers a SEPARATE apply phase (Phase 8P-6 · not implemented yet)"
+  ]
+}
