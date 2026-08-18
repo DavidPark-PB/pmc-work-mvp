@@ -38,6 +38,9 @@ function buildRouter(deps = {}) {
   const reassessFn = deps.reassessFn || (args => require('../../services/oms/inventoryOwnerEvidenceIntakeService').previewOwnerEvidenceReassessment(args));
   // Phase 8J · timeline · SoT reuse (no parallel logic)
   const evidenceHistoryFn = deps.evidenceHistoryFn || (args => require('../../services/oms/replacementEvidenceService').listReplacementObservationsForOwner(args));
+  // Phase 8L integration · additive read-only financial metrics projection.
+  //   Pure adapter over ownerDecision + caller-supplied pricing opts. No DB.
+  const financialMetricsFn = deps.financialMetricsFn || ((ownerDecision, opts) => require('../../services/oms/financialMetricsAssembler').buildFinancialMetrics(ownerDecision, opts));
 
   // ─── 1) Batch exception queue ─────────────────────────
   // Owner §Part 10: ONE call for the page. Detail is lazy per-item.
@@ -144,6 +147,26 @@ function buildRouter(deps = {}) {
     }
   });
 
+  // ─── 6b) Financial metrics (Phase 8L integration · READ-ONLY) ─
+  //   Additive read-only surface. Owner Decision + optional caller-supplied
+  //   pricing inputs (query string). Returns 3 independent cost-basis
+  //   scenarios (accounting / replacement / secondary_market_ask).
+  //   Never mutates Owner Decision. Never derives sale price · never
+  //   auto-selects cost basis · UNKNOWN when inputs missing.
+  router.get('/financial-metrics/:physicalId', async (req, res) => {
+    const id = _parsePositiveInt(req.params.physicalId);
+    if (!id) return res.status(400).json({ error: 'invalid_physical_id', message: 'physicalId must be positive integer' });
+    const opts = _parseFinancialMetricsOpts(req.query);
+    try {
+      const ownerDecision = await ownerDecisionFn({ physicalProductId: id });
+      if (ownerDecision && ownerDecision.error) return res.status(404).json({ error: ownerDecision.error });
+      const financial_metrics = financialMetricsFn(ownerDecision, opts);
+      res.json({ owner_decision: ownerDecision, financial_metrics });
+    } catch (err) {
+      res.status(500).json({ error: 'financial_metrics_failed', message: err && err.message ? err.message : String(err) });
+    }
+  });
+
   // ─── 6) Reassessment AFTER a successful record ───────
   // Client passes the BEFORE snapshot it captured pre-record. Server re-runs
   // canonical assess and returns Phase 8G reassessment (BEFORE/AFTER).
@@ -174,6 +197,33 @@ function _parsePositiveInt(v) {
 function _parseOptionalPositiveInt(v) {
   if (v === undefined || v === null || v === '') return null;
   return _parsePositiveInt(v);
+}
+
+function _parseFinancialMetricsOpts(query) {
+  //   Whitelist + strict numeric coercion for query params. Any invalid
+  //   value → null · downstream marks the metric UNKNOWN (never 0-fabricates).
+  const opts = {};
+  const numFields = [
+    'expected_sale_price_krw',
+    'seller_borne_shipping_krw',
+    'marketplace_fee_pct',
+    'marketplace_fixed_fee_krw',
+  ];
+  for (const f of numFields) {
+    if (query[f] !== undefined && query[f] !== '') {
+      const n = Number(query[f]);
+      opts[f] = Number.isFinite(n) ? n : null;
+    }
+  }
+  //   Provenance strings are bounded to 200 chars to prevent log/response
+  //   inflation. Bad type or empty → null.
+  const strFields = ['expected_sale_price_source', 'shipping_source'];
+  for (const f of strFields) {
+    if (typeof query[f] === 'string' && query[f].length > 0) {
+      opts[f] = query[f].slice(0, 200);
+    }
+  }
+  return opts;
 }
 
 /**

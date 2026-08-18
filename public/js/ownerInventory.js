@@ -287,6 +287,15 @@
       renderJudgmentConfidencePanel(od) +
       renderDataProvenancePanel(od) +
 
+      // Phase 8L · 수익성 / 재고가치 (lazy loaded · collapsible · category-independent scenarios)
+      '<div id="oi-financial" style="margin-top:16px;padding:12px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:6px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
+      '<div style="color:#fff;font-weight:600;font-size:13px;">💰 수익성 / 재고가치 <span style="color:#78909c;font-weight:400;font-size:11px;">(카테고리 분리 · 자동 합산 없음)</span></div>' +
+      '<button id="oi-financial-toggle" type="button" style="padding:4px 10px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">계산 열기</button>' +
+      '</div>' +
+      '<div id="oi-financial-body" style="display:none;color:#aaa;font-size:12px;"></div>' +
+      '</div>' +
+
       // Phase 8J · Evidence history timeline (lazy loaded)
       '<div id="oi-history" style="margin-top:16px;padding:12px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:6px;">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
@@ -303,6 +312,118 @@
     wireEvidencePanel(od);
     document.getElementById('oi-history-refresh').addEventListener('click', () => loadEvidenceHistory(od.physical_product_id));
     loadEvidenceHistory(od.physical_product_id);
+    wireFinancialPanel(od);
+  }
+
+  // ─── Phase 8L · 수익성 / 재고가치 (collapsible · category-independent · UNKNOWN never 0) ──
+
+  function wireFinancialPanel(od) {
+    const btn = document.getElementById('oi-financial-toggle');
+    const body = document.getElementById('oi-financial-body');
+    if (!btn || !body) return;
+    let loaded = false;
+    btn.addEventListener('click', async () => {
+      if (body.style.display === 'none') {
+        body.style.display = 'block';
+        btn.textContent = '접기';
+        if (!loaded) {
+          body.innerHTML = renderFinancialInputForm(od);
+          wireFinancialInputForm(od);
+          loaded = true;
+        }
+      } else {
+        body.style.display = 'none';
+        btn.textContent = '계산 열기';
+      }
+    });
+  }
+
+  function renderFinancialInputForm(od) {
+    return (
+      '<div style="padding:8px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;margin-bottom:8px;">' +
+      '<div style="color:#cfd8dc;font-size:11px;margin-bottom:6px;">판매가/배송비를 확인된 값으로 입력하세요. 비워두면 해당 metric은 "확인되지 않음"으로 표시됩니다. 자동 추정하지 않습니다.</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+      '<label style="display:flex;flex-direction:column;color:#aaa;font-size:11px;">예상 판매가 (KRW)' +
+      '<input type="number" id="oi-fm-price" min="0" step="1" placeholder="예: 100000" style="margin-top:2px;padding:6px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:4px;color:#fff;font-size:12px;"/></label>' +
+      '<label style="display:flex;flex-direction:column;color:#aaa;font-size:11px;">판매가 출처 (선택)' +
+      '<input type="text" id="oi-fm-price-src" maxlength="200" placeholder="예: ebay_listing:205376020693" style="margin-top:2px;padding:6px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:4px;color:#fff;font-size:12px;"/></label>' +
+      '<label style="display:flex;flex-direction:column;color:#aaa;font-size:11px;">판매자 부담 배송비 (KRW)' +
+      '<input type="number" id="oi-fm-ship" min="0" step="1" placeholder="예: 8000" style="margin-top:2px;padding:6px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:4px;color:#fff;font-size:12px;"/></label>' +
+      '<label style="display:flex;flex-direction:column;color:#aaa;font-size:11px;">배송 출처 (선택)' +
+      '<input type="text" id="oi-fm-ship-src" maxlength="200" placeholder="예: kpacket_us" style="margin-top:2px;padding:6px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:4px;color:#fff;font-size:12px;"/></label>' +
+      '</div>' +
+      '<button type="button" id="oi-fm-calc" style="margin-top:8px;padding:6px 14px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">계산</button>' +
+      '</div>' +
+      '<div id="oi-fm-result"></div>'
+    );
+  }
+
+  function wireFinancialInputForm(od) {
+    const btn = document.getElementById('oi-fm-calc');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const price = document.getElementById('oi-fm-price').value;
+      const priceSrc = document.getElementById('oi-fm-price-src').value;
+      const ship = document.getElementById('oi-fm-ship').value;
+      const shipSrc = document.getElementById('oi-fm-ship-src').value;
+      const q = new URLSearchParams();
+      if (price) q.set('expected_sale_price_krw', price);
+      if (priceSrc) q.set('expected_sale_price_source', priceSrc);
+      if (ship) q.set('seller_borne_shipping_krw', ship);
+      if (shipSrc) q.set('shipping_source', shipSrc);
+      const resultEl = document.getElementById('oi-fm-result');
+      resultEl.innerHTML = '<div style="color:#78909c;padding:8px;">계산 중...</div>';
+      try {
+        const res = await fetch('/api/oms/owner/financial-metrics/' + encodeURIComponent(od.physical_product_id) + '?' + q.toString(), { credentials: 'same-origin' });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || 'financial metrics failed (' + res.status + ')');
+        resultEl.innerHTML = renderFinancialMetricsResult(json.financial_metrics);
+      } catch (e) {
+        resultEl.innerHTML = '<div style="color:#ef9a9a;padding:8px;">계산 실패: ' + esc(e.message) + '</div>';
+      }
+    });
+  }
+
+  function renderFinancialMetricsResult(fm) {
+    if (!fm || !fm.scenarios) return '<div style="color:#78909c;">결과 없음</div>';
+    const missing = (fm.missing_inputs || []).length
+      ? '<div style="color:#ffb74d;font-size:11px;margin-bottom:6px;">누락 입력: ' + esc(fm.missing_inputs.join(', ')) + '</div>'
+      : '';
+    const caveats = (fm.caveats || []).length
+      ? '<div style="color:#cfd8dc;font-size:11px;margin-bottom:6px;">' + fm.caveats.map(c => '· ' + esc(c)).join('<br/>') + '</div>'
+      : '';
+    const scenarioBlocks = ['accounting', 'replacement', 'secondary_market_ask']
+      .map(k => renderScenarioBlock(k, fm.scenarios[k]))
+      .join('');
+    return missing + caveats + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px;">' + scenarioBlocks + '</div>';
+  }
+
+  function renderScenarioBlock(key, s) {
+    if (!s) return '';
+    const title = key === 'accounting' ? '회계 원가 기준' : key === 'replacement' ? '대체 원가 기준 (historical supplier)' : '시장 참고가 기준 (secondary market ask)';
+    const badge = key === 'secondary_market_ask' ? '<span style="color:#ffb74d;font-size:10px;margin-left:6px;">REFERENCE ONLY</span>' : '';
+    const kvNum = (label, statusObj, key2 = 'amount_krw') => {
+      if (!statusObj || statusObj.status !== 'AVAILABLE') {
+        const reason = statusObj && Array.isArray(statusObj.missing) && statusObj.missing.length ? ' (' + esc(statusObj.missing.join(', ')) + ')' : '';
+        return '<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #1f1f3a;"><span style="color:#aaa;font-size:11px;">' + esc(label) + '</span><span style="color:#78909c;font-size:11px;">확인되지 않음' + reason + '</span></div>';
+      }
+      const v = statusObj[key2];
+      const disp = key2 === 'pct' ? (Number(v).toFixed(2) + '%') : krw(v);
+      return '<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #1f1f3a;"><span style="color:#aaa;font-size:11px;">' + esc(label) + '</span><span style="color:#fff;font-size:11px;">' + esc(disp) + '</span></div>';
+    };
+    const costLabel = s.cost_basis_krw != null ? krw(s.cost_basis_krw) : '확인되지 않음';
+    return (
+      '<div style="padding:10px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:6px;">' +
+      '<div style="color:#fff;font-weight:600;font-size:12px;margin-bottom:2px;">' + esc(title) + badge + '</div>' +
+      '<div style="color:#78909c;font-size:10px;margin-bottom:6px;">원가 근거: <code style="color:#cfd8dc;">' + esc(s.cost_basis_source) + '</code> · ' + esc(costLabel) + '</div>' +
+      kvNum('예상 판매대금', s.expected_sale_proceeds) +
+      kvNum('예상 총이익', s.gross_profit) +
+      kvNum('예상 마진 %', s.gross_margin, 'pct') +
+      kvNum('손익분기 판매가', s.break_even_price) +
+      kvNum('재고가치', s.inventory_value) +
+      (s.cost_basis_note ? '<div style="color:#78909c;font-size:10px;margin-top:4px;font-style:italic;">' + esc(s.cost_basis_note) + '</div>' : '') +
+      '</div>'
+    );
   }
 
   // ─── Phase 8K · 판단 신뢰도 & 숫자의 출처 (UNKNOWN/null은 숨기지 않고 "확인되지 않음"으로 표시) ───

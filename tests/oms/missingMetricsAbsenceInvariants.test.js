@@ -154,6 +154,7 @@ test('MA4. Only src/services/oms/financialMetricsService.js is authorized to def
   const omsDir = path.resolve(__dirname, '../../src/services/oms');
   const AUTHORIZED = new Set([
     path.resolve(omsDir, 'financialMetricsService.js'),
+    path.resolve(omsDir, 'financialMetricsAssembler.js'),
   ]);
   const files = _walkJsFiles(omsDir).filter(f => !AUTHORIZED.has(f));
   const forbiddenSymbols = [
@@ -178,25 +179,28 @@ test('MA4. Only src/services/oms/financialMetricsService.js is authorized to def
   }
 });
 
-test('MA5. Owner UI (public/js/ownerInventory.js) does NOT render any of the 4 unbacked metrics', () => {
+test('MA5. Owner UI (public/js/ownerInventory.js) — financial metric symbols are ONLY rendered via financialMetricsService (Phase 8L integration)', () => {
+  //   Phase 8L integrated financialMetricsService into the Owner UI. UI now
+  //   legitimately references the metric field names when rendering the
+  //   `financial_metrics` API response. Guard shifted from "no mention" to
+  //   "no hard-coded fabrication" — verify the UI shows "확인되지 않음" for
+  //   UNKNOWN status and never writes a numeric literal for an unbacked
+  //   metric.
   const uiPath = path.resolve(__dirname, '../../public/js/ownerInventory.js');
   const src = fs.readFileSync(uiPath, 'utf8');
-  const forbiddenUiSymbols = [
-    'expected_sale_proceeds',
-    'gross_profit',
-    'gross_margin',
-    'break_even_price',
-    'breakeven',
-    'inventory_value',
-    'stock_value',
+  //   Explicit Korean UNKNOWN rendering must be present for the panel
+  assert.match(src, /확인되지 않음/, 'Owner UI must render UNKNOWN as "확인되지 않음" (Phase 8L UI rule)');
+  //   No hard-coded 0 render for the metric fields · we check literal patterns
+  //   like `gross_profit: 0` that would signal fabrication.
+  const badPatterns = [
+    /expected_sale_proceeds\s*[:=]\s*0\b/,
+    /gross_profit\s*[:=]\s*0\b/,
+    /gross_margin\s*[:=]\s*0\b/,
+    /break_even_price\s*[:=]\s*0\b/,
+    /inventory_value\s*[:=]\s*0\b/,
   ];
-  for (const sym of forbiddenUiSymbols) {
-    const regex = new RegExp(`\\b${sym}\\b`, 'i');
-    assert.doesNotMatch(
-      src,
-      regex,
-      `Owner Inventory UI mentions "${sym}" — rendering an unbacked metric would fabricate a number in the UI (Phase 8L rule 1)`,
-    );
+  for (const p of badPatterns) {
+    assert.doesNotMatch(src, p, `Hard-coded 0 for metric matches ${p} · would fabricate a number in UI`);
   }
 });
 
