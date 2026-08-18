@@ -145,14 +145,17 @@ test('MA3. cost_context surfaces exactly the 3 Phase 8E cost numbers · no fabri
   }
 });
 
-test('MA4. src/services/oms directory contains NO file computing gross_profit / gross_margin / break_even / inventory_value', () => {
-  //   Repository-level absence check. Prevents someone adding a
-  //   src/services/oms/inventoryValueService.js or similar without going
-  //   through Phase 8L. Hermes Phase 18A CSV calculator is at
-  //   src/services/listingProfitabilityCalculator.js — separate surface,
-  //   NOT under src/services/oms/, so this scan excludes it correctly.
+test('MA4. Only src/services/oms/financialMetricsService.js is authorized to define gross_profit / break_even / inventory_value symbols', () => {
+  //   Repository-level absence check. financialMetricsService.js is the
+  //   ONE authorized implementation of these metrics (Phase 8L core).
+  //   Any OTHER file adding these symbols must go through Phase 8L review.
+  //   Hermes CSV calculator lives at src/services/listingProfitabilityCalculator.js
+  //   — separate surface, NOT under src/services/oms/.
   const omsDir = path.resolve(__dirname, '../../src/services/oms');
-  const files = _walkJsFiles(omsDir);
+  const AUTHORIZED = new Set([
+    path.resolve(omsDir, 'financialMetricsService.js'),
+  ]);
+  const files = _walkJsFiles(omsDir).filter(f => !AUTHORIZED.has(f));
   const forbiddenSymbols = [
     'expected_sale_proceeds',
     'gross_profit',
@@ -169,7 +172,7 @@ test('MA4. src/services/oms directory contains NO file computing gross_profit / 
       assert.doesNotMatch(
         src,
         regex,
-        `Found "${sym}" in ${path.relative(process.cwd(), file)} — Phase 8L numeric-integrity gate required before adding this metric`,
+        `Found "${sym}" in ${path.relative(process.cwd(), file)} — Phase 8L numeric-integrity gate required before adding this metric outside financialMetricsService.js`,
       );
     }
   }
