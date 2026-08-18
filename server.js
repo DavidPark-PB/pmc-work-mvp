@@ -186,6 +186,8 @@ app.use('/api/exception-routing', require('./src/web/routes/exceptionRouting'));
 // 주의: /api/orders/mock-import 가 /api/orders/:id 보다 먼저 등록돼야 함 (path specificity).
 app.use('/api/orders/mock-import', require('./src/web/routes/mockOrderImport'));
 app.use('/api/orders', require('./src/web/routes/orders'));
+// Phase 8I — Owner Decision Dashboard (READ-ONLY except explicit gated evidence record)
+app.use('/api/oms/owner', require('./src/web/routes/omsOwnerConsole'));
 // PR O1 — Daily Operations Briefing (오늘 운영 요약 read-only)
 app.use('/api/ops-briefing', require('./src/web/routes/operationsBriefing'));
 // PR R0 — Opportunity Inbox (직원/admin 후보 등록 + 사장님 검토)
