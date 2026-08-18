@@ -160,6 +160,13 @@ test('MA4. Only src/services/oms/financialMetricsService.js is authorized to def
     //   They never compute new numbers · they aggregate existing ones.
     path.resolve(omsDir, 'judgmentHistorySnapshotService.js'),
     path.resolve(omsDir, 'multiProductComparisonService.js'),
+    //   Phase 8O · orchestrator + shadow validator + auto-input candidates.
+    //   These call the calculation service · never invent new formulas.
+    path.resolve(omsDir, 'financialMetricsOrchestrator.js'),
+    path.resolve(omsDir, 'shadowValidationService.js'),
+    path.resolve(omsDir, 'salePriceObservationService.js'),
+    path.resolve(omsDir, 'shippingCandidateService.js'),
+    path.resolve(omsDir, 'judgmentHistoryRepository.js'),
   ]);
   const files = _walkJsFiles(omsDir).filter(f => !AUTHORIZED.has(f));
   const forbiddenSymbols = [

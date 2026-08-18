@@ -43,6 +43,11 @@ function buildRouter(deps = {}) {
   const financialMetricsFn = deps.financialMetricsFn || ((ownerDecision, opts) => require('../../services/oms/financialMetricsAssembler').buildFinancialMetrics(ownerDecision, opts));
   // Phase 8N · multi-product comparison · pure projection
   const compareFn = deps.compareFn || ((items, opts) => require('../../services/oms/multiProductComparisonService').buildMultiProductComparison(items, opts));
+  // Phase 8O · auto-input orchestrator. Default factory resolves its own
+  //   Supabase client via financialMetricsOrchestratorDefaults so the
+  //   route source has zero direct DB coupling (I17-I20 / J11 guard).
+  const orchestratorFn = deps.orchestratorFn || (args => require('../../services/oms/financialMetricsOrchestrator')
+    .buildFinancialMetricsWithAutoInputs({ ...args, db: args.db || require('../../services/oms/financialMetricsOrchestratorDefaults').defaultDb() }));
 
   // ─── 1) Batch exception queue ─────────────────────────
   // Owner §Part 10: ONE call for the page. Detail is lazy per-item.
@@ -149,21 +154,44 @@ function buildRouter(deps = {}) {
     }
   });
 
-  // ─── 6b) Financial metrics (Phase 8L integration · READ-ONLY) ─
+  // ─── 6b) Financial metrics (Phase 8L integration + 8O auto-mode · READ-ONLY) ─
   //   Additive read-only surface. Owner Decision + optional caller-supplied
   //   pricing inputs (query string). Returns 3 independent cost-basis
   //   scenarios (accounting / replacement / secondary_market_ask).
+  //
+  //   Phase 8O: `?auto=1` runs the orchestrator (auto sale-price observation
+  //   + auto shipping candidate). Manual query-param overrides still win
+  //   (Owner rule §5.1). Secondary market ask NEVER used as sale-price
+  //   fallback. UNKNOWN never rendered as 0.
+  //
   //   Never mutates Owner Decision. Never derives sale price · never
   //   auto-selects cost basis · UNKNOWN when inputs missing.
   router.get('/financial-metrics/:physicalId', async (req, res) => {
     const id = _parsePositiveInt(req.params.physicalId);
     if (!id) return res.status(400).json({ error: 'invalid_physical_id', message: 'physicalId must be positive integer' });
     const opts = _parseFinancialMetricsOpts(req.query);
+    const autoMode = req.query.auto === '1' || req.query.auto === 'true';
     try {
       const ownerDecision = await ownerDecisionFn({ physicalProductId: id });
       if (ownerDecision && ownerDecision.error) return res.status(404).json({ error: ownerDecision.error });
-      const financial_metrics = financialMetricsFn(ownerDecision, opts);
-      res.json({ owner_decision: ownerDecision, financial_metrics });
+      if (!autoMode) {
+        const financial_metrics = financialMetricsFn(ownerDecision, opts);
+        return res.json({ owner_decision: ownerDecision, financial_metrics, mode: 'manual' });
+      }
+      //   Auto-mode: orchestrator resolves inputs (manual > auto > UNKNOWN)
+      const db = null;   // orchestrator default factory resolves DB
+      const auto = await orchestratorFn({
+        ownerDecision, db,
+        manual: opts,
+        autoSalePriceOpts: _parseAutoSalePriceOpts(req.query),
+        autoShippingOpts: _parseAutoShippingOpts(req.query),
+      });
+      return res.json({
+        owner_decision: ownerDecision,
+        financial_metrics: auto.financial_metrics,
+        inputs_resolution: auto.inputs_resolution,
+        mode: 'auto',
+      });
     } catch (err) {
       res.status(500).json({ error: 'financial_metrics_failed', message: err && err.message ? err.message : String(err) });
     }
@@ -181,19 +209,30 @@ function buildRouter(deps = {}) {
     if (ids.length === 0) return res.status(400).json({ error: 'invalid_ids', message: 'no valid positive integer ids parsed' });
     if (ids.length > 25) return res.status(400).json({ error: 'too_many_ids', message: 'max 25 items per comparison' });
     const financialOpts = _parseFinancialMetricsOpts(req.query);
+    const autoMode = req.query.auto === '1' || req.query.auto === 'true';
+    const autoSalePriceOpts = _parseAutoSalePriceOpts(req.query);
+    const autoShippingOpts = _parseAutoShippingOpts(req.query);
     try {
       const items = [];
+      const db = null;   // orchestrator default factory resolves DB
       for (const id of ids) {
         const ownerDecision = await ownerDecisionFn({ physicalProductId: id });
         if (ownerDecision && ownerDecision.error) {
           items.push({ ownerDecision: { physical_product_id: id, error: ownerDecision.error }, financialMetrics: null });
           continue;
         }
-        const fm = financialMetricsFn(ownerDecision, financialOpts);
+        let fm;
+        if (autoMode) {
+          //   orchestratorFn resolves its own db when db=null (default factory)
+          const auto = await orchestratorFn({ ownerDecision, db, manual: financialOpts, autoSalePriceOpts, autoShippingOpts });
+          fm = auto.financial_metrics;
+        } else {
+          fm = financialMetricsFn(ownerDecision, financialOpts);
+        }
         items.push({ ownerDecision, financialMetrics: fm });
       }
       const comparison = compareFn(items, { generatedAt: new Date().toISOString() });
-      res.json({ comparison, item_count: items.length, financial_opts_applied: financialOpts });
+      res.json({ comparison, item_count: items.length, financial_opts_applied: financialOpts, mode: autoMode ? 'auto' : 'manual' });
     } catch (err) {
       res.status(500).json({ error: 'compare_failed', message: err && err.message ? err.message : String(err) });
     }
@@ -229,6 +268,37 @@ function _parsePositiveInt(v) {
 function _parseOptionalPositiveInt(v) {
   if (v === undefined || v === null || v === '') return null;
   return _parsePositiveInt(v);
+}
+
+function _parseAutoSalePriceOpts(query) {
+  //   Phase 8O · caller-supplied FX only (Phase 2-2C). Never falls back to a
+  //   hard-coded rate.
+  const opts = {};
+  for (const f of ['usdKrw', 'usdKrwSource', 'usdKrwObservedAt']) {
+    if (query[f] !== undefined && query[f] !== '') {
+      if (f === 'usdKrw') {
+        const n = Number(query[f]);
+        opts[f] = Number.isFinite(n) ? n : null;
+      } else {
+        opts[f] = String(query[f]).slice(0, 200);
+      }
+    }
+  }
+  return opts;
+}
+
+function _parseAutoShippingOpts(query) {
+  //   Owner supplies package dims per SKU (sku_master has weight only ·
+  //   Phase 8O known gap). If dims absent → shipping UNKNOWN.
+  const opts = {};
+  for (const f of ['lengthCm', 'widthCm', 'heightCm']) {
+    if (query[f] !== undefined && query[f] !== '') {
+      const n = Number(query[f]);
+      opts[f] = Number.isFinite(n) && n > 0 ? n : null;
+    }
+  }
+  if (query.destinationCountry) opts.destinationCountry = String(query.destinationCountry).slice(0, 30);
+  return opts;
 }
 
 function _parseFinancialMetricsOpts(query) {
