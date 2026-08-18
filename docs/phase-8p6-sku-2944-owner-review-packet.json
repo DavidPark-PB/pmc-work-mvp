@@ -1,0 +1,94 @@
+{
+  "$schema": "physicalCanonicalWriterPreflight input · single canary decision",
+  "generated_by": "phase-8p6-sku-2944-owner-review-packet.json",
+  "generated_intent": "30-second Owner review packet for the canary candidate. Owner reads · verifies · fills the REQUIRED fields · sets owner_confirmed=true only after every checklist item is satisfied. This file is NEVER auto-consumed for execution.",
+  "phase": "8P-6",
+  "canary_only": true,
+  "safety": {
+    "owner_confirmed_default": false,
+    "auto_link_allowed": false,
+    "auto_create_allowed": false,
+    "phase_8p6_writes_this_payload": "NO · preflight only",
+    "bp_invariant_locked": {
+      "physical_product_id": 1,
+      "locked_sku_master_ids": [2194, 3120]
+    },
+    "reject_flags_the_cli_refuses": ["--apply", "--commit", "--execute", "--force", "--do-it", "--run"]
+  },
+
+  "candidate_summary": {
+    "sku_master_id": 2944,
+    "internal_sku": "<REQUIRED · fetch from live 8P-4 output>",
+    "cohort_hint": "See live output of scripts/oms-physical-product-review-queue.js · likely a singleton cohort · confirm cohort membership before proceeding",
+    "leverage": {
+      "review_rank": 1,
+      "completed_sale_items_last_90d": 128,
+      "pct_of_reviewable_completed_sales_top_5": "35.05%"
+    }
+  },
+
+  "human_readable_evidence_owner_reviews": {
+    "exact_listing_id_hint": "<REQUIRED · from oms_order_items where sku_master_id=2944 · exact identifier>",
+    "exact_product_id_hint": "<optional · from oms_order_items.product_id if present>",
+    "title_review_only": "<REQUIRED · sku_master.title · REVIEW EVIDENCE ONLY · not authoritative>",
+    "brand_review_only": "<optional · sku_master.brand>",
+    "franchise_caveat_expected": "None expected (Pokemon/BP franchise words unlikely to overlap physical#1 canonical_title 'Battle Partners' unless title includes those tokens). If caveat fires · treat as CREATE_NEW_PHYSICAL · do NOT choose LINK",
+    "existing_physical_authoritative_bridge": null
+  },
+
+  "checklist_owner_must_satisfy_before_owner_confirmed_true": [
+    "1. Run scripts/oms-physical-product-review-queue.js live · confirm SKU 2944 still has classification=PHYSICAL_PRODUCT_MISSING",
+    "2. Confirm the singleton cohort_bridge value (singleton_sku_master_id · sku:2944 · OR the exact listing_id if bridged)",
+    "3. Fetch sku_master.title for sku_master_id=2944 · verify it corresponds to a real physical merchandise Owner sells",
+    "4. Confirm proposed_display_name matches the intended canonical_title Owner wants to see in physical_products",
+    "5. Confirm no other existing physical_products row already represents this product (only 2 exist today: BP · NIKKE)",
+    "6. Confirm SKU 2944 is NOT part of the BP-locked set [2194, 3120] (it is not · but re-verify)",
+    "7. Confirm confirmed_sku_master_ids exactly equals [2944] (no cohort expansion)",
+    "8. Set owner_confirmation_id (e.g. 'owner-2026-08-19-canary-2944-01')",
+    "9. Set owner_confirmed: true"
+  ],
+
+  "decision": {
+    "review_target_type": "physical_creation_candidate",
+    "creation_candidate_id": "<REQUIRED · from live 8P-4 output · e.g. 'pcc-1'>",
+    "sku_master_ids": [2944],
+    "owner_decision": "CREATE_NEW_PHYSICAL",
+    "confirmed_sku_master_ids": [2944],
+    "target_physical_product_id": null,
+    "proposed_display_name": "<REQUIRED · Owner-approved product name · e.g. exactly what Owner wants in physical_products.canonical_title>",
+    "owner_authoritative_bridge": null,
+    "owner_confirmed": false,
+    "note": null,
+    "auto_create_allowed": false,
+    "auto_link_allowed": false,
+    "persisted": false,
+    "writer_interface_version": "v8p4.plan"
+  },
+
+  "candidateContext": {
+    "creation_candidate_id": "<REQUIRED · from live 8P-4 output>",
+    "sku_master_ids": [2944],
+    "cohort_bridge": { "basis": "singleton_sku_master_id", "value": "sku:2944" },
+    "listing_ids": ["<REQUIRED · from live output>"],
+    "product_ids": [],
+    "completed_sale_items": 128,
+    "source_review_generated_at": "<REQUIRED · from live 8P-4 output generated_at>"
+  },
+
+  "expectedCandidate": {
+    "creation_candidate_id": "<REQUIRED · from live 8P-4 output · used for payload_drift detection>",
+    "sku_master_ids": [2944],
+    "completed_sale_items": 128
+  },
+
+  "ownerConfirmationId": null,
+
+  "how_to_run_preflight": [
+    "1. Fill in every <REQUIRED> above",
+    "2. Save as sku-2944-canary-decision.json somewhere outside the repo (do not commit filled version · contains Owner audit id)",
+    "3. Run:  node scripts/oms-canary-preflight-sku-2944.js --input <path-to-filled-file>",
+    "4. Read the preflight output · verify READY badge · verify BP INVARIANT status=INTACT · verify payload drift has no findings",
+    "5. If BLOCKED · fix the reasons listed and re-run",
+    "6. If READY · STOP · this preflight does NOT execute the RPC · a SEPARATE future phase enables apply"
+  ]
+}

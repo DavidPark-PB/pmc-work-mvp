@@ -290,17 +290,24 @@ test('T-safety-3. CLI has NO --apply / --commit / --execute / --force flag · at
   assert.doesNotMatch(src, /getClient\s*\(/);
 });
 
-test('T-safety-4. Migration 095 file exists but is NOT auto-applied · reject-mutation triggers ship COMMENTED', () => {
+test('T-safety-4. Migration 095 file exists · Phase 8P-6 activated append-only triggers + REVOKE PUBLIC · file still NOT auto-applied', () => {
   const migPath = path.resolve(__dirname, '../../supabase/migrations/095_physical_write_audit_and_rpc.sql');
-  assert.ok(fs.existsSync(migPath), 'migration 095 file must exist (definition only)');
+  assert.ok(fs.existsSync(migPath), 'migration 095 file must exist');
   const src = fs.readFileSync(migPath, 'utf8');
-  //   Triggers must be commented-out for staging-first rollout
-  //   (accepts either `-- create trigger` or block-commented)
-  const triggerLine = src.match(/^\s*create trigger t_physical_write_audit_no_update/m);
-  assert.equal(triggerLine, null, 'reject-mutation trigger MUST ship commented (Owner apply-review before enable)');
+  //   Phase 8P-6 activation: triggers ship UNCOMMENTED (production-ready state)
+  assert.match(src, /^create trigger t_physical_write_audit_no_update/m,
+    'Phase 8P-6 · append-only UPDATE trigger must be active in migration');
+  assert.match(src, /^create trigger t_physical_write_audit_no_delete/m,
+    'Phase 8P-6 · append-only DELETE trigger must be active in migration');
+  //   Phase 8P-6 permission minimization: REVOKE PUBLIC + GRANT service_role
+  assert.match(src, /revoke\s+execute\s+on\s+function\s+apply_canonical_create_physical\(jsonb\)\s+from\s+public/i);
+  assert.match(src, /revoke\s+execute\s+on\s+function\s+apply_canonical_link_physical\(jsonb\)\s+from\s+public/i);
+  assert.match(src, /grant\s+execute\s+on\s+function\s+apply_canonical_create_physical\(jsonb\)\s+to\s+service_role/i);
   //   Both RPC functions must be defined
   assert.match(src, /create or replace function apply_canonical_create_physical/);
   assert.match(src, /create or replace function apply_canonical_link_physical/);
+  //   NEVER auto-applied · Phase 8P-6 code path does NOT trigger `supabase db push` or equivalent
+  //   (verified by absence of any apply invocation in CLI src · see T-safety-3)
 });
 
 // ─── Transaction atomicity claims ─────

@@ -54,20 +54,35 @@ create index if not exists idx_physical_write_audit_physical
   on physical_write_audit(physical_product_id)
   where physical_product_id is not null;
 
--- ─── 2) Append-only enforcement (uncomment to enable at apply time) ─
+-- ─── 2) Append-only enforcement · Phase 8P-6 activated ─────
 --
--- create or replace function physical_write_audit_reject_mutation()
---   returns trigger language plpgsql as $$
--- begin
---   raise exception 'physical_write_audit is append-only · UPDATE/DELETE not permitted';
--- end $$;
+-- Function + triggers ship ENABLED (Phase 8P-6). Owner review completed
+-- on migration file · staging apply → production apply.
 --
--- create trigger t_physical_write_audit_no_update
---   before update on physical_write_audit
---   for each row execute function physical_write_audit_reject_mutation();
--- create trigger t_physical_write_audit_no_delete
---   before delete on physical_write_audit
---   for each row execute function physical_write_audit_reject_mutation();
+-- If your operations team needs to run a data-fix UPDATE/DELETE on this
+-- table (accepted only via a documented maintenance workflow), they
+-- must DROP the trigger explicitly and DROP it back afterwards. The
+-- table is append-only by policy.
+
+create or replace function physical_write_audit_reject_mutation()
+  returns trigger
+  language plpgsql
+  security definer
+  set search_path = public, pg_catalog
+as $$
+begin
+  raise exception 'physical_write_audit is append-only · UPDATE/DELETE not permitted (Phase 8P-6)';
+end $$;
+
+drop trigger if exists t_physical_write_audit_no_update on physical_write_audit;
+create trigger t_physical_write_audit_no_update
+  before update on physical_write_audit
+  for each row execute function physical_write_audit_reject_mutation();
+
+drop trigger if exists t_physical_write_audit_no_delete on physical_write_audit;
+create trigger t_physical_write_audit_no_delete
+  before delete on physical_write_audit
+  for each row execute function physical_write_audit_reject_mutation();
 
 -- ─── 3) BP invariant constant (immutable in DB · reject-triggers below) ─
 --
@@ -89,7 +104,11 @@ create index if not exists idx_physical_write_audit_physical
 
 create or replace function apply_canonical_create_physical(
   p_payload jsonb
-) returns jsonb language plpgsql security definer as $$
+) returns jsonb
+  language plpgsql
+  security definer
+  set search_path = public, pg_catalog
+as $$
 declare
   v_display_name        text := p_payload->>'proposed_display_name';
   v_sku_master_ids      integer[] := array(select jsonb_array_elements_text(p_payload->'confirmed_sku_master_ids'))::integer[];
@@ -112,6 +131,11 @@ begin
   end if;
   if v_display_name is null or length(trim(v_display_name)) = 0 then
     raise exception 'apply_canonical_create_physical: proposed_display_name required';
+  end if;
+  --  Phase 8P-6 · bound Owner-supplied display name length to prevent
+  --  unbounded storage / index bloat / DoS-shape input.
+  if length(trim(v_display_name)) > 500 then
+    raise exception 'apply_canonical_create_physical: proposed_display_name exceeds 500 chars';
   end if;
   if v_sku_master_ids is null or array_length(v_sku_master_ids, 1) is null then
     raise exception 'apply_canonical_create_physical: confirmed_sku_master_ids required (non-empty array)';
@@ -195,7 +219,11 @@ end $$;
 -- ─── 5) RPC · atomic LINK_TO_EXISTING_PHYSICAL ────────────
 create or replace function apply_canonical_link_physical(
   p_payload jsonb
-) returns jsonb language plpgsql security definer as $$
+) returns jsonb
+  language plpgsql
+  security definer
+  set search_path = public, pg_catalog
+as $$
 declare
   v_target              integer := (p_payload->>'target_physical_product_id')::integer;
   v_sku_master_ids      integer[] := array(select jsonb_array_elements_text(p_payload->'confirmed_sku_master_ids'))::integer[];
@@ -277,6 +305,40 @@ begin
 
   return jsonb_build_object('status', 'INSERTED', 'physical_product_id', v_target, 'sku_master_ids', v_sku_master_ids);
 end $$;
+
+-- ─── 6) Permission minimization (Phase 8P-6) ──────────────
+--
+-- Postgres default GRANTs EXECUTE on functions to PUBLIC. In Supabase
+-- that includes the `anon` role. This block revokes that default and
+-- grants execution only to `service_role` — the backend role that the
+-- canonical writer path uses. `anon` / `authenticated` cannot invoke
+-- these RPCs directly.
+--
+-- The physical_write_audit table itself is table-guard-only (append-only
+-- triggers above · plus service_role INSERT via RPC). No direct grants
+-- required beyond default schema privileges.
+
+revoke execute on function apply_canonical_create_physical(jsonb) from public;
+revoke execute on function apply_canonical_link_physical(jsonb)   from public;
+-- Explicit revoke for Supabase's anon + authenticated (idempotent · safe if role missing)
+do $revoke$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke execute on function apply_canonical_create_physical(jsonb) from anon';
+    execute 'revoke execute on function apply_canonical_link_physical(jsonb)   from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke execute on function apply_canonical_create_physical(jsonb) from authenticated';
+    execute 'revoke execute on function apply_canonical_link_physical(jsonb)   from authenticated';
+  end if;
+end $revoke$;
+
+-- Grant EXECUTE to service_role only (Supabase backend role · the canonical writer path uses this)
+do $grant$ begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    execute 'grant execute on function apply_canonical_create_physical(jsonb) to service_role';
+    execute 'grant execute on function apply_canonical_link_physical(jsonb)   to service_role';
+  end if;
+end $grant$;
 
 -- Rollback (manual · after Owner approval):
 --   drop function if exists apply_canonical_link_physical(jsonb);
