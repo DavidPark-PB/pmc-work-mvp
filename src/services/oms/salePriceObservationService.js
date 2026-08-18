@@ -54,12 +54,16 @@ async function observeSalePriceCandidate({ physicalProductId, db, usdKrw, usdKrw
   const now = Number.isFinite(asOfMs) ? asOfMs : Date.now();
   const missing = [];
 
-  // Walk: physical → sellable_unit → components (qty=1) → sku_master_link → sku_master
-  const sellableUnits = await _select(db, 'sellable_units', 'id, physical_product_id', { physical_product_id: physicalProductId });
-  if (!sellableUnits.length) return _unknown('no_sellable_unit_for_physical', { physicalProductId });
-  const suIds = sellableUnits.map(r => r.id);
-  const components = await _selectIn(db, 'sellable_unit_components', 'sellable_unit_id, quantity_per_unit', 'sellable_unit_id', suIds);
-  const suSingleUnit = components.filter(c => Number(c.quantity_per_unit) === 1).map(c => c.sellable_unit_id);
+  //   Canonical identity walk (Phase 8P-2b schema-correct):
+  //     physical_products.id
+  //     → sellable_unit_components.physical_product_id · .sellable_unit_id · .quantity_per_unit
+  //     → sku_master_link.sellable_unit_id · .sku_master_id
+  //   sellable_units (migration 086) has NO physical_product_id column · the
+  //   consumption relation lives ONLY in sellable_unit_components (087).
+  //   qty=1 authoritative identity is preserved (Phase 8P semantics).
+  const components = await _select(db, 'sellable_unit_components', 'sellable_unit_id, quantity_per_unit', { physical_product_id: physicalProductId });
+  if (!components.length) return _unknown('no_sellable_unit_for_physical', { physicalProductId });
+  const suSingleUnit = [...new Set(components.filter(c => Number(c.quantity_per_unit) === 1).map(c => c.sellable_unit_id))];
   if (!suSingleUnit.length) return _unknown('no_single_unit_component', { physicalProductId });
   const links = await _selectIn(db, 'sku_master_link', 'sku_master_id, sellable_unit_id', 'sellable_unit_id', suSingleUnit);
   const smIds = [...new Set(links.map(l => l.sku_master_id))];

@@ -23,8 +23,8 @@ function makeStubDb(data) {
 
 function completeFixture(weightGram = 500) {
   return {
-    sellable_units: [{ id: 10, physical_product_id: 1 }],
-    sellable_unit_components: [{ sellable_unit_id: 10, quantity_per_unit: 1 }],
+    sellable_units: [{ id: 10, display_name: 'BP 1-Box', variant_kind: 'base', status: 'active' }],
+    sellable_unit_components: [{ sellable_unit_id: 10, physical_product_id: 1, quantity_per_unit: 1, role: 'primary' }],
     sku_master_link: [{ sku_master_id: 100, sellable_unit_id: 10 }],
     sku_master: [{ id: 100, internal_sku: 'x', weight_gram: weightGram }],
   };
@@ -66,8 +66,8 @@ test('SH4. No weight_gram in sku_master → UNKNOWN · reason=no_weight_gram_in_
 
 test('SH5. Median weight when multiple sku_masters bridged', async () => {
   const fx = {
-    sellable_units: [{ id: 10, physical_product_id: 1 }],
-    sellable_unit_components: [{ sellable_unit_id: 10, quantity_per_unit: 1 }],
+    sellable_units: [{ id: 10, display_name: 'BP 1-Box', variant_kind: 'base', status: 'active' }],
+    sellable_unit_components: [{ sellable_unit_id: 10, physical_product_id: 1, quantity_per_unit: 1, role: 'primary' }],
     sku_master_link: [{ sku_master_id: 100, sellable_unit_id: 10 }, { sku_master_id: 101, sellable_unit_id: 10 }, { sku_master_id: 102, sellable_unit_id: 10 }],
     sku_master: [
       { id: 100, internal_sku: 'a', weight_gram: 300 },
@@ -105,4 +105,23 @@ test('SH8. Confidence note explicitly labels 예상 (never final)', async () => 
 test('SH9. Rejects invalid physicalProductId / missing db', async () => {
   await assert.rejects(() => assembleShippingCandidate({ physicalProductId: 0, db: makeStubDb({}) }), /positive integer/);
   await assert.rejects(() => assembleShippingCandidate({ physicalProductId: 1 }), /db.*required/);
+});
+
+// ─── Phase 8P-2b · schema-contract regression ───────
+
+test('SH-8P2b-1. Source NEVER selects sellable_units.physical_product_id (migration 086)', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const src = fs.readFileSync(path.resolve(__dirname, '../../src/services/oms/shippingCandidateService.js'), 'utf8');
+  const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*$/gm, '');
+  assert.doesNotMatch(
+    stripped,
+    /['"]sellable_units['"][\s\S]{0,300}?physical_product_id/i,
+    'shippingCandidateService must NOT couple sellable_units with physical_product_id',
+  );
+  assert.match(
+    stripped,
+    /['"]sellable_unit_components['"][\s\S]{0,300}?physical_product_id/i,
+    'shippingCandidateService MUST source physical_product_id from sellable_unit_components',
+  );
 });

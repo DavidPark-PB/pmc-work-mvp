@@ -40,8 +40,8 @@ function fullDb() {
   const now = Date.now();
   const recent = new Date(now - 24 * 60 * 60 * 1000).toISOString();
   return makeDb({
-    sellable_units: [{ id: 10, physical_product_id: 1 }, { id: 20, physical_product_id: 2 }],
-    sellable_unit_components: [{ sellable_unit_id: 10, quantity_per_unit: 1 }, { sellable_unit_id: 20, quantity_per_unit: 1 }],
+    sellable_units: [{ id: 10, display_name: 'BP', variant_kind: 'base', status: 'active' }, { id: 20, display_name: 'X', variant_kind: 'base', status: 'active' }],
+    sellable_unit_components: [{ sellable_unit_id: 10, physical_product_id: 1, quantity_per_unit: 1, role: 'primary' }, { sellable_unit_id: 20, physical_product_id: 2, quantity_per_unit: 1, role: 'primary' }],
     sku_master_link: [{ sku_master_id: 100, sellable_unit_id: 10 }, { sku_master_id: 200, sellable_unit_id: 20 }],
     sku_master: [{ id: 100, internal_sku: 'BP', weight_gram: 500 }, { id: 200, internal_sku: 'X', weight_gram: 500 }],
     sku_listing_link: [{ sku_id: 100, listing_id: 'e_1', marketplace_sku: 'BP', is_primary: true }, { sku_id: 200, listing_id: 'e_2', marketplace_sku: 'X', is_primary: true }],
@@ -115,8 +115,8 @@ test('SV5. Stale listing (updated_at > 7d) → MISSING_DATA sale_price_stale', a
   const db = fullDb();
   //   Adjust the row directly via a fresh db
   const db2 = makeDb({
-    sellable_units: [{ id: 10, physical_product_id: 1 }],
-    sellable_unit_components: [{ sellable_unit_id: 10, quantity_per_unit: 1 }],
+    sellable_units: [{ id: 10, display_name: 'BP', variant_kind: 'base', status: 'active' }],
+    sellable_unit_components: [{ sellable_unit_id: 10, physical_product_id: 1, quantity_per_unit: 1, role: 'primary' }],
     sku_master_link: [{ sku_master_id: 100, sellable_unit_id: 10 }],
     sku_master: [{ id: 100, internal_sku: 'BP', weight_gram: 500 }],
     sku_listing_link: [{ sku_id: 100, listing_id: 'e_1', marketplace_sku: 'BP', is_primary: true }],
@@ -134,8 +134,8 @@ test('SV5. Stale listing (updated_at > 7d) → MISSING_DATA sale_price_stale', a
 
 test('SV6. Listing status "ended" → MISSING_DATA listing_not_active', async () => {
   const db = makeDb({
-    sellable_units: [{ id: 10, physical_product_id: 1 }],
-    sellable_unit_components: [{ sellable_unit_id: 10, quantity_per_unit: 1 }],
+    sellable_units: [{ id: 10, display_name: 'BP', variant_kind: 'base', status: 'active' }],
+    sellable_unit_components: [{ sellable_unit_id: 10, physical_product_id: 1, quantity_per_unit: 1, role: 'primary' }],
     sku_master_link: [{ sku_master_id: 100, sellable_unit_id: 10 }],
     sku_master: [{ id: 100, internal_sku: 'BP', weight_gram: 500 }],
     sku_listing_link: [{ sku_id: 100, listing_id: 'e_1', marketplace_sku: 'BP', is_primary: true }],

@@ -17,7 +17,9 @@
  * All DB access flows through caller-supplied `db` + `ownerDecisionFn`.
  */
 
-const { buildFinancialMetricsWithAutoInputs } = require('./financialMetricsOrchestrator');
+//   Lazy reference · destructured import would cache a binding that
+//   test monkey-patches never reach.
+const orchestratorMod = require('./financialMetricsOrchestrator');
 
 const ANOMALY_TYPE = Object.freeze({
   DATA_BUG:                     'DATA_BUG',
@@ -30,6 +32,10 @@ const IMPLAUSIBLE_MARGIN_HIGH_PCT = 100;    // > 100% is impossible under normal
 const LARGE_COST_DIVERGENCE_RATIO = 3;      // accounting/replacement > 3× → flag
 const SECONDARY_OUTLIER_MIN_RATIO = 10;     // secondary min < replacement/10 → outlier
 const NEGATIVE_MARGIN_LOSS_PCT = -50;       // <= -50% margin is worth surfacing as loss
+//   Phase 8P · conservative divergence threshold: sold median vs listing
+//   asking price differ by > 25% (either direction) → flag for Owner review.
+//   Owner Part 9: do not automatically declare either source wrong.
+const SOLD_VS_LISTING_DIVERGENCE_PCT = 25;
 
 /**
  * @param {Object} args
@@ -86,7 +92,7 @@ async function _runOne(physicalProductId, ownerDecisionFn, db, opts) {
 
   let result;
   try {
-    result = await buildFinancialMetricsWithAutoInputs({
+    result = await orchestratorMod.buildFinancialMetricsWithAutoInputs({
       ownerDecision: od, db,
       manual: opts.manual,
       autoSalePriceOpts: opts.autoSalePriceOpts,
@@ -169,6 +175,32 @@ function _classifyAnomalies(row, od) {
   //   Provenance completeness
   const spSourceMissing = spRes?.resolution === 'AUTO_OBSERVED' && !spObs?.listing_id;
   if (spSourceMissing) push(ANOMALY_TYPE.MISSING_DATA, 'provenance_missing_sale_price', {});
+
+  //   Phase 8P · SOLD_VS_LISTING_PRICE_DIVERGENCE.
+  //   When both candidates existed (regardless of which was selected), flag
+  //   large divergence for Owner review. NEVER auto-declare either wrong.
+  const seen = spRes?.candidates_seen || [];
+  const soldCandidate = seen.find(c => c.type === 'RECENT_SOLD_PRICE_MEDIAN' && c.status === 'RECENT_SOLD_PRICE_MEDIAN' && Number.isFinite(c.value));
+  const listingCandidate = seen.find(c => c.type === 'OBSERVED_LISTING_PRICE' && Number.isFinite(c.value));
+  //   When SOLD is selected, listing candidate isn't in candidates_seen. Try
+  //   to also read the raw auto_observation for a listing snapshot present
+  //   in row.inputs_resolution (Phase 8P shadow additive · no change to
+  //   orchestrator return shape required).
+  const listingValue = listingCandidate?.value
+    ?? (spRes?.auto_observation && spRes.auto_observation.status === 'OBSERVED_LISTING_PRICE' ? spRes.auto_observation.amount_krw : null);
+  if (Number.isFinite(soldCandidate?.value) && Number.isFinite(listingValue) && soldCandidate.value > 0 && listingValue > 0) {
+    const ratio = Math.abs(soldCandidate.value - listingValue) / Math.max(soldCandidate.value, listingValue);
+    const pct = Math.round(ratio * 10000) / 100;
+    if (pct > SOLD_VS_LISTING_DIVERGENCE_PCT) {
+      push(ANOMALY_TYPE.POLICY_CANDIDATE, 'sold_vs_listing_price_divergence', {
+        sold_median_krw: soldCandidate.value,
+        listing_price_krw: listingValue,
+        divergence_pct: pct,
+        threshold_pct: SOLD_VS_LISTING_DIVERGENCE_PCT,
+        note: 'Owner must judge which price is authoritative · service NEVER auto-corrects',
+      });
+    }
+  }
 }
 
 function _buildSummary(rows) {
@@ -197,4 +229,5 @@ module.exports = {
   LARGE_COST_DIVERGENCE_RATIO,
   SECONDARY_OUTLIER_MIN_RATIO,
   NEGATIVE_MARGIN_LOSS_PCT,
+  SOLD_VS_LISTING_DIVERGENCE_PCT,
 };

@@ -21,6 +21,7 @@
 
 const salePriceSvc = require('./salePriceObservationService');
 const shippingSvc = require('./shippingCandidateService');
+const soldPriceSvc = require('./recentSoldPriceService');
 const { buildFinancialMetrics } = require('./financialMetricsAssembler');
 
 /**
@@ -86,7 +87,13 @@ async function buildFinancialMetricsWithAutoInputs(args = {}) {
 }
 
 async function _resolveSalePrice({ manual, physicalId, db, disabled, autoOpts }) {
-  //   Owner manual override always wins (Owner rule §5.1)
+  //   Priority (Phase 8P Owner Part 7):
+  //     1. MANUAL              (Owner-typed sale price)
+  //     2. RECENT_SOLD_MEDIAN  (canonical completed-sales evidence)
+  //     3. OBSERVED_LISTING    (ebay_products.price_usd candidate)
+  //     4. UNKNOWN
+  //   Secondary market ask is NEVER a sale-price candidate here.
+
   const manualVal = _finiteOrNull(manual.expected_sale_price_krw);
   if (manualVal != null && manualVal > 0) {
     return {
@@ -94,6 +101,7 @@ async function _resolveSalePrice({ manual, physicalId, db, disabled, autoOpts })
       value: manualVal,
       source: manual.expected_sale_price_source || 'owner_manual',
       auto_observation: null,
+      candidates_seen: [],
       note: 'Owner manual override (priority 1 · Owner rule §5)',
     };
   }
@@ -102,14 +110,50 @@ async function _resolveSalePrice({ manual, physicalId, db, disabled, autoOpts })
       resolution: 'UNKNOWN',
       value: null, source: null,
       auto_observation: null,
+      candidates_seen: [],
       note: disabled ? 'auto observations disabled by caller' : 'physicalProductId missing',
     };
   }
+
+  //   Phase 8P · Try SOLD MEDIAN first (stronger evidence than listing)
+  let sold;
+  try {
+    sold = await soldPriceSvc.getRecentSoldPriceCandidate({
+      physicalProductId: physicalId, db,
+      usdKrw: autoOpts.usdKrw ?? null,
+      usdKrwSource: autoOpts.usdKrwSource ?? null,
+      usdKrwObservedAt: autoOpts.usdKrwObservedAt ?? null,
+      krwJpyRate: autoOpts.krwJpyRate ?? null,
+      krwCnyRate: autoOpts.krwCnyRate ?? null,
+      lookbackDays: autoOpts.soldLookbackDays,
+      minSamples: autoOpts.soldMinSamples,
+      channels: autoOpts.soldChannels,
+    });
+  } catch (err) {
+    sold = { status: 'UNKNOWN', reason: `sold_service_error:${err.message}` };
+  }
+  if (sold.status === soldPriceSvc.CANDIDATE_STATUS.RECENT_SOLD_PRICE_MEDIAN && sold.value != null) {
+    return {
+      resolution: 'AUTO_SOLD_MEDIAN',
+      value: sold.value,
+      source: `recent_sold_median:${sold.sample_count}_samples`,
+      auto_observation: sold,
+      candidates_seen: [{ type: 'RECENT_SOLD_PRICE_MEDIAN', status: sold.status, value: sold.value }],
+      note: `RECENT SOLD MEDIAN · ${sold.sample_count} completed sales · last ${sold.lookback_days}d · confidence=${sold.confidence} · one observation per line (not weighted by qty)`,
+    };
+  }
+
+  //   Fallback · OBSERVED LISTING PRICE (asking price only)
   let obs;
   try {
     obs = await salePriceSvc.observeSalePriceCandidate({ physicalProductId: physicalId, db, ...autoOpts });
   } catch (err) {
-    return { resolution: 'UNKNOWN', value: null, source: null, auto_observation: { error: err.message }, note: 'auto observation threw' };
+    return {
+      resolution: 'UNKNOWN', value: null, source: null,
+      auto_observation: { error: err.message },
+      candidates_seen: [{ type: 'RECENT_SOLD_PRICE_MEDIAN', status: sold?.status || 'UNKNOWN', reason: sold?.reason }],
+      note: 'auto observation threw',
+    };
   }
   if (obs.status === salePriceSvc.CANDIDATE_STATUS.OBSERVED_LISTING_PRICE && obs.amount_krw != null) {
     return {
@@ -117,14 +161,22 @@ async function _resolveSalePrice({ manual, physicalId, db, disabled, autoOpts })
       value: obs.amount_krw,
       source: `ebay_listing:${obs.listing_id || 'unknown'}`,
       auto_observation: obs,
-      note: `OBSERVED_LISTING_PRICE · freshness=${obs.freshness_status} · listing_status=${obs.listing_status || 'unknown'} · NOT a verified sale price`,
+      candidates_seen: [
+        { type: 'RECENT_SOLD_PRICE_MEDIAN', status: sold?.status || 'UNKNOWN', reason: sold?.reason || null },
+        { type: 'OBSERVED_LISTING_PRICE', status: obs.status, value: obs.amount_krw },
+      ],
+      note: `Fallback: OBSERVED_LISTING_PRICE · freshness=${obs.freshness_status} · listing_status=${obs.listing_status || 'unknown'} · NOT a verified sale price · reason sold median unavailable: ${sold?.reason || 'unknown'}`,
     };
   }
   return {
     resolution: 'UNKNOWN',
     value: null, source: null,
     auto_observation: obs,
-    note: `no auto sale-price candidate available (reason=${obs.reason || 'unknown'})`,
+    candidates_seen: [
+      { type: 'RECENT_SOLD_PRICE_MEDIAN', status: sold?.status || 'UNKNOWN', reason: sold?.reason || null },
+      { type: 'OBSERVED_LISTING_PRICE', status: obs.status, reason: obs.reason || null },
+    ],
+    note: `no auto sale-price candidate available (sold=${sold?.reason || 'unknown'} · listing=${obs.reason || 'unknown'})`,
   };
 }
 

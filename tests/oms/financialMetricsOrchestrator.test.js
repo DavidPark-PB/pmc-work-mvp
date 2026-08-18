@@ -24,8 +24,8 @@ function fullDb() {
   const now = Date.now();
   const recent = new Date(now - 24 * 60 * 60 * 1000).toISOString();
   const data = {
-    sellable_units: [{ id: 10, physical_product_id: 1 }],
-    sellable_unit_components: [{ sellable_unit_id: 10, quantity_per_unit: 1 }],
+    sellable_units: [{ id: 10, display_name: 'BP 1-Box', variant_kind: 'base', status: 'active' }],
+    sellable_unit_components: [{ sellable_unit_id: 10, physical_product_id: 1, quantity_per_unit: 1, role: 'primary' }],
     sku_master_link: [{ sku_master_id: 100, sellable_unit_id: 10 }],
     sku_master: [{ id: 100, internal_sku: 'BP-SKU', weight_gram: 500 }],
     sku_listing_link: [{ sku_id: 100, listing_id: 'e_1', marketplace_sku: 'BP-SKU', is_primary: true }],

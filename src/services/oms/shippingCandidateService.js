@@ -54,12 +54,15 @@ async function assembleShippingCandidate({
     throw new Error('assembleShippingCandidate: db (Supabase-like client) required');
   }
 
-  // Walk to sku_master to pull weight_gram
-  const sellableUnits = await _select(db, 'sellable_units', 'id, physical_product_id', { physical_product_id: physicalProductId });
-  if (!sellableUnits.length) return _unknown('no_sellable_unit_for_physical');
-  const suIds = sellableUnits.map(r => r.id);
-  const components = await _selectIn(db, 'sellable_unit_components', 'sellable_unit_id, quantity_per_unit', 'sellable_unit_id', suIds);
-  const suSingle = components.filter(c => Number(c.quantity_per_unit) === 1).map(c => c.sellable_unit_id);
+  //   Walk to sku_master to pull weight_gram (Phase 8P-2b schema-correct).
+  //     physical_products.id
+  //     → sellable_unit_components.physical_product_id · .sellable_unit_id · .quantity_per_unit
+  //     → sku_master_link → sku_master
+  //   sellable_units (086) has NO physical_product_id · consumption lives ONLY
+  //   in sellable_unit_components (087). qty=1 authoritative identity preserved.
+  const components = await _select(db, 'sellable_unit_components', 'sellable_unit_id, quantity_per_unit', { physical_product_id: physicalProductId });
+  if (!components.length) return _unknown('no_sellable_unit_for_physical');
+  const suSingle = [...new Set(components.filter(c => Number(c.quantity_per_unit) === 1).map(c => c.sellable_unit_id))];
   if (!suSingle.length) return _unknown('no_single_unit_component');
   const links = await _selectIn(db, 'sku_master_link', 'sku_master_id, sellable_unit_id', 'sellable_unit_id', suSingle);
   const smIds = [...new Set(links.map(l => l.sku_master_id))];
