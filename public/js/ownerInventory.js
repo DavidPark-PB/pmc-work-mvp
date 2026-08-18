@@ -43,8 +43,14 @@
 
       <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
         <div id="oi-generated" style="color:#aaa;font-size:12px;"></div>
-        <button id="oi-refresh" type="button" style="padding:6px 12px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">새로고침</button>
+        <div>
+          <button id="oi-compare-toggle" type="button" style="padding:6px 12px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;margin-right:6px;">📊 여러 상품 비교</button>
+          <button id="oi-refresh" type="button" style="padding:6px 12px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">새로고침</button>
+        </div>
       </div>
+
+      <!-- Phase 8N · Multi-product comparison (collapsible) -->
+      <div id="oi-compare" style="display:none;margin-bottom:14px;padding:12px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:6px;"></div>
 
       <div id="oi-summary" style="margin-bottom:14px;"></div>
       <div id="oi-list" style="margin-bottom:14px;"></div>
@@ -61,6 +67,114 @@
       </div>
     `;
     document.getElementById('oi-refresh').addEventListener('click', refreshList);
+    wireComparePanel();
+  }
+
+  // ─── Phase 8N · Multi-product comparison ──────────────
+
+  function wireComparePanel() {
+    const btn = document.getElementById('oi-compare-toggle');
+    const panel = document.getElementById('oi-compare');
+    if (!btn || !panel) return;
+    btn.addEventListener('click', () => {
+      if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        btn.textContent = '접기';
+        if (!panel.dataset.initialized) {
+          panel.innerHTML = renderCompareForm();
+          wireCompareForm();
+          panel.dataset.initialized = '1';
+        }
+      } else {
+        panel.style.display = 'none';
+        btn.textContent = '📊 여러 상품 비교';
+      }
+    });
+  }
+
+  function renderCompareForm() {
+    return (
+      '<div style="color:#fff;font-weight:600;font-size:13px;margin-bottom:6px;">📊 여러 상품 비교</div>' +
+      '<div style="color:#78909c;font-size:11px;margin-bottom:8px;">최대 25개까지 physical_product_id를 쉼표로 구분해 입력하세요. financial 컬럼은 아래 판매가/배송비를 모든 행에 동일하게 적용합니다.</div>' +
+      '<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:6px;margin-bottom:8px;">' +
+      '<input type="text" id="oi-cmp-ids" placeholder="예: 1,2,3,4" style="padding:6px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:4px;color:#fff;font-size:12px;"/>' +
+      '<input type="number" id="oi-cmp-price" placeholder="판매가 (KRW)" min="0" step="1" style="padding:6px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:4px;color:#fff;font-size:12px;"/>' +
+      '<input type="number" id="oi-cmp-ship" placeholder="배송비 (KRW)" min="0" step="1" style="padding:6px;background:#0e0e1e;border:1px solid #2a2a4a;border-radius:4px;color:#fff;font-size:12px;"/>' +
+      '</div>' +
+      '<button type="button" id="oi-cmp-run" style="padding:6px 14px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">비교</button>' +
+      '<div id="oi-cmp-result" style="margin-top:10px;"></div>'
+    );
+  }
+
+  function wireCompareForm() {
+    const btn = document.getElementById('oi-cmp-run');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      const ids = document.getElementById('oi-cmp-ids').value.trim();
+      if (!ids) { document.getElementById('oi-cmp-result').innerHTML = '<div style="color:#ffb74d;">ids 필요</div>'; return; }
+      const price = document.getElementById('oi-cmp-price').value;
+      const ship = document.getElementById('oi-cmp-ship').value;
+      const q = new URLSearchParams();
+      q.set('ids', ids);
+      if (price) q.set('expected_sale_price_krw', price);
+      if (ship) q.set('seller_borne_shipping_krw', ship);
+      const el = document.getElementById('oi-cmp-result');
+      el.innerHTML = '<div style="color:#78909c;padding:8px;">비교 중...</div>';
+      try {
+        const res = await fetch('/api/oms/owner/compare?' + q.toString(), { credentials: 'same-origin' });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || 'compare failed (' + res.status + ')');
+        el.innerHTML = renderCompareTable(json.comparison);
+      } catch (e) {
+        el.innerHTML = '<div style="color:#ef9a9a;padding:8px;">비교 실패: ' + esc(e.message) + '</div>';
+      }
+    });
+  }
+
+  function renderCompareTable(cmp) {
+    if (!cmp || !cmp.rows || cmp.rows.length === 0) return '<div style="color:#78909c;">결과 없음</div>';
+    const money = (v) => v == null ? '<span style="color:#78909c;">확인되지 않음</span>' : esc(krw(v));
+    const pctv = (v) => v == null ? '<span style="color:#78909c;">확인되지 않음</span>' : (esc(Number(v).toFixed(2)) + '%');
+    const rows = cmp.rows.map(row => {
+      if (!row.decision) {
+        return '<tr><td colspan="10" style="padding:6px 8px;color:#ef9a9a;border-bottom:1px solid #1f1f3a;">physical#' + esc(row.physical_product_id) + ' — 오류/미조회</td></tr>';
+      }
+      return (
+        '<tr>' +
+        '<td style="padding:4px 6px;color:#fff;border-bottom:1px solid #1f1f3a;">#' + esc(row.physical_product_id) + '</td>' +
+        '<td style="padding:4px 6px;color:#fff;border-bottom:1px solid #1f1f3a;">' + esc(row.title || '(no title)') + '</td>' +
+        '<td style="padding:4px 6px;color:#fff;border-bottom:1px solid #1f1f3a;">' + esc(row.decision) + '</td>' +
+        '<td style="padding:4px 6px;color:#fff;border-bottom:1px solid #1f1f3a;text-align:right;">' + esc(String(row.priority)) + '</td>' +
+        '<td style="padding:4px 6px;color:#cfd8dc;border-bottom:1px solid #1f1f3a;">' + esc(row.urgency || '?') + '</td>' +
+        '<td style="padding:4px 6px;color:#cfd8dc;border-bottom:1px solid #1f1f3a;">' + esc(row.confidence_overall_tier || '?') + '</td>' +
+        '<td style="padding:4px 6px;color:#cfd8dc;border-bottom:1px solid #1f1f3a;text-align:right;">' + esc(String(row.on_hand ?? '?')) + '</td>' +
+        '<td style="padding:4px 6px;border-bottom:1px solid #1f1f3a;text-align:right;">' + money(row.financial.accounting.gross_profit.amount_krw) + '</td>' +
+        '<td style="padding:4px 6px;border-bottom:1px solid #1f1f3a;text-align:right;">' + pctv(row.financial.accounting.gross_margin_pct.pct) + '</td>' +
+        '<td style="padding:4px 6px;border-bottom:1px solid #1f1f3a;text-align:right;">' + money(row.financial.accounting.inventory_value.amount_krw) + '</td>' +
+        '</tr>'
+      );
+    }).join('');
+    const caveats = (cmp.caveats || []).map(c => '<div>· ' + esc(c) + '</div>').join('');
+    return (
+      '<div style="color:#78909c;font-size:11px;margin-bottom:6px;">' + caveats + '</div>' +
+      '<div style="overflow-x:auto;">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+      '<thead><tr style="color:#aaa;background:#1a1a2e;">' +
+      '<th style="padding:6px 6px;text-align:left;">#</th>' +
+      '<th style="padding:6px 6px;text-align:left;">상품</th>' +
+      '<th style="padding:6px 6px;text-align:left;">결정</th>' +
+      '<th style="padding:6px 6px;text-align:right;">우선</th>' +
+      '<th style="padding:6px 6px;text-align:left;">긴급</th>' +
+      '<th style="padding:6px 6px;text-align:left;">신뢰</th>' +
+      '<th style="padding:6px 6px;text-align:right;">재고</th>' +
+      '<th style="padding:6px 6px;text-align:right;">회계기준 총이익</th>' +
+      '<th style="padding:6px 6px;text-align:right;">회계기준 마진%</th>' +
+      '<th style="padding:6px 6px;text-align:right;">회계기준 재고가치</th>' +
+      '</tr></thead>' +
+      '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+      '</div>'
+    );
   }
 
   async function refreshList() {

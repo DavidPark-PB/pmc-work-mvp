@@ -41,6 +41,8 @@ function buildRouter(deps = {}) {
   // Phase 8L integration · additive read-only financial metrics projection.
   //   Pure adapter over ownerDecision + caller-supplied pricing opts. No DB.
   const financialMetricsFn = deps.financialMetricsFn || ((ownerDecision, opts) => require('../../services/oms/financialMetricsAssembler').buildFinancialMetrics(ownerDecision, opts));
+  // Phase 8N · multi-product comparison · pure projection
+  const compareFn = deps.compareFn || ((items, opts) => require('../../services/oms/multiProductComparisonService').buildMultiProductComparison(items, opts));
 
   // ─── 1) Batch exception queue ─────────────────────────
   // Owner §Part 10: ONE call for the page. Detail is lazy per-item.
@@ -164,6 +166,36 @@ function buildRouter(deps = {}) {
       res.json({ owner_decision: ownerDecision, financial_metrics });
     } catch (err) {
       res.status(500).json({ error: 'financial_metrics_failed', message: err && err.message ? err.message : String(err) });
+    }
+  });
+
+  // ─── 6c) Multi-product comparison (Phase 8N · READ-ONLY) ─
+  //   Owner picks a set of physicalIds to compare side-by-side.
+  //   Preserves existing priority ordering · no new ROI algorithm.
+  //   Financial metrics are OPTIONAL per item (query param opts apply
+  //   uniformly to all items · same sale-price/shipping/fee assumptions).
+  router.get('/compare', async (req, res) => {
+    const idsRaw = String(req.query.ids || '').trim();
+    if (!idsRaw) return res.status(400).json({ error: 'ids_required', message: 'ids=1,2,3 required' });
+    const ids = idsRaw.split(',').map(s => _parsePositiveInt(s.trim())).filter(v => v != null);
+    if (ids.length === 0) return res.status(400).json({ error: 'invalid_ids', message: 'no valid positive integer ids parsed' });
+    if (ids.length > 25) return res.status(400).json({ error: 'too_many_ids', message: 'max 25 items per comparison' });
+    const financialOpts = _parseFinancialMetricsOpts(req.query);
+    try {
+      const items = [];
+      for (const id of ids) {
+        const ownerDecision = await ownerDecisionFn({ physicalProductId: id });
+        if (ownerDecision && ownerDecision.error) {
+          items.push({ ownerDecision: { physical_product_id: id, error: ownerDecision.error }, financialMetrics: null });
+          continue;
+        }
+        const fm = financialMetricsFn(ownerDecision, financialOpts);
+        items.push({ ownerDecision, financialMetrics: fm });
+      }
+      const comparison = compareFn(items, { generatedAt: new Date().toISOString() });
+      res.json({ comparison, item_count: items.length, financial_opts_applied: financialOpts });
+    } catch (err) {
+      res.status(500).json({ error: 'compare_failed', message: err && err.message ? err.message : String(err) });
     }
   });
 

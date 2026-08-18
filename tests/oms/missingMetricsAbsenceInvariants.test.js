@@ -155,6 +155,11 @@ test('MA4. Only src/services/oms/financialMetricsService.js is authorized to def
   const AUTHORIZED = new Set([
     path.resolve(omsDir, 'financialMetricsService.js'),
     path.resolve(omsDir, 'financialMetricsAssembler.js'),
+    //   Phase 8M snapshot + Phase 8N comparison legitimately reference the
+    //   metric field NAMES to project them into their read-only surfaces.
+    //   They never compute new numbers · they aggregate existing ones.
+    path.resolve(omsDir, 'judgmentHistorySnapshotService.js'),
+    path.resolve(omsDir, 'multiProductComparisonService.js'),
   ]);
   const files = _walkJsFiles(omsDir).filter(f => !AUTHORIZED.has(f));
   const forbiddenSymbols = [
