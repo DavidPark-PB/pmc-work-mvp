@@ -796,9 +796,11 @@ class EbayAPI {
    * GetOrders with OrderStatus=Active — 배송 대기 주문 전체 (시간 제한 없음)
    * GetSellerTransactions은 최근 N일만 조회하지만, 이 API는 현재 미배송 주문을 전부 가져옴
    */
-  async getAwaitingShipmentOrders(daysOverride = null) {
+  async getAwaitingShipmentOrders(daysOverride = null, opts = {}) {
     const allOrders = [];
     let pageNumber = 1;
+    // Phase 8P-20.7 · pagination boundary observability. Zero PII in stage lines.
+    const stageLog = typeof opts.stageLog === 'function' ? opts.stageLog : null;
 
     // eBay GetOrders requires a date filter (max 30 days for ModTime).
     // 사장님 보고 2026-06-23: ModTime 30일 + AwaitingShipment 으로 900건 반환되는데
@@ -822,7 +824,10 @@ class EbayAPI {
   <PageNumber>${pageNumber}</PageNumber>
 </Pagination>`;
 
+        const _pageT = Date.now();
+        if (stageLog) stageLog(`OMS_EBAY_STAGE_START stage=ebay_trading_page page=${pageNumber} ts=${new Date(_pageT).toISOString()}`);
         const response = await this.callTradingAPI('GetOrders', requestBody);
+        if (stageLog) stageLog(`OMS_EBAY_STAGE_DONE stage=ebay_trading_page page=${pageNumber} elapsed_ms=${Date.now() - _pageT} bytes=${typeof response === 'string' ? response.length : 0}`);
 
         const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
         if (!ackMatch || (ackMatch[1] !== 'Success' && ackMatch[1] !== 'Warning')) {

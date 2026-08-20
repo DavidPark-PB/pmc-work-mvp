@@ -39,19 +39,39 @@ async function ingestEbay(opts = {}) {
   const actorId = opts.actorId ?? null;
   const actorType = opts.actorType || 'automation';
   const startedAt = new Date().toISOString();
+  // Phase 8P-20.7 · injectable stage logger (defaults to console.log).
+  // Zero PII / zero raw payload / zero credential in stage records.
+  const stageLog = typeof opts.stageLog === 'function' ? opts.stageLog : (m) => console.log(m);
+  const _stageStart = (stage) => {
+    const t = Date.now();
+    stageLog(`OMS_EBAY_STAGE_START stage=${stage} ts=${new Date(t).toISOString()}`);
+    return t;
+  };
+  const _stageDone = (stage, t0, extra = '') => {
+    stageLog(`OMS_EBAY_STAGE_DONE stage=${stage} elapsed_ms=${Date.now() - t0}${extra ? ' ' + extra : ''}`);
+  };
+  const _stageFail = (stage, t0, errClass, err) => {
+    const msg = _safeStageMsg(err);
+    stageLog(`OMS_EBAY_STAGE_FAIL stage=${stage} elapsed_ms=${Date.now() - t0} error_class=${errClass} message=${msg}`);
+  };
 
   const report = _emptyReport('ebay', days);
   report.startedAt = startedAt;
 
   // 1) Fetch (job-level failure is job-level — surface as jobError)
   let rawOrders;
+  const tFetch = _stageStart('ebay_api_fetch');
   try {
     const api = opts.ebayApi || new EbayAPI();
-    rawOrders = await api.getAwaitingShipmentOrders(days);
+    rawOrders = await api.getAwaitingShipmentOrders(days, { stageLog });
     if (!Array.isArray(rawOrders)) rawOrders = [];
+    _stageDone('ebay_api_fetch', tFetch, `orders_fetched=${rawOrders.length}`);
   } catch (err) {
+    const errClass = _classifyError(err);
+    _stageFail('ebay_api_fetch', tFetch, errClass, err);
     report.jobError = `fetch_failed:${safeMsg(err)}`;
     report.completedAt = new Date().toISOString();
+    stageLog(`OMS_EBAY_STAGE_DONE stage=final_report elapsed_ms=${Date.now() - Date.parse(startedAt)} jobError=1`);
     return report;
   }
 
@@ -60,12 +80,15 @@ async function ingestEbay(opts = {}) {
   report.attempted = toProcess.length;
 
   // 2) Per-order pipeline (isolated)
+  let orderIdx = 0;
   for (const raw of toProcess) {
     let eventId = null;
+    orderIdx += 1;
     try {
       const orderIdForRaw = raw?.ebayOrderId ?? raw?.orderId ?? null;
 
       // 2a) Raw event (idempotent by (channel, payload_hash) or (channel, source_event_id))
+      const tPersist = _stageStart(`raw_event_persist#${orderIdx}`);
       const ev = await persistRawEvent({
         channel: 'ebay',
         externalOrderId: orderIdForRaw,
@@ -74,15 +97,19 @@ async function ingestEbay(opts = {}) {
         rawStatus: raw?._orderStatus ?? raw?.orderStatus ?? null,
         rawPayload: raw,
       });
+      _stageDone(`raw_event_persist#${orderIdx}`, tPersist, `is_new=${ev.isNew ? 1 : 0}`);
       eventId = ev.id;
       if (ev.isNew) report.rawEventsInserted += 1;
       else report.rawEventsDeduped += 1;
 
       // 2b) Adapter
       let canonical;
+      const tAdapt = _stageStart(`canonical_adapt_validate#${orderIdx}`);
       try {
         canonical = toCanonicalOrder(raw);
+        _stageDone(`canonical_adapt_validate#${orderIdx}`, tAdapt, `items=${canonical.items?.length ?? 0}`);
       } catch (err) {
+        _stageFail(`canonical_adapt_validate#${orderIdx}`, tAdapt, 'adapter_error', err);
         await markProcessed(eventId, {
           processingStatus: 'failed',
           errorMessage: `adapter_error:${safeMsg(err)}`,
@@ -94,6 +121,7 @@ async function ingestEbay(opts = {}) {
 
       // 2c) SKU match + cost fill BEFORE persistence
       let enrichedItems = canonical.items;
+      const tMatch = _stageStart(`sku_match#${orderIdx}`);
       try {
         const matched = await matchCanonicalItems({ channel: 'ebay', items: canonical.items });
         enrichedItems = matched.map(({ item, match }) => ({
@@ -104,16 +132,27 @@ async function ingestEbay(opts = {}) {
           matchConfidence: match.matchConfidence,
           matchReason: match.matchReason,
         }));
-      } catch (_err) { /* keep pending */ }
+        _stageDone(`sku_match#${orderIdx}`, tMatch, `enriched=${enrichedItems.length}`);
+      } catch (_err) {
+        _stageFail(`sku_match#${orderIdx}`, tMatch, 'match_error', _err);
+        /* keep pending */
+      }
 
+      const tCost = _stageStart(`cost_fill#${orderIdx}`);
       try {
         enrichedItems = await fillCostSnapshotForItems(enrichedItems);
-      } catch (_err) { /* leave cost fields null */ }
+        _stageDone(`cost_fill#${orderIdx}`, tCost);
+      } catch (_err) {
+        _stageFail(`cost_fill#${orderIdx}`, tCost, 'cost_error', _err);
+        /* leave cost fields null */
+      }
 
       const enrichedCanonical = { ...canonical, items: enrichedItems };
 
       // 2d) Persist (upsert)
+      const tUpsert = _stageStart(`oms_order_upsert#${orderIdx}`);
       const result = await upsertCanonicalOrder(enrichedCanonical, { actorId, actorType });
+      _stageDone(`oms_order_upsert#${orderIdx}`, tUpsert, `status=${result.status}`);
 
       // Tally per-order
       switch (result.status) {
@@ -147,13 +186,16 @@ async function ingestEbay(opts = {}) {
       report.itemsUnmatched += result.itemsUnmatched || 0;
 
       // 2e) Mark raw event processed + linked
+      const tMark = _stageStart(`mark_processed#${orderIdx}`);
       await markProcessed(eventId, {
         processingStatus: 'processed',
         linkedOrderId: result.orderId,
-      }).catch(() => {});
+      }).catch((e) => { _stageFail(`mark_processed#${orderIdx}`, tMark, 'mark_error', e); });
+      _stageDone(`mark_processed#${orderIdx}`, tMark);
 
     } catch (err) {
       // Any per-order exception NOT caught above — isolate.
+      _stageFail(`per_order#${orderIdx}`, Date.now(), 'per_order_exception', err);
       report.failed += 1;
       report.failures.push({ eventId, reason: 'exception', errors: [safeMsg(err)] });
       if (eventId) {
@@ -163,7 +205,28 @@ async function ingestEbay(opts = {}) {
   }
 
   report.completedAt = new Date().toISOString();
+  stageLog(`OMS_EBAY_STAGE_DONE stage=final_report elapsed_ms=${Date.now() - Date.parse(startedAt)} orders=${report.attempted} created=${report.created} updated=${report.updated} failed=${report.failed}`);
   return report;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Stage helpers — safe (no PII, no raw payload, no secrets)
+// ─────────────────────────────────────────────────────────────
+function _safeStageMsg(err) {
+  if (!err) return 'unknown';
+  const m = String(err.message || err);
+  // Strip potential PII-shaped fields (emails, phone-like sequences) then truncate.
+  return m
+    .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, '<email>')
+    .replace(/\+?\d[\d\s\-()]{7,}\d/g, '<phone>')
+    .slice(0, 200);
+}
+function _classifyError(err) {
+  const s = String(err?.message || err || '');
+  if (/timeout|ETIMEDOUT|ECONNABORTED/i.test(s)) return 'timeout';
+  if (/auth|token|expired|unauthor|forbidden|IP_NOT_ALLOWED/i.test(s)) return 'auth';
+  if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|network|ENETUNREACH/i.test(s)) return 'network';
+  return 'unknown';
 }
 
 // ─────────────────────────────────────────────────────────────

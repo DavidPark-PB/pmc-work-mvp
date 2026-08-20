@@ -78,6 +78,12 @@ function startChannelIngestionScheduler(opts = {}) {
 
   const timers = new Map();
   const running = new Map();       //   channel → boolean (concurrency lock)
+  //   Phase 8P-20.7 · in-memory tick tracker (Task D · option A).
+  //   Distinct from ingestion_state.last_attempt_at (which only updates on completion,
+  //   hiding hangs). This is log-only + queryable via the returned controller.
+  //   Zero DB write · zero migration.
+  const inflight = new Map();      //   channel → { startedAt, sinceMs()  }  while a tick is running
+  const lastCompletedAt = new Map(); //   channel → ISO string of last observed completion (any outcome)
   const startedChannels = [];
   const deferredChannels = [];     //   V1 boundary · code-present but scheduler-off
 
@@ -113,11 +119,19 @@ function startChannelIngestionScheduler(opts = {}) {
 
       const tick = async () => {
         if (running.get(channel)) {
-          log(`[oms-scheduler] channel=${channel} tick skipped · previous run in progress`);
+          const inf = inflight.get(channel);
+          //   Phase 8P-20.7 · make "skipped because previous is stuck" observable.
+          //   Includes elapsed_ms of the stuck predecessor so Owner can see hang duration.
+          const infoStr = inf ? ` previous_started_at=${inf.startedAt} elapsed_ms=${Date.now() - inf.startedAtMs}` : '';
+          log(`[oms-scheduler] channel=${channel} tick skipped · previous run in progress${infoStr}`);
           return;
         }
         running.set(channel, true);
         const runStartedAt = new Date().toISOString();
+        //   Phase 8P-20.7 · in-memory started_at (persists across ticks even while a hang
+        //   holds the lock; distinct from ingestion_state.last_attempt_at which only
+        //   updates on completion). Cleared in finally.
+        inflight.set(channel, { startedAt: runStartedAt, startedAtMs: Date.now() });
         //   Phase 8P-20.6 · pre-ingestor observability so Railway logs prove the
         //   tick entered (previously we only saw completion logs; a hung ingestor
         //   left zero evidence). Emitted AFTER lock acquisition · BEFORE any await.
@@ -136,7 +150,9 @@ function startChannelIngestionScheduler(opts = {}) {
           const mod = conf.load();
           const ingestorFn = mod[conf.fn];
           if (typeof ingestorFn !== 'function') throw new Error(`ingestor missing: ${channel}.${conf.fn}`);
-          const report = await ingestorFn({ actorType: 'automation' });
+          //   Phase 8P-20.7 · propagate stage logger only into ingestors that accept it
+          //   (currently ingestEbay). Shopify & deferred channels ignore the extra opt.
+          const report = await ingestorFn({ actorType: 'automation', stageLog: log });
           //   Log only ids/counts · never PII
           log(`[oms-scheduler] channel=${channel} tick ${runStartedAt} fetched=${report.fetched ?? '?'} attempted=${report.attempted ?? '?'} upserted=${report.ordersUpserted ?? report.created ?? '?'} errors=${(report.errors && report.errors.length) || 0} jobError=${report.jobError || 'none'}`);
           //   Freshness tracking · wrapper-level so legacy ingestors (ebay, shopify)
@@ -160,6 +176,10 @@ function startChannelIngestionScheduler(opts = {}) {
           log(`[oms-scheduler] channel=${channel} tick uncaught: ${err && err.message ? err.message.slice(0, 300) : String(err).slice(0, 300)}`);
           try { await recordAttempt({ channel, ok: false, err, errorClass: 'unknown' }); } catch (_e) { /* swallow · state service is best-effort */ }
         } finally {
+          //   Phase 8P-20.7 · release in-memory tracker BEFORE clearing running so
+          //   a rapid re-entrant tick sees consistent state.
+          lastCompletedAt.set(channel, new Date().toISOString());
+          inflight.delete(channel);
           running.set(channel, false);
         }
       };
@@ -192,6 +212,18 @@ function startChannelIngestionScheduler(opts = {}) {
     channels: startedChannels,
     deferred: deferredChannels,
     timers,
+    //   Phase 8P-20.7 · in-memory tick tracker query API.
+    //   Owner / dashboard / freshness route may call getInflight() to see
+    //   which channels are mid-tick (with elapsed_ms). Distinct from
+    //   ingestion_state.last_attempt_at — no DB read.
+    getInflight() {
+      const out = {};
+      for (const [ch, inf] of inflight.entries()) {
+        out[ch] = { started_at: inf.startedAt, elapsed_ms: Date.now() - inf.startedAtMs };
+      }
+      return out;
+    },
+    getLastCompletedAt() { return Object.fromEntries(lastCompletedAt); },
   };
 }
 

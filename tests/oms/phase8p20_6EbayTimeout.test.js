@@ -188,11 +188,19 @@ test('P8P20_6_C_D · simulated ebay ingestor timeout · scheduler logs classific
 //   ─── Extra safety · confirm the scheduler's tick function's finally-block
 //        structural guarantee is still present (regression guard) ──────────
 
-test('P8P20_6_STRUCT · scheduler tick has finally { running.set(channel, false) } (lock release guarantee)', () => {
+test('P8P20_6_STRUCT · scheduler tick finally { … running.set(channel, false); … } (lock release guarantee)', () => {
   const src = fs.readFileSync(path.resolve(__dirname, '../../src/services/oms/channelIngestionScheduler.js'), 'utf8');
-  assert.match(src, /finally\s*\{\s*running\.set\(channel,\s*false\)\s*;\s*\}/,
+  //   Locate a `finally {` block that contains running.set(channel, false).
+  //   Other cleanup statements added in later phases (Phase 8P-20.7 inflight/
+  //   lastCompletedAt) are permitted; the lock-release invariant is the only
+  //   thing we hard-guard.
+  const finallyIdx = src.indexOf('finally {');
+  assert.ok(finallyIdx >= 0, 'tick must contain a finally block');
+  //   Grab a generous window and let the body-content test speak for itself.
+  const window = src.slice(finallyIdx, finallyIdx + 500);
+  assert.match(window, /running\.set\(channel,\s*false\)\s*;/,
     'tick finally must always release the running lock (Phase 8P-20.5/6 invariant)');
-  //   And the pre-ingestor observability log must be present
+  //   Pre-ingestor observability log must remain
   assert.match(src, /OMS_SCHEDULER_TICK_STARTED channel=/,
     'Phase 8P-20.6 pre-ingestor observability log must be present');
 });
