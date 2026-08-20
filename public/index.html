@@ -38,6 +38,9 @@
     <div class="menu-item" data-page="naver">네이버</div>
     <div class="menu-item" data-page="alibaba">Alibaba</div>
     <div class="menu-item" data-page="shopee">Shopee</div>
+    <div class="menu-title">히트 SKU</div>
+    <div class="menu-item" data-page="hitsku">히트 SKU 랭킹</div>
+    <div class="menu-item" data-page="expansion-queue">확장 큐 관리</div>
     <div class="menu-title">B2B</div>
     <div class="menu-item" data-page="b2b" style="color:#0288d1;font-weight:600">B2B 인보이스</div>
     <div class="menu-title">시스템</div>
@@ -1207,6 +1210,97 @@
             </table>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- ===== 히트 SKU 랭킹 페이지 ===== -->
+    <div id="page-hitsku" class="page">
+      <!-- 요약 카드 -->
+      <div class="stats" id="hitSkuSummary"></div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-header">
+          <h3>SKU 판매 랭킹 <span class="count" id="hitSkuCount"></span></h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="hitSkuStatusFilter">
+              <option value="">전체</option>
+              <option value="expansion">확장 대상</option>
+              <option value="interest">관심</option>
+              <option value="normal">일반</option>
+            </select>
+            <select id="hitSkuSort">
+              <option value="auto">자동 (기간/누적)</option>
+              <option value="count7d">7일 판매순</option>
+              <option value="count3d">3일 판매순</option>
+              <option value="salesTotal">누적 판매순</option>
+            </select>
+            <button class="sync-btn" id="aggregateBtn" style="margin:0">집계 실행</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>SKU</th>
+                <th>상품명</th>
+                <th>플랫폼</th>
+                <th>3일 판매</th>
+                <th>7일 판매</th>
+                <th>상태</th>
+                <th>최종 집계</th>
+              </tr>
+            </thead>
+            <tbody id="hitSkuTable">
+              <tr><td colspan="8" class="empty">집계 데이터 없음 — 집계 실행 버튼을 눌러주세요</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 확장 큐 관리 페이지 ===== -->
+    <div id="page-expansion-queue" class="page">
+      <div class="stats" id="queueSummary"></div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-header">
+          <h3>확장 대기 큐 <span class="count" id="queueCount"></span></h3>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="queueStatusFilter">
+              <option value="">전체</option>
+              <option value="pending">대기중</option>
+              <option value="approved">승인됨</option>
+              <option value="rejected">거절됨</option>
+              <option value="exported">Export됨</option>
+            </select>
+            <button class="sync-btn" id="exportQueueBtn" style="margin:0;background:#2e7d32">승인 항목 Export</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>상품명</th>
+                <th>3일 판매</th>
+                <th>7일 판매</th>
+                <th>큐 등록일</th>
+                <th>상태</th>
+                <th>액션</th>
+              </tr>
+            </thead>
+            <tbody id="expansionQueueTable">
+              <tr><td colspan="7" class="empty">확장 대기 항목 없음</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Export 결과 -->
+      <div class="card" id="exportResultCard" style="margin-top:16px;display:none">
+        <h3>Export 결과</h3>
+        <pre id="exportResultData" style="background:#f5f5f5;padding:16px;border-radius:6px;font-size:12px;overflow:auto;max-height:400px"></pre>
       </div>
     </div>
 

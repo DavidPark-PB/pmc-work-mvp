@@ -2719,4 +2719,74 @@ router.get('/b2b/revenue/products', async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════
+// Hit SKU Detection + Expansion Queue System
+// ══════════════════════════════════════════════════════════════
+const hitSkuService = require('../../hitsku/hitSkuService');
+const hitSkuSync    = require('../../hitsku/hitSkuSync');
+
+// 수동 집계 트리거 (Google Sheets → 스냅샷 → 집계)
+router.post('/hit-skus/aggregate', async (req, res) => {
+  try {
+    const stats = await hitSkuSync.syncAndAggregate();
+    res.json({ success: true, count: stats.length, data: stats });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// SKU 통계 조회 (랭킹 정렬)
+router.get('/hit-skus', (req, res) => {
+  try {
+    const { sort = 'auto', order = 'desc', status } = req.query;
+    const data = hitSkuService.getSkuStats({ sort, order, status });
+    res.json({ success: true, total: data.length, data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 확장 큐 조회
+router.get('/expansion-queue', (req, res) => {
+  try {
+    const { status } = req.query;
+    const data = hitSkuService.getExpansionQueue({ status });
+    res.json({ success: true, total: data.length, data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 확장 큐 승인
+router.post('/expansion-queue/:sku/approve', (req, res) => {
+  try {
+    const item = hitSkuService.updateQueueStatus(req.params.sku, 'approved');
+    if (!item) return res.status(404).json({ error: 'SKU not found in queue' });
+    res.json({ success: true, data: item });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 확장 큐 거절
+router.post('/expansion-queue/:sku/reject', (req, res) => {
+  try {
+    const item = hitSkuService.updateQueueStatus(req.params.sku, 'rejected');
+    if (!item) return res.status(404).json({ error: 'SKU not found in queue' });
+    res.json({ success: true, data: item });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 승인된 큐 Export (approved → exported 상태 변경)
+router.get('/expansion-queue/export', (req, res) => {
+  try {
+    const exported = hitSkuService.exportQueue();
+    res.json({ success: true, count: exported.length, data: exported });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

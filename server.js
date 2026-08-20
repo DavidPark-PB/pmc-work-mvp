@@ -37,3 +37,18 @@ app.listen(PORT, () => {
   }, delay);
   console.log(`SKU 점수 자동 업데이트: ${next2AM.toLocaleString('ko-KR')} 예약됨`);
 });
+
+// ── Hit SKU 자동 집계 Cron (1시간마다) ─────────────────────
+const hitSkuSync = require('./src/hitsku/hitSkuSync');
+
+async function runAggregation() {
+  try {
+    await hitSkuSync.syncAndAggregate();
+  } catch (e) {
+    console.error('[HitSKU] 집계 오류:', e.message);
+  }
+}
+
+// 서버 시작 시 1회 즉시 실행 후, 1시간마다 반복
+runAggregation();
+setInterval(runAggregation, 60 * 60 * 1000);

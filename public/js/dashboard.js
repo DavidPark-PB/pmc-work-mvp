@@ -59,6 +59,8 @@ function navigateTo(page) {
     case 'remarker': setupRemarker(); break;
     case 'reconstruct': setupReconstructPage(); break;
     case 'shipping': setupShippingPage(); break;
+    case 'hitsku': loadHitSkuPage(); break;
+    case 'expansion-queue': loadExpansionQueuePage(); break;
   }
 }
 
@@ -1570,6 +1572,214 @@ async function loadEbayTrends() {
     if (statsEl) statsEl.innerHTML = '<div class="stat-card"><div class="label">로드 실패</div></div>';
   }
 }
+
+// ══════════════════════════════════════════════════════════════
+// 히트 SKU 랭킹 페이지
+// ══════════════════════════════════════════════════════════════
+
+const STATUS_LABEL = { expansion: '확장 대상', interest: '관심', normal: '일반' };
+const STATUS_COLOR = { expansion: '#c62828', interest: '#e65100', normal: '#546e7a' };
+
+async function loadHitSkuPage() {
+  const sort   = document.getElementById('hitSkuSort')?.value   || 'auto';
+  const status = document.getElementById('hitSkuStatusFilter')?.value || '';
+
+  const params = new URLSearchParams({ sort, order: 'desc' });
+  if (status) params.set('status', status);
+
+  const res  = await fetch(`${API}/hit-skus?${params}`).then(r => r.json()).catch(() => ({ success: false, data: [] }));
+  const data = res.data || [];
+
+  // 스냅샷 기준 데이터 여부
+  const hasBase = data.length > 0 && data[0].has7dBase;
+
+  // 요약 카드 — 전체 수는 필터 없이 다시 조회
+  const allRes   = await fetch(`${API}/hit-skus?sort=auto&order=desc`).then(r => r.json()).catch(() => ({ data: [] }));
+  const allData  = allRes.data || [];
+  const expansion = allData.filter(s => s.status === 'expansion').length;
+  const interest  = allData.filter(s => s.status === 'interest').length;
+
+  document.getElementById('hitSkuSummary').innerHTML = `
+    <div class="stat-card"><div class="stat-value">${allData.length}</div><div class="stat-label">전체 SKU</div></div>
+    <div class="stat-card" style="border-top:3px solid #c62828"><div class="stat-value" style="color:#c62828">${expansion}</div><div class="stat-label">확장 대상</div></div>
+    <div class="stat-card" style="border-top:3px solid #e65100"><div class="stat-value" style="color:#e65100">${interest}</div><div class="stat-label">관심 SKU</div></div>
+    <div class="stat-card" style="border-top:3px solid #546e7a"><div class="stat-value" style="font-size:14px;color:#546e7a">${hasBase ? '기간별' : '누적순'}</div><div class="stat-label">현재 정렬 기준</div></div>
+  `;
+
+  document.getElementById('hitSkuCount').textContent = data.length ? `(${data.length}개)` : '';
+
+  const tbody = document.getElementById('hitSkuTable');
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">집계 데이터 없음 — 집계 실행 버튼을 눌러주세요</td></tr>';
+    return;
+  }
+
+  // 3일/7일 기준선이 없으면 "누적" 레이블 표시
+  const col3d = hasBase ? '3일 판매' : '3일(기준 없음)';
+  const col7d = hasBase ? '7일 판매' : '누적 판매';
+
+  // 헤더 업데이트
+  const thead = tbody.closest('table').querySelector('thead tr');
+  if (thead) {
+    thead.children[4].textContent = col3d;
+    thead.children[5].textContent = col7d;
+  }
+
+  tbody.innerHTML = data.map((s, i) => {
+    const v3 = s.has3dBase ? s.count3d : '-';
+    const v7 = s.has7dBase ? s.count7d : s.salesTotal;
+    return `
+    <tr>
+      <td>${i + 1}</td>
+      <td><strong>${esc(s.sku)}</strong></td>
+      <td>${esc(s.title) || '-'}</td>
+      <td>${esc(s.platform) || '-'}</td>
+      <td style="text-align:center;font-weight:bold">${v3}</td>
+      <td style="text-align:center;font-weight:bold;color:#c62828">${v7}</td>
+      <td><span style="background:${STATUS_COLOR[s.status]};color:#fff;padding:2px 8px;border-radius:12px;font-size:12px">${STATUS_LABEL[s.status] || s.status}</span></td>
+      <td style="font-size:12px;color:#888">${s.lastUpdated ? new Date(s.lastUpdated).toLocaleString('ko-KR') : '-'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function setupHitSkuEvents() {
+  const aggregateBtn = document.getElementById('aggregateBtn');
+  if (aggregateBtn) {
+    aggregateBtn.addEventListener('click', async () => {
+      aggregateBtn.textContent = '집계 중...';
+      aggregateBtn.disabled = true;
+      try {
+        const res = await fetch(`${API}/hit-skus/aggregate`, { method: 'POST' }).then(r => r.json());
+        alert(`집계 완료 — ${res.count || 0}개 SKU 처리됨`);
+        loadHitSkuPage();
+      } catch (e) {
+        alert('집계 실패: ' + e.message);
+      } finally {
+        aggregateBtn.textContent = '집계 실행';
+        aggregateBtn.disabled = false;
+      }
+    });
+  }
+
+  document.getElementById('hitSkuSort')?.addEventListener('change', loadHitSkuPage);
+  document.getElementById('hitSkuStatusFilter')?.addEventListener('change', loadHitSkuPage);
+
+  const orderLogForm = document.getElementById('orderLogForm');
+  if (orderLogForm) {
+    orderLogForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd  = new FormData(orderLogForm);
+      const body = {
+        sku:      fd.get('sku'),
+        title:    fd.get('title'),
+        platform: fd.get('platform'),
+        quantity: parseInt(fd.get('quantity')) || 1,
+      };
+      const res = document.getElementById('orderLogResult');
+      try {
+        const r = await fetch(`${API}/orders/log`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }).then(r => r.json());
+        res.textContent = r.success ? '주문 등록 완료!' : ('실패: ' + r.error);
+        res.style.color = r.success ? '#2e7d32' : '#c62828';
+        if (r.success) orderLogForm.reset();
+      } catch (err) {
+        res.textContent = '오류: ' + err.message;
+        res.style.color = '#c62828';
+      }
+    });
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// 확장 큐 관리 페이지
+// ══════════════════════════════════════════════════════════════
+
+async function loadExpansionQueuePage() {
+  const status = document.getElementById('queueStatusFilter')?.value || '';
+  const params = status ? `?status=${status}` : '';
+
+  const res  = await fetch(`${API}/expansion-queue${params}`).then(r => r.json()).catch(() => ({ success: false, data: [] }));
+  const data = res.data || [];
+
+  // 요약 카드
+  const all      = await fetch(`${API}/expansion-queue`).then(r => r.json()).catch(() => ({ data: [] }));
+  const allData  = all.data || [];
+  const pending  = allData.filter(q => q.status === 'pending').length;
+  const approved = allData.filter(q => q.status === 'approved').length;
+  const exported = allData.filter(q => q.status === 'exported').length;
+
+  document.getElementById('queueSummary').innerHTML = `
+    <div class="stat-card"><div class="stat-value">${allData.length}</div><div class="stat-label">전체 큐</div></div>
+    <div class="stat-card" style="border-top:3px solid #1565c0"><div class="stat-value" style="color:#1565c0">${pending}</div><div class="stat-label">대기중</div></div>
+    <div class="stat-card" style="border-top:3px solid #2e7d32"><div class="stat-value" style="color:#2e7d32">${approved}</div><div class="stat-label">승인됨</div></div>
+    <div class="stat-card" style="border-top:3px solid #546e7a"><div class="stat-value" style="color:#546e7a">${exported}</div><div class="stat-label">Export됨</div></div>
+  `;
+
+  document.getElementById('queueCount').textContent = data.length ? `(${data.length}개)` : '';
+
+  const tbody = document.getElementById('expansionQueueTable');
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">해당 항목 없음</td></tr>';
+    return;
+  }
+
+  const queueStatusBg = { pending: '#1565c0', approved: '#2e7d32', rejected: '#b71c1c', exported: '#546e7a' };
+  const queueStatusTxt = { pending: '대기중', approved: '승인됨', rejected: '거절됨', exported: 'Export됨' };
+
+  tbody.innerHTML = data.map(q => `
+    <tr>
+      <td><strong>${esc(q.sku)}</strong></td>
+      <td>${esc(q.title) || '-'}</td>
+      <td style="text-align:center">${q.count3d ?? 0}</td>
+      <td style="text-align:center;font-weight:bold">${q.count7d ?? 0}</td>
+      <td style="font-size:12px;color:#888">${new Date(q.addedAt).toLocaleString('ko-KR')}</td>
+      <td><span style="background:${queueStatusBg[q.status]||'#888'};color:#fff;padding:2px 8px;border-radius:12px;font-size:12px">${queueStatusTxt[q.status] || q.status}</span></td>
+      <td>
+        ${q.status === 'pending' ? `
+          <button onclick="queueAction('${esc(q.sku)}','approve')" style="background:#2e7d32;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;margin-right:4px">승인</button>
+          <button onclick="queueAction('${esc(q.sku)}','reject')"  style="background:#b71c1c;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">거절</button>
+        ` : '-'}
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function queueAction(sku, action) {
+  try {
+    const r = await fetch(`${API}/expansion-queue/${encodeURIComponent(sku)}/${action}`, { method: 'POST' }).then(r => r.json());
+    if (r.success) loadExpansionQueuePage();
+    else alert('오류: ' + r.error);
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
+  }
+}
+
+function setupExpansionQueueEvents() {
+  document.getElementById('queueStatusFilter')?.addEventListener('change', loadExpansionQueuePage);
+
+  document.getElementById('exportQueueBtn')?.addEventListener('click', async () => {
+    try {
+      const r = await fetch(`${API}/expansion-queue/export`).then(r => r.json());
+      if (!r.success) { alert('Export 실패: ' + r.error); return; }
+      const card = document.getElementById('exportResultCard');
+      card.style.display = 'block';
+      document.getElementById('exportResultData').textContent = JSON.stringify(r.data, null, 2);
+      alert(`Export 완료 — ${r.count}개 항목`);
+      loadExpansionQueuePage();
+    } catch (e) {
+      alert('오류: ' + e.message);
+    }
+  });
+}
+
+// ── 히트 SKU / 확장 큐 이벤트는 DOM 로드 후 즉시 등록 ────
+document.addEventListener('DOMContentLoaded', () => {
+  setupHitSkuEvents();
+  setupExpansionQueueEvents();
+});
 
 // 모달 외부 클릭시 닫기 (모달은 남겨둠)
 function closeEditModal() {
