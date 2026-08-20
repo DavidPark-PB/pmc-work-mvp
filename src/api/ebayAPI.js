@@ -82,6 +82,8 @@ class EbayAPI {
             'Content-Type': 'application/x-www-form-urlencoded',
             'Authorization': `Basic ${credentials}`,
           },
+          // Phase 8P-20.6: bounded OAuth timeout — prevent scheduler tick hang
+          timeout: 15000,
         }
       );
 
@@ -127,6 +129,8 @@ class EbayAPI {
               'Content-Type': 'application/x-www-form-urlencoded',
               'Authorization': `Basic ${credentials}`,
             },
+            // Phase 8P-20.6: bounded OAuth timeout — prevent scheduler tick hang
+            timeout: 15000,
           }
         );
 
@@ -208,6 +212,10 @@ class EbayAPI {
       const response = await axios.post(this.apiUrl, xml, {
         headers,
         validateStatus: () => true,
+        // Phase 8P-20.6: bounded Trading API timeout — prevent scheduler tick hang.
+        // Confirmed 8P-20.5 root cause: unbounded axios.post held the OMS ebay
+        // scheduler lock forever, blocking every subsequent 10-min tick.
+        timeout: 30000,
       });
       const data = response.data;
       const dataStr = typeof data === 'string' ? data : JSON.stringify(data || '');

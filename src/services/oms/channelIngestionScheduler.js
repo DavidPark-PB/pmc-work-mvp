@@ -118,6 +118,10 @@ function startChannelIngestionScheduler(opts = {}) {
         }
         running.set(channel, true);
         const runStartedAt = new Date().toISOString();
+        //   Phase 8P-20.6 · pre-ingestor observability so Railway logs prove the
+        //   tick entered (previously we only saw completion logs; a hung ingestor
+        //   left zero evidence). Emitted AFTER lock acquisition · BEFORE any await.
+        log(`OMS_SCHEDULER_TICK_STARTED channel=${channel} ts=${runStartedAt}`);
         try {
           //   Refresh state each tick · Owner may have set status='disabled' since start
           const state = await getIngestionState(channel);
@@ -141,9 +145,13 @@ function startChannelIngestionScheduler(opts = {}) {
           //   internally; the extra wrapper call is safe (upserts same row).
           const finishedAt = new Date().toISOString();
           if (report.jobError) {
-            const isAuth = /auth|token|expired|unauthor|forbidden|IP_NOT_ALLOWED/i.test(String(report.jobError));
+            const jobErrStr = String(report.jobError);
+            const isAuth = /auth|token|expired|unauthor|forbidden|IP_NOT_ALLOWED/i.test(jobErrStr);
+            //   Phase 8P-20.6 · distinguish HTTP timeout from generic network error
+            //   so ingestion_error_log surfaces the fix's evidence explicitly.
+            const isTimeout = /timeout|ETIMEDOUT|ECONNABORTED/i.test(jobErrStr);
             if (isAuth) await recordAuthFailure({ channel, err: report.jobError });
-            else await recordAttempt({ channel, ok: false, err: report.jobError, errorClass: 'network' });
+            else await recordAttempt({ channel, ok: false, err: report.jobError, errorClass: isTimeout ? 'timeout' : 'network' });
           } else {
             await recordAttempt({ channel, ok: true, cursor: finishedAt });
           }
