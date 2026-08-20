@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '../../config/.env' });
+require('../config');
 const axios = require('axios');
 
 /**

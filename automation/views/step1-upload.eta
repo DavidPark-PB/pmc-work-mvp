@@ -1,0 +1,120 @@
+<div class="page-header">
+  <h1 class="page-title">CSV 업로드</h1>
+</div>
+
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-file-upload"></i> 파일 업로드</h2>
+  </div>
+  <p class="text-muted" style="margin-bottom: var(--space-5);">소싱한 상품 CSV 파일을 업로드하세요.</p>
+
+  <form id="upload-form" enctype="multipart/form-data">
+    <div class="upload-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <span class="icon"><i class="ti ti-cloud-upload"></i></span>
+      <p>여기에 CSV 파일을 드래그하거나 클릭하세요</p>
+      <p class="hint">.csv 파일만 가능 &middot; 최대 50MB</p>
+    </div>
+    <input type="file" id="file-input" name="file" accept=".csv" class="hidden">
+  </form>
+
+  <div id="file-info" class="upload-file-info hidden">
+    <i class="ti ti-file-text"></i>
+    <span id="file-name"></span>
+    <span class="text-muted" id="file-size"></span>
+  </div>
+
+  <div id="upload-status" class="hidden mt-16">
+    <div class="progress-wrap">
+      <div class="progress-fill striped" id="upload-progress" style="width: 0%">
+        <span class="spinner" style="border-color: rgba(255,255,255,0.3); border-top-color: #fff; width: 14px; height: 14px;"></span>
+        &nbsp;업로드 중...
+      </div>
+    </div>
+  </div>
+
+  <div id="upload-error" class="hidden mt-16" style="color: var(--red-text); font-weight: 600; display: flex; align-items: center; gap: var(--space-2);">
+    <i class="ti ti-alert-circle"></i>
+    <span id="upload-error-text"></span>
+  </div>
+</div>
+
+<script>
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const uploadStatus = document.getElementById('upload-status');
+const uploadProgress = document.getElementById('upload-progress');
+const uploadError = document.getElementById('upload-error');
+const uploadErrorText = document.getElementById('upload-error-text');
+const fileInfo = document.getElementById('file-info');
+
+dropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  dropZone.classList.add('dragover');
+});
+dropZone.addEventListener('dragleave', () => {
+  dropZone.classList.remove('dragover');
+});
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files.length) {
+    showFileInfo(e.dataTransfer.files[0]);
+    uploadFile(e.dataTransfer.files[0]);
+  }
+});
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) {
+    showFileInfo(fileInput.files[0]);
+    uploadFile(fileInput.files[0]);
+  }
+});
+
+function showFileInfo(file) {
+  document.getElementById('file-name').textContent = file.name;
+  const size = file.size < 1024 * 1024
+    ? (file.size / 1024).toFixed(1) + ' KB'
+    : (file.size / (1024 * 1024)).toFixed(1) + ' MB';
+  document.getElementById('file-size').textContent = size;
+  fileInfo.classList.remove('hidden');
+}
+
+async function uploadFile(file) {
+  if (!file.name.endsWith('.csv')) {
+    uploadErrorText.textContent = 'CSV 파일만 업로드 가능합니다.';
+    uploadError.classList.remove('hidden');
+    return;
+  }
+
+  uploadError.classList.add('hidden');
+  uploadStatus.classList.remove('hidden');
+  uploadProgress.style.width = '50%';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const res = await fetch('/api/upload/csv', { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (data.error) {
+      uploadErrorText.textContent = data.error;
+      uploadError.classList.remove('hidden');
+      uploadStatus.classList.add('hidden');
+      return;
+    }
+
+    uploadProgress.style.width = '100%';
+    uploadProgress.innerHTML = '<i class="ti ti-check" style="font-size:14px;"></i>&nbsp;' + data.rowCount + '개 행 발견!';
+    uploadProgress.classList.remove('striped');
+
+    setTimeout(() => {
+      window.location.href = '/import?uploadId=' + data.uploadId;
+    }, 800);
+  } catch (e) {
+    uploadErrorText.textContent = '업로드 실패: ' + e.message;
+    uploadError.classList.remove('hidden');
+    uploadStatus.classList.add('hidden');
+  }
+}
+</script>

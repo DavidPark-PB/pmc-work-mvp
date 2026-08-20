@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '../../config/.env' });
+const { CREDENTIALS_PATH } = require('../config');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { JWT } = require('google-auth-library');
 const fs = require('fs');
@@ -13,7 +13,7 @@ async function cleanupOldSheets() {
 
   try {
     // Google Sheets 인증
-    const credentials = JSON.parse(fs.readFileSync('../../config/credentials.json', 'utf8'));
+    const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8'));
     const serviceAccountAuth = new JWT({
       email: credentials.client_email,
       key: credentials.private_key,

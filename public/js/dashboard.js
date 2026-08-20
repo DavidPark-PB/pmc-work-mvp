@@ -61,6 +61,10 @@ function navigateTo(page) {
     case 'shipping': setupShippingPage(); break;
     case 'hitsku': loadHitSkuPage(); break;
     case 'expansion-queue': loadExpansionQueuePage(); break;
+    case 'settings': loadSettingsPage(); break;
+    case 'export': loadExportPage(); break;
+    case 'automation': loadAutomationPage(); break;
+    case 'crawl-results': loadCrawlResultsPage(); break;
   }
 }
 
@@ -682,10 +686,427 @@ async function loadTopProducts() {
 
 async function loadSyncPage() {
   try {
-    const res = await fetch(`${API}/sync/history`);
-    const history = await res.json();
+    // Load platform cards dynamically from registry
+    const [historyRes, registryRes] = await Promise.all([
+      fetch(`${API}/sync/history`),
+      fetch(`${API}/platform-registry`).catch(() => null)
+    ]);
+    const history = await historyRes.json();
     renderSyncHistory(history, 'syncHistoryFull');
+
+    // Render platform sync cards from registry
+    const container = document.getElementById('syncPlatformCards');
+    if (registryRes && registryRes.ok) {
+      const registry = await registryRes.json();
+      const platforms = registry.platforms || [];
+      container.innerHTML = platforms.map(p => `
+        <div class="sync-platform-card">
+          <h4 style="color:${p.color || '#666'}">${p.display_name || p.name}</h4>
+          <p>${p.name} → Supabase 동기화</p>
+          <button class="sync-btn" data-platform="${p.key}">동기화 실행</button>
+        </div>
+      `).join('');
+    } else {
+      // Fallback to static platforms
+      const fallback = ['eBay', 'Shopify', 'Naver', 'Alibaba', 'Shopee'];
+      container.innerHTML = fallback.map(name => `
+        <div class="sync-platform-card">
+          <h4>${name}</h4>
+          <p>${name} → Supabase 동기화</p>
+          <button class="sync-btn" data-platform="${name.toLowerCase()}">동기화 실행</button>
+        </div>
+      `).join('');
+    }
+
+    // Re-bind sync buttons
+    container.querySelectorAll('.sync-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const platform = btn.dataset.platform;
+        btn.disabled = true;
+        btn.textContent = '동기화 중...';
+        try {
+          await fetch(`${API}/sync/trigger/${platform}`, { method: 'POST' });
+          btn.textContent = '완료!';
+          setTimeout(() => { btn.textContent = '동기화 실행'; btn.disabled = false; }, 2000);
+        } catch (e) {
+          btn.textContent = '실패';
+          setTimeout(() => { btn.textContent = '동기화 실행'; btn.disabled = false; }, 2000);
+        }
+      });
+    });
+  } catch (e) {
+    console.error('loadSyncPage error:', e);
+  }
+}
+
+// ===== 설정 페이지 =====
+
+let settingsData = null;
+
+async function loadSettingsPage() {
+  // Tab switching
+  document.querySelectorAll('.settings-tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.settings-tab').forEach(t => { t.style.background = 'transparent'; t.style.color = '#666'; t.style.boxShadow = 'none'; });
+      tab.style.background = '#fff'; tab.style.color = '#1a1a2e'; tab.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+      document.querySelectorAll('.settings-tab-content').forEach(c => { c.style.display = 'none'; c.classList.remove('active'); });
+      const target = document.getElementById(tab.dataset.tab);
+      if (target) { target.style.display = 'block'; target.classList.add('active'); }
+    };
+  });
+
+  try {
+    const res = await fetch(`${API}/platform-registry`);
+    if (!res.ok) throw new Error('Failed to load registry');
+    settingsData = await res.json();
+
+    // Fill margin settings
+    if (settingsData.settings) {
+      for (const [key, val] of Object.entries(settingsData.settings)) {
+        const input = document.getElementById(`setting-${key}`);
+        if (input) input.value = val;
+      }
+    }
+
+    // Fill platform list
+    renderPlatformList(settingsData.platforms || []);
+  } catch (e) {
+    console.error('loadSettingsPage error:', e);
+  }
+
+  // Save button
+  document.getElementById('saveMarginSettingsBtn').onclick = saveMarginSettings;
+
+  // Simulation button
+  document.getElementById('runSimulationBtn').onclick = runPriceSimulation;
+}
+
+function renderPlatformList(platforms) {
+  const body = document.getElementById('platformListBody');
+  document.getElementById('platformCount').textContent = platforms.length + '개';
+  body.innerHTML = platforms.map(p => `
+    <tr>
+      <td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color || '#666'};margin-right:6px"></span>${p.display_name || p.name}</td>
+      <td>${p.market_type === 'domestic' ? '국내' : '글로벌'}</td>
+      <td>${((p.fee_rate || 0) * 100).toFixed(1)}%</td>
+      <td>${p.currency || 'USD'}</td>
+      <td><span class="status ${p.is_active ? 'connected' : 'disconnected'}">${p.is_active ? '활성' : '비활성'}</span></td>
+      <td>${p.sort_order || 0}</td>
+    </tr>
+  `).join('');
+}
+
+async function saveMarginSettings() {
+  const settingKeys = [
+    'exchange_rate_usd', 'exchange_rate_jpy', 'exchange_rate_local',
+    'default_margin_pct', 'tax_rate', 'default_shipping_usd', 'domestic_shipping_krw'
+  ];
+
+  const btn = document.getElementById('saveMarginSettingsBtn');
+  btn.disabled = true;
+  btn.textContent = '저장 중...';
+
+  let success = 0;
+  for (const key of settingKeys) {
+    const input = document.getElementById(`setting-${key}`);
+    if (!input) continue;
+    try {
+      const res = await fetch(`${API}/platform-registry/settings/${key}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: parseFloat(input.value) })
+      });
+      if (res.ok) success++;
+    } catch (e) {}
+  }
+
+  btn.textContent = `${success}개 저장 완료!`;
+  btn.style.background = '#4caf50';
+  setTimeout(() => { btn.textContent = '설정 저장'; btn.disabled = false; }, 2000);
+}
+
+async function runPriceSimulation() {
+  const purchasePrice = parseFloat(document.getElementById('simPurchasePrice').value) || 0;
+  const weight = parseFloat(document.getElementById('simWeight').value) || 0;
+
+  if (purchasePrice <= 0) { alert('매입가를 입력하세요'); return; }
+
+  try {
+    const res = await fetch(`${API}/analysis/margin-calc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ purchasePrice, weight, targetMargin: parseFloat(document.getElementById('setting-default_margin_pct').value) || 30 })
+    });
+    const data = await res.json();
+    const prices = data.prices || {};
+
+    document.getElementById('simulationResult').style.display = 'block';
+    const body = document.getElementById('simResultBody');
+    body.innerHTML = Object.entries(prices).map(([key, p]) => {
+      if (p.error) return `<tr><td>${key}</td><td colspan="5" style="color:#c62828">${p.error}</td></tr>`;
+      return `<tr>
+        <td><strong>${key}</strong></td>
+        <td>${p.price?.toLocaleString()}</td>
+        <td>${p.currency}</td>
+        <td>${p.fee?.toLocaleString()} KRW</td>
+        <td>${p.estimatedProfit?.toLocaleString()} KRW</td>
+        <td>${p.margin}%</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    alert('시뮬레이션 실패: ' + e.message);
+  }
+}
+
+// ===== 상품 내보내기 페이지 =====
+
+async function loadExportPage() {
+  // Tab switching
+  document.querySelectorAll('.export-tab').forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll('.export-tab').forEach(t => { t.style.background = 'transparent'; t.style.color = '#666'; t.style.boxShadow = 'none'; });
+      tab.style.background = '#fff'; tab.style.color = '#1a1a2e'; tab.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+      document.querySelectorAll('.export-tab-content').forEach(c => { c.style.display = 'none'; c.classList.remove('active'); });
+      const target = document.getElementById(tab.dataset.tab);
+      if (target) { target.style.display = 'block'; target.classList.add('active'); }
+    };
+  });
+
+  // Load platform checkboxes
+  try {
+    const res = await fetch(`${API}/platform-registry`);
+    if (res.ok) {
+      const data = await res.json();
+      const container = document.getElementById('exportPlatformCheckboxes');
+      container.innerHTML = (data.platforms || []).map(p => `
+        <label class="platform-checkbox" data-key="${p.key}" style="border-color:${p.color || '#ddd'}">
+          <input type="checkbox" value="${p.key}">
+          <span style="width:6px;height:6px;border-radius:50%;background:${p.color || '#666'}"></span>
+          ${p.display_name || p.name}
+        </label>
+      `).join('');
+
+      container.querySelectorAll('.platform-checkbox').forEach(label => {
+        label.onclick = (e) => {
+          if (e.target.tagName === 'INPUT') return;
+          const cb = label.querySelector('input');
+          cb.checked = !cb.checked;
+          label.classList.toggle('checked', cb.checked);
+        };
+      });
+    }
   } catch (e) {}
+
+  // Export button
+  document.getElementById('runExportBtn').onclick = runExport;
+
+  // Export status
+  document.getElementById('refreshExportStatus').onclick = loadExportStatus;
+
+  // Translation search
+  document.getElementById('translateSearchBtn').onclick = searchTranslation;
+  document.getElementById('translateSkuSearch').onkeydown = (e) => { if (e.key === 'Enter') searchTranslation(); };
+  document.getElementById('autoTranslateBtn').onclick = runAutoTranslate;
+  document.getElementById('saveTranslateBtn').onclick = saveTranslation;
+}
+
+async function runExport() {
+  const sku = document.getElementById('exportSku').value.trim();
+  if (!sku) { alert('SKU를 입력하세요'); return; }
+
+  const checked = document.querySelectorAll('#exportPlatformCheckboxes input:checked');
+  const platforms = Array.from(checked).map(cb => cb.value);
+  if (platforms.length === 0) { alert('플랫폼을 선택하세요'); return; }
+
+  const progressDiv = document.getElementById('exportProgress');
+  const logDiv = document.getElementById('exportLog');
+  const bar = document.getElementById('exportProgressBar');
+  const resultDiv = document.getElementById('exportResult');
+
+  progressDiv.style.display = 'block';
+  resultDiv.style.display = 'none';
+  logDiv.innerHTML = '';
+  bar.style.width = '10%';
+
+  addExportLog(logDiv, `${sku} 상품을 ${platforms.join(', ')} 플랫폼에 내보내기 시작...`);
+  bar.style.width = '30%';
+
+  try {
+    const res = await fetch(`${API}/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku, platforms })
+    });
+    const data = await res.json();
+    bar.style.width = '100%';
+
+    if (data.error) {
+      addExportLog(logDiv, data.error, 'error');
+    } else {
+      const results = data.results || {};
+      for (const [pf, r] of Object.entries(results)) {
+        if (r.success) {
+          addExportLog(logDiv, `${pf}: 등록 성공 (가격: ${r.price || '-'})`, 'success');
+        } else {
+          addExportLog(logDiv, `${pf}: 실패 - ${r.error || 'unknown'}`, 'error');
+        }
+      }
+      resultDiv.style.display = 'block';
+      const successCount = Object.values(results).filter(r => r.success).length;
+      resultDiv.innerHTML = `<div class="card" style="background:#e8f5e9;border:1px solid #81c784">
+        <strong>${successCount}/${platforms.length}</strong> 플랫폼 등록 완료
+      </div>`;
+    }
+  } catch (e) {
+    bar.style.width = '100%';
+    bar.style.background = '#e53935';
+    addExportLog(logDiv, '내보내기 오류: ' + e.message, 'error');
+  }
+}
+
+function addExportLog(container, msg, type = '') {
+  const line = document.createElement('div');
+  line.className = `log-line ${type ? 'log-' + type : ''}`;
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  container.appendChild(line);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function loadExportStatus() {
+  const body = document.getElementById('exportStatusBody');
+  try {
+    const filter = document.getElementById('exportStatusFilterSelect').value;
+    const res = await fetch(`${API}/products/export-status?filter=${filter}`);
+    if (!res.ok) { body.innerHTML = '<tr><td colspan="7">데이터 로드 실패</td></tr>'; return; }
+    const data = await res.json();
+    const items = data.items || [];
+    body.innerHTML = items.length === 0
+      ? '<tr><td colspan="7" style="text-align:center;color:#888">내보내기 이력 없음</td></tr>'
+      : items.map(item => `<tr>
+          <td>${item.sku || '-'}</td>
+          <td>${item.title || '-'}</td>
+          <td>${item.platform || '-'}</td>
+          <td><span class="export-badge ${item.status}">${item.status}</span></td>
+          <td>${item.price || '-'}</td>
+          <td>${item.exported_at ? new Date(item.exported_at).toLocaleString() : '-'}</td>
+          <td>${item.status === 'failed' ? `<button class="refresh-btn" style="font-size:10px;padding:2px 8px" onclick="retryExport('${item.sku}','${item.platform}')">재시도</button>` : ''}</td>
+        </tr>`).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="7">오류 발생</td></tr>';
+  }
+}
+
+async function retryExport(sku, platform) {
+  try {
+    await fetch(`${API}/export/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku, platform })
+    });
+    loadExportStatus();
+  } catch (e) {}
+}
+
+// ===== 번역 관리 =====
+
+let currentTranslateProductId = null;
+
+async function searchTranslation() {
+  const sku = document.getElementById('translateSkuSearch').value.trim();
+  if (!sku) return;
+  const lang = document.getElementById('translateTargetLang').value;
+  document.getElementById('transLangLabel').textContent = lang.toUpperCase();
+
+  try {
+    // Find product by SKU
+    const productRes = await fetch(`${API}/master-products?sku=${encodeURIComponent(sku)}`);
+    if (!productRes.ok) throw new Error('상품을 찾을 수 없습니다');
+    const products = await productRes.json();
+    const product = Array.isArray(products) ? products[0] : products;
+    if (!product) throw new Error('상품을 찾을 수 없습니다');
+
+    currentTranslateProductId = product.id;
+    document.getElementById('transOrigTitle').value = product.title || product.productName || '';
+    document.getElementById('transOrigDesc').value = product.description || '';
+
+    // Try to load existing translation
+    try {
+      const transRes = await fetch(`${API}/translate/${product.id}?lang=${lang}`);
+      if (transRes.ok) {
+        const trans = await transRes.json();
+        if (trans.translation) {
+          document.getElementById('transTitle').value = trans.translation.title || '';
+          document.getElementById('transDesc').value = trans.translation.description || '';
+          document.getElementById('transKeywords').value = (trans.translation.keywords || []).join(', ');
+        } else {
+          document.getElementById('transTitle').value = '';
+          document.getElementById('transDesc').value = '';
+          document.getElementById('transKeywords').value = '';
+        }
+      }
+    } catch (e) {
+      document.getElementById('transTitle').value = '';
+      document.getElementById('transDesc').value = '';
+      document.getElementById('transKeywords').value = '';
+    }
+
+    document.getElementById('translateEditor').style.display = 'block';
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function runAutoTranslate() {
+  if (!currentTranslateProductId) return;
+  const lang = document.getElementById('translateTargetLang').value;
+  const btn = document.getElementById('autoTranslateBtn');
+  btn.disabled = true;
+  btn.textContent = 'AI 번역 중...';
+
+  try {
+    const res = await fetch(`${API}/translate/${currentTranslateProductId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetLang: lang })
+    });
+    const data = await res.json();
+    if (data.translation) {
+      document.getElementById('transTitle').value = data.translation.title || '';
+      document.getElementById('transDesc').value = data.translation.description || '';
+      document.getElementById('transKeywords').value = (data.translation.keywords || []).join(', ');
+    }
+    btn.textContent = '번역 완료!';
+    btn.style.background = '#4caf50';
+    setTimeout(() => { btn.textContent = 'AI 번역'; btn.style.background = '#7c4dff'; btn.disabled = false; }, 2000);
+  } catch (e) {
+    btn.textContent = '번역 실패';
+    setTimeout(() => { btn.textContent = 'AI 번역'; btn.style.background = '#7c4dff'; btn.disabled = false; }, 2000);
+  }
+}
+
+async function saveTranslation() {
+  if (!currentTranslateProductId) return;
+  const lang = document.getElementById('translateTargetLang').value;
+  const btn = document.getElementById('saveTranslateBtn');
+
+  try {
+    const res = await fetch(`${API}/translate/${currentTranslateProductId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetLang: lang,
+        title: document.getElementById('transTitle').value,
+        description: document.getElementById('transDesc').value,
+        keywords: document.getElementById('transKeywords').value.split(',').map(k => k.trim()).filter(Boolean)
+      })
+    });
+    if (res.ok) {
+      btn.textContent = '저장 완료!';
+      setTimeout(() => { btn.textContent = '저장'; }, 2000);
+    }
+  } catch (e) {
+    alert('저장 실패: ' + e.message);
+  }
 }
 
 // ===== 상품 등록 (멀티마켓 자동 최적화) =====
@@ -697,6 +1118,9 @@ function setupRegisterForm() {
   const form = document.getElementById('registerForm');
   if (form.dataset.initialized) return;
   form.dataset.initialized = 'true';
+
+  // CSV 대량 등록 설정
+  setupCsvImport();
 
   // 이미지 업로드 설정
   setupImageUpload();
@@ -857,6 +1281,229 @@ function renderImagePreviews() {
 function removeImage(idx) {
   uploadedImageUrls.splice(idx, 1);
   renderImagePreviews();
+}
+
+// ===== CSV 대량 등록 =====
+
+let csvParsedRows = [];
+
+function setupCsvImport() {
+  // Register tab switching
+  document.querySelectorAll('.register-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.register-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+
+      const isCSV = tab.dataset.tab === 'csv';
+      document.getElementById('csvImportSection').style.display = isCSV ? '' : 'none';
+      document.getElementById('registerForm').style.display = isCSV ? 'none' : '';
+    });
+  });
+
+  // CSV file upload area
+  const area = document.getElementById('csvUploadArea');
+  const fileInput = document.getElementById('csvFileInput');
+  if (!area || !fileInput) return;
+
+  area.addEventListener('click', () => fileInput.click());
+  area.addEventListener('dragover', (e) => { e.preventDefault(); area.classList.add('dragover'); });
+  area.addEventListener('dragleave', () => area.classList.remove('dragover'));
+  area.addEventListener('drop', (e) => {
+    e.preventDefault();
+    area.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) handleCsvFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length > 0) handleCsvFile(fileInput.files[0]);
+  });
+
+  // Template download
+  const templateBtn = document.getElementById('csvTemplateBtn');
+  if (templateBtn) {
+    templateBtn.addEventListener('click', () => {
+      window.location.href = `${API}/products/csv-template`;
+    });
+  }
+
+  // Confirm button
+  const confirmBtn = document.getElementById('csvConfirmBtn');
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', () => executeCsvImport());
+  }
+}
+
+async function handleCsvFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['csv', 'xlsx', 'xls'].includes(ext)) {
+    alert('CSV 또는 Excel 파일만 업로드 가능합니다 (.csv, .xlsx)');
+    return;
+  }
+
+  // Show file name
+  const placeholder = document.getElementById('csvUploadPlaceholder');
+  const fileInfo = document.getElementById('csvFileName');
+  placeholder.style.display = 'none';
+  fileInfo.style.display = '';
+  fileInfo.innerHTML = `<strong>${esc(file.name)}</strong> (${(file.size / 1024).toFixed(1)} KB) <button type="button" class="refresh-btn" style="font-size:11px;padding:3px 10px" onclick="resetCsvUpload()">다른 파일</button>`;
+
+  // Upload and parse
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    fileInfo.innerHTML += ' <span style="color:#888">파싱 중...</span>';
+    const res = await fetch(`${API}/products/import-csv`, { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      alert(data.error || '파일 파싱 실패');
+      resetCsvUpload();
+      return;
+    }
+
+    csvParsedRows = data.validRows || [];
+    renderCsvValidation(data);
+  } catch (err) {
+    alert('파일 업로드 오류: ' + err.message);
+    resetCsvUpload();
+  }
+}
+
+function renderCsvValidation(data) {
+  // Show options
+  document.getElementById('csvOptions').style.display = '';
+
+  // Validation summary
+  const summaryEl = document.getElementById('csvValidationSummary');
+  summaryEl.style.display = '';
+  document.getElementById('csvStatTotal').textContent = data.total;
+  document.getElementById('csvStatValid').textContent = data.validCount;
+  document.getElementById('csvStatError').textContent = data.errorCount;
+
+  // Error list
+  if (data.errors && data.errors.length > 0) {
+    const errorEl = document.getElementById('csvErrorList');
+    errorEl.style.display = '';
+    const tbody = document.querySelector('#csvErrorTable tbody');
+    tbody.innerHTML = data.errors.map(e =>
+      `<tr><td>${e.row}</td><td>${esc(e.sku)}</td><td style="color:#c62828">${e.errors.join(', ')}</td></tr>`
+    ).join('');
+  }
+
+  // Preview table
+  if (data.preview && data.preview.length > 0) {
+    const previewEl = document.getElementById('csvPreviewSection');
+    previewEl.style.display = '';
+    const tbody = document.querySelector('#csvPreviewTable tbody');
+    tbody.innerHTML = data.preview.map(r => `
+      <tr>
+        <td><strong>${esc(r.sku)}</strong></td>
+        <td>${esc(r.title)}</td>
+        <td style="text-align:right">${(r.purchasePrice || 0).toLocaleString()}원</td>
+        <td style="text-align:right">${r.weight || '-'}</td>
+        <td>${esc(r.category || '-')}</td>
+        <td style="text-align:right">${r.quantity || '-'}</td>
+        <td style="text-align:right">${r.targetMargin !== null ? r.targetMargin + '%' : '-'}</td>
+      </tr>
+    `).join('');
+  }
+
+  // Show confirm button if there are valid rows
+  if (data.validCount > 0) {
+    document.getElementById('csvActionArea').style.display = '';
+    document.getElementById('csvConfirmBtn').textContent = `대량 등록 실행 (${data.validCount}건)`;
+  }
+}
+
+async function executeCsvImport() {
+  if (csvParsedRows.length === 0) {
+    alert('등록할 데이터가 없습니다.');
+    return;
+  }
+
+  const confirmBtn = document.getElementById('csvConfirmBtn');
+  const progressArea = document.getElementById('csvProgressArea');
+  const progressFill = document.getElementById('csvProgressFill');
+  const progressText = document.getElementById('csvProgressText');
+
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = '등록 중...';
+  progressArea.style.display = '';
+  progressFill.style.width = '10%';
+  progressText.textContent = `${csvParsedRows.length}건 등록 요청 중...`;
+
+  const defaultMargin = parseFloat(document.getElementById('csvDefaultMargin').value) || 30;
+
+  try {
+    progressFill.style.width = '40%';
+    const res = await fetch(`${API}/products/import-csv/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rows: csvParsedRows, defaultMargin }),
+    });
+    const data = await res.json();
+
+    progressFill.style.width = '100%';
+
+    if (!res.ok) {
+      progressText.textContent = '오류: ' + (data.error || '등록 실패');
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = '다시 시도';
+      return;
+    }
+
+    progressText.textContent = '완료!';
+    renderCsvResults(data);
+  } catch (err) {
+    progressText.textContent = '서버 오류: ' + err.message;
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = '다시 시도';
+  }
+}
+
+function renderCsvResults(data) {
+  const resultArea = document.getElementById('csvResultArea');
+  resultArea.style.display = '';
+
+  const summaryEl = document.getElementById('csvResultSummary');
+  const isAllSuccess = data.failed === 0;
+  summaryEl.className = 'csv-result-summary ' + (isAllSuccess ? 'success' : 'partial');
+  summaryEl.innerHTML = `
+    전체 <strong>${data.total}</strong>건 |
+    성공 <strong style="color:#2e7d32">${data.success}</strong>건 |
+    실패 <strong style="color:#c62828">${data.failed}</strong>건
+  `;
+
+  const tbody = document.querySelector('#csvResultTable tbody');
+  tbody.innerHTML = (data.results || []).map(r => {
+    const statusClass = r.status === 'success' ? 'color:#2e7d32' : 'color:#c62828';
+    const statusText = r.status === 'success' ? '성공' : '실패';
+    return `<tr>
+      <td><strong>${esc(r.sku)}</strong></td>
+      <td>${esc(r.title || '-')}</td>
+      <td style="${statusClass};font-weight:600">${statusText}${r.error ? ': ' + esc(r.error) : ''}</td>
+      <td>${r.prices?.ebay || '-'}</td>
+      <td>${r.prices?.shopify || '-'}</td>
+      <td>${r.prices?.naver || '-'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function resetCsvUpload() {
+  csvParsedRows = [];
+  document.getElementById('csvUploadPlaceholder').style.display = '';
+  document.getElementById('csvFileName').style.display = 'none';
+  document.getElementById('csvFileName').innerHTML = '';
+  document.getElementById('csvFileInput').value = '';
+  document.getElementById('csvOptions').style.display = 'none';
+  document.getElementById('csvValidationSummary').style.display = 'none';
+  document.getElementById('csvErrorList').style.display = 'none';
+  document.getElementById('csvPreviewSection').style.display = 'none';
+  document.getElementById('csvActionArea').style.display = 'none';
+  document.getElementById('csvProgressArea').style.display = 'none';
+  document.getElementById('csvResultArea').style.display = 'none';
+  const confirmBtn = document.getElementById('csvConfirmBtn');
+  if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '대량 등록 실행'; }
 }
 
 // ===== 카테고리 검색 =====
@@ -2145,6 +2792,7 @@ async function loadBattle() {
 
     if (!battleEventsInit) {
       setupBattleEvents();
+      setupRepricingEvents();
       battleEventsInit = true;
     }
   } catch (err) {
@@ -2153,6 +2801,87 @@ async function loadBattle() {
       '<div class="stat-card"><div class="label">데이터 로드 실패</div></div>';
   } finally {
     showLoading(false);
+  }
+}
+
+function setupRepricingEvents() {
+  const evalBtn = document.getElementById('repricingEvalBtn');
+  const execBtn = document.getElementById('repricingExecBtn');
+
+  if (evalBtn) evalBtn.onclick = async () => {
+    evalBtn.disabled = true;
+    evalBtn.textContent = '평가 중...';
+    try {
+      // Evaluate repricing for all items with competitors
+      const items = (battleData?.items || []).filter(i => i.compPrice);
+      const results = [];
+      for (const item of items.slice(0, 20)) { // limit 20
+        try {
+          const res = await fetch(`${API}/repricing/evaluate/${encodeURIComponent(item.sku)}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.recommendation) results.push({ ...data.recommendation, sku: item.sku, title: item.productName || item.sku });
+          }
+        } catch (e) {}
+      }
+
+      const body = document.getElementById('repricingBody');
+      const container = document.getElementById('repricingResult');
+      container.style.display = 'block';
+
+      if (results.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#888">리프라이싱 대상 없음</td></tr>';
+      } else {
+        body.innerHTML = results.map(r => `<tr>
+          <td title="${r.title}">${r.sku}</td>
+          <td>$${(r.currentPrice || 0).toFixed(2)}</td>
+          <td>$${(r.competitorPrice || 0).toFixed(2)}</td>
+          <td style="font-weight:700;color:${r.newPrice < r.currentPrice ? '#c62828' : '#2e7d32'}">$${(r.newPrice || 0).toFixed(2)}</td>
+          <td>${r.strategy || '-'}</td>
+          <td>${r.estimatedMargin || '-'}%</td>
+          <td><button class="refresh-btn" style="font-size:10px;padding:2px 8px;background:#e53935" onclick="executeRepricing('${r.sku}')">실행</button></td>
+        </tr>`).join('');
+      }
+    } catch (e) {
+      console.error('Repricing eval error:', e);
+    } finally {
+      evalBtn.textContent = '가격 평가';
+      evalBtn.disabled = false;
+    }
+  };
+
+  if (execBtn) execBtn.onclick = async () => {
+    if (!confirm('모든 추천 가격을 일괄 적용하시겠습니까?')) return;
+    execBtn.disabled = true;
+    execBtn.textContent = '실행 중...';
+
+    const rows = document.querySelectorAll('#repricingBody tr');
+    let done = 0;
+    for (const row of rows) {
+      const sku = row.querySelector('td')?.textContent;
+      if (sku) {
+        try {
+          await fetch(`${API}/repricing/execute/${encodeURIComponent(sku)}`, { method: 'POST' });
+          done++;
+        } catch (e) {}
+      }
+    }
+
+    execBtn.textContent = `${done}건 완료!`;
+    setTimeout(() => { execBtn.textContent = '일괄 실행'; execBtn.disabled = false; }, 3000);
+    loadBattle(); // Refresh
+  };
+}
+
+async function executeRepricing(sku) {
+  try {
+    const res = await fetch(`${API}/repricing/execute/${encodeURIComponent(sku)}`, { method: 'POST' });
+    if (res.ok) {
+      alert(`${sku} 리프라이싱 실행 완료`);
+      loadBattle();
+    }
+  } catch (e) {
+    alert('실행 실패: ' + e.message);
   }
 }
 
@@ -4788,4 +5517,467 @@ async function loadBuyerProducts(buyerId, buyerName) {
   } catch (err) {
     console.error('Buyer products load failed:', err);
   }
+}
+
+// ===== 자동화 (ccorea-auto 연동) =====
+
+const AUTO_API = `${API}/auto`;
+let autoSelectedProductIds = [];
+
+async function loadAutomationPage() {
+  setupAutoTabs();
+  await checkAutoServerStatus();
+  await loadAutoListings();
+  setupAutoEvents();
+}
+
+function setupAutoTabs() {
+  document.querySelectorAll('.auto-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.auto-tab').forEach(t => {
+        t.classList.remove('active');
+        t.style.background = 'transparent';
+        t.style.color = '#666';
+        t.style.boxShadow = 'none';
+      });
+      tab.classList.add('active');
+      tab.style.background = '#fff';
+      tab.style.color = '#1a1a2e';
+      tab.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+      document.querySelectorAll('.auto-tab-content').forEach(c => {
+        c.style.display = 'none';
+        c.classList.remove('active');
+      });
+      const target = document.getElementById(tab.dataset.tab);
+      if (target) { target.style.display = 'block'; target.classList.add('active'); }
+    });
+  });
+}
+
+async function checkAutoServerStatus() {
+  const el = document.getElementById('autoServerStatus');
+  try {
+    const res = await fetch(`${AUTO_API}/products?limit=1`);
+    if (res.ok) {
+      el.textContent = '정상';
+      el.style.color = '#27ae60';
+    } else {
+      el.textContent = '오류';
+      el.style.color = '#e94560';
+    }
+  } catch {
+    el.textContent = '오프라인';
+    el.style.color = '#e94560';
+  }
+}
+
+async function loadAutoListings(filter = 'all', page = 1) {
+  const body = document.getElementById('autoListingsBody');
+  try {
+    const params = new URLSearchParams({ limit: '50', offset: String((page - 1) * 50) });
+    if (filter !== 'all') params.set('status', filter);
+    const res = await fetch(`${AUTO_API}/listings?${params}`);
+    if (!res.ok) throw new Error('Failed to load listings');
+    const data = await res.json();
+    const listings = data.listings || data || [];
+
+    // Update summary counts
+    updateAutoSummary(listings);
+
+    if (!listings.length) {
+      body.innerHTML = '<tr><td colspan="8" class="empty">리스팅 데이터 없음</td></tr>';
+      return;
+    }
+
+    body.innerHTML = listings.map(l => {
+      const statusColors = { active: '#27ae60', pending: '#ff9800', error: '#e94560', ended: '#888', draft: '#666' };
+      const statusLabels = { active: '활성', pending: '대기', error: '실패', ended: '종료', draft: '초안' };
+      const color = statusColors[l.status] || '#888';
+      const label = statusLabels[l.status] || l.status;
+      return `<tr>
+        <td><input type="checkbox" class="auto-listing-check" data-id="${l.id}" data-product-id="${l.productId}"></td>
+        <td style="font-weight:600">${l.sku || l.platformSku || '-'}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${l.title || '-'}</td>
+        <td><span class="badge" style="background:${l.platform === 'ebay' ? '#1565c0' : l.platform === 'shopify' ? '#96bf48' : '#666'};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px">${l.platform}</span></td>
+        <td style="text-align:right;font-weight:600">$${(l.price || 0).toFixed(2)}</td>
+        <td><span style="color:${color};font-weight:600;font-size:11px">${label}</span></td>
+        <td style="font-size:11px;color:#888">${l.createdAt ? new Date(l.createdAt).toLocaleDateString('ko-KR') : '-'}</td>
+        <td>
+          ${l.status === 'error' ? `<button onclick="retryAutoListing('${l.id}')" style="background:#e94560;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer">재시도</button>` : ''}
+          ${l.status === 'active' ? `<button onclick="endAutoListing('${l.id}')" style="background:#888;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer">종료</button>` : ''}
+          ${l.listingUrl ? `<a href="${l.listingUrl}" target="_blank" style="color:#0288d1;font-size:10px;text-decoration:none">보기</a>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="8" class="empty" style="color:#e94560">${err.message}</td></tr>`;
+  }
+}
+
+function updateAutoSummary(listings) {
+  if (!Array.isArray(listings)) return;
+  const counts = { total: listings.length, active: 0, pending: 0, error: 0 };
+  listings.forEach(l => { if (counts[l.status] !== undefined) counts[l.status]++; });
+  const el = (id) => document.getElementById(id);
+  if (el('autoTotalListings')) el('autoTotalListings').textContent = counts.total.toLocaleString();
+  if (el('autoActiveListings')) el('autoActiveListings').textContent = counts.active.toLocaleString();
+  if (el('autoPendingListings')) el('autoPendingListings').textContent = counts.pending.toLocaleString();
+  if (el('autoErrorListings')) el('autoErrorListings').textContent = counts.error.toLocaleString();
+}
+
+function setupAutoEvents() {
+  // Listing filter
+  const filterEl = document.getElementById('autoListingFilter');
+  if (filterEl) filterEl.addEventListener('change', () => loadAutoListings(filterEl.value));
+
+  // Create listings button
+  const createBtn = document.getElementById('autoCreateListingsBtn');
+  if (createBtn) createBtn.addEventListener('click', () => createAutoListings(false));
+
+  // Dry run button
+  const dryBtn = document.getElementById('autoDryRunBtn');
+  if (dryBtn) dryBtn.addEventListener('click', () => createAutoListings(true));
+
+  // Retry all failed
+  const retryBtn = document.getElementById('autoRetryAllBtn');
+  if (retryBtn) retryBtn.addEventListener('click', retryAllAutoListings);
+
+  // Inventory sync
+  const syncBtn = document.getElementById('autoSyncInventoryBtn');
+  if (syncBtn) syncBtn.addEventListener('click', syncAutoInventory);
+
+  // Platform checkboxes
+  loadAutoPlatformCheckboxes();
+
+  // CSV upload
+  setupAutoCsvUpload();
+
+  // Product search
+  const searchEl = document.getElementById('autoProductSearch');
+  if (searchEl) {
+    let searchTimeout;
+    searchEl.addEventListener('input', () => {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => searchAutoProducts(searchEl.value), 400);
+    });
+  }
+
+  // Select all checkbox
+  const selectAll = document.getElementById('autoSelectAll');
+  if (selectAll) selectAll.addEventListener('change', (e) => {
+    document.querySelectorAll('.auto-listing-check').forEach(cb => cb.checked = e.target.checked);
+  });
+}
+
+async function loadAutoPlatformCheckboxes() {
+  const container = document.getElementById('autoPlatformCheckboxes');
+  if (!container) return;
+  try {
+    const res = await fetch(`${API}/platform-registry`);
+    const data = await res.json();
+    const platforms = data.platforms || [];
+    container.innerHTML = platforms
+      .filter(p => ['ebay', 'shopify', 'alibaba', 'shopee'].includes(p.key))
+      .map(p => `<label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;padding:4px 8px;border:1px solid #ddd;border-radius:6px">
+        <input type="checkbox" class="auto-platform-check" value="${p.key}" checked> ${p.display_name}
+      </label>`).join('');
+  } catch { container.innerHTML = '<span style="color:#e94560;font-size:11px">플랫폼 로드 실패</span>'; }
+}
+
+async function searchAutoProducts(query) {
+  if (!query || query.length < 2) { document.getElementById('autoSelectedProducts').innerHTML = ''; return; }
+  try {
+    const res = await fetch(`${AUTO_API}/products?search=${encodeURIComponent(query)}&limit=10`);
+    const data = await res.json();
+    const products = data.products || data || [];
+    const container = document.getElementById('autoSelectedProducts');
+    container.innerHTML = products.map(p =>
+      `<label style="display:inline-flex;align-items:center;gap:4px;margin:2px 4px;padding:4px 8px;background:#f0f2f5;border-radius:4px;cursor:pointer">
+        <input type="checkbox" class="auto-product-check" value="${p.id}" data-sku="${p.sku}"> ${p.sku} - ${(p.title || '').slice(0, 30)}
+      </label>`
+    ).join('');
+  } catch (err) { console.error('Product search error:', err); }
+}
+
+async function createAutoListings(dryRun = false) {
+  const checkedProducts = document.querySelectorAll('.auto-product-check:checked');
+  const checkedPlatforms = document.querySelectorAll('.auto-platform-check:checked');
+
+  if (!checkedProducts.length) return alert('상품을 선택해주세요');
+  if (!checkedPlatforms.length) return alert('플랫폼을 선택해주세요');
+
+  const productIds = Array.from(checkedProducts).map(cb => Number(cb.value));
+  const platforms = Array.from(checkedPlatforms).map(cb => cb.value);
+
+  const progressContainer = document.getElementById('autoProgressContainer');
+  progressContainer.style.display = 'block';
+
+  try {
+    const res = await fetch(`${AUTO_API}/listings/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productIds, platforms, dryRun })
+    });
+    const data = await res.json();
+
+    if (data.jobId) {
+      streamAutoJobProgress(data.jobId);
+    } else {
+      document.getElementById('autoProgressText').textContent = dryRun ? '테스트 완료' : '등록 완료';
+      document.getElementById('autoProgressBar').style.width = '100%';
+      setTimeout(() => loadAutoListings(), 1000);
+    }
+  } catch (err) {
+    document.getElementById('autoProgressText').textContent = `오류: ${err.message}`;
+    document.getElementById('autoProgressBar').style.width = '100%';
+    document.getElementById('autoProgressBar').style.background = '#e94560';
+  }
+}
+
+function streamAutoJobProgress(jobId) {
+  const es = new EventSource(`${AUTO_API}/listings/stream/${jobId}`);
+  const progressText = document.getElementById('autoProgressText');
+  const progressCount = document.getElementById('autoProgressCount');
+  const progressBar = document.getElementById('autoProgressBar');
+
+  es.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      const { completed = 0, failed = 0, total = 1, status } = data;
+      const done = completed + failed;
+      const pct = Math.round((done / total) * 100);
+
+      progressText.textContent = status === 'running' ? `등록 진행 중... (성공: ${completed}, 실패: ${failed})` : '완료!';
+      progressCount.textContent = `${done}/${total}`;
+      progressBar.style.width = `${pct}%`;
+
+      if (status !== 'running') {
+        es.close();
+        setTimeout(() => loadAutoListings(), 1000);
+      }
+    } catch {}
+  };
+
+  es.onerror = () => {
+    es.close();
+    progressText.textContent = '스트림 연결 끊김 — 새로고침 해주세요';
+  };
+}
+
+async function retryAutoListing(listingId) {
+  try {
+    await fetch(`${AUTO_API}/listings/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ listingIds: [listingId] })
+    });
+    loadAutoListings();
+  } catch (err) { alert('재시도 실패: ' + err.message); }
+}
+
+async function endAutoListing(listingId) {
+  if (!confirm('이 리스팅을 종료하시겠습니까?')) return;
+  try {
+    await fetch(`${AUTO_API}/listings/end`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ listingIds: [listingId] })
+    });
+    loadAutoListings();
+  } catch (err) { alert('종료 실패: ' + err.message); }
+}
+
+async function retryAllAutoListings() {
+  const checked = document.querySelectorAll('.auto-listing-check:checked');
+  const ids = Array.from(checked).map(cb => cb.dataset.id);
+  if (!ids.length) return alert('재시도할 리스팅을 선택해주세요');
+  try {
+    await fetch(`${AUTO_API}/listings/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ listingIds: ids })
+    });
+    loadAutoListings();
+  } catch (err) { alert('일괄 재시도 실패: ' + err.message); }
+}
+
+async function syncAutoInventory() {
+  const resultEl = document.getElementById('autoSyncResult');
+  const btn = document.getElementById('autoSyncInventoryBtn');
+  btn.disabled = true;
+  btn.textContent = '동기화 중...';
+  resultEl.style.display = 'block';
+  resultEl.innerHTML = '<div style="color:#0288d1;font-size:12px">재고 동기화 진행 중...</div>';
+
+  try {
+    const res = await fetch(`${AUTO_API}/listings/sync-inventory`, { method: 'POST' });
+    const data = await res.json();
+    const results = data.results || [];
+    resultEl.innerHTML = results.map(r =>
+      `<div style="font-size:12px;padding:4px 0;border-bottom:1px solid #f0f2f5">
+        <strong>${r.platform}</strong>: ${r.updated || 0}개 업데이트, ${r.unchanged || 0}개 변동없음
+      </div>`
+    ).join('') || '<div style="color:#27ae60;font-size:12px">동기화 완료</div>';
+  } catch (err) {
+    resultEl.innerHTML = `<div style="color:#e94560;font-size:12px">오류: ${err.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '수동 동기화';
+  }
+}
+
+function setupAutoCsvUpload() {
+  const dropzone = document.getElementById('autoCsvDropzone');
+  const fileInput = document.getElementById('autoCsvFileInput');
+  if (!dropzone || !fileInput) return;
+
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.style.borderColor = '#ff5722'; });
+  dropzone.addEventListener('dragleave', () => { dropzone.style.borderColor = '#ddd'; });
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.style.borderColor = '#ddd';
+    if (e.dataTransfer.files.length) handleAutoCsvFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => { if (fileInput.files.length) handleAutoCsvFile(fileInput.files[0]); });
+
+  const importBtn = document.getElementById('autoCsvImportBtn');
+  if (importBtn) importBtn.addEventListener('click', importAutoCsv);
+  const cancelBtn = document.getElementById('autoCsvCancelBtn');
+  if (cancelBtn) cancelBtn.addEventListener('click', () => {
+    document.getElementById('autoCsvPreview').style.display = 'none';
+  });
+}
+
+let autoCsvData = null;
+
+function handleAutoCsvFile(file) {
+  if (!file.name.endsWith('.csv')) return alert('CSV 파일만 업로드 가능합니다');
+  document.getElementById('autoCsvFileName').textContent = file.name;
+  autoCsvData = file;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const lines = e.target.result.split('\n').filter(l => l.trim());
+    document.getElementById('autoCsvRowCount').textContent = `${lines.length - 1}개 행`;
+    const headers = lines[0].split(',').map(h => h.trim());
+    const preview = lines.slice(1, 6);
+
+    const table = document.getElementById('autoCsvPreviewTable');
+    table.innerHTML = `<thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+      <tbody>${preview.map(row => `<tr>${row.split(',').map(c => `<td>${c.trim()}</td>`).join('')}</tr>`).join('')}</tbody>`;
+    document.getElementById('autoCsvPreview').style.display = 'block';
+  };
+  reader.readAsText(file);
+}
+
+async function importAutoCsv() {
+  if (!autoCsvData) return;
+  const formData = new FormData();
+  formData.append('file', autoCsvData);
+
+  const btn = document.getElementById('autoCsvImportBtn');
+  btn.disabled = true;
+  btn.textContent = '업로드 중...';
+
+  try {
+    const res = await fetch(`${AUTO_API}/upload/csv`, { method: 'POST', body: formData });
+    const data = await res.json();
+    alert(`업로드 완료: ${data.imported || data.rowCount || 0}개 등록`);
+    document.getElementById('autoCsvPreview').style.display = 'none';
+    autoCsvData = null;
+  } catch (err) {
+    alert('업로드 실패: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'DB에 등록';
+  }
+}
+
+// ===== 크롤링 결과 =====
+
+async function loadCrawlResultsPage() {
+  setupCrawlEvents();
+  await loadCrawlResults();
+}
+
+function setupCrawlEvents() {
+  const filterEl = document.getElementById('crawlStatusFilter');
+  if (filterEl) filterEl.addEventListener('change', () => loadCrawlResults(filterEl.value));
+
+  const importBtn = document.getElementById('crawlImportSelectedBtn');
+  if (importBtn) importBtn.addEventListener('click', importSelectedCrawlResults);
+
+  const selectAll = document.getElementById('crawlSelectAll');
+  if (selectAll) selectAll.addEventListener('change', (e) => {
+    document.querySelectorAll('.crawl-result-check').forEach(cb => cb.checked = e.target.checked);
+  });
+}
+
+async function loadCrawlResults(status = 'all', page = 1) {
+  const body = document.getElementById('crawlResultsBody');
+  try {
+    const params = new URLSearchParams({ limit: '50', offset: String((page - 1) * 50) });
+    if (status !== 'all') params.set('status', status);
+    const res = await fetch(`${AUTO_API}/crawl-results?${params}`);
+    if (!res.ok) throw new Error('Failed to load crawl results');
+    const data = await res.json();
+    const results = data.results || data || [];
+
+    if (!results.length) {
+      body.innerHTML = '<tr><td colspan="8" class="empty">크롤링 결과 없음</td></tr>';
+      return;
+    }
+
+    body.innerHTML = results.map(r => {
+      const statusColors = { 'new': '#0288d1', reviewed: '#ff9800', imported: '#27ae60', ignored: '#888' };
+      const statusLabels = { 'new': '신규', reviewed: '검토됨', imported: '등록됨', ignored: '무시됨' };
+      const img = r.imageUrl || r.image_url || '';
+      return `<tr>
+        <td><input type="checkbox" class="crawl-result-check" value="${r.id}"></td>
+        <td>${img ? `<img src="${img}" style="width:40px;height:40px;object-fit:cover;border-radius:4px" onerror="this.style.display='none'">` : '-'}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.title || r.name || '-'}</td>
+        <td style="font-size:11px">${r.sourceName || r.source_platform || '-'}</td>
+        <td style="text-align:right;font-weight:600">${(r.price || 0).toLocaleString()}</td>
+        <td><span style="color:${statusColors[r.status] || '#888'};font-weight:600;font-size:11px">${statusLabels[r.status] || r.status}</span></td>
+        <td style="font-size:11px;color:#888">${r.createdAt ? new Date(r.createdAt).toLocaleDateString('ko-KR') : '-'}</td>
+        <td>
+          ${r.status === 'new' || r.status === 'reviewed' ? `<button onclick="importCrawlResult('${r.id}')" style="background:#ff5722;color:#fff;border:none;padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer">가져오기</button>` : ''}
+          ${r.url || r.sourceUrl ? `<a href="${r.url || r.sourceUrl}" target="_blank" style="color:#0288d1;font-size:10px;text-decoration:none;margin-left:4px">원본</a>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="8" class="empty" style="color:#e94560">자동화 서버 연결 실패: ${err.message}</td></tr>`;
+  }
+}
+
+async function importCrawlResult(crawlResultId) {
+  try {
+    const res = await fetch(`${AUTO_API}/listings/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ crawlResultIds: [crawlResultId] })
+    });
+    if (!res.ok) throw new Error('Import failed');
+    alert('상품 가져오기 완료');
+    loadCrawlResults(document.getElementById('crawlStatusFilter')?.value || 'all');
+  } catch (err) { alert('가져오기 실패: ' + err.message); }
+}
+
+async function importSelectedCrawlResults() {
+  const checked = document.querySelectorAll('.crawl-result-check:checked');
+  const ids = Array.from(checked).map(cb => cb.value);
+  if (!ids.length) return alert('가져올 항목을 선택해주세요');
+
+  try {
+    const res = await fetch(`${AUTO_API}/listings/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ crawlResultIds: ids })
+    });
+    if (!res.ok) throw new Error('Import failed');
+    alert(`${ids.length}개 상품 가져오기 완료`);
+    loadCrawlResults(document.getElementById('crawlStatusFilter')?.value || 'all');
+  } catch (err) { alert('일괄 가져오기 실패: ' + err.message); }
 }

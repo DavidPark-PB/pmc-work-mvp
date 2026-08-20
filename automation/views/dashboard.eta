@@ -1,0 +1,1131 @@
+<%/* ── 상단: 타이틀 ── */%>
+<div class="page-header">
+  <h1 class="page-title">대시보드</h1>
+</div>
+
+<%/* ── 진행중 잡 배너 ── */%>
+<% if (it.activeJobs.length > 0) { %>
+<div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--space-5);">
+  <% it.activeJobs.forEach((job) => { %>
+  <div class="job-banner">
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <i class="ti ti-loader spinner-icon"></i>
+      <strong><%= job.platforms.join(' + ') %></strong>
+      <% if (job.dryRun) { %>
+        <span class="badge badge-draft">테스트</span>
+      <% } else { %>
+        <span class="badge badge-success">실제</span>
+      <% } %>
+      <span class="tabular-nums"><%= job.completed + job.failed %>/<%= job.total %></span>
+    </div>
+    <a href="/upload?jobId=<%= job.id %>" class="btn btn-primary btn-sm">보기</a>
+  </div>
+  <% }) %>
+</div>
+<% } %>
+
+<%/* ── 상품 파이프라인 통합 테이블 ── */%>
+<%
+  const allItems = it.allItems || [];
+  const crawlItems = it.recentCrawlResults || [];
+
+  // 업로드 대기: crawl_results status='new'
+  const pendingCount = it.stats.crawlByStatus['new'] || 0;
+
+  // 완료 내역 count (서버에서 쿼리)
+  const completedCount = it.stats.completedCount || 0;
+
+  // 판매 취소 count
+  const endedCount = it.stats.endedCount || 0;
+
+  const totalCount = allItems.length;
+
+  // 상태 라벨 매핑
+  const statusLabel = { error: '실패', draft: '대기', pending: '검수중', ended: '종료' };
+
+  // 이미지 프록시 (쿠팡 등 핫링크 차단 우회)
+  const imgProxy = (url) => url ? '/api/img-proxy?url=' + encodeURIComponent(url) : '';
+%>
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-box"></i> 상품 파이프라인</h2>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <a href="/upload-csv" class="btn btn-primary btn-sm">
+        <i class="ti ti-file-upload"></i> CSV 업로드
+      </a>
+      <a href="/history"><i class="ti ti-arrow-right"></i> 전체 보기</a>
+    </div>
+  </div>
+
+  <%/* ── 탭 바 ── */%>
+  <div class="tab-bar">
+    <button class="tab-item active" data-tab="all">전체 <span class="tab-count"><%= totalCount %></span></button>
+    <button class="tab-item" data-tab="pending">업로드 대기 <span class="tab-count"><%= pendingCount %></span></button>
+    <button class="tab-item" data-tab="completed">업로드 완료 <span class="tab-count"><%= completedCount %></span></button>
+    <button class="tab-item" data-tab="ended">판매 취소 <span class="tab-count"><%= endedCount %></span></button>
+  </div>
+
+  <%/* ════════ 업로드 대기 탭 ════════ */%>
+  <div id="tab-pending" class="tab-panel" style="display: none;">
+    <div class="action-bar" id="pending-action-bar" style="display: none;">
+      <span class="action-bar-count"><span id="pending-selected-count">0</span>개 선택</span>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <div class="platform-checks" id="pending-platform-checks">
+          <label class="platform-check-label"><input type="checkbox" value="ebay" checked> <span class="pf-dot" style="background:#e53238"></span>eBay</label>
+          <label class="platform-check-label"><input type="checkbox" value="shopify"> <span class="pf-dot" style="background:#96bf48"></span>Shopify</label>
+          <label class="platform-check-label"><input type="checkbox" value="alibaba"> <span class="pf-dot" style="background:#ff6a00"></span>Alibaba</label>
+          <label class="platform-check-label"><input type="checkbox" value="shopee"> <span class="pf-dot" style="background:#ee4d2d"></span>Shopee</label>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="uploadSelected('pending')">
+          <i class="ti ti-upload"></i> 업로드
+        </button>
+      </div>
+    </div>
+    <% if (crawlItems.length > 0) { %>
+    <table>
+      <thead>
+        <tr>
+          <th class="th-check"><input type="checkbox" onchange="toggleAll(this, 'pending')"></th>
+          <th class="th-thumb">이미지</th>
+          <th class="td-title">상품명</th>
+          <th>소싱처</th>
+          <th>원본가격</th>
+          <th>eBay</th>
+          <th>Shopify</th>
+          <th>Alibaba</th>
+          <th>Shopee</th>
+          <th>임포트일</th>
+          <th>업로드</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% crawlItems.forEach((c) => {
+          const currentUser = it.user;
+          const isOwned = !!c.ownerId;
+          const isMine = currentUser && c.ownerId === currentUser.id;
+          const isAdmin = currentUser && currentUser.isAdmin;
+          const canCheck = !isOwned || isMine || isAdmin;
+        %>
+        <tr class="<%= !canCheck ? 'row-locked' : '' %>">
+          <td class="td-check">
+            <input type="checkbox" class="row-check pending-check" value="<%= c.id %>" onchange="updateActionBar('pending')"<%= !canCheck ? ' disabled' : '' %>>
+          </td>
+          <td class="td-thumb"><% if (c.imageUrl) { %><img class="thumb" src="<%= imgProxy(c.imageUrl) %>" alt=""><% } else { %><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div><% } %></td>
+          <td>
+            <span class="truncate"><% if (c.sourceUrl) { %><a href="<%= c.sourceUrl %>" target="_blank" rel="noopener"><%= c.title %></a><% } else { %><%= c.title %><% } %></span>
+            <% if (c.ownerName) { %>
+              <span class="owner-badge <%= isMine ? 'mine' : 'others' %>"><i class="ti ti-user"></i> <%= c.ownerName %></span>
+            <% } else { %>
+              <span class="owner-badge unassigned">미할당</span>
+            <% } %>
+          </td>
+          <td class="nowrap"><%= c.sourceLabel %></td>
+          <td class="tabular-nums nowrap"><%= c.costKrw ? '₩' + Number(c.costKrw).toLocaleString() : '—' %></td>
+          <td class="tabular-nums nowrap text-green">$<%= c.ebayPrice ? c.ebayPrice.toFixed(2) : '—' %></td>
+          <td class="tabular-nums nowrap text-accent">$<%= c.shopifyPrice ? c.shopifyPrice.toFixed(2) : '—' %></td>
+          <td class="tabular-nums nowrap" style="color:var(--warning);">$<%= c.alibabaPrice ? c.alibabaPrice.toFixed(2) : '—' %></td>
+          <td class="tabular-nums nowrap" style="color:var(--info);">$<%= c.shopeePrice ? c.shopeePrice.toFixed(2) : '—' %></td>
+          <td class="text-muted nowrap"><%= c.createdAt ? new Date(c.createdAt).toLocaleDateString('ko-KR') : '—' %></td>
+          <td class="nowrap">
+            <div class="inline-upload">
+              <div class="multi-select" id="ms-<%= c.id %>">
+                <div class="multi-select-trigger" onclick="toggleMultiSelect(<%= c.id %>)">
+                  <span class="ms-label">eBay</span>
+                  <i class="ti ti-chevron-down"></i>
+                </div>
+                <div class="multi-select-dropdown">
+                  <label><input type="checkbox" value="ebay" checked onchange="updateMsLabel(<%= c.id %>)"> eBay</label>
+                  <label><input type="checkbox" value="shopify" onchange="updateMsLabel(<%= c.id %>)"> Shopify</label>
+                  <label><input type="checkbox" value="alibaba" onchange="updateMsLabel(<%= c.id %>)"> Alibaba</label>
+                  <label><input type="checkbox" value="shopee" onchange="updateMsLabel(<%= c.id %>)"> Shopee</label>
+                </div>
+              </div>
+              <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= c.id %>, this)"<%= !canCheck ? ' disabled' : '' %>>
+                <i class="ti ti-upload"></i>
+              </button>
+            </div>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <% } else { %>
+    <div class="empty-state">
+      <i class="ti ti-inbox-off"></i>
+      <p>업로드 대기 항목이 없습니다</p>
+    </div>
+    <% } %>
+  </div>
+
+  <%/* ════════ 완료 내역 탭 ════════ */%>
+  <div id="tab-completed" class="tab-panel" style="display: none;">
+    <%/* ── 툴바: 검색 + 필터 + 재고동기화 ── */%>
+    <div class="completed-toolbar">
+      <div class="completed-toolbar-left">
+        <div class="search-box">
+          <i class="ti ti-search"></i>
+          <input type="text" id="completed-search" placeholder="상품명, SKU 검색..." class="search-input">
+        </div>
+        <select id="completed-status-filter" class="select-sm" onchange="loadCompleted(1)">
+          <option value="">전체 상태</option>
+          <option value="active">판매중</option>
+          <option value="error">실패</option>
+          <option value="pending">검수중</option>
+          <option value="draft">대기</option>
+        </select>
+        <select id="completed-platform-filter" class="select-sm" onchange="loadCompleted(1)">
+          <option value="">전체 판매처</option>
+          <option value="ebay">eBay</option>
+          <option value="shopify">Shopify</option>
+          <option value="alibaba">Alibaba</option>
+          <option value="shopee">Shopee</option>
+        </select>
+      </div>
+      <button id="syncInventoryBtn" class="btn btn-secondary btn-sm" onclick="syncInventory()">
+        <i class="ti ti-refresh"></i> 재고 동기화
+      </button>
+    </div>
+
+    <%/* ── 테이블 ── */%>
+    <div id="completed-table-wrap">
+      <div class="empty-state">
+        <i class="ti ti-list-check"></i>
+        <p>업로드 완료된 항목이 없습니다</p>
+      </div>
+    </div>
+
+    <%/* ── 페이징 ── */%>
+    <div id="completed-pagination" class="pagination" style="display: none;"></div>
+  </div>
+
+  <%/* ════════ 판매 취소 탭 ════════ */%>
+  <div id="tab-ended" class="tab-panel" style="display: none;">
+    <div class="completed-toolbar">
+      <div class="completed-toolbar-left">
+        <div class="search-box">
+          <i class="ti ti-search"></i>
+          <input type="text" id="ended-search" placeholder="상품명, SKU 검색..." class="search-input">
+        </div>
+        <select id="ended-platform-filter" class="select-sm" onchange="loadEnded(1)">
+          <option value="">전체 판매처</option>
+          <option value="ebay">eBay</option>
+          <option value="shopify">Shopify</option>
+          <option value="alibaba">Alibaba</option>
+          <option value="shopee">Shopee</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="ended-table-wrap">
+      <div class="empty-state">
+        <i class="ti ti-player-stop"></i>
+        <p>판매 취소된 항목이 없습니다</p>
+      </div>
+    </div>
+
+    <div id="ended-pagination" class="pagination" style="display: none;"></div>
+  </div>
+
+  <%/* ════════ 전체 탭 ════════ */%>
+  <div id="tab-all" class="tab-panel">
+    <div class="action-bar" id="all-action-bar" style="display: none;">
+      <span class="action-bar-count"><span id="all-selected-count">0</span>개 선택</span>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <div class="platform-checks" id="all-platform-checks">
+          <label class="platform-check-label"><input type="checkbox" value="ebay" checked> <span class="pf-dot" style="background:#e53238"></span>eBay</label>
+          <label class="platform-check-label"><input type="checkbox" value="shopify"> <span class="pf-dot" style="background:#96bf48"></span>Shopify</label>
+          <label class="platform-check-label"><input type="checkbox" value="alibaba"> <span class="pf-dot" style="background:#ff6a00"></span>Alibaba</label>
+          <label class="platform-check-label"><input type="checkbox" value="shopee"> <span class="pf-dot" style="background:#ee4d2d"></span>Shopee</label>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="uploadSelected('all')">
+          <i class="ti ti-upload"></i> 업로드
+        </button>
+        <button class="btn btn-error btn-sm" onclick="deleteSelected('all')">
+          <i class="ti ti-trash"></i> 삭제
+        </button>
+      </div>
+    </div>
+    <% if (allItems.length > 0) { %>
+    <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th class="th-check"><input type="checkbox" onchange="toggleAll(this, 'all')"></th>
+          <th>SKU</th>
+          <th class="th-thumb">이미지</th>
+          <th class="td-title">상품명</th>
+          <th>소싱처</th>
+          <th>eBay</th>
+          <th>Shopify</th>
+          <th>Alibaba</th>
+          <th>Shopee</th>
+          <th>상태</th>
+          <th>액션</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% allItems.forEach((item) => { %>
+        <%
+          const listings = typeof item.listings === 'string' ? JSON.parse(item.listings) : (item.listings || []);
+          const activeListings_ = listings.filter(l => l.status !== 'ended');
+          const endedListings = listings.filter(l => l.status === 'ended');
+          const hasActiveListing = activeListings_.length > 0;
+          const hasError = activeListings_.some(l => l.status === 'error');
+          const allActive = activeListings_.every(l => l.status === 'active') && hasActiveListing;
+          const allEnded = !hasActiveListing && endedListings.length > 0;
+          // 플랫폼별 리스팅 맵
+          const listingMap = {};
+          listings.forEach(l => { listingMap[l.platform] = l; });
+          const platforms = ['ebay', 'shopify', 'alibaba', 'shopee'];
+          const priceMap = { ebay: item.ebayPrice, shopify: item.shopifyPrice, alibaba: item.alibabaPrice, shopee: item.shopeePrice };
+          const hasLiveOnPlatform = listings.some(l => l.status === 'active');
+        %>
+        <tr class="<%= hasLiveOnPlatform ? 'row-live' : '' %>">
+          <td class="td-check">
+            <% if (!hasLiveOnPlatform) { %>
+              <input type="checkbox" class="row-check all-check" data-type="<%= item.type %>" value="<%= item.id %>" onchange="updateActionBar('all')">
+            <% } %>
+          </td>
+          <td class="font-mono"><% if (item.sku) { %><%= item.sku %><% } else { %><span class="text-muted">—</span><% } %></td>
+          <td class="td-thumb"><% if (item.imageUrl) { %><img class="thumb" src="<%= imgProxy(item.imageUrl) %>" alt=""><% } else { %><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div><% } %></td>
+          <td class="td-title"><span class="truncate"><% if (item.sourceUrl) { %><a href="<%= item.sourceUrl %>" target="_blank" rel="noopener"><%= item.title %></a><% } else { %><%= item.title %><% } %></span></td>
+          <td class="nowrap"><%= item.sourceLabel %></td>
+          <% platforms.forEach((pf) => { %>
+            <% const li = listingMap[pf]; %>
+            <td class="tabular-nums nowrap">
+              <% if (li) { %>
+                <%
+                  const isActive = li.status === 'active';
+                  const badgeClass = li.status === 'error' ? 'badge-error'
+                    : li.status === 'pending' ? 'badge-pending'
+                    : (li.status === 'draft' || li.status === 'ended') ? 'badge-draft'
+                    : ('badge-' + pf);
+                  const label = isActive
+                    ? '$' + Number(li.price).toFixed(2)
+                    : (statusLabel[li.status] || li.status);
+                %>
+                <% if (isActive && li.listingUrl) { %>
+                  <span class="badge <%= badgeClass %>">
+                    <a href="<%= li.listingUrl %>" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;"><%= label %></a>
+                    <i class="ti ti-x badge-action" onclick="event.stopPropagation(); endListings([<%= li.id %>], this)" title="판매 내리기"></i>
+                  </span>
+                <% } else if (li.status === 'error') { %>
+                  <span class="badge badge-error">
+                    실패 <i class="ti ti-refresh badge-action" onclick="retryListings([<%= li.id %>], this)" title="재시도"></i>
+                  </span>
+                <% } else if (li.listingUrl) { %>
+                  <a href="<%= li.listingUrl %>" target="_blank" rel="noopener" style="text-decoration: none;">
+                    <span class="badge <%= badgeClass %>"><%= label %></span>
+                  </a>
+                <% } else { %>
+                  <span class="badge <%= badgeClass %>"><%= label %></span>
+                <% } %>
+              <% } else if (priceMap[pf]) { %>
+                <span class="text-muted">$<%= priceMap[pf].toFixed(2) %></span>
+              <% } else { %>
+                <span class="text-muted">—</span>
+              <% } %>
+            </td>
+          <% }) %>
+          <td>
+            <%
+              const successCount = listings.filter(l => l.status === 'active').length;
+              const totalListings = listings.length;
+            %>
+            <% if (totalListings === 0) { %>
+              <span class="badge badge-draft">미등록</span>
+            <% } else if (allEnded) { %>
+              <span class="badge badge-draft">판매종료</span>
+            <% } else if (allActive) { %>
+              <span class="badge badge-success"><%= totalListings > 1 ? successCount + '/' + totalListings + ' ' : '' %>판매중</span>
+            <% } else if (successCount > 0) { %>
+              <span class="badge badge-pending"><%= successCount %>/<%= totalListings %> 성공</span>
+            <% } else if (hasError && activeListings_.every(l => l.status === 'error')) { %>
+              <span class="badge badge-error">실패</span>
+            <% } else if (hasError) { %>
+              <span class="badge badge-pending"><%= successCount %>/<%= activeListings_.length %> 성공</span>
+            <% } else { %>
+              <span class="badge badge-pending">처리중</span>
+            <% } %>
+          </td>
+          <td class="nowrap">
+            <% if (hasActiveListing) { %>
+              <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+              <%
+                const retryableListings = activeListings_.filter(l => ['draft', 'pending', 'error'].includes(l.status));
+                const cancellableListings = activeListings_.filter(l => ['draft', 'pending', 'error'].includes(l.status));
+                const liveListings = activeListings_.filter(l => l.status === 'active');
+              %>
+              <% if (retryableListings.length > 0) { %>
+                <button class="btn btn-secondary btn-xs" onclick="retryListings([<%= retryableListings.map(l => l.id).join(',') %>], this)">
+                  <i class="ti ti-refresh"></i> 재시도
+                </button>
+              <% } %>
+              <% if (cancellableListings.length > 0) { %>
+                <button class="btn btn-secondary btn-xs" onclick="cancelListings([<%= cancellableListings.map(l => l.id).join(',') %>], this)">
+                  <i class="ti ti-x"></i> 업로드 취소
+                </button>
+              <% } %>
+              <% if (liveListings.length > 0) { %>
+                <button class="btn btn-error btn-xs" onclick="endListings([<%= liveListings.map(l => l.id).join(',') %>], this)">
+                  <i class="ti ti-player-stop"></i> 판매 내리기
+                </button>
+              <% } %>
+              </div>
+            <% } else { %>
+              <div class="inline-upload">
+                <div class="multi-select" id="ms-all-<%= item.type %>-<%= item.id %>">
+                  <div class="multi-select-trigger" onclick="toggleMultiSelect('all-<%= item.type %>-<%= item.id %>')">
+                    <span class="ms-label">eBay</span>
+                    <i class="ti ti-chevron-down"></i>
+                  </div>
+                  <div class="multi-select-dropdown">
+                    <label><input type="checkbox" value="ebay" checked onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> eBay</label>
+                    <label><input type="checkbox" value="shopify" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Shopify</label>
+                    <label><input type="checkbox" value="alibaba" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Alibaba</label>
+                    <label><input type="checkbox" value="shopee" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Shopee</label>
+                  </div>
+                </div>
+                <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= item.id %>, this)">
+                  <i class="ti ti-upload"></i>
+                </button>
+              </div>
+            <% } %>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    </div>
+    <% } else { %>
+    <div class="empty-state">
+      <i class="ti ti-box-off"></i>
+      <p>데이터가 없습니다</p>
+    </div>
+    <% } %>
+  </div>
+</div>
+
+<script>
+// 탭 전환
+document.querySelectorAll('.tab-item').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+    tab.classList.add('active');
+    document.getElementById('tab-' + tab.dataset.tab).style.display = 'block';
+    // 완료 내역 탭 최초 로드
+    if (tab.dataset.tab === 'completed' && !completedState.loaded) {
+      completedState.loaded = true;
+      loadCompleted(1);
+    }
+    // 판매 취소 탭 최초 로드
+    if (tab.dataset.tab === 'ended' && !endedState.loaded) {
+      endedState.loaded = true;
+      loadEnded(1);
+    }
+  });
+});
+
+// 전체 선택/해제
+function toggleAll(master, group) {
+  const panel = document.getElementById('tab-' + group);
+  const checks = panel.querySelectorAll('.row-check');
+  checks.forEach(cb => { cb.checked = master.checked; });
+  updateActionBar(group);
+}
+
+// 액션바 표시/숨김
+function updateActionBar(group) {
+  const panel = document.getElementById('tab-' + group);
+  const checks = panel.querySelectorAll('.row-check:checked');
+  const bar = document.getElementById(group + '-action-bar');
+  const countEl = document.getElementById(group + '-selected-count');
+  if (bar) {
+    bar.style.display = checks.length > 0 ? 'flex' : 'none';
+    if (countEl) countEl.textContent = checks.length;
+  }
+}
+
+// 선택한 항목 업로드 (복수 플랫폼)
+async function uploadSelected(group) {
+  const panel = document.getElementById('tab-' + group);
+  const checks = panel.querySelectorAll('.row-check:checked');
+  const platformChecks = document.querySelectorAll('#' + group + '-platform-checks input:checked');
+  const platforms = Array.from(platformChecks).map(cb => cb.value);
+  const ids = Array.from(checks).map(cb => Number(cb.value));
+
+  if (ids.length === 0) return;
+  if (platforms.length === 0) { alert('플랫폼을 1개 이상 선택하세요.'); return; }
+
+  try {
+    const res = await fetch('/api/listings/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ crawlResultIds: ids, platforms, dryRun: false }),
+    });
+    const data = await res.json();
+    if (data.jobId) {
+      window.location.href = '/upload?jobId=' + data.jobId;
+    } else {
+      alert(data.error || '업로드 실패');
+    }
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
+  }
+}
+
+// 선택한 항목 삭제 (휴지통으로 이동)
+async function deleteSelected(group) {
+  const panel = document.getElementById('tab-' + group);
+  const checks = panel.querySelectorAll('.row-check:checked');
+  const ids = [];
+  const types = [];
+  Array.from(checks).forEach(cb => {
+    ids.push(Number(cb.value));
+    types.push(cb.dataset.type);
+  });
+
+  if (ids.length === 0) return;
+  if (!confirm(ids.length + '개 항목을 휴지통으로 이동하시겠습니까?')) return;
+
+  try {
+    const res = await fetch('/api/trash', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, types }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+    // 성공: 행 페이드아웃 후 새로고침
+    checks.forEach(cb => {
+      const row = cb.closest('tr');
+      if (row) { row.style.transition = 'opacity 0.3s'; row.style.opacity = '0'; }
+    });
+    if (typeof showToast === 'function') showToast((data.trashedProducts + data.trashedCrawls) + '개 항목을 휴지통으로 이동했습니다', 'success');
+    setTimeout(() => location.reload(), 500);
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
+  }
+}
+
+// 멀티셀렉트 토글
+function toggleMultiSelect(id) {
+  const ms = document.getElementById('ms-' + id);
+  // 다른 열린 것 닫기
+  document.querySelectorAll('.multi-select.open').forEach(el => { if (el !== ms) el.classList.remove('open'); });
+  ms.classList.toggle('open');
+}
+function updateMsLabel(id) {
+  const ms = document.getElementById('ms-' + id);
+  const checked = ms.querySelectorAll('input:checked');
+  const label = ms.querySelector('.ms-label');
+  if (checked.length === 0) {
+    label.textContent = '선택';
+  } else if (checked.length <= 2) {
+    label.textContent = Array.from(checked).map(cb => cb.parentElement.textContent.trim()).join('+');
+  } else {
+    label.textContent = checked.length + '개';
+  }
+}
+// 외부 클릭 시 닫기
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.multi-select')) {
+    document.querySelectorAll('.multi-select.open').forEach(el => el.classList.remove('open'));
+  }
+});
+
+// 단건 업로드 (복수 플랫폼)
+async function uploadSingle(id, btn) {
+  // 버튼의 가장 가까운 inline-upload 내 multi-select에서 체크된 플랫폼 찾기
+  const container = btn.closest('.inline-upload');
+  const ms = container ? container.querySelector('.multi-select') : null;
+  const checked = ms ? ms.querySelectorAll('input:checked') : [];
+  const platforms = Array.from(checked).map(cb => cb.value);
+
+  if (platforms.length === 0) { alert('플랫폼을 1개 이상 선택하세요.'); return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
+  try {
+    const res = await fetch('/api/listings/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ crawlResultIds: [id], platforms, dryRun: false }),
+    });
+    const data = await res.json();
+    if (data.jobId) {
+      window.location.href = '/upload?jobId=' + data.jobId;
+    } else {
+      alert(data.error || '업로드 실패');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ti ti-upload"></i>';
+    }
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-upload"></i>';
+  }
+}
+
+// 리스팅 재시도 (실패/대기/처리중)
+async function retryListings(listingIds, btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
+  try {
+    const res = await fetch('/api/listings/retry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ listingIds }),
+    });
+    const data = await res.json();
+    if (data.jobId) {
+      window.location.href = '/upload?jobId=' + data.jobId;
+    } else {
+      alert(data.error || '재시도 실패');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ti ti-refresh"></i> 재시도';
+    }
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-refresh"></i> 재시도';
+  }
+}
+
+// 판매 내리기 — 낙관적 업데이트
+async function endListings(listingIds, btn) {
+  if (!confirm('선택한 ' + listingIds.length + '개 리스팅을 판매 내리시겠습니까?\n해외몰에서 리스팅이 종료됩니다.')) return;
+  const row = btn.closest('tr');
+  // 낙관적: 즉시 상태 배지 변경
+  if (row) {
+    const statusCell = row.querySelector('td:nth-last-child(2)'); // 상태 열
+    if (statusCell) {
+      statusCell.dataset.prevHtml = statusCell.innerHTML;
+      statusCell.innerHTML = '<span class="badge badge-draft">종료</span>';
+    }
+    row.style.transition = 'opacity 0.3s';
+    row.style.opacity = '0.5';
+  }
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
+
+  try {
+    const res = await fetch('/api/listings/end', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ listingIds }),
+    });
+    const data = await res.json();
+    if (data.failed > 0) {
+      // 일부 실패 → 롤백
+      if (row) {
+        row.style.opacity = '1';
+        const statusCell = row.querySelector('td:nth-last-child(2)');
+        if (statusCell && statusCell.dataset.prevHtml) statusCell.innerHTML = statusCell.dataset.prevHtml;
+      }
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ti ti-player-stop"></i> 판매 내리기';
+      alert(data.succeeded + '개 성공, ' + data.failed + '개 실패');
+    } else {
+      // 성공 → 행 유지, 뱃지만 "종료"로 업데이트
+      if (row) {
+        row.style.opacity = '1';
+        // 종료된 리스팅 뱃지를 "종료"로 변경
+        listingIds.forEach(id => {
+          // 뱃지 내 X 버튼에서 해당 listing id를 찾아 뱃지 교체
+          const badges = row.querySelectorAll('.badge');
+          badges.forEach(badge => {
+            const xBtn = badge.querySelector('.badge-action');
+            if (xBtn && xBtn.getAttribute('onclick') && xBtn.getAttribute('onclick').includes('[' + id + ']')) {
+              badge.className = 'badge badge-draft';
+              badge.innerHTML = '종료';
+            }
+          });
+        });
+        // 상태 열 업데이트
+        const statusCell = row.querySelector('td:nth-last-child(2)');
+        if (statusCell) statusCell.innerHTML = '<span class="badge badge-draft">판매종료</span>';
+        // 판매 내리기 버튼 숨기기
+        const endBtn = btn.closest('div')?.querySelector('.btn-error');
+        if (endBtn) endBtn.remove();
+        // 버튼 영역에 남은 버튼이 없으면 정리
+        const btnWrap = row.querySelector('td:last-child div');
+        if (btnWrap && btnWrap.children.length === 0) {
+          btnWrap.innerHTML = '<span class="text-muted">종료됨</span>';
+        }
+      }
+      if (typeof showToast === 'function') showToast(data.succeeded + '개 리스팅 판매 내림', 'success');
+    }
+  } catch (e) {
+    // 실패 → 롤백
+    if (row) {
+      row.style.opacity = '1';
+      const statusCell = row.querySelector('td:nth-last-child(2)');
+      if (statusCell && statusCell.dataset.prevHtml) statusCell.innerHTML = statusCell.dataset.prevHtml;
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-player-stop"></i> 판매 내리기';
+    alert('요청 실패: ' + e.message);
+  }
+}
+
+// 업로드 취소 — 낙관적 업데이트
+async function cancelListings(listingIds, btn) {
+  const row = btn.closest('tr');
+  // 낙관적: 즉시 행 페이드아웃
+  if (row) {
+    row.style.transition = 'opacity 0.3s';
+    row.style.opacity = '0.3';
+  }
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
+
+  try {
+    const res = await fetch('/api/listings/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ listingIds }),
+    });
+    const data = await res.json();
+    if (data.failed > 0) {
+      // 일부 실패 → 롤백
+      if (row) { row.style.opacity = '1'; }
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ti ti-x"></i> 업로드 취소';
+      alert(data.succeeded + '개 취소, ' + data.failed + '개 실패');
+    } else {
+      // 성공 → 행 제거
+      if (row) row.remove();
+      if (typeof showToast === 'function') showToast(data.succeeded + '개 업로드 취소됨', 'success');
+    }
+  } catch (e) {
+    // 실패 → 롤백
+    if (row) { row.style.opacity = '1'; }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-x"></i> 업로드 취소';
+    alert('요청 실패: ' + e.message);
+  }
+}
+
+// ════════ 완료 내역 AJAX ════════
+const completedState = { page: 1, sort: 'createdAt', order: 'desc', loaded: false };
+const sourceLabelsJS = { coupang: '쿠팡', lotte: '롯데온', emart: '이마트', naver: '네이버' };
+const statusLabelJS = { error: '실패', draft: '대기', pending: '검수중', ended: '종료' };
+
+let searchTimer = null;
+document.getElementById('completed-search').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => loadCompleted(1), 300);
+});
+
+function setCompletedSort(col) {
+  if (completedState.sort === col) {
+    completedState.order = completedState.order === 'desc' ? 'asc' : 'desc';
+  } else {
+    completedState.sort = col;
+    completedState.order = col === 'title' || col === 'sku' ? 'asc' : 'desc';
+  }
+  loadCompleted(completedState.page);
+}
+
+async function loadCompleted(page) {
+  completedState.page = page;
+  const q = document.getElementById('completed-search').value;
+  const status = document.getElementById('completed-status-filter').value;
+  const platform = document.getElementById('completed-platform-filter').value;
+
+  const params = new URLSearchParams({
+    page: String(page), limit: '50',
+    sort: completedState.sort, order: completedState.order,
+    q, status, platform,
+  });
+
+  const wrap = document.getElementById('completed-table-wrap');
+  wrap.innerHTML = '<div style="text-align:center;padding:var(--space-8);color:var(--text-muted);"><i class="ti ti-loader spinner-icon" style="font-size:24px;"></i></div>';
+
+  try {
+    const res = await fetch('/api/completed?' + params);
+    const { data, pagination } = await res.json();
+    renderCompletedTable(data, pagination);
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state"><i class="ti ti-alert-circle"></i><p>데이터 로드 실패</p></div>';
+  }
+}
+
+function renderCompletedTable(items, pagination) {
+  const wrap = document.getElementById('completed-table-wrap');
+  const pagEl = document.getElementById('completed-pagination');
+
+  // 탭 카운트 업데이트
+  const tabBtn = document.querySelector('[data-tab="completed"]');
+  if (tabBtn) {
+    const countEl = tabBtn.querySelector('.tab-count');
+    if (countEl) countEl.textContent = pagination.total;
+  }
+
+  if (items.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><i class="ti ti-list-check"></i><p>업로드 완료된 항목이 없습니다</p></div>';
+    pagEl.style.display = 'none';
+    return;
+  }
+
+  const sortIcon = (col) => {
+    if (completedState.sort !== col) return '';
+    return completedState.order === 'asc'
+      ? ' <i class="ti ti-chevron-up" style="font-size:12px;"></i>'
+      : ' <i class="ti ti-chevron-down" style="font-size:12px;"></i>';
+  };
+
+  let html = '<table><thead><tr>';
+  html += '<th class="sortable" onclick="setCompletedSort(\'sku\')">SKU' + sortIcon('sku') + '</th>';
+  html += '<th class="th-thumb">이미지</th>';
+  html += '<th class="td-title sortable" onclick="setCompletedSort(\'title\')">상품명' + sortIcon('title') + '</th>';
+  html += '<th class="sortable" onclick="setCompletedSort(\'sourcePlatform\')">소싱처' + sortIcon('sourcePlatform') + '</th>';
+  html += '<th>판매처</th>';
+  html += '<th>상태</th>';
+  html += '<th class="sortable" onclick="setCompletedSort(\'createdAt\')">등록일' + sortIcon('createdAt') + '</th>';
+  html += '<th>액션</th>';
+  html += '</tr></thead><tbody>';
+
+  items.forEach(p => {
+    const listings = typeof p.listings === 'string' ? JSON.parse(p.listings) : (p.listings || []);
+    const hasError = listings.some(l => l.status === 'error');
+    const allActive = listings.length > 0 && listings.every(l => l.status === 'active');
+    const isSoldout = p.status === 'soldout';
+
+    html += '<tr class="' + (isSoldout ? 'row-soldout' : '') + '">';
+    html += '<td class="font-mono">' + esc(p.sku) + '</td>';
+
+    // 썸네일
+    if (p.imageUrl) {
+      html += '<td class="td-thumb"><img class="thumb" src="/api/img-proxy?url=' + encodeURIComponent(p.imageUrl) + '" alt=""></td>';
+    } else {
+      html += '<td class="td-thumb"><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div></td>';
+    }
+
+    // 상품명
+    const name = esc(p.titleKo || p.title);
+    if (p.sourceUrl) {
+      html += '<td><span class="truncate"><a href="' + esc(p.sourceUrl) + '" target="_blank" rel="noopener">' + name + '</a></span></td>';
+    } else {
+      html += '<td><span class="truncate">' + name + '</span></td>';
+    }
+
+    // 소싱처
+    html += '<td class="nowrap">' + (sourceLabelsJS[p.sourcePlatform] || p.sourcePlatform || '—') + '</td>';
+
+    // 판매처
+    html += '<td><div style="display:flex;gap:4px;flex-wrap:wrap;">';
+    listings.forEach(l => {
+      const isActive = l.status === 'active';
+      const badgeClass = l.status === 'error' ? 'badge-error'
+        : l.status === 'pending' ? 'badge-pending'
+        : (l.status === 'draft' || l.status === 'ended') ? 'badge-draft'
+        : 'badge-' + l.platform;
+      const label = isActive
+        ? l.platform + ' $' + Number(l.price).toFixed(2)
+        : l.platform + ' ' + (statusLabelJS[l.status] || l.status);
+      if (isActive && l.listingUrl) {
+        html += '<span class="badge ' + badgeClass + '"><a href="' + esc(l.listingUrl) + '" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">' + label + '</a><i class="ti ti-x badge-action" onclick="event.stopPropagation(); endListings([' + l.id + '], this)" title="판매 내리기"></i></span>';
+      } else if (l.status === 'error') {
+        html += '<span class="badge badge-error">' + l.platform + ' 실패 <i class="ti ti-refresh badge-action" onclick="retryListings([' + l.id + '], this)" title="재시도"></i></span>';
+      } else if (l.listingUrl) {
+        html += '<a href="' + esc(l.listingUrl) + '" target="_blank" rel="noopener" style="text-decoration:none;"><span class="badge ' + badgeClass + '">' + label + '</span></a>';
+      } else {
+        html += '<span class="badge ' + badgeClass + '">' + label + '</span>';
+      }
+    });
+    html += '</div></td>';
+
+    // 상태
+    const successCount = listings.filter(l => l.status === 'active').length;
+    const totalListings = listings.length;
+    if (isSoldout) {
+      html += '<td><span class="badge badge-error">품절</span></td>';
+    } else if (allActive) {
+      html += '<td><span class="badge badge-success">' + (totalListings > 1 ? successCount + '/' + totalListings + ' ' : '') + '판매중</span></td>';
+    } else if (successCount > 0) {
+      html += '<td><span class="badge badge-pending">' + successCount + '/' + totalListings + ' 성공</span></td>';
+    } else if (hasError && listings.every(l => l.status === 'error')) {
+      html += '<td><span class="badge badge-error">실패</span></td>';
+    } else if (hasError) {
+      const nonEnded = listings.filter(l => l.status !== 'ended');
+      html += '<td><span class="badge badge-pending">' + successCount + '/' + nonEnded.length + ' 성공</span></td>';
+    } else {
+      html += '<td><span class="badge badge-pending">처리중</span></td>';
+    }
+
+    // 등록일
+    const date = p.createdAt ? new Date(p.createdAt).toLocaleDateString('ko-KR') : '—';
+    html += '<td class="text-muted nowrap">' + date + '</td>';
+
+    // 액션 버튼
+    const retryableIds = listings.filter(l => ['draft', 'pending', 'error'].includes(l.status)).map(l => l.id);
+    const activeIds = listings.filter(l => l.status === 'active').map(l => l.id);
+    const cancellableIds = listings.filter(l => ['draft', 'pending', 'error'].includes(l.status)).map(l => l.id);
+    let actions = '';
+    if (retryableIds.length > 0) {
+      actions += '<button class="btn btn-secondary btn-xs" onclick="retryListings([' + retryableIds.join(',') + '], this)"><i class="ti ti-refresh"></i> 재시도</button>';
+    }
+    if (cancellableIds.length > 0) {
+      actions += '<button class="btn btn-secondary btn-xs" onclick="cancelListings([' + cancellableIds.join(',') + '], this)"><i class="ti ti-x"></i> 업로드 취소</button>';
+    }
+    if (activeIds.length > 0) {
+      actions += '<button class="btn btn-error btn-xs" onclick="endListings([' + activeIds.join(',') + '], this)"><i class="ti ti-player-stop"></i> 판매 내리기</button>';
+    }
+    html += '<td class="nowrap"><div style="display:flex;gap:4px;flex-wrap:wrap;">' + actions + '</div></td>';
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+
+  // 페이징
+  if (pagination.totalPages <= 1) {
+    pagEl.style.display = 'none';
+    return;
+  }
+  pagEl.style.display = 'flex';
+  let pagHtml = '';
+  pagHtml += '<button class="page-btn ' + (pagination.page <= 1 ? 'disabled' : '') + '" onclick="loadCompleted(' + (pagination.page - 1) + ')"><i class="ti ti-chevron-left"></i></button>';
+
+  const maxVisible = 5;
+  let startPage = Math.max(1, pagination.page - Math.floor(maxVisible / 2));
+  let endPage = Math.min(pagination.totalPages, startPage + maxVisible - 1);
+  if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
+
+  if (startPage > 1) {
+    pagHtml += '<button class="page-btn" onclick="loadCompleted(1)">1</button>';
+    if (startPage > 2) pagHtml += '<span class="page-info">…</span>';
+  }
+  for (let i = startPage; i <= endPage; i++) {
+    pagHtml += '<button class="page-btn ' + (i === pagination.page ? 'active' : '') + '" onclick="loadCompleted(' + i + ')">' + i + '</button>';
+  }
+  if (endPage < pagination.totalPages) {
+    if (endPage < pagination.totalPages - 1) pagHtml += '<span class="page-info">…</span>';
+    pagHtml += '<button class="page-btn" onclick="loadCompleted(' + pagination.totalPages + ')">' + pagination.totalPages + '</button>';
+  }
+
+  pagHtml += '<button class="page-btn ' + (pagination.page >= pagination.totalPages ? 'disabled' : '') + '" onclick="loadCompleted(' + (pagination.page + 1) + ')"><i class="ti ti-chevron-right"></i></button>';
+  pagHtml += '<span class="page-info">' + pagination.total + '개 중 ' + ((pagination.page - 1) * pagination.limit + 1) + '-' + Math.min(pagination.page * pagination.limit, pagination.total) + '</span>';
+  pagEl.innerHTML = pagHtml;
+}
+
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// 재고 동기화
+async function syncInventory() {
+  const btn = document.getElementById('syncInventoryBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader"></i> 동기화 중...';
+  try {
+    const res = await fetch('/api/listings/sync-inventory', { method: 'POST' });
+    const data = await res.json();
+    btn.innerHTML = '<i class="ti ti-check"></i> 완료 (' + data.changed + '개 변경)';
+    if (data.changed > 0) setTimeout(() => location.reload(), 1500);
+    else setTimeout(() => { btn.innerHTML = '<i class="ti ti-refresh"></i> 재고 동기화'; btn.disabled = false; }, 2000);
+  } catch (e) {
+    btn.innerHTML = '<i class="ti ti-alert-circle"></i> 실패';
+    setTimeout(() => { btn.innerHTML = '<i class="ti ti-refresh"></i> 재고 동기화'; btn.disabled = false; }, 2000);
+  }
+}
+
+// ════════ 판매 취소 AJAX ════════
+const endedState = { page: 1, sort: 'createdAt', order: 'desc', loaded: false };
+
+let endedSearchTimer = null;
+document.getElementById('ended-search').addEventListener('input', () => {
+  clearTimeout(endedSearchTimer);
+  endedSearchTimer = setTimeout(() => loadEnded(1), 300);
+});
+
+async function loadEnded(page) {
+  endedState.page = page;
+  const q = document.getElementById('ended-search').value;
+  const platform = document.getElementById('ended-platform-filter').value;
+
+  const params = new URLSearchParams({
+    page: String(page), limit: '50',
+    sort: endedState.sort, order: endedState.order,
+    q, platform,
+  });
+
+  const wrap = document.getElementById('ended-table-wrap');
+  wrap.innerHTML = '<div style="text-align:center;padding:var(--space-8);color:var(--text-muted);"><i class="ti ti-loader spinner-icon" style="font-size:24px;"></i></div>';
+
+  try {
+    const res = await fetch('/api/ended?' + params);
+    const { data, pagination } = await res.json();
+    renderEndedTable(data, pagination);
+  } catch (e) {
+    wrap.innerHTML = '<div class="empty-state"><i class="ti ti-alert-circle"></i><p>데이터 로드 실패</p></div>';
+  }
+}
+
+function renderEndedTable(items, pagination) {
+  const wrap = document.getElementById('ended-table-wrap');
+  const pagEl = document.getElementById('ended-pagination');
+
+  // 탭 카운트 업데이트
+  const tabBtn = document.querySelector('[data-tab="ended"]');
+  if (tabBtn) {
+    const countEl = tabBtn.querySelector('.tab-count');
+    if (countEl) countEl.textContent = pagination.total;
+  }
+
+  if (items.length === 0) {
+    wrap.innerHTML = '<div class="empty-state"><i class="ti ti-player-stop"></i><p>판매 취소된 항목이 없습니다</p></div>';
+    pagEl.style.display = 'none';
+    return;
+  }
+
+  let html = '<table><thead><tr>';
+  html += '<th>SKU</th>';
+  html += '<th class="th-thumb">이미지</th>';
+  html += '<th class="td-title">상품명</th>';
+  html += '<th>소싱처</th>';
+  html += '<th>판매처</th>';
+  html += '<th>판매가</th>';
+  html += '<th>액션</th>';
+  html += '</tr></thead><tbody>';
+
+  items.forEach(p => {
+    html += '<tr>';
+    html += '<td class="font-mono">' + esc(p.sku) + '</td>';
+
+    // 썸네일
+    if (p.imageUrl) {
+      html += '<td class="td-thumb"><img class="thumb" src="/api/img-proxy?url=' + encodeURIComponent(p.imageUrl) + '" alt=""></td>';
+    } else {
+      html += '<td class="td-thumb"><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div></td>';
+    }
+
+    // 상품명
+    const name = esc(p.titleKo || p.title);
+    if (p.sourceUrl) {
+      html += '<td><span class="truncate"><a href="' + esc(p.sourceUrl) + '" target="_blank" rel="noopener">' + name + '</a></span></td>';
+    } else {
+      html += '<td><span class="truncate">' + name + '</span></td>';
+    }
+
+    // 소싱처
+    html += '<td class="nowrap">' + (sourceLabelsJS[p.sourcePlatform] || p.sourcePlatform || '—') + '</td>';
+
+    // 판매처
+    html += '<td><span class="badge badge-draft">' + esc(p.listingPlatform) + ' 종료</span></td>';
+
+    // 판매가
+    html += '<td class="tabular-nums nowrap">$' + (p.listingPrice ? Number(p.listingPrice).toFixed(2) : '—') + '</td>';
+
+    // 액션
+    html += '<td class="nowrap"><div style="display:flex;gap:4px;flex-wrap:wrap;">';
+    html += '<button class="btn btn-primary btn-xs" onclick="relistListings([' + p.listingId + '], this)"><i class="ti ti-upload"></i> 판매 재개</button>';
+    html += '<button class="btn btn-error btn-xs" onclick="deleteProducts([' + p.id + '], this)"><i class="ti ti-trash"></i> 삭제</button>';
+    html += '</div></td>';
+
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+
+  // 페이징
+  if (pagination.totalPages <= 1) {
+    pagEl.style.display = 'none';
+    return;
+  }
+  pagEl.style.display = 'flex';
+  let pagHtml = '';
+  pagHtml += '<button class="page-btn ' + (pagination.page <= 1 ? 'disabled' : '') + '" onclick="loadEnded(' + (pagination.page - 1) + ')"><i class="ti ti-chevron-left"></i></button>';
+
+  const maxVisible = 5;
+  let startPage = Math.max(1, pagination.page - Math.floor(maxVisible / 2));
+  let endPage = Math.min(pagination.totalPages, startPage + maxVisible - 1);
+  if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
+
+  if (startPage > 1) {
+    pagHtml += '<button class="page-btn" onclick="loadEnded(1)">1</button>';
+    if (startPage > 2) pagHtml += '<span class="page-info">…</span>';
+  }
+  for (var i = startPage; i <= endPage; i++) {
+    pagHtml += '<button class="page-btn ' + (i === pagination.page ? 'active' : '') + '" onclick="loadEnded(' + i + ')">' + i + '</button>';
+  }
+  if (endPage < pagination.totalPages) {
+    if (endPage < pagination.totalPages - 1) pagHtml += '<span class="page-info">…</span>';
+    pagHtml += '<button class="page-btn" onclick="loadEnded(' + pagination.totalPages + ')">' + pagination.totalPages + '</button>';
+  }
+
+  pagHtml += '<button class="page-btn ' + (pagination.page >= pagination.totalPages ? 'disabled' : '') + '" onclick="loadEnded(' + (pagination.page + 1) + ')"><i class="ti ti-chevron-right"></i></button>';
+  pagHtml += '<span class="page-info">' + pagination.total + '개 중 ' + ((pagination.page - 1) * pagination.limit + 1) + '-' + Math.min(pagination.page * pagination.limit, pagination.total) + '</span>';
+  pagEl.innerHTML = pagHtml;
+}
+
+// 판매 재개 (ended → re-upload)
+async function relistListings(listingIds, btn) {
+  if (!confirm('선택한 ' + listingIds.length + '개 리스팅을 다시 마켓에 올리시겠습니까?')) return;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
+  try {
+    const res = await fetch('/api/listings/relist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ listingIds }),
+    });
+    const data = await res.json();
+    if (data.jobId) {
+      window.location.href = '/upload?jobId=' + data.jobId;
+    } else {
+      alert(data.error || '판매 재개 실패');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ti ti-upload"></i> 판매 재개';
+    }
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-upload"></i> 판매 재개';
+  }
+}
+
+// 상품 삭제 — 낙관적 업데이트
+async function deleteProducts(productIds, btn) {
+  if (!confirm('선택한 ' + productIds.length + '개 상품을 완전히 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.')) return;
+  const row = btn.closest('tr');
+  if (row) {
+    row.style.transition = 'opacity 0.3s';
+    row.style.opacity = '0.3';
+  }
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
+  try {
+    const res = await fetch('/api/listings/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productIds }),
+    });
+    const data = await res.json();
+    if (data.failed > 0) {
+      if (row) { row.style.opacity = '1'; }
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ti ti-trash"></i> 삭제';
+      alert(data.succeeded + '개 삭제, ' + data.failed + '개 실패');
+    } else {
+      if (row) row.remove();
+      if (typeof showToast === 'function') showToast(data.succeeded + '개 상품 삭제됨', 'success');
+    }
+  } catch (e) {
+    if (row) { row.style.opacity = '1'; }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-trash"></i> 삭제';
+    alert('요청 실패: ' + e.message);
+  }
+}
+</script>

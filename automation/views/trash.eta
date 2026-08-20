@@ -1,0 +1,190 @@
+<%/* ── 상단: 타이틀 ── */%>
+<div class="page-header">
+  <h1 class="page-title"><i class="ti ti-trash"></i> 휴지통</h1>
+</div>
+
+<%
+  const trashItems = it.trashItems || [];
+  const imgProxy = (url) => url ? '/api/img-proxy?url=' + encodeURIComponent(url) : '';
+%>
+
+<div class="card">
+  <%/* 액션 바 */%>
+  <div class="action-bar" id="trash-action-bar" style="display: none;">
+    <span class="action-bar-count"><span id="trash-selected-count">0</span>개 선택</span>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <button class="btn btn-primary btn-sm" onclick="restoreSelected()">
+        <i class="ti ti-arrow-back-up"></i> 복원
+      </button>
+      <button class="btn btn-error btn-sm" onclick="permanentlyDeleteSelected()">
+        <i class="ti ti-trash-x"></i> 완전 삭제
+      </button>
+    </div>
+  </div>
+
+  <% if (trashItems.length > 0) { %>
+  <div style="overflow-x: auto;">
+  <table style="min-width: 800px;">
+    <thead>
+      <tr>
+        <th class="th-check"><input type="checkbox" onchange="toggleAllTrash(this)"></th>
+        <th>SKU</th>
+        <th class="th-thumb">이미지</th>
+        <th class="td-title">상품명</th>
+        <th>소싱처</th>
+        <th>eBay</th>
+        <th>Shopify</th>
+        <th>Alibaba</th>
+        <th>Shopee</th>
+        <th>타입</th>
+        <th>액션</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% trashItems.forEach((item) => { %>
+      <tr>
+        <td class="td-check">
+          <input type="checkbox" class="row-check trash-check" data-type="<%= item.type %>" value="<%= item.id %>" onchange="updateTrashActionBar()">
+        </td>
+        <td class="font-mono"><% if (item.sku) { %><%= item.sku %><% } else { %><span class="text-muted">—</span><% } %></td>
+        <td class="td-thumb"><% if (item.imageUrl) { %><img class="thumb" src="<%= imgProxy(item.imageUrl) %>" alt=""><% } else { %><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div><% } %></td>
+        <td class="td-title"><span class="truncate"><% if (item.sourceUrl) { %><a href="<%= item.sourceUrl %>" target="_blank" rel="noopener"><%= item.title %></a><% } else { %><%= item.title %><% } %></span></td>
+        <td class="nowrap"><%= item.sourceLabel %></td>
+        <% const priceMap = { ebay: item.ebayPrice, shopify: item.shopifyPrice, alibaba: item.alibabaPrice, shopee: item.shopeePrice }; %>
+        <% ['ebay', 'shopify', 'alibaba', 'shopee'].forEach(pf => { %>
+          <td class="tabular-nums nowrap">
+            <% if (priceMap[pf]) { %>
+              <span class="text-muted">$<%= priceMap[pf].toFixed(2) %></span>
+            <% } else { %>
+              <span class="text-muted">—</span>
+            <% } %>
+          </td>
+        <% }) %>
+        <td><span class="badge badge-draft"><%= item.type === 'product' ? '상품' : '크롤' %></span></td>
+        <td class="nowrap">
+          <div style="display: flex; gap: 4px;">
+            <button class="btn btn-secondary btn-xs" onclick="restoreItem('<%= item.type %>', <%= item.id %>, this)">
+              <i class="ti ti-arrow-back-up"></i> 복원
+            </button>
+            <button class="btn btn-error btn-xs" onclick="permanentlyDeleteItem('<%= item.type %>', <%= item.id %>, this)">
+              <i class="ti ti-trash-x"></i>
+            </button>
+          </div>
+        </td>
+      </tr>
+      <% }) %>
+    </tbody>
+  </table>
+  </div>
+  <% } else { %>
+  <div class="empty-state">
+    <i class="ti ti-trash-off"></i>
+    <p>휴지통이 비어 있습니다</p>
+  </div>
+  <% } %>
+</div>
+
+<script>
+function toggleAllTrash(master) {
+  document.querySelectorAll('.trash-check').forEach(cb => { cb.checked = master.checked; });
+  updateTrashActionBar();
+}
+
+function updateTrashActionBar() {
+  const checks = document.querySelectorAll('.trash-check:checked');
+  const bar = document.getElementById('trash-action-bar');
+  const countEl = document.getElementById('trash-selected-count');
+  bar.style.display = checks.length > 0 ? 'flex' : 'none';
+  countEl.textContent = checks.length;
+}
+
+function getSelectedTrash() {
+  const checks = document.querySelectorAll('.trash-check:checked');
+  const ids = [];
+  const types = [];
+  checks.forEach(cb => {
+    ids.push(Number(cb.value));
+    types.push(cb.dataset.type);
+  });
+  return { ids, types };
+}
+
+async function restoreSelected() {
+  const { ids, types } = getSelectedTrash();
+  if (ids.length === 0) return;
+  if (!confirm(ids.length + '개 항목을 복원하시겠습니까?')) return;
+
+  try {
+    const res = await fetch('/api/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, types }),
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    if (typeof showToast === 'function') showToast((data.restoredProducts + data.restoredCrawls) + '개 항목 복원됨', 'success');
+    setTimeout(() => location.reload(), 300);
+  } catch (e) { alert('요청 실패: ' + e.message); }
+}
+
+async function permanentlyDeleteSelected() {
+  const { ids, types } = getSelectedTrash();
+  if (ids.length === 0) return;
+  if (!confirm(ids.length + '개 항목을 완전히 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.')) return;
+
+  try {
+    const res = await fetch('/api/permanently-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, types }),
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    if (typeof showToast === 'function') showToast(data.succeeded + '개 항목 완전 삭제됨', 'success');
+    setTimeout(() => location.reload(), 300);
+  } catch (e) { alert('요청 실패: ' + e.message); }
+}
+
+async function restoreItem(type, id, btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
+  try {
+    const res = await fetch('/api/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [id], types: [type] }),
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = '<i class="ti ti-arrow-back-up"></i> 복원'; return; }
+    const row = btn.closest('tr');
+    if (row) { row.style.transition = 'opacity 0.3s'; row.style.opacity = '0'; setTimeout(() => row.remove(), 300); }
+    if (typeof showToast === 'function') showToast('복원 완료', 'success');
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-arrow-back-up"></i> 복원';
+  }
+}
+
+async function permanentlyDeleteItem(type, id, btn) {
+  if (!confirm('이 항목을 완전히 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.')) return;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
+  try {
+    const res = await fetch('/api/permanently-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: [id], types: [type] }),
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); btn.disabled = false; btn.innerHTML = '<i class="ti ti-trash-x"></i>'; return; }
+    const row = btn.closest('tr');
+    if (row) { row.style.transition = 'opacity 0.3s'; row.style.opacity = '0'; setTimeout(() => row.remove(), 300); }
+    if (typeof showToast === 'function') showToast('완전 삭제 완료', 'success');
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-trash-x"></i>';
+  }
+}
+</script>

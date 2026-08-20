@@ -43,8 +43,13 @@
     <div class="menu-item" data-page="expansion-queue">확장 큐 관리</div>
     <div class="menu-title">B2B</div>
     <div class="menu-item" data-page="b2b" style="color:#0288d1;font-weight:600">B2B 인보이스</div>
+    <div class="menu-title">자동화</div>
+    <div class="menu-item" data-page="automation" style="color:#ff5722;font-weight:600">리스팅 자동화</div>
+    <div class="menu-item" data-page="crawl-results">크롤링 결과</div>
     <div class="menu-title">시스템</div>
     <div class="menu-item" data-page="sync">동기화</div>
+    <div class="menu-item" data-page="settings" style="color:#ff9800;font-weight:600">설정</div>
+    <div class="menu-item" data-page="export" style="color:#4caf50;font-weight:600">상품 내보내기</div>
   </div>
 
   <div class="main">
@@ -170,7 +175,118 @@
     <!-- ===== 상품 등록 페이지 ===== -->
     <div id="page-register" class="page">
       <div class="card">
-        <h3>신규 상품 등록 (멀티마켓 자동 최적화)</h3>
+        <h3>상품 등록</h3>
+
+        <!-- 서브탭 전환 -->
+        <div class="register-tabs">
+          <button class="register-tab active" data-tab="single">단건 등록</button>
+          <button class="register-tab" data-tab="csv">CSV 대량 등록</button>
+        </div>
+
+        <!-- ===== CSV 대량 등록 영역 ===== -->
+        <div id="csvImportSection" class="register-tab-content" style="display:none;max-width:1000px">
+
+          <!-- 파일 업로드 영역 -->
+          <div class="csv-upload-area" id="csvUploadArea">
+            <input type="file" id="csvFileInput" accept=".csv,.xlsx,.xls" style="display:none">
+            <div class="upload-placeholder" id="csvUploadPlaceholder">
+              <span style="font-size:36px">&#128196;</span><br>
+              CSV 또는 Excel 파일을 드래그하거나 클릭하여 업로드<br>
+              <small>.csv, .xlsx (최대 20MB)</small>
+            </div>
+            <div id="csvFileName" style="display:none" class="csv-file-info"></div>
+          </div>
+
+          <!-- 옵션 설정 -->
+          <div id="csvOptions" style="display:none;margin-top:16px">
+            <h4 class="form-section-title">등록 옵션</h4>
+            <div class="form-grid">
+              <div class="form-group">
+                <label>기본 목표마진 (%)</label>
+                <input type="number" id="csvDefaultMargin" value="30" step="1" min="1" max="80">
+                <small style="color:#888">CSV에 마진 미지정 시 적용</small>
+              </div>
+              <div class="form-group" style="display:flex;align-items:flex-end;gap:8px">
+                <button type="button" class="refresh-btn" id="csvTemplateBtn" style="white-space:nowrap">
+                  템플릿 다운로드
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 검증 요약 -->
+          <div id="csvValidationSummary" style="display:none;margin-top:16px">
+            <h4 class="form-section-title">검증 결과</h4>
+            <div class="csv-validation-stats">
+              <span class="csv-stat total">전체: <strong id="csvStatTotal">0</strong></span>
+              <span class="csv-stat success">정상: <strong id="csvStatValid">0</strong></span>
+              <span class="csv-stat error">오류: <strong id="csvStatError">0</strong></span>
+            </div>
+          </div>
+
+          <!-- 오류 목록 -->
+          <div id="csvErrorList" style="display:none;margin-top:12px">
+            <details>
+              <summary style="cursor:pointer;font-size:13px;color:#c62828;font-weight:600">오류 행 상세보기</summary>
+              <div class="table-wrap" style="max-height:200px;overflow-y:auto;margin-top:8px">
+                <table class="data-table" id="csvErrorTable">
+                  <thead><tr><th>행</th><th>SKU</th><th>오류</th></tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+
+          <!-- 미리보기 테이블 -->
+          <div id="csvPreviewSection" style="display:none;margin-top:16px">
+            <h4 class="form-section-title">미리보기 (정상 데이터)</h4>
+            <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+              <table class="data-table" id="csvPreviewTable">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>상품명</th>
+                    <th>매입가</th>
+                    <th>무게</th>
+                    <th>카테고리</th>
+                    <th>수량</th>
+                    <th>마진(%)</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 등록 버튼 + 진행바 -->
+          <div id="csvActionArea" style="display:none;margin-top:20px">
+            <button type="button" class="submit-btn" id="csvConfirmBtn">
+              대량 등록 실행
+            </button>
+            <div id="csvProgressArea" style="display:none;margin-top:12px">
+              <div class="csv-progress-bar">
+                <div class="csv-progress-fill" id="csvProgressFill"></div>
+              </div>
+              <div class="csv-progress-text" id="csvProgressText">등록 중...</div>
+            </div>
+          </div>
+
+          <!-- 결과 요약 -->
+          <div id="csvResultArea" style="display:none;margin-top:16px">
+            <h4 class="form-section-title">등록 결과</h4>
+            <div id="csvResultSummary" class="csv-result-summary"></div>
+            <div class="table-wrap" style="max-height:300px;overflow-y:auto;margin-top:8px">
+              <table class="data-table" id="csvResultTable">
+                <thead>
+                  <tr><th>SKU</th><th>상품명</th><th>상태</th><th>eBay</th><th>Shopify</th><th>Naver</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== 단건 등록 (기존 폼) ===== -->
         <form id="registerForm" class="register-form" style="max-width:900px">
 
           <!-- 기본 정보 -->
@@ -834,6 +950,23 @@
         </div>
       </div>
 
+      <!-- 자동 리프라이싱 패널 -->
+      <div class="card" style="margin-bottom:16px;border-left:4px solid #ff9800">
+        <div class="card-header">
+          <h3 style="font-size:15px;font-weight:600;color:#e65100">자동 리프라이싱</h3>
+          <div style="display:flex;gap:8px">
+            <button class="refresh-btn" id="repricingEvalBtn" style="background:#ff9800;font-size:11px">가격 평가</button>
+            <button class="refresh-btn" id="repricingExecBtn" style="background:#c62828;font-size:11px">일괄 실행</button>
+          </div>
+        </div>
+        <p style="font-size:12px;color:#888;margin-bottom:12px">경쟁 셀러 가격 기반 자동 가격 조정. 최소 마진 보호 적용됨.</p>
+        <div id="repricingResult" style="display:none">
+          <table class="data-table"><thead><tr>
+            <th>SKU</th><th>현재가</th><th>경쟁가</th><th>제안가</th><th>전략</th><th>예상마진</th><th>실행</th>
+          </tr></thead><tbody id="repricingBody"></tbody></table>
+        </div>
+      </div>
+
       <!-- 전투 테이블 -->
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -1308,38 +1441,222 @@
     <div id="page-sync" class="page">
       <div class="card">
         <h3>동기화 관리</h3>
-        <div class="sync-actions-full">
-          <div class="sync-platform-card">
-            <h4>Shopify</h4>
-            <p>Shopify → Google Sheets 동기화</p>
-            <button class="sync-btn" data-platform="shopify">동기화 실행</button>
-          </div>
-          <div class="sync-platform-card">
-            <h4>eBay</h4>
-            <p>eBay → Google Sheets 동기화</p>
-            <button class="sync-btn" data-platform="ebay">동기화 실행</button>
-          </div>
-          <div class="sync-platform-card">
-            <h4>Naver</h4>
-            <p>네이버 → Google Sheets 동기화</p>
-            <button class="sync-btn" data-platform="naver">동기화 실행</button>
-          </div>
-          <div class="sync-platform-card">
-            <h4>Alibaba</h4>
-            <p>Alibaba → Google Sheets 동기화</p>
-            <button class="sync-btn" data-platform="alibaba">동기화 실행</button>
-          </div>
-          <div class="sync-platform-card">
-            <h4>Shopee</h4>
-            <p>Shopee → Google Sheets 동기화</p>
-            <button class="sync-btn" data-platform="shopee">동기화 실행</button>
-          </div>
+        <div class="sync-actions-full" id="syncPlatformCards">
+          <!-- Dynamically loaded from platform registry -->
         </div>
       </div>
       <div class="card" style="margin-top:16px">
         <h3>동기화 이력</h3>
         <div id="syncHistoryFull">
           <p class="empty">이력 없음</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 설정 페이지 ===== -->
+    <div id="page-settings" class="page">
+      <!-- 탭 네비게이션 -->
+      <div style="display:flex;gap:4px;margin-bottom:16px;background:#f0f2f5;border-radius:8px;padding:4px">
+        <button class="settings-tab active" data-tab="settings-margin" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:#1a1a2e;box-shadow:0 1px 3px rgba(0,0,0,0.1)">환율/마진 설정</button>
+        <button class="settings-tab" data-tab="settings-platforms" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">플랫폼 관리</button>
+      </div>
+
+      <!-- 환율/마진 설정 탭 -->
+      <div id="settings-margin" class="settings-tab-content active">
+        <div class="card">
+          <div class="card-header">
+            <h3>환율 설정</h3>
+            <button class="refresh-btn" id="saveMarginSettingsBtn" style="background:#4caf50">설정 저장</button>
+          </div>
+          <div class="settings-grid" id="exchangeRateSettings">
+            <div class="setting-item">
+              <label>USD/KRW 환율</label>
+              <input type="number" id="setting-exchange_rate_usd" value="1400" step="1">
+            </div>
+            <div class="setting-item">
+              <label>JPY/KRW 환율</label>
+              <input type="number" id="setting-exchange_rate_jpy" value="1000" step="1">
+            </div>
+            <div class="setting-item">
+              <label>Shopee LOCAL/KRW</label>
+              <input type="number" id="setting-exchange_rate_local" value="1000" step="1">
+            </div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h3>마진/세금/배송 설정</h3>
+          <div class="settings-grid" id="marginTaxSettings">
+            <div class="setting-item">
+              <label>기본 목표 마진율 (%)</label>
+              <input type="number" id="setting-default_margin_pct" value="30" step="1">
+            </div>
+            <div class="setting-item">
+              <label>세율</label>
+              <input type="number" id="setting-tax_rate" value="0.15" step="0.01">
+            </div>
+            <div class="setting-item">
+              <label>기본 배송비 (USD)</label>
+              <input type="number" id="setting-default_shipping_usd" value="3.9" step="0.1">
+            </div>
+            <div class="setting-item">
+              <label>국내 배송비 (KRW)</label>
+              <input type="number" id="setting-domestic_shipping_krw" value="3000" step="100">
+            </div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h3>가격 시뮬레이션</h3>
+          <p style="font-size:12px;color:#888;margin-bottom:12px">매입가를 입력하면 현재 설정 기준으로 플랫폼별 판매가를 시뮬레이션합니다</p>
+          <div style="display:flex;gap:12px;align-items:end;margin-bottom:16px">
+            <div class="setting-item" style="flex:1">
+              <label>매입가 (KRW)</label>
+              <input type="number" id="simPurchasePrice" placeholder="10000" step="100">
+            </div>
+            <div class="setting-item" style="flex:1">
+              <label>무게 (kg)</label>
+              <input type="number" id="simWeight" placeholder="0.5" step="0.1">
+            </div>
+            <button class="refresh-btn" id="runSimulationBtn" style="height:36px">시뮬레이션</button>
+          </div>
+          <div id="simulationResult" style="display:none">
+            <table class="data-table"><thead><tr>
+              <th>플랫폼</th><th>판매가</th><th>통화</th><th>수수료</th><th>예상이익(KRW)</th><th>마진율</th>
+            </tr></thead><tbody id="simResultBody"></tbody></table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 플랫폼 관리 탭 -->
+      <div id="settings-platforms" class="settings-tab-content" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <h3>등록된 플랫폼</h3>
+            <span class="count" id="platformCount">0개</span>
+          </div>
+          <table class="data-table">
+            <thead><tr>
+              <th>플랫폼</th><th>시장</th><th>수수료율</th><th>통화</th><th>상태</th><th>정렬</th>
+            </tr></thead>
+            <tbody id="platformListBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 상품 내보내기 페이지 ===== -->
+    <div id="page-export" class="page">
+      <!-- 탭 네비게이션 -->
+      <div style="display:flex;gap:4px;margin-bottom:16px;background:#f0f2f5;border-radius:8px;padding:4px">
+        <button class="export-tab active" data-tab="export-single" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:#1a1a2e;box-shadow:0 1px 3px rgba(0,0,0,0.1)">단건 내보내기</button>
+        <button class="export-tab" data-tab="export-status" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">내보내기 현황</button>
+        <button class="export-tab" data-tab="export-translate" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">번역 관리</button>
+      </div>
+
+      <!-- 단건 내보내기 탭 -->
+      <div id="export-single" class="export-tab-content active">
+        <div class="card">
+          <h3>상품 플랫폼 등록</h3>
+          <p style="font-size:12px;color:#888;margin-bottom:16px">SKU를 입력하고 등록할 플랫폼을 선택하세요. 번역/가격 계산/등록이 자동으로 진행됩니다.</p>
+          <div style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+            <div class="setting-item" style="flex:2;min-width:200px">
+              <label>SKU</label>
+              <input type="text" id="exportSku" placeholder="SKU-001">
+            </div>
+            <div class="setting-item" style="flex:3;min-width:300px">
+              <label>등록 플랫폼</label>
+              <div id="exportPlatformCheckboxes" class="platform-checkboxes">
+                <!-- Dynamically loaded -->
+              </div>
+            </div>
+            <button class="refresh-btn" id="runExportBtn" style="background:#4caf50;height:36px;white-space:nowrap">내보내기 실행</button>
+          </div>
+          <div id="exportProgress" style="display:none;margin-top:16px">
+            <div class="progress-bar-container">
+              <div class="progress-bar" id="exportProgressBar" style="width:0%"></div>
+            </div>
+            <div id="exportLog" class="export-log"></div>
+          </div>
+          <div id="exportResult" style="display:none;margin-top:16px"></div>
+        </div>
+      </div>
+
+      <!-- 내보내기 현황 탭 -->
+      <div id="export-status" class="export-tab-content" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <h3>플랫폼 등록 현황</h3>
+            <button class="refresh-btn" id="refreshExportStatus" style="font-size:12px">새로고침</button>
+          </div>
+          <div id="exportStatusFilter" style="margin-bottom:12px">
+            <select id="exportStatusFilterSelect" style="padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px">
+              <option value="all">전체</option>
+              <option value="pending">대기중</option>
+              <option value="success">성공</option>
+              <option value="failed">실패</option>
+            </select>
+          </div>
+          <table class="data-table"><thead><tr>
+            <th>SKU</th><th>상품명</th><th>플랫폼</th><th>상태</th><th>등록가격</th><th>등록일시</th><th>액션</th>
+          </tr></thead><tbody id="exportStatusBody"></tbody></table>
+        </div>
+      </div>
+
+      <!-- 번역 관리 탭 -->
+      <div id="export-translate" class="export-tab-content" style="display:none">
+        <div class="card">
+          <div class="card-header">
+            <h3>번역 관리</h3>
+            <span style="font-size:12px;color:#888">Claude AI 자동 번역 + 수동 편집</span>
+          </div>
+          <div style="display:flex;gap:12px;margin-bottom:16px;align-items:end">
+            <div class="setting-item" style="flex:1">
+              <label>SKU 검색</label>
+              <input type="text" id="translateSkuSearch" placeholder="SKU 입력 후 Enter">
+            </div>
+            <div class="setting-item">
+              <label>대상 언어</label>
+              <select id="translateTargetLang" style="padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px">
+                <option value="en">영어 (EN)</option>
+                <option value="ja">일본어 (JA)</option>
+                <option value="zh">중국어 (ZH)</option>
+              </select>
+            </div>
+            <button class="refresh-btn" id="translateSearchBtn" style="height:36px">검색</button>
+          </div>
+          <div id="translateEditor" style="display:none">
+            <div class="translate-comparison">
+              <div class="translate-col">
+                <h4>원문 (한국어)</h4>
+                <div class="translate-field">
+                  <label>제목</label>
+                  <textarea id="transOrigTitle" readonly rows="2"></textarea>
+                </div>
+                <div class="translate-field">
+                  <label>설명</label>
+                  <textarea id="transOrigDesc" readonly rows="6"></textarea>
+                </div>
+              </div>
+              <div class="translate-col">
+                <h4>번역 (<span id="transLangLabel">EN</span>)</h4>
+                <div class="translate-field">
+                  <label>제목</label>
+                  <textarea id="transTitle" rows="2"></textarea>
+                </div>
+                <div class="translate-field">
+                  <label>설명</label>
+                  <textarea id="transDesc" rows="6"></textarea>
+                </div>
+                <div class="translate-field">
+                  <label>키워드</label>
+                  <input type="text" id="transKeywords" placeholder="comma separated">
+                </div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                  <button class="refresh-btn" id="autoTranslateBtn" style="background:#7c4dff">AI 번역</button>
+                  <button class="refresh-btn" id="saveTranslateBtn" style="background:#4caf50">저장</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1663,6 +1980,191 @@
             </table>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- ===== 리스팅 자동화 페이지 ===== -->
+    <div id="page-automation" class="page">
+      <div style="display:flex;gap:4px;margin-bottom:16px;background:#f0f2f5;border-radius:8px;padding:4px">
+        <button class="auto-tab active" data-tab="auto-listings" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:#fff;color:#1a1a2e;box-shadow:0 1px 3px rgba(0,0,0,0.1)">리스팅 관리</button>
+        <button class="auto-tab" data-tab="auto-inventory" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">재고 동기화</button>
+        <button class="auto-tab" data-tab="auto-csv" style="flex:1;padding:8px;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;background:transparent;color:#666">CSV 업로드</button>
+      </div>
+
+      <!-- 탭 1: 리스팅 관리 -->
+      <div id="auto-listings" class="auto-tab-content active">
+        <!-- 상태 요약 -->
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">
+          <div class="card" style="text-align:center;padding:16px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">전체 리스팅</div>
+            <div id="autoTotalListings" style="font-size:22px;font-weight:700;color:#1a1a2e">-</div>
+          </div>
+          <div class="card" style="text-align:center;padding:16px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">활성</div>
+            <div id="autoActiveListings" style="font-size:22px;font-weight:700;color:#27ae60">-</div>
+          </div>
+          <div class="card" style="text-align:center;padding:16px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">대기중</div>
+            <div id="autoPendingListings" style="font-size:22px;font-weight:700;color:#ff9800">-</div>
+          </div>
+          <div class="card" style="text-align:center;padding:16px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">실패</div>
+            <div id="autoErrorListings" style="font-size:22px;font-weight:700;color:#e94560">-</div>
+          </div>
+          <div class="card" style="text-align:center;padding:16px">
+            <div style="font-size:11px;color:#888;margin-bottom:4px">자동화 서버</div>
+            <div id="autoServerStatus" style="font-size:14px;font-weight:700;color:#888">확인 중...</div>
+          </div>
+        </div>
+
+        <!-- 일괄 등록 -->
+        <div class="card" style="margin-bottom:16px;border-left:4px solid #ff5722">
+          <h3 style="font-size:15px;font-weight:700;margin-bottom:14px">플랫폼 일괄 등록</h3>
+          <div style="display:flex;gap:12px;align-items:end;margin-bottom:12px">
+            <div style="flex:1">
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">상품 선택 (체크박스로 선택)</label>
+              <input type="text" id="autoProductSearch" placeholder="SKU 또는 상품명 검색..." style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:#666;display:block;margin-bottom:4px">플랫폼</label>
+              <div id="autoPlatformCheckboxes" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+            </div>
+            <button id="autoCreateListingsBtn" style="background:#ff5722;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">일괄 등록</button>
+            <button id="autoDryRunBtn" style="background:#666;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">테스트 실행</button>
+          </div>
+          <!-- 선택된 상품 목록 -->
+          <div id="autoSelectedProducts" style="margin-bottom:8px;font-size:12px;color:#666"></div>
+          <!-- 진행률 -->
+          <div id="autoProgressContainer" style="display:none">
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+              <span id="autoProgressText" style="font-size:12px;color:#666">진행 중...</span>
+              <span id="autoProgressCount" style="font-size:12px;font-weight:600">0/0</span>
+            </div>
+            <div class="progress-bar-container"><div class="progress-bar" id="autoProgressBar" style="width:0%"></div></div>
+          </div>
+        </div>
+
+        <!-- 리스팅 테이블 -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="font-size:15px;font-weight:700">리스팅 현황</h3>
+            <div style="display:flex;gap:6px">
+              <select id="autoListingFilter" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+                <option value="all">전체</option>
+                <option value="active">활성</option>
+                <option value="pending">대기중</option>
+                <option value="error">실패</option>
+                <option value="ended">종료</option>
+              </select>
+              <button id="autoRetryAllBtn" style="background:#e94560;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">실패 재시도</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table" style="font-size:12px">
+              <thead>
+                <tr>
+                  <th><input type="checkbox" id="autoSelectAll"></th>
+                  <th>SKU</th>
+                  <th>상품명</th>
+                  <th>플랫폼</th>
+                  <th style="text-align:right">가격 (USD)</th>
+                  <th>상태</th>
+                  <th>등록일</th>
+                  <th>액션</th>
+                </tr>
+              </thead>
+              <tbody id="autoListingsBody">
+                <tr><td colspan="8" class="empty">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div id="autoListingsPagination" style="display:flex;justify-content:center;gap:8px;margin-top:12px"></div>
+        </div>
+      </div>
+
+      <!-- 탭 2: 재고 동기화 -->
+      <div id="auto-inventory" class="auto-tab-content" style="display:none">
+        <div class="card" style="margin-bottom:16px;border-left:4px solid #0288d1">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <h3 style="font-size:15px;font-weight:700;margin-bottom:4px">재고 자동 동기화</h3>
+              <p style="font-size:12px;color:#888">플랫폼 재고를 30분마다 자동 동기화합니다.</p>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button id="autoSyncInventoryBtn" style="background:#0288d1;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">수동 동기화</button>
+            </div>
+          </div>
+          <div id="autoSyncResult" style="margin-top:12px;display:none"></div>
+        </div>
+        <div class="card">
+          <h3 style="font-size:15px;font-weight:700;margin-bottom:12px">동기화 로그</h3>
+          <div id="autoSyncLog" style="font-size:12px;color:#666">마지막 동기화 정보를 불러오는 중...</div>
+        </div>
+      </div>
+
+      <!-- 탭 3: CSV 업로드 -->
+      <div id="auto-csv" class="auto-tab-content" style="display:none">
+        <div class="card" style="border-left:4px solid #4caf50">
+          <h3 style="font-size:15px;font-weight:700;margin-bottom:14px">CSV 파일 업로드</h3>
+          <p style="font-size:12px;color:#888;margin-bottom:12px">상품 데이터 CSV 파일을 업로드하여 일괄 등록합니다.</p>
+          <div style="border:2px dashed #ddd;border-radius:8px;padding:30px;text-align:center;cursor:pointer" id="autoCsvDropzone">
+            <div style="font-size:36px;color:#ccc;margin-bottom:8px">📁</div>
+            <div style="font-size:13px;color:#666">CSV 파일을 드래그하거나 클릭하여 업로드</div>
+            <input type="file" id="autoCsvFileInput" accept=".csv" style="display:none">
+          </div>
+          <div id="autoCsvPreview" style="margin-top:16px;display:none">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <span id="autoCsvFileName" style="font-size:13px;font-weight:600"></span>
+              <span id="autoCsvRowCount" style="font-size:12px;color:#888"></span>
+            </div>
+            <div class="table-wrap" style="max-height:300px;overflow-y:auto">
+              <table class="data-table" style="font-size:11px" id="autoCsvPreviewTable"></table>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <button id="autoCsvImportBtn" style="background:#4caf50;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer">DB에 등록</button>
+              <button id="autoCsvCancelBtn" style="background:#888;color:#fff;border:none;padding:10px 16px;border-radius:6px;font-size:13px;cursor:pointer">취소</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 크롤링 결과 페이지 ===== -->
+    <div id="page-crawl-results" class="page">
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="font-size:15px;font-weight:700">크롤링 결과</h3>
+          <div style="display:flex;gap:6px">
+            <select id="crawlStatusFilter" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:12px">
+              <option value="all">전체</option>
+              <option value="new">신규</option>
+              <option value="reviewed">검토됨</option>
+              <option value="imported">등록됨</option>
+              <option value="ignored">무시됨</option>
+            </select>
+            <button id="crawlImportSelectedBtn" style="background:#ff5722;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer">선택 상품 가져오기</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" style="font-size:12px">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="crawlSelectAll"></th>
+                <th>이미지</th>
+                <th>상품명</th>
+                <th>출처</th>
+                <th style="text-align:right">가격 (KRW)</th>
+                <th>상태</th>
+                <th>수집일</th>
+                <th>액션</th>
+              </tr>
+            </thead>
+            <tbody id="crawlResultsBody">
+              <tr><td colspan="8" class="empty">로딩 중...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="crawlResultsPagination" style="display:flex;justify-content:center;gap:8px;margin-top:12px"></div>
       </div>
     </div>
 

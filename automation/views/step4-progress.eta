@@ -1,0 +1,163 @@
+<div class="page-header">
+  <h1 class="page-title">업로드 진행</h1>
+  <div class="connection-status" id="conn-status">
+    <span class="connection-dot" id="conn-dot"></span>
+    <span id="conn-text">연결됨</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="flex justify-between align-center">
+    <h2><i class="ti ti-upload"></i> 업로드 진행 중</h2>
+    <span class="badge badge-pending" id="status-badge"><i class="ti ti-loader"></i> 진행중</span>
+  </div>
+  <p class="text-muted mt-4" id="status-text">서버에 연결 중...</p>
+
+  <div class="progress-wrap mt-16">
+    <div class="progress-fill striped" id="progress-bar" style="width: 0%">0%</div>
+  </div>
+
+  <div class="summary mt-16">
+    <div class="summary-item summary-total">
+      <div class="number" id="stat-total">0</div>
+      <div class="label">전체</div>
+    </div>
+    <div class="summary-item summary-success">
+      <div class="number" id="stat-success">0</div>
+      <div class="label">성공</div>
+    </div>
+    <div class="summary-item summary-fail">
+      <div class="number" id="stat-fail">0</div>
+      <div class="label">실패</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-list-check"></i> 실시간 결과</h2>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>상품명</th>
+        <th>플랫폼</th>
+        <th>상태</th>
+        <th>링크</th>
+      </tr>
+    </thead>
+    <tbody id="results-body">
+    </tbody>
+  </table>
+  <div class="empty-state" id="empty-msg">
+    <i class="ti ti-clock"></i>
+    <p>대기 중...</p>
+  </div>
+</div>
+
+<div class="mt-16 hidden" id="done-actions">
+  <div class="flex gap-8">
+    <a href="/results?jobId=<%= it.jobId %>" class="btn btn-success btn-lg">
+      <i class="ti ti-chart-bar"></i> 결과 보기
+    </a>
+    <a href="/" class="btn btn-secondary"><i class="ti ti-home"></i> 처음으로</a>
+  </div>
+</div>
+
+<script>
+const jobId = '<%= it.jobId %>';
+const progressBar = document.getElementById('progress-bar');
+const statusText = document.getElementById('status-text');
+const statusBadge = document.getElementById('status-badge');
+const statTotal = document.getElementById('stat-total');
+const statSuccess = document.getElementById('stat-success');
+const statFail = document.getElementById('stat-fail');
+const resultsBody = document.getElementById('results-body');
+const doneActions = document.getElementById('done-actions');
+const emptyMsg = document.getElementById('empty-msg');
+const connDot = document.getElementById('conn-dot');
+const connText = document.getElementById('conn-text');
+
+let lastResultCount = 0;
+
+const evtSource = new EventSource('/api/listings/stream/' + jobId);
+
+evtSource.onmessage = function(event) {
+  const job = JSON.parse(event.data);
+  const pct = job.total > 0 ? Math.round(((job.completed + job.failed) / job.total) * 100) : 0;
+
+  progressBar.style.width = pct + '%';
+  progressBar.textContent = pct + '%';
+  statTotal.textContent = job.total;
+  statSuccess.textContent = job.completed;
+  statFail.textContent = job.failed;
+
+  if (job.status === 'running') {
+    statusText.textContent = job.platforms.join(' + ').toUpperCase() + ' 업로드 중... (' + (job.completed + job.failed) + '/' + job.total + ')';
+  } else {
+    var allFailed = job.failed === job.total;
+    var hasFail = job.failed > 0;
+
+    if (allFailed) {
+      statusText.textContent = '업로드 실패';
+      statusBadge.className = 'badge badge-error';
+      statusBadge.innerHTML = '<i class="ti ti-x"></i> 실패';
+      if (typeof showToast === 'function') showToast('업로드에 실패했습니다.', 'error');
+    } else if (hasFail) {
+      statusText.textContent = '업로드 완료 (일부 실패)';
+      statusBadge.className = 'badge badge-warning';
+      statusBadge.innerHTML = '<i class="ti ti-alert-triangle"></i> 부분 완료';
+      if (typeof showToast === 'function') showToast(job.failed + '건 실패, ' + job.completed + '건 성공', 'warning');
+    } else {
+      statusText.textContent = '업로드 완료!';
+      statusBadge.className = 'badge badge-success';
+      statusBadge.innerHTML = '<i class="ti ti-check"></i> 완료';
+      if (typeof showToast === 'function') showToast('업로드가 완료되었습니다!', 'success');
+    }
+
+    progressBar.classList.remove('striped');
+    doneActions.classList.remove('hidden');
+    evtSource.close();
+  }
+
+  if (job.results.length > 0) {
+    emptyMsg.style.display = 'none';
+  }
+
+  for (let i = lastResultCount; i < job.results.length; i++) {
+    const r = job.results[i];
+    const tr = document.createElement('tr');
+    tr.style.animation = 'fadeIn 0.3s ease';
+    tr.innerHTML =
+      '<td class="text-muted">' + (i + 1) + '</td>' +
+      '<td class="truncate">' + escapeHtml(r.title) + '</td>' +
+      '<td><span class="badge badge-' + (r.platform || 'ebay') + '">' + (r.platform || '').toUpperCase() + '</span></td>' +
+      '<td>' + (r.success
+        ? '<span class="badge badge-success"><i class="ti ti-check"></i> 성공</span>'
+        : '<span class="badge badge-error"><i class="ti ti-x"></i> 실패</span>') +
+      '</td>' +
+      '<td>' + (r.listingUrl
+        ? '<a href="' + r.listingUrl + '" target="_blank"><i class="ti ti-external-link"></i> 보기</a>'
+        : (r.error ? '<span class="text-muted" title="' + escapeHtml(r.error) + '">' + escapeHtml(r.error.substring(0, 40)) + '</span>' : '-')) +
+      '</td>';
+    resultsBody.appendChild(tr);
+  }
+  lastResultCount = job.results.length;
+};
+
+evtSource.onerror = function() {
+  statusText.textContent = '연결이 끊어졌습니다. 새로고침하세요.';
+  statusBadge.className = 'badge badge-error';
+  statusBadge.innerHTML = '<i class="ti ti-wifi-off"></i> 연결 끊김';
+  connDot.classList.add('disconnected');
+  connText.textContent = '연결 끊김';
+  evtSource.close();
+};
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+</script>

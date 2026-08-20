@@ -1,12 +1,13 @@
 const { google } = require('googleapis');
 const path = require('path');
+const { CREDENTIALS_PATH } = require('../config');
 
 /**
  * Google Sheets API 클래스
  * Service Account 인증을 사용하여 구글 스프레드시트와 연결
  */
 class GoogleSheetsAPI {
-  constructor(credentialsPath = '../../config/credentials.json') {
+  constructor(credentialsPath = CREDENTIALS_PATH) {
     this.credentialsPath = credentialsPath;
     this.auth = null;
     this.sheets = null;

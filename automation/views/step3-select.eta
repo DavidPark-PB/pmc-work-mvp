@@ -1,0 +1,177 @@
+<div class="page-header">
+  <h1 class="page-title">쇼핑몰 선택</h1>
+</div>
+
+<div class="card">
+  <div class="section-header">
+    <h2><i class="ti ti-building-store"></i> 플랫폼 선택</h2>
+  </div>
+  <p class="text-muted" style="margin-bottom: var(--space-4);">업로드할 쇼핑몰을 선택하세요. (복수 선택 가능)</p>
+
+  <div class="platform-btns">
+    <div class="platform-btn selected" id="btn-ebay" onclick="togglePlatform('ebay')">
+      <div class="platform-icon"><i class="ti ti-world"></i></div>
+      <div class="name">eBay</div>
+      <div class="desc">수수료 13% &middot; USD 판매</div>
+      <div class="check-icon"><i class="ti ti-circle-check-filled"></i></div>
+    </div>
+    <div class="platform-btn" id="btn-shopify" onclick="togglePlatform('shopify')">
+      <div class="platform-icon"><i class="ti ti-shopping-bag"></i></div>
+      <div class="name">Shopify</div>
+      <div class="desc">수수료 5% &middot; USD 판매</div>
+      <div class="check-icon"><i class="ti ti-circle-check-filled"></i></div>
+    </div>
+    <div class="platform-btn" id="btn-alibaba" onclick="togglePlatform('alibaba')">
+      <div class="platform-icon"><i class="ti ti-building-factory"></i></div>
+      <div class="name">Alibaba</div>
+      <div class="desc">수수료 5% &middot; USD B2B</div>
+      <div class="check-icon"><i class="ti ti-circle-check-filled"></i></div>
+    </div>
+    <div class="platform-btn" id="btn-shopee" onclick="togglePlatform('shopee')">
+      <div class="platform-icon"><i class="ti ti-brand-shopee"></i></div>
+      <div class="name">Shopee</div>
+      <div class="desc">수수료 6% &middot; USD 판매</div>
+      <div class="check-icon"><i class="ti ti-circle-check-filled"></i></div>
+    </div>
+  </div>
+</div>
+
+<div class="card" style="padding-bottom: 0;">
+  <div class="section-header">
+    <h2><i class="ti ti-list-details"></i> 상품 목록 <span class="text-accent"><%= it.items.length %></span></h2>
+    <label class="flex align-center gap-8" style="cursor:pointer;">
+      <input type="checkbox" id="select-all" checked onchange="toggleAll(this.checked)">
+      <span class="text-muted">전체 선택</span>
+    </label>
+  </div>
+
+  <div style="overflow-x: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th class="text-center" style="width:40px;"></th>
+          <th>이미지</th>
+          <th>상품명</th>
+          <th class="text-right">매입가 (원)</th>
+          <th class="text-right">eBay</th>
+          <th class="text-right">Shopify</th>
+          <th class="text-right">Alibaba</th>
+          <th class="text-right">Shopee</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% it.items.forEach((item) => {
+          const currentUser = it.user;
+          const isOwned = !!item.ownerId;
+          const isMine = currentUser && item.ownerId === currentUser.id;
+          const isAdmin = currentUser && currentUser.isAdmin;
+          const canSelect = !isOwned || isMine || isAdmin;
+        %>
+        <tr class="<%= !canSelect ? 'row-locked' : '' %>">
+          <td class="text-center">
+            <input type="checkbox" class="item-check" value="<%= item.id %>"<%= canSelect ? ' checked' : ' disabled' %> onchange="updateCount()">
+          </td>
+          <td>
+            <% if (item.imageUrl) { %>
+              <img src="<%= item.imageUrl %>" class="thumb" alt="" onerror="this.style.display='none'">
+            <% } else { %>
+              <div class="thumb" style="display:flex;align-items:center;justify-content:center;"><i class="ti ti-photo-off" style="font-size:14px;color:var(--text-muted);"></i></div>
+            <% } %>
+          </td>
+          <td class="truncate">
+            <%= item.title %>
+            <% if (item.ownerName) { %>
+              <span class="owner-badge <%= isMine ? 'mine' : 'others' %>"><i class="ti ti-user"></i> <%= item.ownerName %></span>
+            <% } %>
+          </td>
+          <td class="text-right tabular-nums"><%= Number(item.price).toLocaleString() %></td>
+          <td class="text-right tabular-nums text-green">$<%= item.ebayPrice.toFixed(2) %></td>
+          <td class="text-right tabular-nums text-accent">$<%= item.shopifyPrice.toFixed(2) %></td>
+          <td class="text-right tabular-nums" style="color:var(--warning);">$<%= item.alibabaPrice.toFixed(2) %></td>
+          <td class="text-right tabular-nums" style="color:var(--info);">$<%= item.shopeePrice.toFixed(2) %></td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="action-bar">
+    <div class="selection-count">
+      <i class="ti ti-checkbox"></i>
+      <strong id="selected-count"><%= it.items.length %></strong>
+      <span>개 선택됨</span>
+    </div>
+    <div class="flex gap-8">
+      <a href="/" class="btn btn-secondary"><i class="ti ti-arrow-left"></i> 처음으로</a>
+      <button class="btn btn-secondary" onclick="startUpload(true)">
+        <i class="ti ti-test-pipe"></i> 테스트
+      </button>
+      <button class="btn btn-primary btn-lg" onclick="startUpload(false)">
+        <i class="ti ti-upload"></i> 업로드 시작
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+let selectedPlatforms = ['ebay'];
+
+function togglePlatform(p) {
+  const idx = selectedPlatforms.indexOf(p);
+  if (idx >= 0) {
+    if (selectedPlatforms.length === 1) return; // 최소 1개 필수
+    selectedPlatforms.splice(idx, 1);
+  } else {
+    selectedPlatforms.push(p);
+  }
+  ['ebay', 'shopify', 'alibaba', 'shopee'].forEach(id => {
+    document.getElementById('btn-' + id).classList.toggle('selected', selectedPlatforms.includes(id));
+  });
+}
+
+function toggleAll(checked) {
+  document.querySelectorAll('.item-check').forEach(cb => cb.checked = checked);
+  updateCount();
+}
+
+function updateCount() {
+  const count = document.querySelectorAll('.item-check:checked').length;
+  document.getElementById('selected-count').textContent = count;
+  const allChecked = count === document.querySelectorAll('.item-check').length;
+  document.getElementById('select-all').checked = allChecked;
+}
+
+async function startUpload(dryRun) {
+  const checked = document.querySelectorAll('.item-check:checked');
+  const ids = Array.from(checked).map(cb => Number(cb.value));
+
+  if (ids.length === 0) {
+    if (typeof showToast === 'function') showToast('업로드할 상품을 선택하세요.', 'error');
+    else alert('업로드할 상품을 선택하세요.');
+    return;
+  }
+
+  const platformLabel = selectedPlatforms.join(' + ');
+  if (!dryRun && !confirm(ids.length + '개 상품을 ' + platformLabel + '에 실제 업로드합니다. 진행하시겠습니까?')) return;
+
+  try {
+    const res = await fetch('/api/listings/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        crawlResultIds: ids,
+        platforms: selectedPlatforms,
+        dryRun: dryRun,
+      }),
+    });
+    const data = await res.json();
+
+    if (data.jobId) {
+      window.location.href = '/upload?jobId=' + data.jobId;
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('오류: ' + e.message, 'error');
+    else alert('오류: ' + e.message);
+  }
+}
+</script>

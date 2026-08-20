@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '../../config/.env' });
+require('../config');
 const GoogleSheetsAPI = require('../api/googleSheetsAPI');
 
 const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID || '1ArkhXbz8rRTQP2yO4FQKCJSYx-9Tj8c0opz0cHQXD8M';
@@ -13,7 +13,7 @@ async function detectAnomalies() {
   console.log('\n=== 이상 징후 감지 시스템 ===\n');
 
   try {
-    const sheets = new GoogleSheetsAPI('../../config/credentials.json');
+    const sheets = new GoogleSheetsAPI();
     await sheets.authenticate();
 
     // 전체 데이터 읽기 (L, M, N열 추가: 재고, 최근7일판매, 직전3주평균)
