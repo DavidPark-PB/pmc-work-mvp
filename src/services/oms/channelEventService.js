@@ -23,6 +23,10 @@ const { payloadHash } = require('./lineId');
 /**
  * Persist a raw channel event. Idempotent per Owner §1 rules.
  *
+ * Phase 8P-20.8A · duplicate-path lookup also returns processing_status +
+ * linked_order_id so per-channel ingestors can decide whether to short-circuit
+ * (already-processed, unchanged event) or retry (pending / failed / linked-null).
+ *
  * @param {Object} params
  * @param {string}  params.channel
  * @param {string|null} [params.externalOrderId]
@@ -30,7 +34,7 @@ const { payloadHash } = require('./lineId');
  * @param {string}  params.eventType
  * @param {string|null} [params.rawStatus]
  * @param {any}     params.rawPayload
- * @returns {Promise<{ id:number, isNew:boolean, payloadHash:string }>}
+ * @returns {Promise<{ id:number, isNew:boolean, payloadHash:string, processingStatus:string, linkedOrderId:number|null }>}
  */
 async function persistRawEvent({
   channel,
@@ -62,14 +66,19 @@ async function persistRawEvent({
 
   const { data, error } = await db.from('channel_order_events').insert(row).select().single();
   if (!error) {
-    return { id: data.id, isNew: true, payloadHash: hash };
+    //   Phase 8P-20.8A · consistent shape for insert-succeeded path
+    return { id: data.id, isNew: true, payloadHash: hash, processingStatus: 'pending', linkedOrderId: null };
   }
 
   // Duplicate — look up existing row via the same key rule as the UNIQUE indexes
   const isUnique = error.code === '23505' || /duplicate|unique/i.test(error.message || '');
   if (!isUnique) throw error;
 
-  const lookup = db.from('channel_order_events').select('id').eq('channel', channel);
+  //   Phase 8P-20.8A · include processing_status + linked_order_id so the
+  //   caller can short-circuit already-processed unchanged events.
+  const lookup = db.from('channel_order_events')
+    .select('id, processing_status, linked_order_id')
+    .eq('channel', channel);
   const existingQ = sourceEventId
     ? lookup.eq('source_event_id', sourceEventId).is('source_event_id', undefined) === undefined
       ? lookup.eq('source_event_id', sourceEventId)
@@ -79,7 +88,13 @@ async function persistRawEvent({
   const { data: existing, error: e2 } = await existingQ.maybeSingle();
   if (e2) throw e2;
   if (!existing) throw error;                              // truly unexpected
-  return { id: existing.id, isNew: false, payloadHash: hash };
+  return {
+    id: existing.id,
+    isNew: false,
+    payloadHash: hash,
+    processingStatus: existing.processing_status,
+    linkedOrderId: existing.linked_order_id,
+  };
 }
 
 /**

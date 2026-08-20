@@ -102,6 +102,28 @@ async function ingestEbay(opts = {}) {
       if (ev.isNew) report.rawEventsInserted += 1;
       else report.rawEventsDeduped += 1;
 
+      // 2a-bis) Phase 8P-20.8A short-circuit.
+      //   If this event is a byte-identical duplicate we already processed to
+      //   completion (processing_status='processed' AND linked_order_id NOT NULL),
+      //   skip the entire downstream pipeline. Existing canonical row is authoritative.
+      //   SAFETY:
+      //     - eBay payload_hash unchanged → adapter output would be identical
+      //     - upsertCanonicalOrder would have produced status='skipped' (patch empty)
+      //     - No delete / no mutation on the skip path
+      //     - New/changed payloads still hit the full pipeline (isNew=true)
+      //     - pending/failed and processed-but-linked-null events still retry (fall through)
+      //   TRADE-OFF (documented):
+      //     - Removes the implicit rematch-on-every-tick behavior. Historical
+      //       unmatched / cost-null rows will remain until a separate
+      //       Owner-triggered rematch/backfill job runs. See docs/PHASE-8P-20-8A-*.md
+      //       (out-of-scope for this phase).
+      if (!ev.isNew && ev.processingStatus === 'processed' && ev.linkedOrderId != null) {
+        const tSc = _stageStart(`short_circuit_already_processed#${orderIdx}`);
+        report.shortCircuited = (report.shortCircuited || 0) + 1;
+        _stageDone(`short_circuit_already_processed#${orderIdx}`, tSc, `linked_order_id=${ev.linkedOrderId}`);
+        continue;
+      }
+
       // 2b) Adapter
       let canonical;
       const tAdapt = _stageStart(`canonical_adapt_validate#${orderIdx}`);
@@ -205,7 +227,7 @@ async function ingestEbay(opts = {}) {
   }
 
   report.completedAt = new Date().toISOString();
-  stageLog(`OMS_EBAY_STAGE_DONE stage=final_report elapsed_ms=${Date.now() - Date.parse(startedAt)} orders=${report.attempted} created=${report.created} updated=${report.updated} failed=${report.failed}`);
+  stageLog(`OMS_EBAY_STAGE_DONE stage=final_report elapsed_ms=${Date.now() - Date.parse(startedAt)} orders=${report.attempted} created=${report.created} updated=${report.updated} failed=${report.failed} short_circuited=${report.shortCircuited || 0}`);
   return report;
 }
 
@@ -261,6 +283,9 @@ function _emptyReport(channel, days) {
     fetched: 0, attempted: 0,
     created: 0, updated: 0, skipped: 0, invalid: 0, failed: 0,
     rawEventsInserted: 0, rawEventsDeduped: 0,
+    //   Phase 8P-20.8A · orders skipped via already-processed short-circuit
+    //   (distinct from `skipped` which comes from upsertCanonicalOrder no-op).
+    shortCircuited: 0,
     itemsInserted: 0, itemsUpdated: 0, itemsSkipped: 0,
     itemsMatched: 0, itemsUnmatched: 0,
     failures: [],
