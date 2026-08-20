@@ -186,6 +186,10 @@ app.use('/api/exception-routing', require('./src/web/routes/exceptionRouting'));
 // 주의: /api/orders/mock-import 가 /api/orders/:id 보다 먼저 등록돼야 함 (path specificity).
 app.use('/api/orders/mock-import', require('./src/web/routes/mockOrderImport'));
 app.use('/api/orders', require('./src/web/routes/orders'));
+// OMS Phase 1 · Step 4 — admin-only ingestion + reconciliation (manual trigger)
+app.use('/api/oms-admin', require('./src/web/routes/omsAdmin'));
+// Phase 8P-20 — per-channel ingestion freshness READ-ONLY dashboard
+app.use('/api/oms/ingestion-freshness', require('./src/web/routes/omsIngestionFreshness'));
 // Phase 8I — Owner Decision Dashboard (READ-ONLY except explicit gated evidence record)
 app.use('/api/oms/owner', require('./src/web/routes/omsOwnerConsole'));
 // PR O1 — Daily Operations Briefing (오늘 운영 요약 read-only)
@@ -245,7 +249,38 @@ app.listen(PORT, () => {
   console.log(`API: http://localhost:${PORT}/api\n`);
 
   // 업무관리 알림 스케줄러 (Phase 5 — 매일 오전 9시, 오후 5시)
-  require('./src/services/scheduler').start();
+  // Phase 8P-20.3a: wrap in try/catch so a legacy-scheduler failure cannot
+  // prevent the OMS ingestion scheduler below from starting.
+  try {
+    require('./src/services/scheduler').start();
+  } catch (e) {
+    console.error('[legacy scheduler] start failed:', e && e.message ? e.message : String(e));
+  }
+
+  // Phase 8P-20 — per-channel OMS order ingestion scheduler.
+  // Owner kill switch: OMS_SCHEDULER_DISABLED=1 or per-channel OMS_INGEST_<CH>_DISABLED=1.
+  // Default: ON in production (RAILWAY_ENVIRONMENT=production) · OFF elsewhere unless
+  // OMS_SCHEDULER_ENABLED=1 is set. Production apply requires Owner authorization.
+  //
+  // Phase 8P-20.3a: unconditional boot log so Railway logs always reveal the
+  // resolved decision · never silent.
+  try {
+    const enabledEnv  = process.env.OMS_SCHEDULER_ENABLED === '1' ? '1' : 'unset';
+    const disabledEnv = process.env.OMS_SCHEDULER_DISABLED === '1' ? '1' : 'unset';
+    const railwayEnv  = process.env.RAILWAY_ENVIRONMENT || 'unset';
+    const schedulerEnabled = process.env.OMS_SCHEDULER_ENABLED === '1'
+      || (process.env.RAILWAY_ENVIRONMENT === 'production' && process.env.OMS_SCHEDULER_DISABLED !== '1');
+    console.log(`OMS_SCHEDULER_BOOT_DECISION enabled_env=${enabledEnv} disabled_env=${disabledEnv} railway_environment=${railwayEnv} resolved_enabled=${schedulerEnabled}`);
+    if (schedulerEnabled) {
+      const { startChannelIngestionScheduler } = require('./src/services/oms/channelIngestionScheduler');
+      const controller = startChannelIngestionScheduler({});
+      console.log(`[OMS ingestion scheduler] started channels=${controller.channels.join(',')} deferred=${(controller.deferred||[]).join(',')}`);
+    } else {
+      console.log('[OMS ingestion scheduler] not started (OMS_SCHEDULER_ENABLED != 1 and RAILWAY_ENVIRONMENT != production or disabled)');
+    }
+  } catch (e) {
+    console.error('[OMS ingestion scheduler] start failed:', e && e.message ? e.message : String(e), e && e.stack ? e.stack.slice(0, 500) : '');
+  }
 
   // 텔레그램 webhook 등록 — P0 (2026-08-17) 대응: 원인 조사 종료 및
   //   Owner 승인 전에는 자동 등록을 하지 않는다. `TELEGRAM_ENABLE_WEBHOOK=true`
