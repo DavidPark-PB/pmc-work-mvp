@@ -41,6 +41,14 @@ const { payloadHash } = require('./lineId');
  *               · phase='done' : { elapsedMs, isNew? }
  *               · phase='fail' : { elapsedMs, errorClass, message }
  *
+ * Phase 8P-20.8C · optional `existingEventHint` (VERIFIED prefetch result).
+ * When present AND the hint validates against the current identity rule for
+ * this call (sourceEventId or payload_hash), persistRawEvent SKIPS the INSERT
+ * and duplicate SELECT round-trips and returns immediately with source:'prefetch'.
+ * If the hint doesn't verify (stale, wrong identity, drifted payload), the
+ * call FALLS OPEN to the standard INSERT+fallback-SELECT path — the optimization
+ * cannot cause a lost event, a duplicate row, or a bypass of DB uniqueness.
+ *
  * @param {Object} params
  * @param {string}  params.channel
  * @param {string|null} [params.externalOrderId]
@@ -48,8 +56,10 @@ const { payloadHash } = require('./lineId');
  * @param {string}  params.eventType
  * @param {string|null} [params.rawStatus]
  * @param {any}     params.rawPayload
- * @param {Function} [params.stageObserver]  optional; see contract above
- * @returns {Promise<{ id:number, isNew:boolean, payloadHash:string, processingStatus:string, linkedOrderId:number|null }>}
+ * @param {Function} [params.stageObserver]        optional; see contract above
+ * @param {Object|null} [params.existingEventHint] optional prefetched row (see prefetchExistingEvents)
+ *        Shape: { id, source_event_id, payload_hash, processing_status, linked_order_id }
+ * @returns {Promise<{ id:number, isNew:boolean, payloadHash:string, processingStatus:string, linkedOrderId:number|null, source?:'prefetch' }>}
  */
 async function persistRawEvent({
   channel,
@@ -59,6 +69,7 @@ async function persistRawEvent({
   rawStatus = null,
   rawPayload,
   stageObserver,
+  existingEventHint,
 }) {
   if (!channel) throw new Error('channelEventService.persistRawEvent: channel required');
   if (!eventType) throw new Error('channelEventService.persistRawEvent: eventType required');
@@ -71,6 +82,27 @@ async function persistRawEvent({
   };
 
   const hash = payloadHash(rawPayload);
+
+  //   Phase 8P-20.8C · verified prefetch hit path (fails OPEN on any doubt).
+  //   Verification MUST reproduce the exact identity precedence used by the two
+  //   partial UNIQUE indexes in migration 080:
+  //     sourceEventId != null  →  (channel, source_event_id)     [payload may drift]
+  //     sourceEventId == null  →  (channel, payload_hash)         [source_event_id IS NULL row]
+  //   IMPORTANT · we do NOT emit the channel_event_insert observer event here.
+  //   No DB round-trip occurred, so counting this as an event_insert_duplicate
+  //   would corrupt the 8P-20.8B DB-boundary metrics. Callers distinguish the
+  //   two paths via the `source: 'prefetch'` return field.
+  if (_isVerifiedHint(existingEventHint, sourceEventId, hash)) {
+    return {
+      id: existingEventHint.id,
+      isNew: false,
+      payloadHash: hash,
+      processingStatus: existingEventHint.processing_status,
+      linkedOrderId: existingEventHint.linked_order_id,
+      source: 'prefetch',
+    };
+  }
+
   const size = Buffer.byteLength(JSON.stringify(rawPayload), 'utf8');
   const db = getClient();
 
@@ -154,6 +186,133 @@ async function persistRawEvent({
   };
 }
 
+//   Phase 8P-20.8C · Verify a prefetched hint against the SAME identity rule
+//   the DB uses at INSERT time. If it doesn't match perfectly, return false and
+//   the caller falls through to the authoritative INSERT+SELECT path.
+function _isVerifiedHint(hint, sourceEventId, computedHash) {
+  if (!hint || typeof hint !== 'object') return false;
+  if (hint.id == null) return false;
+  //   Case A: source_event_id-keyed identity
+  if (sourceEventId != null) {
+    return hint.source_event_id != null && String(hint.source_event_id) === String(sourceEventId);
+  }
+  //   Case B: payload_hash-keyed identity (source_event_id must be NULL on both sides)
+  return hint.source_event_id == null
+    && hint.payload_hash != null
+    && String(hint.payload_hash) === String(computedHash);
+}
+
+/**
+ * Phase 8P-20.8C · Bulk-prefetch existing channel_order_events by identity.
+ *
+ * Purpose: replace N sequential per-order INSERT+23505+SELECT round-trips with
+ * a small number of bounded IN(...) SELECTs so callers can decide up-front
+ * which candidates already exist and can be short-circuited without touching
+ * the DB per-row.
+ *
+ * Identity precedence exactly mirrors persistRawEvent + the migration-080
+ * partial UNIQUE indexes:
+ *   sourceEventId != null  →  match (channel, source_event_id)
+ *   sourceEventId == null  →  match (channel, source_event_id IS NULL, payload_hash)
+ *
+ * Guarantees:
+ *   • Never SELECTs raw_payload (only id, source_event_id, payload_hash,
+ *     processing_status, linked_order_id — the fields short-circuit needs).
+ *   • Bounded IN(...) chunking (default 100, override via chunkSize).
+ *   • Sequential chunks — no unbounded Promise.all over hundreds of DB calls.
+ *   • Empty input → zero DB queries.
+ *   • DB is still authoritative: a prefetch miss followed by an INSERT race is
+ *     handled by the existing 23505 fallback inside persistRawEvent.
+ *
+ * @param {Object} args
+ * @param {string} args.channel
+ * @param {Array<{ sourceEventId:string|null, payloadHash:string }>} args.candidates
+ * @param {number} [args.chunkSize=100]
+ * @returns {Promise<{ resolve:(candidate)=>Object|null, stats:{ queries:number, rowsFound:number, elapsedMs:number } }>}
+ */
+async function prefetchExistingEvents({ channel, candidates, chunkSize = 100 } = {}) {
+  if (!channel) throw new Error('channelEventService.prefetchExistingEvents: channel required');
+  const t0 = Date.now();
+  const stats = { queries: 0, rowsFound: 0, elapsedMs: 0 };
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    stats.elapsedMs = Date.now() - t0;
+    return { resolve: () => null, stats };
+  }
+  const size = Number.isInteger(chunkSize) && chunkSize > 0 ? Math.min(chunkSize, 500) : 100;
+
+  //   Deduplicate identities so we don't waste chunk slots on repeated hashes.
+  const sourceIds = new Set();
+  const hashes = new Set();
+  for (const c of candidates) {
+    if (!c || typeof c !== 'object') continue;
+    if (c.sourceEventId != null) sourceIds.add(String(c.sourceEventId));
+    else if (c.payloadHash != null) hashes.add(String(c.payloadHash));
+  }
+
+  const rowsBySourceId = new Map();
+  const rowsByHash = new Map();
+  const db = getClient();
+
+  const SELECT_COLS = 'id, source_event_id, payload_hash, processing_status, linked_order_id';
+
+  //   Chunked lookup · source_event_id path
+  if (sourceIds.size > 0) {
+    for (const chunk of _chunkArray([...sourceIds], size)) {
+      stats.queries += 1;
+      const { data, error } = await db.from('channel_order_events')
+        .select(SELECT_COLS)
+        .eq('channel', channel)
+        .in('source_event_id', chunk);
+      if (error) throw error;
+      for (const r of (data || [])) {
+        if (r.source_event_id != null) {
+          rowsBySourceId.set(String(r.source_event_id), r);
+          stats.rowsFound += 1;
+        }
+      }
+    }
+  }
+
+  //   Chunked lookup · payload_hash path (restricted to source_event_id IS NULL)
+  if (hashes.size > 0) {
+    for (const chunk of _chunkArray([...hashes], size)) {
+      stats.queries += 1;
+      const { data, error } = await db.from('channel_order_events')
+        .select(SELECT_COLS)
+        .eq('channel', channel)
+        .is('source_event_id', null)
+        .in('payload_hash', chunk);
+      if (error) throw error;
+      for (const r of (data || [])) {
+        if (r.source_event_id == null && r.payload_hash != null) {
+          rowsByHash.set(String(r.payload_hash), r);
+          stats.rowsFound += 1;
+        }
+      }
+    }
+  }
+
+  stats.elapsedMs = Date.now() - t0;
+
+  const resolve = (candidate) => {
+    if (!candidate || typeof candidate !== 'object') return null;
+    if (candidate.sourceEventId != null) {
+      return rowsBySourceId.get(String(candidate.sourceEventId)) || null;
+    }
+    if (candidate.payloadHash != null) {
+      return rowsByHash.get(String(candidate.payloadHash)) || null;
+    }
+    return null;
+  };
+  return { resolve, stats };
+}
+
+function _chunkArray(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 //   Phase 8P-20.8B · PII-safe error message + generic DB-error classifier.
 //   Keeps observer meta free of raw payload / buyer email / phone / OAuth tokens.
 function _safeErrMsg(err) {
@@ -223,4 +382,9 @@ module.exports = {
   persistRawEvent,
   markProcessed,
   listPendingEvents,
+  //   Phase 8P-20.8C · bulk existing-event prefetch (generic, non-eBay)
+  prefetchExistingEvents,
+  //   Re-export the canonical identity helper so callers use a single source of truth
+  //   (avoids drift between ebayIngestor and channelEventService hash computation).
+  payloadHash,
 };

@@ -54,6 +54,10 @@ stub(chanEvtPath, {
   },
   async markProcessed(_id, _patch) { /* noop */ },
   async listPendingEvents() { return []; },
+  //   Phase 8P-20.8C forward-compat · ebayIngestor now imports these too.
+  //   No-op implementations keep the 8P-20.7 stage-observability tests unaffected.
+  prefetchExistingEvents: async () => ({ resolve: () => null, stats: { queries: 0, rowsFound: 0, elapsedMs: 0 } }),
+  payloadHash: (_p) => 'test-hash-8p20-7',
 });
 stub(omsSvcPath, {
   async upsertCanonicalOrder(canonical, _opts) {

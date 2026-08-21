@@ -90,6 +90,14 @@ function _installStubs() {
     },
     async markProcessed(_id, _patch) { markProcessedCalls++; },
     async listPendingEvents() { return []; },
+    //   Phase 8P-20.8C forward-compat · ebayIngestor now imports these too.
+    //   No-op implementations keep the 8B observability-only tests unaffected:
+    //     - prefetchExistingEvents returns "no hints" so ingestor takes the standard
+    //       persist path (which our stubbed persistRawEvent controls via persistQueue)
+    //     - payloadHash is deterministic-but-fake for the 8B tests (identity checks
+    //       are covered in 8C tests against the REAL implementation)
+    prefetchExistingEvents: async () => ({ resolve: () => null, stats: { queries: 0, rowsFound: 0, elapsedMs: 0 } }),
+    payloadHash: (_p) => 'test-hash-8b',
   });
   stub(omsSvcPath, {
     async upsertCanonicalOrder(canonical, _opts) {

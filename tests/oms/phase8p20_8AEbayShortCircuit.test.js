@@ -60,6 +60,10 @@ stub(chanEvtPath, {
   },
   async markProcessed(_id, _patch) { markProcessedCalls++; },
   async listPendingEvents() { return []; },
+  //   Phase 8P-20.8C forward-compat · ebayIngestor now imports these too.
+  //   No-op implementations keep the 8A short-circuit-only tests unaffected.
+  prefetchExistingEvents: async () => ({ resolve: () => null, stats: { queries: 0, rowsFound: 0, elapsedMs: 0 } }),
+  payloadHash: (_p) => 'test-hash-8a',
 });
 stub(omsSvcPath, {
   async upsertCanonicalOrder(canonical, _opts) {

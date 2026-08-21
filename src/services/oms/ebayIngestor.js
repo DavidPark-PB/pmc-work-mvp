@@ -17,7 +17,11 @@
 
 const EbayAPI = require('../../api/ebayAPI');
 const { toCanonicalOrder } = require('./adapters/ebayOrderAdapter');
-const { persistRawEvent, markProcessed } = require('./channelEventService');
+const {
+  persistRawEvent, markProcessed,
+  //   Phase 8P-20.8C · bulk prefetch + canonical identity hasher (single source of truth)
+  prefetchExistingEvents, payloadHash,
+} = require('./channelEventService');
 const { upsertCanonicalOrder } = require('./omsOrderService');
 const { fillCostSnapshotForItems } = require('./costFiller');
 const { matchCanonicalItems } = require('./omsSkuMatcher');
@@ -79,6 +83,29 @@ async function ingestEbay(opts = {}) {
   const toProcess = limit != null ? rawOrders.slice(0, limit) : rawOrders;
   report.attempted = toProcess.length;
 
+  //   Phase 8P-20.8C · Pre-compute event identity ONCE per order (single canonical
+  //   payloadHash source), then bulk-prefetch existing rows. eBay never provides
+  //   a stable source_event_id, so all candidates use the payload_hash identity.
+  //   The channelEventService.prefetchExistingEvents contract still handles the
+  //   source_event_id case for future channels.
+  const candidates = toProcess.map((raw) => ({
+    sourceEventId: null,   // eBay Trading API has no stable event id
+    payloadHash: payloadHash(raw),
+  }));
+  const tPrefetch = _stageStart('event_prefetch');
+  let prefetch = { resolve: () => null, stats: { queries: 0, rowsFound: 0, elapsedMs: 0 } };
+  try {
+    prefetch = await prefetchExistingEvents({ channel: 'ebay', candidates });
+    _stageDone('event_prefetch', tPrefetch, `rows=${prefetch.stats.rowsFound} queries=${prefetch.stats.queries}`);
+  } catch (err) {
+    //   Fail OPEN · a prefetch failure MUST NOT abort the whole tick. The per-order
+    //   persistRawEvent still runs (INSERT + fallback SELECT) and correctness is preserved.
+    _stageFail('event_prefetch', tPrefetch, _classifyError(err), err);
+  }
+  report.timings.prefetchMs = prefetch.stats.elapsedMs;
+  report.prefetchQueries = prefetch.stats.queries;
+  report.prefetchRowsFound = prefetch.stats.rowsFound;
+
   // 2) Per-order pipeline (isolated)
   let orderIdx = 0;
   for (const raw of toProcess) {
@@ -91,7 +118,10 @@ async function ingestEbay(opts = {}) {
       //   Phase 8P-20.8B · per-order stageObserver adapter emits OMS_EBAY_STAGE_*
       //   for the two DB boundaries inside persistRawEvent (INSERT, DUPLICATE_LOOKUP)
       //   AND accumulates elapsed_ms into aggregate report.timings / metrics.
+      //   Phase 8P-20.8C · pass the prefetched hint. Verified hits skip the INSERT
+      //   entirely; misses or unverified hints fall back to the authoritative path.
       const tPersist = _stageStart(`raw_event_persist#${orderIdx}`);
+      const hint = prefetch.resolve(candidates[orderIdx - 1]);
       const ev = await persistRawEvent({
         channel: 'ebay',
         externalOrderId: orderIdForRaw,
@@ -100,12 +130,24 @@ async function ingestEbay(opts = {}) {
         rawStatus: raw?._orderStatus ?? raw?.orderStatus ?? null,
         rawPayload: raw,
         stageObserver: _makeChannelEventObserver(orderIdx, stageLog, report),
+        existingEventHint: hint,
       });
-      _stageDone(`raw_event_persist#${orderIdx}`, tPersist, `is_new=${ev.isNew ? 1 : 0}`);
+      _stageDone(`raw_event_persist#${orderIdx}`, tPersist, `is_new=${ev.isNew ? 1 : 0}${ev.source === 'prefetch' ? ' source=prefetch' : ''}`);
       //   Aggregate the whole-boundary wall-clock. Note: rawEventPersistMs
       //   INCLUDES both DB sub-boundaries + JS/hash/serialize overhead — see
       //   "Timing composition" note in _emptyReport.
       report.timings.rawEventPersistMs += Date.now() - tPersist;
+      //   Phase 8P-20.8C · classify the outcome
+      if (ev.source === 'prefetch') {
+        report.prefetchHits += 1;
+      } else {
+        report.prefetchMisses += 1;
+        //   Race fallback: prefetch had a hint but persistRawEvent did NOT return
+        //   source='prefetch' (hint failed to verify OR was absent). If the event
+        //   turned out to already exist, the duplicate_lookup boundary fired
+        //   inside persistRawEvent — count it as a race fallback.
+        if (!ev.isNew) report.prefetchRaceFallbacks += 1;
+      }
       eventId = ev.id;
       if (ev.isNew) report.rawEventsInserted += 1;
       else report.rawEventsDeduped += 1;
@@ -246,7 +288,14 @@ async function ingestEbay(opts = {}) {
     ` duplicate_lookup_ms=${report.timings.channelEventDuplicateLookupMs}` +
     ` event_insert_new=${report.eventInsertNew}` +
     ` event_insert_duplicate=${report.eventInsertDuplicate}` +
-    ` duplicate_lookup_count=${report.duplicateLookupCount}`
+    ` duplicate_lookup_count=${report.duplicateLookupCount}` +
+    //   Phase 8P-20.8C · bulk-prefetch attribution
+    ` prefetch_ms=${report.timings.prefetchMs || 0}` +
+    ` prefetch_queries=${report.prefetchQueries || 0}` +
+    ` prefetch_rows_found=${report.prefetchRowsFound || 0}` +
+    ` prefetch_hits=${report.prefetchHits || 0}` +
+    ` prefetch_misses=${report.prefetchMisses || 0}` +
+    ` prefetch_fallback_duplicate_lookups=${report.prefetchRaceFallbacks || 0}`
   );
   return report;
 }
@@ -368,6 +417,8 @@ function _emptyReport(channel, days) {
       rawEventPersistMs: 0,
       channelEventInsertMs: 0,
       channelEventDuplicateLookupMs: 0,
+      //   Phase 8P-20.8C · bulk prefetch wall-clock (single upfront pass)
+      prefetchMs: 0,
     },
     //   Phase 8P-20.8B · Count metrics (Task 5).
     //   eventInsertNew        · rows newly created (isNew=true) in channel_order_events
@@ -378,6 +429,21 @@ function _emptyReport(channel, days) {
     eventInsertNew: 0,
     eventInsertDuplicate: 0,
     duplicateLookupCount: 0,
+    //   Phase 8P-20.8C · bulk-prefetch metrics.
+    //     prefetchQueries              · number of bounded IN(...) SELECTs issued
+    //     prefetchRowsFound            · rows returned by prefetch (any state)
+    //     prefetchHits                 · orders whose persistRawEvent short-circuited via verified hint
+    //     prefetchMisses               · orders whose persistRawEvent went through the standard path
+    //     prefetchRaceFallbacks        · subset of misses where the event turned out to already exist
+    //                                     (race between prefetch and INSERT — the DB duplicate SELECT
+    //                                     fallback fires; DB UNIQUE remains authoritative)
+    //     Invariant: prefetchHits + prefetchMisses === attempted (barring per-order exceptions before persist)
+    //     Invariant: prefetchRaceFallbacks <= duplicateLookupCount
+    prefetchQueries: 0,
+    prefetchRowsFound: 0,
+    prefetchHits: 0,
+    prefetchMisses: 0,
+    prefetchRaceFallbacks: 0,
     startedAt: null, completedAt: null,
     jobError: null,
   };
