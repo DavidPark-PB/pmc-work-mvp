@@ -340,14 +340,16 @@ test('U16. CLI source has no marketplace/notification/scheduler require', () => 
 
 // ─── U17 · No DDL/migration ─
 
-test('U17. Migration numbering guard · 094 exists (baseline) · 095 exists (Phase 8P-5 writer · not applied) · no 096+ added by 8P-3', () => {
+test('U17. Migration numbering guard · 094 baseline · 095/096/097 authorized · no unauthorized 098+', () => {
   const migDir = path.resolve(__dirname, '../../supabase/migrations');
   const files = fs.readdirSync(migDir).filter(f => /^09\d_/.test(f));
   const numbers = files.map(f => Number(f.match(/^(\d+)_/)[1])).sort((a, b) => a - b);
   assert.ok(numbers.includes(94), '094 baseline judgment_snapshots migration expected');
   //   Phase 8P-5 added 095 (physical_write_audit + RPC · file only, unapplied).
-  //   Anything ≥ 096 would be a new phase that this guard did not authorize.
-  assert.ok(!numbers.some(n => n >= 96), `no migration >= 096 permitted by earlier Phase 8P-3 · found ${numbers.filter(n => n >= 96)}`);
+  //   Phase 8P-20 added 096 (ingestion_state + ingestion_error_log · file only, unapplied).
+  //   Phase 8P-21B added 097 (marketplace_identity · file only, unapplied).
+  //   Anything ≥ 098 would be a new phase this guard did not authorize.
+  assert.ok(!numbers.some(n => n >= 98), `no migration >= 098 permitted · found ${numbers.filter(n => n >= 98)}`);
 });
 
 // ─── U18 · DEFAULT_MIN_SAMPLES remains 3 ─
@@ -679,12 +681,14 @@ test('P4-17. No DB write path added by 8P-4 additions', () => {
   assert.doesNotMatch(stripped, /\.from\s*\([^)]*\)\s*\.(insert|update|delete|upsert)\s*\(/, '8P-4 must not introduce DB write');
 });
 
-test('P4-18. Migration numbering guard · 094 exists · 095 is the sole Phase 8P-5 authorized addition (unapplied) · no 096+ from 8P-4', () => {
+test('P4-18. Migration numbering guard · 094 baseline · 095/096/097 authorized · no unauthorized 098+', () => {
   const migDir = path.resolve(__dirname, '../../supabase/migrations');
   const files = fs.readdirSync(migDir).filter(f => /^09\d_/.test(f));
   const numbers = files.map(f => Number(f.match(/^(\d+)_/)[1])).sort((a, b) => a - b);
   assert.ok(numbers.includes(94));
-  //   095 = physical_write_audit + RPC (Phase 8P-5 · file only). This guard
-  //   permits 095 explicitly. Any migration ≥ 096 would be a new phase.
-  assert.ok(!numbers.some(n => n >= 96), `no migration >= 096 permitted by earlier Phase 8P-4 · found ${numbers.filter(n => n >= 96)}`);
+  //   095 = physical_write_audit + RPC (Phase 8P-5 · file only).
+  //   096 = ingestion_state + ingestion_error_log (Phase 8P-20 · file only).
+  //   097 = marketplace_identity (Phase 8P-21B · file only, unapplied).
+  //   Anything ≥ 098 would be a new phase.
+  assert.ok(!numbers.some(n => n >= 98), `no migration >= 098 permitted · found ${numbers.filter(n => n >= 98)}`);
 });
