@@ -88,6 +88,9 @@ async function ingestEbay(opts = {}) {
       const orderIdForRaw = raw?.ebayOrderId ?? raw?.orderId ?? null;
 
       // 2a) Raw event (idempotent by (channel, payload_hash) or (channel, source_event_id))
+      //   Phase 8P-20.8B · per-order stageObserver adapter emits OMS_EBAY_STAGE_*
+      //   for the two DB boundaries inside persistRawEvent (INSERT, DUPLICATE_LOOKUP)
+      //   AND accumulates elapsed_ms into aggregate report.timings / metrics.
       const tPersist = _stageStart(`raw_event_persist#${orderIdx}`);
       const ev = await persistRawEvent({
         channel: 'ebay',
@@ -96,8 +99,13 @@ async function ingestEbay(opts = {}) {
         eventType: 'poll',
         rawStatus: raw?._orderStatus ?? raw?.orderStatus ?? null,
         rawPayload: raw,
+        stageObserver: _makeChannelEventObserver(orderIdx, stageLog, report),
       });
       _stageDone(`raw_event_persist#${orderIdx}`, tPersist, `is_new=${ev.isNew ? 1 : 0}`);
+      //   Aggregate the whole-boundary wall-clock. Note: rawEventPersistMs
+      //   INCLUDES both DB sub-boundaries + JS/hash/serialize overhead — see
+      //   "Timing composition" note in _emptyReport.
+      report.timings.rawEventPersistMs += Date.now() - tPersist;
       eventId = ev.id;
       if (ev.isNew) report.rawEventsInserted += 1;
       else report.rawEventsDeduped += 1;
@@ -227,8 +235,64 @@ async function ingestEbay(opts = {}) {
   }
 
   report.completedAt = new Date().toISOString();
-  stageLog(`OMS_EBAY_STAGE_DONE stage=final_report elapsed_ms=${Date.now() - Date.parse(startedAt)} orders=${report.attempted} created=${report.created} updated=${report.updated} failed=${report.failed} short_circuited=${report.shortCircuited || 0}`);
+  //   Phase 8P-20.8B · aggregate DB-boundary profiling in final_report line so
+  //   Owner can grep exactly where wall-clock was spent, without per-order noise.
+  stageLog(
+    `OMS_EBAY_STAGE_DONE stage=final_report elapsed_ms=${Date.now() - Date.parse(startedAt)}` +
+    ` orders=${report.attempted} created=${report.created} updated=${report.updated} failed=${report.failed}` +
+    ` short_circuited=${report.shortCircuited || 0}` +
+    ` raw_event_persist_ms=${report.timings.rawEventPersistMs}` +
+    ` event_insert_ms=${report.timings.channelEventInsertMs}` +
+    ` duplicate_lookup_ms=${report.timings.channelEventDuplicateLookupMs}` +
+    ` event_insert_new=${report.eventInsertNew}` +
+    ` event_insert_duplicate=${report.eventInsertDuplicate}` +
+    ` duplicate_lookup_count=${report.duplicateLookupCount}`
+  );
   return report;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Phase 8P-20.8B · per-order channelEventService stageObserver adapter.
+// Formats generic (stageName, phase, meta) events into OMS_EBAY_STAGE_* lines
+// with the parent order suffix, AND accumulates timings/metrics into the report.
+// Zero PII / zero raw payload / zero credential — meta comes from a service
+// that never receives buyer data.
+// ─────────────────────────────────────────────────────────────
+function _makeChannelEventObserver(orderIdx, stageLog, report) {
+  const suffix = `#${orderIdx}`;
+  return function observer(stageName, phase, meta) {
+    const stage = `${stageName}${suffix}`;
+    if (phase === 'start') {
+      stageLog(`OMS_EBAY_STAGE_START stage=${stage} ts=${new Date().toISOString()}`);
+      return;
+    }
+    if (phase === 'done') {
+      const el = meta && Number.isFinite(meta.elapsedMs) ? meta.elapsedMs : 0;
+      let extra = '';
+      if (stageName === 'channel_event_insert') {
+        report.timings.channelEventInsertMs += el;
+        if (meta && meta.isNew === true) {
+          report.eventInsertNew += 1;
+          extra = ' is_new=1';
+        } else if (meta && meta.isNew === false) {
+          report.eventInsertDuplicate += 1;
+          extra = ' is_new=0';
+        }
+      } else if (stageName === 'channel_event_duplicate_lookup') {
+        report.timings.channelEventDuplicateLookupMs += el;
+        report.duplicateLookupCount += 1;
+      }
+      stageLog(`OMS_EBAY_STAGE_DONE stage=${stage} elapsed_ms=${el}${extra}`);
+      return;
+    }
+    if (phase === 'fail') {
+      const el = meta && Number.isFinite(meta.elapsedMs) ? meta.elapsedMs : 0;
+      const errClass = (meta && meta.errorClass) || 'unknown';
+      const msg = _safeStageMsg({ message: (meta && meta.message) || '' });
+      stageLog(`OMS_EBAY_STAGE_FAIL stage=${stage} elapsed_ms=${el} error_class=${errClass} message=${msg}`);
+      return;
+    }
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -289,6 +353,31 @@ function _emptyReport(channel, days) {
     itemsInserted: 0, itemsUpdated: 0, itemsSkipped: 0,
     itemsMatched: 0, itemsUnmatched: 0,
     failures: [],
+    //   Phase 8P-20.8B · DB-boundary profiling aggregates.
+    //   Timing composition (avoid double-counting confusion):
+    //     rawEventPersistMs        · total wall-clock inside persistRawEvent
+    //                                 (INCLUDES the two sub-boundaries below
+    //                                 PLUS JS overhead: hash, serialize, meta build).
+    //     channelEventInsertMs     · SUM of just the INSERT boundary durations
+    //                                 (fires for every order; either succeeds or
+    //                                 23505-unique-violates → both count).
+    //     channelEventDuplicateLookupMs · SUM of just the DUPLICATE_LOOKUP
+    //                                 boundary durations (fires ONLY on isNew=false).
+    //   Invariant: rawEventPersistMs ≥ channelEventInsertMs + channelEventDuplicateLookupMs
+    timings: {
+      rawEventPersistMs: 0,
+      channelEventInsertMs: 0,
+      channelEventDuplicateLookupMs: 0,
+    },
+    //   Phase 8P-20.8B · Count metrics (Task 5).
+    //   eventInsertNew        · rows newly created (isNew=true) in channel_order_events
+    //   eventInsertDuplicate  · rows that hit the UNIQUE index (isNew=false)
+    //   duplicateLookupCount  · number of duplicate-lookup SELECTs actually issued
+    //     Invariant: eventInsertNew + eventInsertDuplicate === attempted (barring persist failures)
+    //     Invariant: duplicateLookupCount === eventInsertDuplicate
+    eventInsertNew: 0,
+    eventInsertDuplicate: 0,
+    duplicateLookupCount: 0,
     startedAt: null, completedAt: null,
     jobError: null,
   };
