@@ -202,6 +202,15 @@ function _isVerifiedHint(hint, sourceEventId, computedHash) {
     && String(hint.payload_hash) === String(computedHash);
 }
 
+//   Phase 8P-20.8D · Public identity-verification helper. Same rule as the
+//   internal _isVerifiedHint used inside persistRawEvent — exported so callers
+//   (channel ingestors that pre-hash their candidates) can predict whether a
+//   prefetched hint will produce a prefetch-hit BEFORE calling persistRawEvent,
+//   without duplicating the identity rule (single source of truth · no drift).
+function verifyEventHint({ hint, sourceEventId = null, payloadHash: computedHash } = {}) {
+  return _isVerifiedHint(hint, sourceEventId, computedHash);
+}
+
 /**
  * Phase 8P-20.8C · Bulk-prefetch existing channel_order_events by identity.
  *
@@ -387,4 +396,6 @@ module.exports = {
   //   Re-export the canonical identity helper so callers use a single source of truth
   //   (avoids drift between ebayIngestor and channelEventService hash computation).
   payloadHash,
+  //   Phase 8P-20.8D · export identity-verification helper for prospective fast-path detection.
+  verifyEventHint,
 };

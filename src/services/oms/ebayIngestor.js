@@ -21,6 +21,8 @@ const {
   persistRawEvent, markProcessed,
   //   Phase 8P-20.8C · bulk prefetch + canonical identity hasher (single source of truth)
   prefetchExistingEvents, payloadHash,
+  //   Phase 8P-20.8D · identity-verification helper for prospective fast-path detection
+  verifyEventHint,
 } = require('./channelEventService');
 const { upsertCanonicalOrder } = require('./omsOrderService');
 const { fillCostSnapshotForItems } = require('./costFiller');
@@ -106,6 +108,11 @@ async function ingestEbay(opts = {}) {
   report.prefetchQueries = prefetch.stats.queries;
   report.prefetchRowsFound = prefetch.stats.rowsFound;
 
+  //   Phase 8P-20.8D · verbose-log escape hatch. Default = compressed (production).
+  //   Set OMS_EBAY_VERBOSE_ORDER_LOGS=1 to restore full per-order stage logs for
+  //   diagnostics. Only affects logging — never processing / control flow.
+  const verboseOrderLogs = process.env.OMS_EBAY_VERBOSE_ORDER_LOGS === '1';
+
   // 2) Per-order pipeline (isolated)
   let orderIdx = 0;
   for (const raw of toProcess) {
@@ -113,6 +120,56 @@ async function ingestEbay(opts = {}) {
     orderIdx += 1;
     try {
       const orderIdForRaw = raw?.ebayOrderId ?? raw?.orderId ?? null;
+      const hint = prefetch.resolve(candidates[orderIdx - 1]);
+
+      //   Phase 8P-20.8D · fast-path detection (prospective).
+      //   For orders that will unquestionably take the 8P-20.8A short-circuit
+      //   (prefetch-verified identity + processed + linked), suppress the four
+      //   per-order stage lines that would otherwise flood Railway (raw_event_persist
+      //   START/DONE + short_circuit_already_processed START/DONE).
+      //   The functional path below is byte-identical to the normal branch —
+      //   only stage-log emission changes.
+      //   Verification uses the SAME identity rule as persistRawEvent (single
+      //   source of truth via verifyEventHint) so we cannot mis-predict.
+      const isFastPath = !verboseOrderLogs
+        && hint
+        && verifyEventHint({ hint, sourceEventId: null, payloadHash: candidates[orderIdx - 1].payloadHash })
+        && hint.processing_status === 'processed'
+        && hint.linked_order_id != null;
+
+      if (isFastPath) {
+        //   Silent fast-path · zero per-order stage log lines.
+        //   Semantics preserved:
+        //     - persistRawEvent runs (returns via prefetch hit · no DB call)
+        //     - report.rawEventsDeduped / shortCircuited / prefetchHits all incremented
+        //     - continue skips downstream pipeline (same as normal short-circuit)
+        const tFastPath = Date.now();
+        const evFast = await persistRawEvent({
+          channel: 'ebay',
+          externalOrderId: orderIdForRaw,
+          sourceEventId: null,
+          eventType: 'poll',
+          rawStatus: raw?._orderStatus ?? raw?.orderStatus ?? null,
+          rawPayload: raw,
+          //   NO stageObserver — silent path
+          existingEventHint: hint,
+        });
+        report.timings.rawEventPersistMs += Date.now() - tFastPath;
+        report.rawEventsDeduped += 1;
+        report.prefetchHits += 1;
+        report.shortCircuited += 1;
+        report.fastPathSuppressed += 1;
+        //   Defensive check: if the return diverged from prediction (race edge
+        //   case that cannot happen with current persistRawEvent implementation
+        //   but guards future changes), log a diagnostic line so Owner sees it.
+        if (!evFast || evFast.source !== 'prefetch' || evFast.isNew !== false) {
+          stageLog(`OMS_EBAY_FAST_PATH_DIVERGENCE order_idx=${orderIdx} predicted=fast_path actual_source=${evFast && evFast.source} actual_isNew=${evFast && evFast.isNew}`);
+        }
+        continue;
+      }
+
+      //   ─── Detailed logging path (new events · prefetch misses · pending/failed retries · adapter errors) ───
+      report.detailedOrders += 1;
 
       // 2a) Raw event (idempotent by (channel, payload_hash) or (channel, source_event_id))
       //   Phase 8P-20.8B · per-order stageObserver adapter emits OMS_EBAY_STAGE_*
@@ -121,7 +178,6 @@ async function ingestEbay(opts = {}) {
       //   Phase 8P-20.8C · pass the prefetched hint. Verified hits skip the INSERT
       //   entirely; misses or unverified hints fall back to the authoritative path.
       const tPersist = _stageStart(`raw_event_persist#${orderIdx}`);
-      const hint = prefetch.resolve(candidates[orderIdx - 1]);
       const ev = await persistRawEvent({
         channel: 'ebay',
         externalOrderId: orderIdForRaw,
@@ -295,7 +351,10 @@ async function ingestEbay(opts = {}) {
     ` prefetch_rows_found=${report.prefetchRowsFound || 0}` +
     ` prefetch_hits=${report.prefetchHits || 0}` +
     ` prefetch_misses=${report.prefetchMisses || 0}` +
-    ` prefetch_fallback_duplicate_lookups=${report.prefetchRaceFallbacks || 0}`
+    ` prefetch_fallback_duplicate_lookups=${report.prefetchRaceFallbacks || 0}` +
+    //   Phase 8P-20.8D · fast-path log-compression attribution
+    ` fast_path_suppressed=${report.fastPathSuppressed || 0}` +
+    ` detailed_orders=${report.detailedOrders || 0}`
   );
   return report;
 }
@@ -444,6 +503,15 @@ function _emptyReport(channel, days) {
     prefetchHits: 0,
     prefetchMisses: 0,
     prefetchRaceFallbacks: 0,
+    //   Phase 8P-20.8D · log-compression counters.
+    //     fastPathSuppressed · orders whose per-order stage lines were suppressed
+    //                          (subset of shortCircuited · not a separate outcome).
+    //     detailedOrders     · orders that took the detailed logging path
+    //                          (new events · misses · pending/failed retries · etc.)
+    //     Invariant: fastPathSuppressed + detailedOrders === attempted
+    //     Invariant: fastPathSuppressed <= shortCircuited <= prefetchHits
+    fastPathSuppressed: 0,
+    detailedOrders: 0,
     startedAt: null, completedAt: null,
     jobError: null,
   };
