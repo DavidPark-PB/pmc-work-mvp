@@ -14,6 +14,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '../config/.env') });
 const { getClient } = require('../src/db/supabaseClient');
+const { validateEbaySkuAuthority } = require('../src/services/ebay/skuAuthorityValidator');
 
 const APPLY = process.argv.includes('--apply');
 
@@ -49,12 +50,59 @@ async function main() {
     if (error) throw new Error(`sku_master 조회 실패: ${error.message}`);
     for (const s of data || []) existing.add(s.internal_sku);
   }
-  const toCreate = allSkus.filter((s) => !existing.has(s));
-  console.log(`[seed] 기존 등록 ${existing.size}개 · 신규 등록 대상 ${toCreate.length}개`);
+  const toCreateRaw = allSkus.filter((s) => !existing.has(s));
+
+  //   Phase 8P-22B · Authority guard.
+  //   Reject candidate SKUs where the value is not a safe authoritative eBay SKU
+  //   (price-shaped / uuid fallback / blank / non-unique-across-listings). Skipped
+  //   SKUs are reported per bucket · never silently discarded.
+  const mskuToListings = new Map();
+  for (const [sku, p] of ebayBySku.entries()) {
+    if (!p.item_id) continue;
+    if (!mskuToListings.has(sku)) mskuToListings.set(sku, new Set());
+    mskuToListings.get(sku).add(String(p.item_id));
+  }
+  const counters = {
+    safe_seeded: 0, skipped_blank: 0, skipped_price_shaped: 0,
+    skipped_uuid_artifact: 0, skipped_non_unique: 0, skipped_other_invalid: 0,
+  };
+  const quarantine = [];
+  const toCreate = [];
+  for (const sku of toCreateRaw) {
+    const observed = mskuToListings.get(sku) || new Set();
+    //   eBay's uuid fallback shows up as ebay_products.sku when the seller left SKU
+    //   blank and our ingest wrapper injected a canonical UUID. Treat any UUID-shape
+    //   arriving via seed as generated fallback (canonicalUuidArtifact:true).
+    const v = validateEbaySkuAuthority(sku, {
+      canonicalUuidArtifact: true,
+      observedListingIds: observed,
+    });
+    if (v.ok) { toCreate.push(sku); continue; }
+    quarantine.push({ sku, verdict: v.verdict, reason: v.reason, observed_listing_count: observed.size });
+    switch (v.verdict) {
+      case 'INVALID_BLANK':        counters.skipped_blank += 1; break;
+      case 'INVALID_PRICE_SHAPED': counters.skipped_price_shaped += 1; break;
+      case 'INVALID_UUID_ARTIFACT':counters.skipped_uuid_artifact += 1; break;
+      case 'INVALID_NON_UNIQUE':   counters.skipped_non_unique += 1; break;
+      default:                     counters.skipped_other_invalid += 1;
+    }
+  }
+  console.log(`[seed] 기존 등록 ${existing.size}개 · 신규 등록 대상 ${toCreate.length}개 · 22B guard skip=${toCreateRaw.length - toCreate.length}`);
+  console.log(`[seed:22B] price=${counters.skipped_price_shaped} uuid=${counters.skipped_uuid_artifact} non_unique=${counters.skipped_non_unique} blank=${counters.skipped_blank} other=${counters.skipped_other_invalid}`);
+  if (quarantine.length > 0) {
+    const fs = require('fs'); const path = require('path');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const qPath = path.join(__dirname, `../logs/seed-sku-master-quarantine-${stamp}.json`);
+    try {
+      fs.mkdirSync(path.dirname(qPath), { recursive: true });
+      fs.writeFileSync(qPath, JSON.stringify(quarantine, null, 2));
+      console.log(`[seed:22B] quarantine → ${qPath}`);
+    } catch (e) { console.warn(`[seed:22B] quarantine write skipped: ${e.message}`); }
+  }
 
   if (!APPLY) {
     console.log('[seed] dry-run 모드 — 실제 등록하려면: node scripts/seed-sku-master-from-ebay.js --apply');
-    return;
+    return { counters, quarantineCount: quarantine.length, wouldCreate: toCreate.length };
   }
 
   // 3. sku_master INSERT (원가/무게 NULL → Engine 1이 BLOCK으로 잡고 CSV로 보완)
@@ -76,6 +124,7 @@ async function main() {
     created += batch.length;
     console.log(`[seed] sku_master ${created}/${toCreate.length} 등록...`);
   }
+  counters.safe_seeded = created;
 
   // 4. sku_listing_link 연결 (item_id 있는 것만, 중복은 skip)
   //    ebay_products 의 모든 SKU 를 대상 (이번 실행에서 신규 등록된 것 + 이미 있던 것 포함)
@@ -112,6 +161,11 @@ async function main() {
 
   console.log(`[seed] 완료 — sku_master ${created}개 생성 · listing_link ${linked}개 연결`);
   console.log('[seed] 다음: SKU 마스터 화면에서 "미입력 SKU 템플릿" 다운로드 → 원가/무게 입력 → CSV 업로드');
+  return { counters, quarantineCount: quarantine.length, created, linked };
 }
 
-main().then(() => process.exit(0)).catch((e) => { console.error('[seed] 실패:', e.message); process.exit(1); });
+module.exports = { main };
+
+if (require.main === module) {
+  main().then(() => process.exit(0)).catch((e) => { console.error('[seed] 실패:', e.message); process.exit(1); });
+}

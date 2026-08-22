@@ -25,6 +25,7 @@
 'use strict';
 
 const { getClient } = require('../../db/supabaseClient');
+const { validateEbaySkuAuthority } = require('../ebay/skuAuthorityValidator');
 
 //   Allowlist mirrors migration 097 chk_marketplace_identity_type constraint.
 //   Keep in sync; the DB is authoritative but validating in JS catches bad calls
@@ -225,6 +226,19 @@ async function upsertIdentity({
   if (!SOURCE_ALLOWLIST.has(source)) throw new Error(`upsertIdentity: source not in allowlist: ${source}`);
   if (!CONFIDENCE_ALLOWLIST.has(confidence)) throw new Error(`upsertIdentity: confidence not in allowlist: ${confidence}`);
 
+  //   Phase 8P-22B · guard against seeded malformed / non-unique eBay ebay_sku identities.
+  //   Owner-confirmed inserts are trusted and bypass. Only ingest_seed / catalog_export are gated.
+  if (channel === 'ebay' && identityType === 'ebay_sku' && source !== 'owner_confirmed') {
+    const evidence = await _collectEbayIdentityEvidence(String(identityValue));
+    const verdict = validateEbaySkuAuthority(String(identityValue), evidence);
+    if (!verdict.ok) {
+      const err = new Error(`upsertIdentity: rejected ebay_sku='${identityValue}' via 8P-22B guard: ${verdict.verdict}${verdict.reason ? ' · ' + verdict.reason : ''}`);
+      err.code = 'H22B_EBAY_SKU_REJECTED';
+      err.verdict = verdict.verdict;
+      throw err;
+    }
+  }
+
   const db = getClient();
   const now = new Date().toISOString();
   const row = {
@@ -263,6 +277,29 @@ function _isValidCandidate(c) {
 function _isMissingTableError(err) {
   const msg = err && (err.message || err.hint || err.details || String(err));
   return typeof msg === 'string' && (/does not exist/i.test(msg) || err?.code === '42P01');
+}
+
+/**
+ * Phase 8P-22B · gather evidence for eBay ebay_sku ingest-seed guard.
+ * Reads sku_listing_link to count distinct listing_ids using this msku value.
+ * Fail-open: any DB error returns "no evidence" (validator still catches
+ * pattern-based rejects like price/uuid; only non-uniqueness detection is soft).
+ */
+async function _collectEbayIdentityEvidence(identityValue) {
+  try {
+    const db = getClient();
+    const { data, error } = await db
+      .from('sku_listing_link')
+      .select('listing_id')
+      .eq('marketplace', 'ebay')
+      .eq('marketplace_sku', identityValue)
+      .limit(50);
+    if (error) return { observedListingIds: 0 };
+    const set = new Set((data || []).map(r => String(r.listing_id)));
+    return { observedListingIds: set };
+  } catch (_e) {
+    return { observedListingIds: 0 };
+  }
 }
 
 module.exports = {
