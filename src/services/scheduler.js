@@ -410,8 +410,43 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // ─── B2C Inventory Distribution · Phase 6 · 09:30 KST · DEFAULT OFF ───
+  // Owner directive: b2c.scheduler_enabled=0 이면 자동 refill 실행 안 함.
+  //   · env B2C_SCHEDULER_CRON 로 cron 표현 override 가능 (default '30 9 * * *').
+  //   · runtime 마다 margin_settings 를 매번 조회하여 enabled 여부 재확인 (config 변경 즉시 반영).
+  //   · Scheduler 라고 max_tasks_per_refill / dedup 을 우회하지 않음 (기존 안전장치 그대로).
+  //   · b2c.data_quality_auto_enabled 도 별도 gate.
+  const B2C_CRON = process.env.B2C_SCHEDULER_CRON || '30 9 * * *';
+  cron.schedule(B2C_CRON, async () => {
+    try {
+      const c = getClient();
+      const { data: cfgRows } = await c.from('margin_settings').select('setting_key, setting_value')
+        .in('setting_key', ['b2c.scheduler_enabled', 'b2c.data_quality_auto_enabled']);
+      const cfg = Object.fromEntries((cfgRows || []).map(r => [r.setting_key, Number(r.setting_value)]));
+      const schEnabled = cfg['b2c.scheduler_enabled'] === 1;
+      if (!schEnabled) {
+        console.log('[scheduler.b2c] SKIPPED — b2c.scheduler_enabled=0 (default OFF)');
+        return;
+      }
+      const { refillChannelRegistrationQueue } = require('./b2cInventory/queueRefill');
+      const crRes = await refillChannelRegistrationQueue({ db: c, dryRun: false });
+      console.log(`[scheduler.b2c] channel_register refill: created=${crRes.channel_tasks_created} run_id=${crRes.run_id} reason=${crRes.reason}`);
+
+      const dqEnabled = cfg['b2c.data_quality_auto_enabled'] === 1;
+      if (dqEnabled) {
+        const { refillDataQualityCostMissingQueue } = require('./b2cInventory/dataQualityTasks');
+        const dqRes = await refillDataQualityCostMissingQueue({ db: c, dryRun: false });
+        console.log(`[scheduler.b2c] DQ.cost_missing refill: created=${dqRes.data_quality_tasks_created} run_id=${dqRes.run_id}`);
+      } else {
+        console.log('[scheduler.b2c] DQ SKIPPED — b2c.data_quality_auto_enabled=0');
+      }
+    } catch (e) {
+      console.error('[scheduler.b2c] error:', e.message);
+    }
+  }, { timezone: TZ });
+
   scheduled = true;
-  console.log('[scheduler] 활성화 — 9시(digest)·9:15(Inventory Exceptions)·17시(summary)·4시(platform sync)·10/22시(eBay sync)·0/6/12/18시(경쟁사 모니터+리프라이싱)·3시(recurring)·3:30(uploads cleanup)');
+  console.log(`[scheduler] 활성화 — 9시(digest)·9:15(Inventory Exceptions)·9:30(B2C · default OFF · cron="${B2C_CRON}")·17시(summary)·4시(platform sync)·10/22시(eBay sync)·0/6/12/18시(경쟁사 모니터+리프라이싱)·3시(recurring)·3:30(uploads cleanup)`);
 }
 
 module.exports = { start, sendMorningDigest, sendEveningOwnerSummary };
