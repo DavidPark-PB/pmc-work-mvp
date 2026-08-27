@@ -126,6 +126,16 @@ function navigateTo(page) {
     case 'opportunity-inbox':
       if (window.pmcOpportunityInbox) pmcOpportunityInbox.init();
       break;
+    // ── Phase B2C-7 · Employee Work OS ──
+    case 'b2c-my-tasks':
+      if (window.pmcB2cMyTasks) pmcB2cMyTasks.load();
+      break;
+    case 'b2c-qc':
+      if (window.pmcB2cQc) pmcB2cQc.load();
+      break;
+    case 'b2c-control':
+      if (window.pmcB2cControl) pmcB2cControl.load();
+      break;
   }
 }
 

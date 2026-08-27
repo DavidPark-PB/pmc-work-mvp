@@ -183,6 +183,10 @@ app.use('/api/sku-master/import', require('./src/web/routes/skuMasterImport'));
 app.use('/api/sku-master', require('./src/web/routes/skuMaster'));
 // B2C Inventory Distribution · Phase 3 — Channel Matrix API (read: authGuard · write: requireAdmin 내부)
 app.use('/api/b2c/sku', require('./src/web/routes/b2cChannelMatrix'));
+// B2C Inventory Distribution · Phase 5 — Controlled Task Queue admin API (requireAdmin 라우터 안)
+app.use('/api/b2c/tasks', require('./src/web/routes/b2cTasks'));
+// B2C Inventory Distribution · Phase 7 — Employee Work OS (authGuard + 개별 endpoint requireAdmin)
+app.use('/api/b2c/work', require('./src/web/routes/b2cWork'));
 app.use('/api/exception-routing', require('./src/web/routes/exceptionRouting'));
 // WMS Phase 2 — Order import + matching (admin 전용)
 // 주의: /api/orders/mock-import 가 /api/orders/:id 보다 먼저 등록돼야 함 (path specificity).

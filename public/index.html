@@ -680,6 +680,10 @@
     <div class="menu-item ops-menu" data-page="ops-briefing" style="color:#ffd54f;font-weight:600">📅 오늘 브리핑</div>
     <!-- Phase 8I — Owner Inventory Decision Dashboard (admin only) -->
     <div class="menu-item ops-menu" data-page="owner-inventory" data-admin-only style="color:#ffb74d;font-weight:600">📋 인벤토리 결정</div>
+    <!-- Phase B2C-7 — Employee Work OS -->
+    <div class="menu-item ops-menu" data-page="b2c-my-tasks" style="color:#69f0ae;font-weight:600">🎯 내 업무 (B2C)</div>
+    <div class="menu-item ops-menu" data-page="b2c-qc" data-admin-only style="color:#81d4fa;font-weight:600">🔍 B2C QC</div>
+    <div class="menu-item ops-menu" data-page="b2c-control" data-admin-only style="color:#ce93d8;font-weight:600">🎛 B2C Control</div>
     <!-- PR R-Inbox UI — Opportunity Inbox (R0 후속, admin / staff 동일 가시성) -->
     <div class="menu-item ops-menu" data-page="opportunity-inbox" style="color:#ce93d8;font-weight:600">💡 후보 Inbox</div>
     <div class="menu-item ops-menu" data-page="ops-products" style="color:#81d4fa;font-weight:600">상품 검색/관리</div>
@@ -3509,6 +3513,10 @@
   </div>
   <!-- Phase 8I: Owner Inventory Decision Dashboard -->
   <div id="page-owner-inventory" class="page"></div>
+  <!-- Phase B2C-7: Employee Work OS -->
+  <div id="page-b2c-my-tasks" class="page"></div>
+  <div id="page-b2c-qc" class="page"></div>
+  <div id="page-b2c-control" class="page"></div>
   <!-- PR R-Inbox UI: Opportunity Inbox -->
   <div id="page-opportunity-inbox" class="page">
     <div id="opportunity-inbox-section"></div>
@@ -3581,6 +3589,10 @@
   <!-- ── Phase 8J — DQ drill-down + Evidence history timeline (same file) ── -->
   <!-- ── Phase 8K — Judgment Confidence + Data Provenance panels (same file) ── -->
   <script src="/js/ownerInventory.js?v=20260818b"></script>
+  <!-- Phase B2C-7 · Employee Work OS -->
+  <script src="/js/b2cMyTasks.js?v=20260826a"></script>
+  <script src="/js/b2cQc.js?v=20260826a"></script>
+  <script src="/js/b2cControl.js?v=20260826a"></script>
   <!-- ── PR R-Inbox UI — Opportunity Inbox ── -->
   <script src="/js/opportunityInbox.js?v=20260511a"></script>
   <script src="/js/shippingRecs.js?v=20260623auto"></script>
