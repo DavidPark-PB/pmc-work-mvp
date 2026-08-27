@@ -181,6 +181,8 @@ app.use('/api/sku-master/search', require('./src/web/routes/skuMasterSearch'));
 // 원가/무게/치수 CSV 일괄 임포트 — /api/sku-master 의 /:id 라우트보다 먼저 mount 필요
 app.use('/api/sku-master/import', require('./src/web/routes/skuMasterImport'));
 app.use('/api/sku-master', require('./src/web/routes/skuMaster'));
+// B2C Inventory Distribution · Phase 3 — Channel Matrix API (read: authGuard · write: requireAdmin 내부)
+app.use('/api/b2c/sku', require('./src/web/routes/b2cChannelMatrix'));
 app.use('/api/exception-routing', require('./src/web/routes/exceptionRouting'));
 // WMS Phase 2 — Order import + matching (admin 전용)
 // 주의: /api/orders/mock-import 가 /api/orders/:id 보다 먼저 등록돼야 함 (path specificity).

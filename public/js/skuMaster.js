@@ -647,8 +647,174 @@
 
       panel.querySelectorAll('.sm-link-del').forEach(b => b.addEventListener('click', onDeleteLink));
       panel.querySelector('.sm-link-form').addEventListener('submit', onAddLink);
+
+      //   ── B2C Channel Matrix (Phase 3) — 링크 panel 안에 이어 붙임 ──
+      await renderChannelMatrix(skuId, panel);
     } catch (err) {
       panel.innerHTML = `<div style="color:#ef9a9a;">로드 실패: ${esc(err.message)}</div>`;
+    }
+  }
+
+  //   ── B2C Channel Matrix section (Phase 3) ─────────────────────────────
+  //     GET /api/b2c/sku/:id/channel-matrix · 6개 target 채널 pivot + eligibility
+  //     PATCH /api/b2c/sku/:id/eligibility · admin only · per-channel toggle
+  async function renderChannelMatrix(skuId, hostPanel) {
+    const wrap = document.createElement('div');
+    wrap.className = 'b2c-cm-wrap';
+    wrap.style.cssText = 'margin-top:18px;padding-top:14px;border-top:1px solid #2a2a4a;';
+    wrap.innerHTML = '<div style="color:#888;font-size:12px;">🌐 Channel Matrix 로딩 중…</div>';
+    hostPanel.appendChild(wrap);
+    try {
+      const [meRes, mRes] = await Promise.all([
+        fetch('/api/auth/me').catch(() => null),
+        fetch('/api/b2c/sku/' + skuId + '/channel-matrix'),
+      ]);
+      const meJson = meRes && meRes.ok ? await meRes.json().catch(() => null) : null;
+      const isAdmin = !!(meJson && meJson.user && meJson.user.isAdmin);
+      const mJson = await mRes.json();
+      if (!mRes.ok) throw new Error(mJson.error || 'channel-matrix load failed');
+      const d = mJson.data;
+
+      //   ── eligibility state chip
+      const stateChipMap = {
+        unspecified: { color: '#546e7a', label: 'Unspecified (NULL)' },
+        none:        { color: '#4a1a1a', label: 'Not Eligible (배제)' },
+        explicit:    { color: '#1b5e20', label: 'Eligible (지정됨)' },
+      };
+      const st = stateChipMap[d.eligibility_state] || stateChipMap.unspecified;
+      const stateChip = `<span style="display:inline-block;padding:2px 8px;background:${st.color};color:#fff;border-radius:10px;font-size:10px;font-weight:700;">${esc(st.label)}</span>`;
+
+      const cellStatusColor = (s) => ({
+        LIVE:'#2e7d32', READY:'#0277bd', WORKING:'#f9a825', ERROR:'#c62828',
+        PAUSED:'#616161', BLOCKED:'#4a148c', ENDED:'#37474f', NONE:'#212121',
+      })[s] || '#212121';
+
+      const eligLabel = (v) => v === true ? 'Eligible' : v === false ? 'Not Eligible' : 'Unspecified';
+      const eligColor = (v) => v === true ? '#2e7d32' : v === false ? '#c62828' : '#546e7a';
+
+      const rowsHtml = (d.channels || []).map(c => {
+        const disabled = isAdmin ? '' : 'disabled';
+        const isChecked = c.eligible === true ? 'checked' : '';
+        const isIndet   = c.eligible === null ? 'data-indet="1"' : '';
+        const priceLabel = c.selling_price != null
+          ? `${Number(c.selling_price).toLocaleString()} ${c.selling_currency || ''}`.trim()
+          : '-';
+        const listingLink = c.listing_url
+          ? `<a href="${esc(c.listing_url)}" target="_blank" rel="noopener" style="color:#81d4fa;text-decoration:none;">${esc(c.listing_id || 'link')}↗</a>`
+          : (c.listing_id ? esc(c.listing_id) : '<span style="color:#666;">-</span>');
+        const autoBadge = c.auto_task_target
+          ? '<span title="Owner 지정 자동 Task 대상 채널" style="display:inline-block;padding:1px 5px;background:#01579b;color:#fff;border-radius:8px;font-size:9px;margin-left:4px;">AUTO</span>'
+          : '';
+        return `<tr data-channel="${esc(c.channel)}" style="border-top:1px solid #2a2a4a;">
+          <td style="padding:6px;color:#fff;font-family:monospace;font-weight:600;">${esc(c.channel)}${autoBadge}</td>
+          <td style="padding:6px;"><span style="display:inline-block;padding:2px 8px;background:${cellStatusColor(c.channel_status)};color:#fff;border-radius:10px;font-size:10px;font-weight:700;">${esc(c.channel_status)}</span>${c.raw_status && c.raw_status !== c.channel_status.toLowerCase() ? `<span style="color:#666;font-size:10px;margin-left:4px;">(${esc(c.raw_status)})</span>` : ''}</td>
+          <td style="padding:6px;font-family:monospace;font-size:11px;">${listingLink}</td>
+          <td style="padding:6px;color:#fff;text-align:right;font-size:11px;">${priceLabel}</td>
+          <td style="padding:6px;color:#888;font-size:10px;">${c.last_checked_at ? new Date(c.last_checked_at).toLocaleDateString('ko-KR') : '-'}</td>
+          <td style="padding:6px;text-align:center;">
+            <label style="display:inline-flex;align-items:center;gap:4px;color:${eligColor(c.eligible)};font-size:11px;cursor:${isAdmin ? 'pointer' : 'not-allowed'};" title="${isAdmin ? '' : '관리자만 변경 가능'}">
+              <input type="checkbox" class="b2c-cm-elig" data-sku="${skuId}" data-channel="${esc(c.channel)}" ${isChecked} ${isIndet} ${disabled} style="cursor:${isAdmin ? 'pointer' : 'not-allowed'};">
+              ${eligLabel(c.eligible)}
+            </label>
+          </td>
+        </tr>`;
+      }).join('');
+
+      const bulkBtns = isAdmin ? `
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+          <button class="b2c-cm-bulk" data-sku="${skuId}" data-mode="korea"        style="padding:4px 10px;background:#0277bd;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">Korea Only (4채널)</button>
+          <button class="b2c-cm-bulk" data-sku="${skuId}" data-mode="all"          style="padding:4px 10px;background:#2e7d32;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">All 6 Eligible</button>
+          <button class="b2c-cm-bulk" data-sku="${skuId}" data-mode="none"         style="padding:4px 10px;background:#4a1a1a;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">배제 ([] · Not Eligible)</button>
+          <button class="b2c-cm-bulk" data-sku="${skuId}" data-mode="unspecified"  style="padding:4px 10px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">Unspecified (NULL)</button>
+        </div>
+      ` : '';
+
+      const adminNote = (isAdmin && d.admin_note) ? `
+        <div style="margin-top:8px;padding:8px 10px;background:#0d2818;border-left:3px solid #01579b;font-size:11px;color:#b3e5fc;line-height:1.5;">
+          ℹ️ ${esc(d.admin_note)}
+        </div>` : '';
+
+      wrap.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+          <div style="color:#aaa;font-size:12px;font-weight:600;">🌐 Channel Matrix &amp; Eligibility</div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span style="color:#666;font-size:10px;">SKU 전체 상태:</span> ${stateChip}
+          </div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="color:#aaa;background:#0f0f23;">
+            <th style="padding:6px;text-align:left;">Channel</th>
+            <th style="padding:6px;text-align:left;">Status</th>
+            <th style="padding:6px;text-align:left;">Listing ID</th>
+            <th style="padding:6px;text-align:right;">판매가</th>
+            <th style="padding:6px;text-align:left;">최근 확인</th>
+            <th style="padding:6px;text-align:center;">Eligible</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        ${bulkBtns}
+        ${adminNote}
+        ${(d.other_channels && d.other_channels.length > 0) ? `
+          <div style="margin-top:10px;padding-top:8px;border-top:1px dashed #333;">
+            <div style="color:#666;font-size:10px;margin-bottom:4px;">기타 채널 (표시 대상 외 · 참고용):</div>
+            <div style="color:#aaa;font-size:11px;">${d.other_channels.map(o => `${esc(o.channel)}:${esc(o.channel_status)}${o.listing_id ? ` (${esc(o.listing_id)})` : ''}`).join(' · ')}</div>
+          </div>` : ''}
+      `;
+      //   indeterminate 체크박스 시각화 (unspecified · null)
+      wrap.querySelectorAll('.b2c-cm-elig[data-indet="1"]').forEach(cb => { cb.indeterminate = true; });
+      //   이벤트
+      wrap.querySelectorAll('.b2c-cm-elig').forEach(cb => cb.addEventListener('change', onEligToggle));
+      wrap.querySelectorAll('.b2c-cm-bulk').forEach(b => b.addEventListener('click', onEligBulk));
+    } catch (err) {
+      wrap.innerHTML = `<div style="color:#ef9a9a;font-size:12px;">Channel Matrix 로드 실패: ${esc(err.message)}</div>`;
+    }
+  }
+
+  async function onEligToggle(e) {
+    const cb = e.currentTarget;
+    if (cb.disabled) return;
+    const skuId = parseInt(cb.dataset.sku, 10);
+    const channel = cb.dataset.channel;
+    const desired = cb.checked;               // true = eligible 켜기 · false = 끄기 (배제)
+
+    //   현재 상태 재조회 → 새 배열 계산 (unspecified NULL 이었으면 [] 에서 시작)
+    try {
+      const cur = await fetch('/api/b2c/sku/' + skuId + '/channel-matrix').then(r => r.json());
+      const el = cur?.data?.channel_eligibility;
+      const list = Array.isArray(el) ? el.slice() : [];
+      const idx = list.indexOf(channel);
+      if (desired && idx < 0) list.push(channel);
+      if (!desired && idx >= 0) list.splice(idx, 1);
+      await patchEligibility(skuId, list);
+    } catch (err) {
+      alert('eligibility 저장 실패: ' + err.message);
+    }
+  }
+
+  async function onEligBulk(e) {
+    const skuId = parseInt(e.currentTarget.dataset.sku, 10);
+    const mode = e.currentTarget.dataset.mode;
+    let val;
+    if (mode === 'korea')        val = ['coupang', 'naver', '11st', 'gmarket'];
+    else if (mode === 'all')     val = ['ebay', 'shopify', 'coupang', 'naver', '11st', 'gmarket'];
+    else if (mode === 'none')    val = [];
+    else if (mode === 'unspecified') val = null;
+    else return;
+    await patchEligibility(skuId, val);
+  }
+
+  async function patchEligibility(skuId, val) {
+    try {
+      const res = await fetch('/api/b2c/sku/' + skuId + '/eligibility', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel_eligibility: val }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'update failed');
+      //   panel 재랜더
+      await renderLinkPanel(skuId);
+    } catch (err) {
+      alert('eligibility 저장 실패: ' + err.message);
     }
   }
 
