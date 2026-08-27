@@ -142,6 +142,159 @@ router.get('/pilot/readiness', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+//   ── B2C Active Tasks (Phase 8P-W1-HOTFIX1 · admin visibility) ──
+//   READ-ONLY · Owner/Admin 이 Wave 1 active tasks 전체를 관찰할 수 있게.
+//   filters: status · assignee_id · channel · sku_search
+//   default: 모든 active B2C auto-generated tasks (Wave 1 IDs 1127-1137 포함)
+router.get('/tasks/active', requireAdmin, async (req, res) => {
+  try {
+    const db = getClient();
+    const q = req.query || {};
+    const statusFilter    = q.status ? String(q.status) : null;
+    const assigneeFilter  = q.assignee_id ? Number(q.assignee_id) : null;
+    const channelFilter   = q.channel ? String(q.channel) : null;
+    const skuSearchRaw    = q.sku_search ? String(q.sku_search).trim() : null;
+    const includeDoneToday = q.include_done_today !== 'false';
+
+    //   B2C exception_type namespace 필터 · legacy pricing 태스크 제외
+    const B2C_ET_PREFIXES = ['channel_register.', 'data_quality.'];
+    //   active 는 pending/in_progress/qc_pending · Passed Today 는 done + today
+    const ACTIVE_STATUSES = ['pending', 'in_progress', 'qc_pending', 'blocked'];
+    const todayIso = new Date().toISOString().slice(0, 10) + 'T00:00:00Z';
+
+    //   Query · 최근 30일 window 로 안전하게 · summary Passed/Failed 도 포함 위해
+    const since = new Date(Date.now() - 30 * 86400e3).toISOString();
+    const { data: rows, error } = await db.from('team_tasks')
+      .select('id, title, related_sku_id, channel, exception_type, status, qc_status, qc_fail_reason, blocked_reason, priority_level, priority_score, assignee_id, assignee_scope, created_by, auto_generated, created_at, started_at, submitted_at, completed_at, qc_at, listing_id, listing_url, selling_price, memo')
+      .gte('created_at', since)
+      .order('priority_level', { ascending: true })
+      .order('priority_score', { ascending: false })
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+
+    //   filter to B2C
+    let b2c = (rows || []).filter(t => {
+      const et = t.exception_type || '';
+      return B2C_ET_PREFIXES.some(p => et.startsWith(p)) || et === 'listing_error';
+    });
+
+    //   summary counts (필터 이전 · 전체 B2C 기준)
+    const summary = {
+      pending:      b2c.filter(t => t.status === 'pending').length,
+      in_progress:  b2c.filter(t => t.status === 'in_progress').length,
+      qc_pending:   b2c.filter(t => t.status === 'qc_pending').length,
+      blocked:      b2c.filter(t => t.status === 'blocked').length,
+      passed_today: b2c.filter(t => t.status === 'done' && t.qc_status === 'pass' && t.completed_at && Date.parse(t.completed_at) >= Date.parse(todayIso)).length,
+      failed:       b2c.filter(t => t.qc_status === 'fail').length,
+      total_active: b2c.filter(t => ACTIVE_STATUSES.includes(t.status)).length,
+    };
+
+    //   기본 view = active 상태만 (pending, in_progress, qc_pending, blocked) · Passed Today 는 include_done_today=true 시 포함
+    let visible = b2c.filter(t => ACTIVE_STATUSES.includes(t.status));
+    if (includeDoneToday) {
+      const doneToday = b2c.filter(t => t.status === 'done' && t.completed_at && Date.parse(t.completed_at) >= Date.parse(todayIso));
+      visible = visible.concat(doneToday);
+    }
+
+    //   filters
+    if (statusFilter)   visible = visible.filter(t => t.status === statusFilter);
+    if (channelFilter)  visible = visible.filter(t => t.channel === channelFilter);
+    if (assigneeFilter != null && Number.isFinite(assigneeFilter)) {
+      visible = visible.filter(t => Number(t.assignee_id) === assigneeFilter);
+    }
+
+    //   users batch lookup (assignee display)
+    const uids = Array.from(new Set(visible.map(t => t.assignee_id).filter(Boolean)));
+    const { data: users } = uids.length
+      ? await db.from('users').select('id, username, display_name').in('id', uids)
+      : { data: [] };
+    const userMap = new Map((users || []).map(u => [u.id, u]));
+
+    //   sku_master batch lookup (internal_sku for display + sku_search filter)
+    const skuIds = Array.from(new Set(visible.map(t => t.related_sku_id).filter(Boolean)));
+    const { data: skus } = skuIds.length
+      ? await db.from('sku_master').select('id, internal_sku, title').in('id', skuIds)
+      : { data: [] };
+    const skuMap = new Map((skus || []).map(s => [s.id, s]));
+
+    //   sku_search filter (internal_sku 또는 task title 부분일치 · case-insensitive)
+    if (skuSearchRaw) {
+      const q2 = skuSearchRaw.toLowerCase();
+      visible = visible.filter(t => {
+        const sku = skuMap.get(t.related_sku_id);
+        const iSku = (sku?.internal_sku || '').toLowerCase();
+        const tTitle = String(t.title || '').toLowerCase();
+        const rid = String(t.related_sku_id || '').toLowerCase();
+        return iSku.includes(q2) || tTitle.includes(q2) || rid.includes(q2);
+      });
+    }
+
+    //   response projection
+    const nowMs = Date.now();
+    const items = visible.map(t => {
+      const u = userMap.get(Number(t.assignee_id));
+      const s = skuMap.get(t.related_sku_id);
+      const ageSec = t.created_at ? Math.max(0, Math.round((nowMs - Date.parse(t.created_at)) / 1000)) : null;
+      const elapsedSec = t.started_at
+        ? Math.max(0, Math.round(((t.completed_at ? Date.parse(t.completed_at) : nowMs) - Date.parse(t.started_at)) / 1000))
+        : null;
+      return {
+        task_id: t.id,
+        priority_level: t.priority_level,
+        priority_score: t.priority_score,
+        sku_master_id: t.related_sku_id,
+        internal_sku: s ? s.internal_sku : null,
+        sku_title:    s ? s.title : null,
+        task_title:   t.title,
+        channel: t.channel,
+        assignee_id: t.assignee_id,
+        assignee_username: u ? u.username : null,
+        assignee_display_name: u ? u.display_name : null,
+        assignee_scope: t.assignee_scope,
+        status: t.status,
+        qc_status: t.qc_status,
+        qc_fail_reason: t.qc_fail_reason,
+        blocked_reason: t.blocked_reason,
+        exception_type: t.exception_type,
+        created_at:   t.created_at,
+        started_at:   t.started_at,
+        submitted_at: t.submitted_at,
+        completed_at: t.completed_at,
+        qc_at:        t.qc_at,
+        age_seconds:      ageSec,
+        elapsed_seconds:  elapsedSec,
+        listing_id:  t.listing_id,
+        listing_url: t.listing_url,
+        selling_price: t.selling_price,
+      };
+    });
+
+    //   distinct filter option 힌트 (필터 dropdown 채우기용)
+    const dropdowns = {
+      statuses:  Array.from(new Set(b2c.map(t => t.status))).filter(Boolean).sort(),
+      channels:  Array.from(new Set(b2c.map(t => t.channel))).filter(Boolean).sort(),
+      assignees: Array.from(new Set(b2c.map(t => t.assignee_id))).filter(Boolean).sort().map(id => ({
+        id,
+        username: (userMap.get(id) || {}).username || null,
+        display_name: (userMap.get(id) || {}).display_name || null,
+      })),
+    };
+
+    res.json({ data: {
+      at: new Date().toISOString(),
+      summary,
+      count: items.length,
+      total_b2c_30d: b2c.length,
+      items,
+      dropdowns,
+      applied_filters: { status: statusFilter, assignee_id: assigneeFilter, channel: channelFilter, sku_search: skuSearchRaw, include_done_today: includeDoneToday },
+    }});
+  } catch (e) {
+    console.error('[b2cWork] tasks/active error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/control/state', requireAdmin, async (req, res) => {
   try {
     const db = getClient();
