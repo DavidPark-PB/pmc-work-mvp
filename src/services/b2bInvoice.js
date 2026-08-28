@@ -1012,6 +1012,38 @@ class B2BInvoiceService {
     return Buffer.from(buffer);
   }
 
+  /**
+   * PDF 변환 전용 — MASTER 시트만 남긴 xlsx 버퍼를 만든다.
+   *
+   * 템플릿에는 MASTER 외에 ITEM_MASTER(상품명 별칭표) 와 INPUT(작업용 입력 시트)
+   * 가 함께 들어 있다. Drive 의 PDF export 는 통합문서의 모든 시트를 내보내므로
+   * 그대로 변환하면 고객이 받는 PDF 가 5 페이지가 되고 4 페이지가 내부 시트다
+   * (INPUT 에는 직전 인보이스 입력 잔여물도 남는다).
+   *
+   * xlsx 다운로드 산출물은 건드리지 않는다 — 여기서만 줄여서 PDF 로 넘긴다.
+   */
+  async _stripToMasterSheet(xlsxBuffer) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(xlsxBuffer);
+    for (const ws of workbook.worksheets.slice()) {
+      if (ws.name !== 'MASTER') workbook.removeWorksheet(ws.id);
+    }
+    if (!workbook.getWorksheet('MASTER')) {
+      throw new Error('MASTER 시트가 없어 PDF 변환 불가');
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
+  }
+
+  /**
+   * xlsx 버퍼 → 인보이스 PDF. MASTER 시트만 남기고 Drive 로 변환한다.
+   */
+  async _xlsxToInvoicePdf(xlsxBuffer, invoiceNo) {
+    const masterOnly = await this._stripToMasterSheet(xlsxBuffer);
+    return this.drive.convertXlsxToPdf(masterOnly, `temp-${invoiceNo}`, B2B_DRIVE_FOLDER_ID);
+  }
+
   // ────────────────────── 인보이스 조회 ──────────────────────
 
   /**
@@ -1329,7 +1361,7 @@ class B2BInvoiceService {
         if (dlErr) throw new Error(dlErr.message);
         const xlsxBuffer = Buffer.from(await blob.arrayBuffer());
         if (format === 'pdf') {
-          const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`, B2B_DRIVE_FOLDER_ID);
+          const pdfBuffer = await this._xlsxToInvoicePdf(xlsxBuffer, invoiceNo);
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
         return {
@@ -1346,10 +1378,9 @@ class B2BInvoiceService {
     if (inv.DriveFileId) {
       try {
         if (format === 'pdf') {
-          const pdfBuffer = await this.drive.convertXlsxToPdf(
+          const pdfBuffer = await this._xlsxToInvoicePdf(
             await this.drive.downloadFile(inv.DriveFileId),
-            `temp-${invoiceNo}`,
-            B2B_DRIVE_FOLDER_ID
+            invoiceNo
           );
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
@@ -1387,7 +1418,7 @@ class B2BInvoiceService {
     // (이전엔 Drive fallback 경로에서 format=pdf 를 무시하고 xlsx 를 그대로 반환해서
     //  PDF 버튼이 사실상 .xlsx 를 다운로드시키는 버그가 있었음)
     if (format === 'pdf') {
-      const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`, B2B_DRIVE_FOLDER_ID);
+      const pdfBuffer = await this._xlsxToInvoicePdf(xlsxBuffer, invoiceNo);
       return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
     }
 
