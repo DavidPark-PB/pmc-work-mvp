@@ -1329,7 +1329,7 @@ class B2BInvoiceService {
         if (dlErr) throw new Error(dlErr.message);
         const xlsxBuffer = Buffer.from(await blob.arrayBuffer());
         if (format === 'pdf') {
-          const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`);
+          const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`, B2B_DRIVE_FOLDER_ID);
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
         return {
@@ -1348,7 +1348,8 @@ class B2BInvoiceService {
         if (format === 'pdf') {
           const pdfBuffer = await this.drive.convertXlsxToPdf(
             await this.drive.downloadFile(inv.DriveFileId),
-            `temp-${invoiceNo}`
+            `temp-${invoiceNo}`,
+            B2B_DRIVE_FOLDER_ID
           );
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
@@ -1386,7 +1387,7 @@ class B2BInvoiceService {
     // (이전엔 Drive fallback 경로에서 format=pdf 를 무시하고 xlsx 를 그대로 반환해서
     //  PDF 버튼이 사실상 .xlsx 를 다운로드시키는 버그가 있었음)
     if (format === 'pdf') {
-      const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`);
+      const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`, B2B_DRIVE_FOLDER_ID);
       return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
     }
 
