@@ -47,6 +47,22 @@ RUN apt-get update -qq && \
 # PHP 실행 파일 path — seed128.js 의 PHP_BIN 환경변수가 이걸 가리킴
 ENV PHP_BIN=/usr/bin/php7.4
 
+# B2B 인보이스 PDF 변환용 LibreOffice Calc (headless).
+# 이전에는 Google Drive 에 임시 업로드 → Sheets 변환 → PDF export 경로였는데,
+# Drive 용량이 차면 PDF 버튼만 죽었다 (xlsx 는 Supabase Storage 라 멀쩡).
+# 인보이스 템플릿에 로고·대표 서명 이미지가 있어 HTML 재구현은 문서가 달라지므로
+# xlsx 를 그대로 렌더링하는 LibreOffice 를 쓴다. calc 만 설치해 이미지 증가 최소화.
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y \
+        libreoffice-calc fonts-dejavu-core && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    soffice --version
+
+# xlsxToPdf.js 가 참조하는 실행 파일 경로
+ENV SOFFICE_BIN=/usr/bin/soffice
+# LibreOffice user profile 기본 경로 (호출별로 override 되지만 HOME 이 없으면 실패)
+ENV HOME=/root
+
 # Copy built application
 COPY --from=build /app /app
 

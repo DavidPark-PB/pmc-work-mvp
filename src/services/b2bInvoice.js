@@ -11,6 +11,8 @@ const path = require('path');
 const ExcelJS = require('exceljs');
 const GoogleSheetsAPI = require('../api/googleSheetsAPI');
 const GoogleDriveAPI = require('../api/googleDriveAPI');
+// PDF 변환은 Drive 를 거치지 않고 로컬 LibreOffice 로 처리 (Drive 용량과 무관).
+const xlsxToPdf = require('../lib/xlsxToPdf');
 
 const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID;
 const B2B_DRIVE_FOLDER_ID = process.env.B2B_DRIVE_FOLDER_ID || '1FduYLrs9G8qU197QoYqYtLY0Il3t4Tet';
@@ -1329,7 +1331,7 @@ class B2BInvoiceService {
         if (dlErr) throw new Error(dlErr.message);
         const xlsxBuffer = Buffer.from(await blob.arrayBuffer());
         if (format === 'pdf') {
-          const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`);
+          const pdfBuffer = await xlsxToPdf.convertXlsxToPdf(xlsxBuffer, invoiceNo);
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
         return {
@@ -1346,9 +1348,9 @@ class B2BInvoiceService {
     if (inv.DriveFileId) {
       try {
         if (format === 'pdf') {
-          const pdfBuffer = await this.drive.convertXlsxToPdf(
+          const pdfBuffer = await xlsxToPdf.convertXlsxToPdf(
             await this.drive.downloadFile(inv.DriveFileId),
-            `temp-${invoiceNo}`
+            invoiceNo
           );
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
@@ -1386,7 +1388,7 @@ class B2BInvoiceService {
     // (이전엔 Drive fallback 경로에서 format=pdf 를 무시하고 xlsx 를 그대로 반환해서
     //  PDF 버튼이 사실상 .xlsx 를 다운로드시키는 버그가 있었음)
     if (format === 'pdf') {
-      const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`);
+      const pdfBuffer = await xlsxToPdf.convertXlsxToPdf(xlsxBuffer, invoiceNo);
       return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
     }
 

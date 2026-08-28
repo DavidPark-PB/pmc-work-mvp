@@ -117,6 +117,12 @@ class GoogleDriveAPI {
   /**
    * xlsx 파일 → Google Sheets로 변환 업로드 → PDF export → 삭제
    * (xlsx를 PDF로 변환하는 우회 방법)
+   *
+   * @deprecated 쓰지 말 것. 1단계가 Drive '쓰기' 라서 service account 용량이 차면
+   *   변환이 통째로 실패한다 (2026-08 B2B 인보이스 PDF 버튼 장애의 원인).
+   *   대신 src/lib/xlsxToPdf.js (LibreOffice headless) 를 사용한다 — Drive 와 무관하고
+   *   xlsx 를 그대로 렌더링해서 로고·서명 등 템플릿 서식이 보존된다.
+   *   현재 호출처 없음. 남겨둔 이유는 legacy 진단용.
    */
   async convertXlsxToPdf(xlsxBuffer, tempName = 'temp-invoice') {
     await this._ensureDrive();
