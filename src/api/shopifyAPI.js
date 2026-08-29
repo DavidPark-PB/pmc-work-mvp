@@ -278,7 +278,13 @@ class ShopifyAPI {
         variantId: p.variants[0].id,
         handle: p.handle,
         adminUrl: `https://${this.storeUrl}/admin/products/${p.id}`,
-        publicUrl: `https://${this.storeUrl.replace('.myshopify.com','')}/products/${p.handle}`,
+        // 2026-08-30: 이전 코드는 `storeUrl.replace('.myshopify.com','')` 로 도메인을 잘라내
+        //   `https://ccorea/products/...` 같은 잘못된 URL 을 만들어 DNS 실패시켰음.
+        //   Shopify API 응답의 online_store_url 을 최우선 (커스텀 도메인 포함 정확한 storefront URL)·
+        //   없으면 SHOPIFY_PUBLIC_DOMAIN env override (커스텀 도메인 있을 때)·
+        //   그것도 없으면 storeUrl 그대로 (myshopify.com 도메인은 storefront 접근 가능).
+        publicUrl: p.online_store_url
+          || `https://${process.env.SHOPIFY_PUBLIC_DOMAIN || this.storeUrl}/products/${p.handle}`,
       };
     } catch (error) {
       return { success: false, error: error.response?.data?.errors || error.message };
