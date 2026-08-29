@@ -445,8 +445,22 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // ─── AI 워크플로우 undercut 모니터 · 6h 주기 (00/06/12/18) ───
+  //   Owner 승인 (2026-08-30): AI 상품 제작으로 등록된 리스팅의 원본 경쟁사가
+  //   30일 이내 가격을 인하하면 사장 벨 알림. Browse API 소진 방지 위해
+  //   회당 SWEEP_MAX_PAIRS (default 50) 로 제한. EBAY_API_LOCKED 걸려있으면 정지.
+  if (!EBAY_API_LOCKED) cron.schedule('0 0,6,12,18 * * *', async () => {
+    try {
+      const monitor = require('./aiPublicationMonitor');
+      const r = await monitor.runSweep();
+      console.log(`[scheduler.aiPubMonitor] checked=${r.checked} alerts=${r.alerts} ended=${r.ended} skipped=${r.skipped}`);
+    } catch (e) {
+      console.error('[scheduler.aiPubMonitor] error:', e.message);
+    }
+  }, { timezone: TZ });
+
   scheduled = true;
-  console.log(`[scheduler] 활성화 — 9시(digest)·9:15(Inventory Exceptions)·9:30(B2C · default OFF · cron="${B2C_CRON}")·17시(summary)·4시(platform sync)·10/22시(eBay sync)·0/6/12/18시(경쟁사 모니터+리프라이싱)·3시(recurring)·3:30(uploads cleanup)`);
+  console.log(`[scheduler] 활성화 — 9시(digest)·9:15(Inventory Exceptions)·9:30(B2C · default OFF · cron="${B2C_CRON}")·17시(summary)·4시(platform sync)·10/22시(eBay sync)·0/6/12/18시(경쟁사 모니터+리프라이싱+AI-Pub-Undercut)·3시(recurring)·3:30(uploads cleanup)`);
 }
 
 module.exports = { start, sendMorningDigest, sendEveningOwnerSummary };

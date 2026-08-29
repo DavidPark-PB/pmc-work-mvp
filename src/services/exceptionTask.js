@@ -35,6 +35,7 @@ const DEFAULT_ROUTING = {
   SUPPLIER_OUT_OF_STOCK:      { scope: 'operators' },
   PRICE_CHANGE_APPROVAL_REQUIRED: { scope: 'operators' },
   LABEL_FAILED:               { scope: 'operators' },
+  COMPETITOR_PRICE_DROP:      { scope: 'operators' },
 };
 
 const DEFAULT_TITLE_BY_TYPE = {
@@ -45,6 +46,7 @@ const DEFAULT_TITLE_BY_TYPE = {
   SUPPLIER_OUT_OF_STOCK:          '[자동] 도매처 품절',
   PRICE_CHANGE_APPROVAL_REQUIRED: '[자동] 가격변경 승인 필요',
   LABEL_FAILED:                   '[자동] 라벨 발급 실패',
+  COMPETITOR_PRICE_DROP:          '[자동] 경쟁사 가격 인하',
 };
 
 const VALID_SEVERITIES = new Set(['low', 'medium', 'high', 'critical']);

@@ -199,6 +199,10 @@ async function publishToShopify(product, preset) {
 
 /**
  * 여러 플랫폼 병렬 배포. 하나 실패해도 나머지 계속.
+ *
+ * 2026-08-30: 성공한 eBay 리스팅은 원본 경쟁사와 pair 로 aiPublicationMonitor 에 등록되어
+ *   30일 동안 undercut 감지 대상이 됨. Shopify 는 경쟁사 매칭 개념이 없어 skip.
+ *   product.competitorItemId 없거나 (파일 업로드 경로) 훅 실패해도 발행 결과 자체는 반환.
  */
 async function publish({ product, platforms = ['ebay', 'shopify'], presets = {}, userId } = {}) {
   if (!product || !product.title) throw new Error('product.title 필수');
@@ -216,6 +220,24 @@ async function publish({ product, platforms = ['ebay', 'shopify'], presets = {},
   });
 
   const results = await Promise.all(tasks);
+
+  // Undercut 모니터링 등록 — 성공한 eBay 결과가 있고 경쟁사 itemId 를 갖고 있을 때만.
+  try {
+    const ebayOk = results.find(r => r && r.platform === 'ebay' && r.success && r.itemId);
+    if (ebayOk && product.competitorItemId) {
+      const monitor = require('./aiPublicationMonitor');
+      await monitor.recordPublication({
+        myEbayItemId:             String(ebayOk.itemId),
+        myPublishPrice:           Number(product.price) || null,
+        competitorItemId:         String(product.competitorItemId),
+        competitorPriceAtPublish: Number(product.competitorPrice) || null,
+        createdBy:                Number.isFinite(Number(userId)) ? Number(userId) : null,
+      });
+    }
+  } catch (e) {
+    console.warn('[aiWfPublish] undercut monitor hook 실패 (발행 자체는 성공):', e.message);
+  }
+
   return { results, totalRequested: platforms.length, totalSucceeded: results.filter(r => r.success).length };
 }
 

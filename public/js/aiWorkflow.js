@@ -1226,6 +1226,8 @@
       thumbnailsBase64: (state.thumbnails || []).map(t => ({ platform: t.platform, base64: t.url })),
       itemSpecifics: state.competitor?.itemSpecifics || {},
       competitorItemId: state.competitor?.itemId,
+      // 2026-08-30: 경쟁사 등록 시점 가격을 서버로 전달 · 30일 undercut 감시 baseline 저장에 사용.
+      competitorPrice: Number(state.competitor?.price) || null,
       seoKeywords: state.remake?.seoKeywords || [],
     };
 
