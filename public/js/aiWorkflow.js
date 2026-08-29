@@ -72,6 +72,25 @@
     savePresets(presets);
   }
 
+  // 2026-08-30: Step 2 "PMC 표준 템플릿" 도 동일하게 하드코딩 (Brand=Pokemon /
+  //   Origin=Korea, South / Color=Multiple Color / Material=PP, Paper / Condition=New)
+  //   완전 제거. 경쟁사 fetch (state.competitor.itemSpecifics) 의 aspect 마다 input
+  //   자동 생성 · PMC_TEMPLATE 도 이 aspects 를 loop 로 render 함.
+  //   각 input 은 data-tpl-aspect="{aspect_key}" · runTemplate 가 이 selector 로 수집.
+  function _step2AspectInputs() {
+    const specs = state.competitor?.itemSpecifics || {};
+    const keys = Object.keys(specs);
+    if (keys.length === 0) {
+      return `<div style="grid-column:1/-1;padding:12px;background:#0f0f23;border:1px dashed #444;border-radius:4px;color:#888;font-size:11px;text-align:center;">
+        1단계에서 경쟁사 상품을 가져오면 item specifics 가 여기에 자동으로 채워집니다.
+      </div>`;
+    }
+    return keys.map(k => {
+      const val = specs[k] == null ? '' : String(specs[k]);
+      return `<label style="color:#aaa;font-size:11px;">${esc(k)}<br><input type="text" data-tpl-aspect="${esc(k)}" value="${esc(val)}" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>`;
+    }).join('');
+  }
+
   // Dynamic renderer · presets.ebay.itemSpecifics 의 key 마다 input 생성.
   //   각 input 은 data-preset-ebay-is="{aspect_key}" · savePresetsFromUI 가 이 selector 로 수집.
   //   경쟁사 fetch 로 채워진 상태 · 사용자가 자유롭게 수정.
@@ -475,18 +494,14 @@
           </div>
         </div>
 
-        <!-- 방식 1: PMC 표준 템플릿 (사장님 실제 흐름) — AI 호출 없이 즉시 -->
+        <!-- 방식 1: PMC 상세페이지 — 경쟁사 aspect 자동 채움 (AI 호출 없이 즉시) -->
         <div style="background:#0f2a1a;border:1px solid #1a6a4a;border-radius:8px;padding:12px;margin-bottom:12px;">
-          <div style="color:#81c784;font-size:12px;font-weight:600;margin-bottom:8px;">⚡ PMC 표준 템플릿 <span style="font-weight:400;color:#666;">— eBay/Shopee/Qoo10 용. 제목만 갈아끼움, 즉시 생성</span></div>
+          <div style="color:#81c784;font-size:12px;font-weight:600;margin-bottom:8px;">⚡ PMC 상세페이지 <span style="font-weight:400;color:#666;">— 경쟁사 item specifics 자동 반영 · 제목만 갈아끼움, 즉시 생성</span></div>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:8px;">
-            <label style="color:#aaa;font-size:11px;">Brand<br><input type="text" id="wf-t-brand" value="Pokemon" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
-            <label style="color:#aaa;font-size:11px;">Origin<br><input type="text" id="wf-t-origin" value="Korea, South" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
-            <label style="color:#aaa;font-size:11px;">Color<br><input type="text" id="wf-t-color" value="Multiple Color" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
-            <label style="color:#aaa;font-size:11px;">Material<br><input type="text" id="wf-t-material" value="PP, Paper" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
-            <label style="color:#aaa;font-size:11px;">Condition<br><input type="text" id="wf-t-condition" value="New" style="width:100%;margin-top:2px;padding:6px 8px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:12px;"></label>
+            ${_step2AspectInputs()}
           </div>
           <button type="button" onclick="pmcAIWorkflow.runTemplate()"
-            style="padding:9px 20px;background:#43a047;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">⚡ 표준 템플릿으로 즉시 생성</button>
+            style="padding:9px 20px;background:#43a047;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">⚡ 즉시 생성</button>
         </div>
 
         <!-- 방식 2: AI 재구성 (Vision 이미지 or 텍스트) — 국내 상품용 -->
@@ -538,10 +553,17 @@
     }
   }
 
-  // ⚡ PMC 표준 템플릿 — 사장님 실제 eBay 상세페이지 (2026-08-08 사장님 보내준 원본 그대로).
-  //   AI 호출 없이 즉시. 제목/브랜드/원산지/컬러/재질/컨디션 6개 필드만 갈아끼움.
+  // ⚡ PMC 상세페이지 템플릿 — 사장님 실제 eBay 상세페이지 (2026-08-08 원본).
+  //   2026-08-30: aspects 를 dynamic loop 로 render. 하드코딩 (Brand/Origin/Color/Material/
+  //   Condition) 완전 제거. 경쟁사 fetch 결과 (state.competitor.itemSpecifics) 를
+  //   그대로 사용 · Yu-Gi-Oh / K-Pop 등 어떤 카테고리든 자동 반영.
   //   나머지 (배송·결제·반품·about) 는 boilerplate 고정.
-  const PMC_TEMPLATE = ({ title, brand, origin, color, material, condition }) => `
+  const PMC_TEMPLATE = ({ title, aspects }) => {
+    const rows = Object.entries(aspects || {})
+      .filter(([, v]) => v != null && String(v).trim() !== '')
+      .map(([k, v]) => `<tr><td style="padding:6px 0;color:#666;width:160px;">${_esc(k)}</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(v)}</td></tr>`)
+      .join('');
+    return `
 <div style="max-width:800px;margin:0 auto;font-family:Arial,sans-serif;color:#333;font-size:13px;line-height:1.6;">
   <div style="border-bottom:2px solid #1a1a2e;padding-bottom:12px;margin-bottom:16px;">
     <div style="font-size:11px;color:#888;letter-spacing:1px;">DESCRIPTION</div>
@@ -551,11 +573,7 @@
 
   <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
     <tbody>
-      <tr><td style="padding:6px 0;color:#666;width:120px;">Brand</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(brand)}</td></tr>
-      <tr><td style="padding:6px 0;color:#666;">Origin</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(origin)}</td></tr>
-      <tr><td style="padding:6px 0;color:#666;">Color</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(color)}</td></tr>
-      <tr><td style="padding:6px 0;color:#666;">Material</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(material)}</td></tr>
-      <tr><td style="padding:6px 0;color:#666;">Condition</td><td style="padding:6px 0;color:#1a1a2e;font-weight:600;">${_esc(condition)}</td></tr>
+      ${rows}
     </tbody>
   </table>
 
@@ -606,27 +624,30 @@
     <b style="color:#1a1a2e;">PMC Corporation</b> — Premium Quality Verified
   </div>
 </div>`.trim();
+  };
 
   function _esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  // ⚡ 즉시 템플릿 생성 — AI 호출 없음
+  // ⚡ 즉시 템플릿 생성 — AI 호출 없음. 경쟁사 aspect 를 그대로 사용.
   function runTemplate() {
     const title = state.remake?.seoTitle || state.remake?.title || state.competitor?.title || '';
     if (!title) { alert('1단계에서 상품 정보를 먼저 가져오세요'); return; }
-    const fields = {
-      title,
-      brand:     document.getElementById('wf-t-brand')?.value?.trim()     || 'Pokemon',
-      origin:    document.getElementById('wf-t-origin')?.value?.trim()    || 'Korea, South',
-      color:     document.getElementById('wf-t-color')?.value?.trim()     || 'Multiple Color',
-      material:  document.getElementById('wf-t-material')?.value?.trim()  || 'PP, Paper',
-      condition: document.getElementById('wf-t-condition')?.value?.trim() || 'New',
-    };
-    const html = PMC_TEMPLATE(fields);
+    const aspects = {};
+    document.querySelectorAll('[data-tpl-aspect]').forEach(el => {
+      const key = el.getAttribute('data-tpl-aspect');
+      const val = (el.value || '').trim();
+      if (key && val !== '') aspects[key] = val;
+    });
+    if (Object.keys(aspects).length === 0) {
+      alert('상품 스펙(item specifics)이 비어있습니다. 1단계에서 경쟁사를 가져오세요.');
+      return;
+    }
+    const html = PMC_TEMPLATE({ title, aspects });
     state.reconstruct = {
       htmlDescription: html,
-      raw: { source: 'template', fields },
+      raw: { source: 'template', title, aspects },
       originalImages: selectedImages().slice(0, 5),
       lang: 'en',
       mode: 'template',
