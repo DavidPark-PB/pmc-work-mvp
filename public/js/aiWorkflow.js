@@ -928,9 +928,13 @@
 
         <div id="wf-step4-status" style="color:#888;font-size:12px;margin-bottom:12px;"></div>
 
-        ${pub?.results ? `
+        ${pub?.results ? (() => {
+          const okCount = pub.results.filter(r => r.success).length;
+          const allOk = okCount === pub.results.length && okCount > 0;
+          const anyOk = okCount > 0;
+          return `
         <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:12px;margin-bottom:12px;">
-          <div style="color:#fff;font-size:13px;font-weight:600;margin-bottom:8px;">배포 결과 ${pub.results.filter(r => r.success).length}/${pub.results.length} 성공</div>
+          <div style="color:#fff;font-size:13px;font-weight:600;margin-bottom:8px;">배포 결과 ${okCount}/${pub.results.length} 성공</div>
           ${pub.results.map(r => `
             <div style="padding:10px;background:#1a1a2e;border-left:3px solid ${r.success ? '#4caf50' : '#e94560'};border-radius:4px;margin-bottom:6px;">
               <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -945,8 +949,18 @@
               ${r.error ? `<div style="color:#ff8a80;font-size:11px;margin-top:4px;white-space:pre-wrap;">${esc(String(r.error).slice(0, 300))}</div>` : ''}
             </div>
           `).join('')}
+          ${anyOk ? `
+            <div style="margin-top:10px;padding-top:10px;border-top:1px solid #2a2a4a;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <button type="button" onclick="pmcAIWorkflow.resetToStart()"
+                style="padding:10px 20px;background:#43a047;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:700;font-size:13px;">
+                ▶ 다음 상품 등록 시작
+              </button>
+              ${allOk ? `<span style="color:#81c784;font-size:11px;">✅ 전 플랫폼 등록 완료 · 5초 뒤 자동으로 첫 화면으로 이동합니다</span>` : `<span style="color:#ffb74d;font-size:11px;">⚠️ 실패 항목 확인 후 [다음 상품 등록 시작] 을 눌러주세요</span>`}
+            </div>
+          ` : ''}
         </div>
-        ` : ''}
+          `;
+        })() : ''}
 
         <div style="display:flex;gap:8px;">
           <button type="button" onclick="pmcAIWorkflow.gotoStep(3)"
@@ -1164,6 +1178,25 @@
     }
   }
 
+  // 2026-08-30: 새 상품 등록 시작 — state 완전 초기화 후 Step 1 로 복귀.
+  //   자동 이동 타이머가 걸려있으면 취소 (사용자가 수동 클릭 시).
+  //   localStorage 프리셋은 유지 (다음 상품에서도 재사용).
+  function resetToStart() {
+    if (state._autoResetTimer) { clearTimeout(state._autoResetTimer); state._autoResetTimer = null; }
+    state.step = 1;
+    state.competitor = null;
+    state.remake = null;
+    state.reconstruct = null;
+    state.thumbnails = [];
+    state.selectedImageUrls = new Set();
+    state.publish = null;
+    state.sourceMode = 'ebay';
+    renderStepper();
+    renderBody();
+    // Item ID 입력 필드로 자동 포커스 (다음 상품 즉시 입력 가능)
+    setTimeout(() => document.getElementById('wf-item-id')?.focus(), 50);
+  }
+
   async function runPublish() {
     savePresetsFromUI();
     const presets = loadPresets();
@@ -1214,8 +1247,18 @@
         throw new Error(`서버 오류 (${res.status}): ${m ? m[1].trim() : text.slice(0, 200)}`);
       }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      state.publish = { ...state.publish, results: data.results || [], running: false };
+      const results = data.results || [];
+      state.publish = { ...state.publish, results, running: false };
       renderStep4();
+
+      // 2026-08-30: 사장님 요청 — 등록 성공 시 자동으로 첫 화면 복귀 (다음 상품 준비).
+      //   모든 플랫폼 성공 시에만 자동 이동 · 하나라도 실패하면 결과 확인용으로 머무름.
+      //   5초 지연 · 결과 배너의 🔗 열기 클릭할 시간 확보.
+      const allOk = results.length > 0 && results.every(r => r.success);
+      if (allOk) {
+        if (state._autoResetTimer) clearTimeout(state._autoResetTimer);
+        state._autoResetTimer = setTimeout(() => { state._autoResetTimer = null; resetToStart(); }, 5000);
+      }
     } catch (e) {
       const msg = e.name === 'AbortError' ? '3분 timeout — 서버 응답 없음' : e.message;
       state.publish = { ...state.publish, results: null, running: false };
@@ -1288,7 +1331,7 @@
   // ───────────────────────────────────────────────
   window.pmcAIWorkflow = { load, gotoStep, fetchCompetitor, runRemake, runReconstruct, runTemplate, copyHtml, runThumbnails,
     toggleImage, selectAllImages, clearImageSelection,
-    runPublish, savePresetsFromUI, suggestEbayCategory, pickEbayCategory,
+    runPublish, resetToStart, savePresetsFromUI, suggestEbayCategory, pickEbayCategory,
     importPresetFromListing, checkEbayAspects, runVerify,
     setSourceMode, onFilesPicked, submitFiles };
 })();
