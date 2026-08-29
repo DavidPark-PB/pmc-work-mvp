@@ -44,15 +44,11 @@
         // 2026-08-09 VerifyAdd 통과 확정 조합.
         // 다른 카테고리 참고: 183455 = Sealed Booster Packs / 183454 = Single Cards (구 리스팅)
         categoryId: '183456', conditionId: '1000', currency: 'USD', quantity: 1,
-        itemSpecifics: {
-          Game: 'Pokémon TCG',
-          Type: 'Booster Box',
-          Manufacturer: 'The Pokémon Company',
-          Language: 'Korean',
-          'Age Level': '6+',
-          'Country of Origin': 'Korea, Republic of',
-          Set: 'Scarlet & Violet',
-        },
+        // 2026-08-30: Pokemon TCG 하드코딩 (Game/Type/Manufacturer/Language/Age Level/
+        //   Country of Origin/Set) 완전 제거. 경쟁사 fetch (state.competitor.itemSpecifics)
+        //   결과를 그대로 publish 에 전달 · preset 은 사용자가 UI 에서 명시적으로 채운
+        //   값만 반영됨. 이미 localStorage 에 저장된 사용자 preset 은 그대로 유지됨.
+        itemSpecifics: {},
       },
       shopify: {
         vendor: 'PMC', productType: 'Trading Card', status: 'active',

@@ -20,7 +20,8 @@
  */
 'use strict';
 
-// 사장님 대부분 상품이 TCG 카드라 아래가 안전한 default. 필요시 preset 으로 override.
+// 카테고리/조건/currency 등 eBay 필수 메타는 default 유지. itemSpecifics 는 경쟁사 fetch
+// 결과를 그대로 사용 · 하드코딩 기본값 없음.
 const DEFAULT_PRESETS = {
   ebay: {
     // 2026-08-09: 사장님 성공 리스팅 (183454) 은 옛날 리스팅이라 살아있지만, eBay 는 이제
@@ -34,15 +35,14 @@ const DEFAULT_PRESETS = {
     quantity: 1,
     dispatchTimeMax: 3,
     listingDuration: 'GTC',
-    itemSpecifics: {
-      Game: 'Pokémon TCG',
-      Type: 'Booster Box',
-      Manufacturer: 'The Pokémon Company',
-      Language: 'Korean',
-      'Age Level': '6+',
-      'Country of Origin': 'Korea, Republic of',
-      Set: 'Scarlet & Violet',   // 상품마다 다름 — UI 에서 수정
-    },
+    // 2026-08-30: Pokemon TCG 하드코딩 (Game/Type/Manufacturer/Language/Age Level/
+    //   Country of Origin/Set) 완전 제거. 경쟁사 fetch (localizedAspects) 결과를
+    //   그대로 사용. Yu-Gi-Oh / K-Pop 등 비-Pokemon 상품 등록 시 preset 기본값이
+    //   Manufacturer='The Pokémon Company' 로 오염되는 사고 방지. 카테고리별
+    //   required aspect 부족은 verify-ebay (VerifyAddFixedPriceItem) 가 판정.
+    //   사용자가 특정 preset 을 저장하고 싶으면 aiWorkflow.js UI 에서 편집
+    //   → localStorage 에 저장됨 · 이 default 는 첫 사용자에게만 적용됨.
+    itemSpecifics: {},
   },
   shopify: {
     vendor: 'PMC',
