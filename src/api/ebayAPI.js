@@ -645,6 +645,14 @@ class EbayAPI {
 
   /**
    * 2026-08-09: Item payload XML builder — createProduct 와 verifyProduct 공유.
+   *
+   * 2026-08-30: ProductListingDetails (UPC/EAN/ISBN) 추가.
+   *   문제: Vinyl Records · DVD · Music · Video Games 등 다수 카테고리는 UPC 필수.
+   *         ItemSpecifics 에 UPC 넣어도 eBay 는 별도 <ProductListingDetails><UPC>
+   *         태그로 요구함. 그 필드 자체가 없었어서 사장님이 UPC 입력해도 반려됨.
+   *   방침: itemSpecifics 에서 UPC/EAN/ISBN 을 case-insensitive 로 추출 · 있으면
+   *         ProductListingDetails 에 mirror. UPC 는 없어도 항상 "Does not apply"
+   *         (eBay 공식 opt-out 값) 자동 채움 → UPC 없는 상품도 통과.
    */
   _buildItemXml({ title, description, price, quantity, sku, categoryId, conditionId, imageUrls, imageUrl, currency, itemSpecifics }) {
     const allImages = imageUrls || (imageUrl ? [imageUrl] : []);
@@ -656,6 +664,23 @@ class EbayAPI {
     const specsXml = specsEntries.length > 0
       ? `<ItemSpecifics>${specsEntries.map(([k, v]) => `<NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(String(v))}</Value></NameValueList>`).join('')}</ItemSpecifics>`
       : '';
+
+    // GTIN 계열 추출 (case-insensitive · 별칭 허용).
+    const pickSpec = (...aliases) => {
+      const lower = aliases.map(a => a.toLowerCase());
+      const found = specsEntries.find(([k]) => lower.includes(String(k).trim().toLowerCase()));
+      return found ? String(found[1]).trim() : '';
+    };
+    const upc  = pickSpec('UPC', 'Universal Product Code');
+    const ean  = pickSpec('EAN', 'European Article Number');
+    const isbn = pickSpec('ISBN', 'ISBN-10', 'ISBN-13');
+    // UPC 는 항상 tag emit — 값 없으면 "Does not apply" (eBay 공식 opt-out).
+    //   Vinyl/DVD/책 등 카테고리 필수 통과 · 그 외 카테고리도 무해.
+    // EAN/ISBN 은 값 있을 때만 emit — 억지로 "Does not apply" 넣으면 오히려 카테고리별 반려 가능.
+    const productListingDetailsXml = `<ProductListingDetails>
+      <UPC>${this.escapeXml(upc || 'Does not apply')}</UPC>${ean ? `\n      <EAN>${this.escapeXml(ean)}</EAN>` : ''}${isbn ? `\n      <ISBN>${this.escapeXml(isbn)}</ISBN>` : ''}
+    </ProductListingDetails>`;
+
     return `
   <Item>
     <Title>${this.escapeXml(title)}</Title>
@@ -686,6 +711,7 @@ class EbayAPI {
         <PaymentProfileID>${process.env.EBAY_PAYMENT_PROFILE_ID || '266278202014'}</PaymentProfileID>
       </SellerPaymentProfile>
     </SellerProfiles>
+    ${productListingDetailsXml}
     ${specsXml}
     ${pictureXml}
   </Item>`;
