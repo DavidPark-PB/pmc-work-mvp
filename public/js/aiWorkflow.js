@@ -60,15 +60,23 @@
     try { localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(p)); } catch {}
   }
 
-  // 2026-08-30: 경쟁사 fetch/reconstruct 직후 preset.ebay.itemSpecifics 를 경쟁사 값으로
-  //   자동 동기화. 이미지는 자동 표시되는데 aspect 는 하드코딩 7-field 그리드에만 갇혀
-  //   보이지 않던 문제 · 이제 preset UI 가 경쟁사 aspect 그대로 렌더.
+  // 2026-08-30: 경쟁사 fetch/reconstruct 직후 preset.ebay 를 경쟁사 값으로 자동 동기화.
+  //   - itemSpecifics : 이미지는 자동 표시되는데 aspect 는 하드코딩 7-field 그리드에만
+  //     갇혀 보이지 않던 문제 · 이제 preset UI 가 경쟁사 aspect 그대로 렌더.
+  //   - categoryId / conditionId : Pokemon Booster Box (183456) 로 고정돼 있어서
+  //     Chanel 립스틱을 그 카테고리에 밀어넣어 "item specific Game is missing" 반려.
+  //     경쟁사가 실제 등록한 카테고리/컨디션 그대로 사용 · 사용자가 UI 에서 override 가능.
   function mirrorCompetitorToPreset() {
-    const specs = state.competitor?.itemSpecifics;
-    if (!specs || typeof specs !== 'object' || Object.keys(specs).length === 0) return;
+    const c = state.competitor;
+    if (!c) return;
     const presets = loadPresets();
     presets.ebay = presets.ebay || {};
-    presets.ebay.itemSpecifics = { ...specs };
+    if (c.categoryId)  presets.ebay.categoryId  = String(c.categoryId);
+    if (c.conditionId) presets.ebay.conditionId = String(c.conditionId);
+    const specs = c.itemSpecifics;
+    if (specs && typeof specs === 'object' && Object.keys(specs).length > 0) {
+      presets.ebay.itemSpecifics = { ...specs };
+    }
     savePresets(presets);
   }
 

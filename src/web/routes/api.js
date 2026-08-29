@@ -3304,6 +3304,9 @@ router.get('/ai-workflow/preset-from-listing', async (req, res) => {
     if (!item) return res.status(404).json({ error: '상품을 찾을 수 없습니다' });
 
     // preset shape 로 변환 (프론트 loadPresets 형식과 동기)
+    // 2026-08-30: itemSpecifics 를 Pokemon TCG 키 8종 (Game/Type/Manufacturer/Language/
+    //   Age Level/Country of Origin/Brand/Grade) 으로 필터링하던 것을 제거. 리스팅에
+    //   실제 존재하는 모든 aspect 를 그대로 반환 · 프론트 dynamic UI 가 그대로 렌더.
     const specs = item.itemSpecifics || {};
     res.json({
       itemId,
@@ -3314,17 +3317,7 @@ router.get('/ai-workflow/preset-from-listing', async (req, res) => {
           conditionId: item.conditionId || '',
           currency:    item.currency || 'USD',
           quantity:    1,
-          itemSpecifics: {
-            Game:                specs.Game || '',
-            Type:                specs.Type || '',
-            Manufacturer:        specs.Manufacturer || '',
-            Language:            specs.Language || '',
-            'Age Level':         specs['Age Level'] || '',
-            'Country of Origin': specs['Country of Origin'] || specs['Country/Region of Manufacture'] || specs.Country || '',
-            // 선택: 있으면 사용, 없으면 UI 에서 안 채움
-            Brand:               specs.Brand || '',
-            Grade:               specs.Grade || specs.CardCondition || '',
-          },
+          itemSpecifics: { ...specs },
         },
       },
       raw: {
