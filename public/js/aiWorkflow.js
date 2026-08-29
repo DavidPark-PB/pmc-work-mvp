@@ -60,6 +60,37 @@
     try { localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(p)); } catch {}
   }
 
+  // 2026-08-30: 경쟁사 fetch/reconstruct 직후 preset.ebay.itemSpecifics 를 경쟁사 값으로
+  //   자동 동기화. 이미지는 자동 표시되는데 aspect 는 하드코딩 7-field 그리드에만 갇혀
+  //   보이지 않던 문제 · 이제 preset UI 가 경쟁사 aspect 그대로 렌더.
+  function mirrorCompetitorToPreset() {
+    const specs = state.competitor?.itemSpecifics;
+    if (!specs || typeof specs !== 'object' || Object.keys(specs).length === 0) return;
+    const presets = loadPresets();
+    presets.ebay = presets.ebay || {};
+    presets.ebay.itemSpecifics = { ...specs };
+    savePresets(presets);
+  }
+
+  // Dynamic renderer · presets.ebay.itemSpecifics 의 key 마다 input 생성.
+  //   각 input 은 data-preset-ebay-is="{aspect_key}" · savePresetsFromUI 가 이 selector 로 수집.
+  //   경쟁사 fetch 로 채워진 상태 · 사용자가 자유롭게 수정.
+  function _ebayItemSpecificsInputs(specs) {
+    const keys = Object.keys(specs || {});
+    if (keys.length === 0) {
+      return `<div style="grid-column:span 2;padding:10px;background:#0f0f23;border:1px dashed #444;border-radius:4px;color:#888;font-size:11px;text-align:center;">
+        경쟁사 fetch 시 상품의 item specifics 가 여기에 자동으로 채워집니다.
+      </div>`;
+    }
+    return keys.map(k => {
+      const val = specs[k] == null ? '' : String(specs[k]);
+      return `<label style="color:#aaa;grid-column:span 2;">${esc(k)}
+        <input type="text" data-preset-ebay-is="${esc(k)}" value="${esc(val)}"
+          style="width:100%;margin-top:2px;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
+      </label>`;
+    }).join('');
+  }
+
   // 선택된 이미지만 반환 (없으면 빈 배열 — 후속 함수가 알아서 처리)
   function selectedImages() {
     const all = state.competitor?.images || [];
@@ -315,6 +346,8 @@
         mode: 'standard',
       };
       state.selectedImageUrls = new Set(imgs);
+      // 2026-08-30: 파일 업로드 재구성 경로도 preset UI 자동 채움 (fetch 경로와 동일)
+      mirrorCompetitorToPreset();
       if (status) status.innerHTML = '<span style="color:#81c784;">✅ AI 분석 완료 — 판매가는 4단계에서 직접 입력하세요.</span>';
       renderStep1();
     } catch (e) {
@@ -371,6 +404,8 @@
       state.remake = null;
       // 신규 fetch — 모든 이미지 기본 선택
       state.selectedImageUrls = new Set(state.competitor.images);
+      // 2026-08-30: 경쟁사 item specifics 를 preset UI 에 즉시 반영 (하드코딩 template 대체)
+      mirrorCompetitorToPreset();
       renderStep1();
     } catch (e) {
       const msg = e.name === 'AbortError' ? '30초 timeout' : e.message;
@@ -806,16 +841,9 @@
                   </select>
                 </label>
                 <label style="color:#aaa;">Currency<br><input type="text" id="wf-preset-ebay-currency" value="${esc(presets.ebay.currency || 'USD')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Game (필수)<br><input type="text" id="wf-preset-ebay-game" value="${esc(presets.ebay.itemSpecifics?.Game || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Type (필수)<br><input type="text" id="wf-preset-ebay-type" value="${esc(presets.ebay.itemSpecifics?.Type || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Manufacturer (필수)<br><input type="text" id="wf-preset-ebay-mfr" value="${esc(presets.ebay.itemSpecifics?.Manufacturer || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Age Level (필수)<br><input type="text" id="wf-preset-ebay-age" value="${esc(presets.ebay.itemSpecifics?.['Age Level'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Language<br><input type="text" id="wf-preset-ebay-lang" value="${esc(presets.ebay.itemSpecifics?.Language || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;">Country of Origin<br><input type="text" id="wf-preset-ebay-country" value="${esc(presets.ebay.itemSpecifics?.['Country of Origin'] || presets.ebay.itemSpecifics?.['Country/Region of Manufacture'] || '')}" style="width:100%;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;"></label>
-                <label style="color:#aaa;grid-column:span 2;">Set (필수 — 상품마다 다름)
-                  <input type="text" id="wf-preset-ebay-set" value="${esc(presets.ebay.itemSpecifics?.Set || '')}" placeholder="예: Scarlet & Violet, Legends, Mega Festa 2026" style="width:100%;margin-top:2px;padding:5px 7px;background:#0f0f23;border:1px solid #333;border-radius:3px;color:#fff;font-size:11px;">
-                </label>
-                <div style="grid-column:span 2;color:#666;font-size:10px;">💡 Booster Box=183456 / Booster Pack=183455 / Single Card=183454</div>
+                <!-- 2026-08-30: 경쟁사 fetch 시 자동 채워지는 item specifics · 하드코딩 7-field 그리드 제거 -->
+                ${_ebayItemSpecificsInputs(presets.ebay.itemSpecifics)}
+                <div style="grid-column:span 2;color:#666;font-size:10px;">💡 위 값은 경쟁사 fetch 결과 · 필요 시 수정 가능 · Booster Box=183456 / Booster Pack=183455 / Single Card=183454</div>
               </div>
             </details>
           </div>
@@ -991,19 +1019,26 @@
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
       const p = j.preset?.ebay || {};
-      // 프리셋 편집 필드에 자동 채움
-      const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
-      set('wf-preset-ebay-category', p.categoryId);
-      set('wf-preset-ebay-condition', p.conditionId);
-      set('wf-preset-ebay-currency', p.currency);
-      set('wf-preset-ebay-game', p.itemSpecifics?.Game || j.raw?.specifics?.Game);
-      set('wf-preset-ebay-type', p.itemSpecifics?.Type || j.raw?.specifics?.Type);
-      set('wf-preset-ebay-mfr', p.itemSpecifics?.Manufacturer || j.raw?.specifics?.Manufacturer);
-      set('wf-preset-ebay-age', p.itemSpecifics?.['Age Level'] || j.raw?.specifics?.['Age Level']);
-      set('wf-preset-ebay-lang', p.itemSpecifics?.Language);
-      set('wf-preset-ebay-country', p.itemSpecifics?.['Country of Origin'] || j.raw?.specifics?.['Country of Origin']);
-      // 자동 저장
-      savePresetsFromUI();
+      // 2026-08-30: dynamic itemSpecifics UI 로 이관. raw.specifics 를 우선 사용해서
+      //   경쟁사 리스팅에 실제 있는 모든 aspect 를 preset 에 반영. 그 뒤 renderStep4 로
+      //   UI 재렌더 → 사용자에게 자동으로 모든 aspect 노출.
+      const merged = { ...(j.raw?.specifics || {}), ...(p.itemSpecifics || {}) };
+      // 값이 빈 문자열인 key 는 제외 (preset-from-listing 이 없는 값은 '' 로 반환)
+      const clean = {};
+      for (const [k, v] of Object.entries(merged)) {
+        if (v != null && String(v).trim() !== '') clean[k] = v;
+      }
+      const presets = loadPresets();
+      presets.ebay = {
+        ...presets.ebay,
+        categoryId:  p.categoryId  || presets.ebay.categoryId,
+        conditionId: p.conditionId || presets.ebay.conditionId,
+        currency:    p.currency    || presets.ebay.currency,
+        itemSpecifics: clean,
+      };
+      savePresets(presets);
+      // 4단계 UI 즉시 재렌더 (dynamic input 반영)
+      renderStep4();
       if (status) {
         const cat = j.raw?.categoryName || p.categoryId;
         const cond = j.raw?.conditionDisplayName || p.conditionId;
@@ -1015,21 +1050,21 @@
   }
 
   function savePresetsFromUI() {
+    // 2026-08-30: itemSpecifics 는 dynamic input (data-preset-ebay-is) 에서 전부 수집.
+    //   경쟁사가 준 aspect 뿐 아니라 사용자가 UI 에서 편집한 값 모두 반영. 빈 값은 저장 안 함.
+    const specs = {};
+    document.querySelectorAll('[data-preset-ebay-is]').forEach(el => {
+      const key = el.getAttribute('data-preset-ebay-is');
+      const val = (el.value || '').trim();
+      if (key && val !== '') specs[key] = val;
+    });
     const presets = {
       ebay: {
         categoryId:  document.getElementById('wf-preset-ebay-category')?.value?.trim() || '183456',
         conditionId: document.getElementById('wf-preset-ebay-condition')?.value?.trim() || '1000',
         currency:    document.getElementById('wf-preset-ebay-currency')?.value?.trim() || 'USD',
         quantity:    1,
-        itemSpecifics: {
-          Game:                document.getElementById('wf-preset-ebay-game')?.value?.trim() || '',
-          Type:                document.getElementById('wf-preset-ebay-type')?.value?.trim() || '',
-          Manufacturer:        document.getElementById('wf-preset-ebay-mfr')?.value?.trim() || '',
-          'Age Level':         document.getElementById('wf-preset-ebay-age')?.value?.trim() || '',
-          Language:            document.getElementById('wf-preset-ebay-lang')?.value?.trim() || '',
-          'Country of Origin': document.getElementById('wf-preset-ebay-country')?.value?.trim() || '',
-          Set:                 document.getElementById('wf-preset-ebay-set')?.value?.trim() || '',
-        },
+        itemSpecifics: specs,
       },
       shopify: {
         vendor:          document.getElementById('wf-preset-shopify-vendor')?.value?.trim() || 'PMC',
