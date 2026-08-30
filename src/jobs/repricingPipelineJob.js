@@ -18,7 +18,7 @@
  *   dryRun=false        — 안전장치 통과 후 eBay API 실제 변경
  */
 
-const { runCompetitorMonitor } = require('../services/competitorMonitor');
+
 const { runAutoRepricer } = require('../services/autoRepricer');
 const telegram = require('../services/telegramBot');
 const { getClient } = require('../db/supabaseClient');
@@ -61,10 +61,12 @@ async function loadRecentAlerts(hoursBack = 6) {
     .order('created_at', { ascending: false });
 
   if (error) {
-    console.warn('[RepricingPipeline] competitor_alerts 조회 오류 (fallback: monitor 직접 실행):', error.message);
-    // 테이블이 없으면 monitor 직접 실행
-    const result = await runCompetitorMonitor();
-    return result.alerts || [];
+    // 2026-08-30 Owner audit (Approach 1 · #8): fallback 이 활성 경쟁사 전량
+    //   (~1,049) 을 Browse API 로 재조회하는 burst 였음. 일시 DB 오류에 대해
+    //   자동 재빌드 시도는 quota 위험. competitor_alerts 는 CompetitorMonitor
+    //   cron 이 정상적으로 채우므로 이번 tick 만 스킵하고 다음 tick 에서 다시.
+    console.error('[RepricingPipeline] competitor_alerts 조회 실패 — 이번 tick 스킵 (fallback burst 방지):', error.message);
+    return [];
   }
 
   // DB rows → alert 객체로 변환
