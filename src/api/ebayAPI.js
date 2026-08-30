@@ -3,6 +3,34 @@ const axios = require('axios');
 const fs = require('fs');
 const tokenStore = require('../services/tokenStore');
 
+// ── Browse API in-memory 응답 캐시 (2026-08-30, Approach 1 · Item #3) ───────
+//   동일 legacy itemId 를 여러 크론이 각기 호출하는 낭비 방지.
+//   module-level Map 이라 모든 EbayAPI 인스턴스가 공유 (Node single-process 안전).
+//   TTL default 300s · env EBAY_BROWSE_CACHE_TTL_MS 로 override 가능.
+//   BROWSE_CACHE_MAX (default 5000) 초과 시 가장 오래된 entry 부터 축출.
+//   audit 근거: MyListingRefresher + CompetitorMonitor + CompListingRefresher +
+//     killPricingDailyJob + battle UI 가 같은 competitor itemId 를 하루 여러 번 호출.
+//     5분 TTL 만 도입해도 Browse 20~30% 즉감 예상.
+const _browseCache = new Map();               // itemId → { result, expiresAt }
+const BROWSE_CACHE_TTL_MS = Number(process.env.EBAY_BROWSE_CACHE_TTL_MS) || 300_000;
+const BROWSE_CACHE_MAX = Number(process.env.EBAY_BROWSE_CACHE_MAX) || 5000;
+let _browseCacheHits = 0;
+let _browseCacheMisses = 0;
+
+/** 통계 스냅샷 조회 (진단/로그용). */
+function getBrowseCacheStats() {
+  const total = _browseCacheHits + _browseCacheMisses;
+  const hitRate = total > 0 ? (_browseCacheHits / total) : 0;
+  return { size: _browseCache.size, hits: _browseCacheHits, misses: _browseCacheMisses, hitRate };
+}
+
+/** 테스트/수동 초기화용. 프로덕션 코드에서 호출 지양. */
+function clearBrowseCache() {
+  _browseCache.clear();
+  _browseCacheHits = 0;
+  _browseCacheMisses = 0;
+}
+
 /**
  * eBay API 연동 클래스 (Trading API 직접 호출)
  *
@@ -1333,6 +1361,20 @@ class EbayAPI {
   }
 
   async _fetchViaBrowseAPI(itemId) {
+    // 캐시 확인 · 성공 응답만 저장되므로 hit 이면 즉시 반환 (실패는 캐시 안 됨).
+    const cacheKey = String(itemId);
+    const cached = _browseCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      _browseCacheHits++;
+      // 100 hit 마다 hit-rate 요약 로그 (스팸 방지).
+      if (_browseCacheHits % 100 === 0) {
+        const stats = getBrowseCacheStats();
+        console.log(`[Browse cache] size=${stats.size} hits=${stats.hits} misses=${stats.misses} hitRate=${(stats.hitRate * 100).toFixed(1)}%`);
+      }
+      return cached.result;
+    }
+    _browseCacheMisses++;
+
     const appToken = await this.getApplicationToken();
     const url = `https://api.ebay.com/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id=${itemId}`;
 
@@ -1437,7 +1479,7 @@ class EbayAPI {
     // 실제 판매되는 옵션은 대부분 배열 안에 있음. 배송 무료 리스팅도 감지.
     const shippingCost = this._pickShippingCost(item.shippingOptions);
 
-    return {
+    const result = {
       itemId: item.legacyItemId || itemId,
       title: item.title || '',
       description: item.description || item.shortDescription || '',
@@ -1471,6 +1513,14 @@ class EbayAPI {
       conditionId: item.conditionId || '',
       itemSpecifics: specifics,
     };
+
+    // 캐시 저장 · 최대 크기 초과 시 가장 오래된 entry 축출 (Map insertion order).
+    if (_browseCache.size >= BROWSE_CACHE_MAX) {
+      const oldest = _browseCache.keys().next().value;
+      if (oldest !== undefined) _browseCache.delete(oldest);
+    }
+    _browseCache.set(cacheKey, { result, expiresAt: Date.now() + BROWSE_CACHE_TTL_MS });
+    return result;
   }
 
   /**
@@ -1760,3 +1810,5 @@ if (require.main === module) {
 }
 
 module.exports = EbayAPI;
+module.exports.getBrowseCacheStats = getBrowseCacheStats;
+module.exports.clearBrowseCache = clearBrowseCache;
