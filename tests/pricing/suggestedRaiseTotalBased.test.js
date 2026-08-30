@@ -17,21 +17,34 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 /**
- * route 안의 로직과 동일한 순수 함수.
- * 라우트 자체는 DB 조인 + supabase 계층까지 있어서 여기서는 계산부만 격리.
- * suggestedRaise 로직이 바뀌면 이 함수도 라우트와 동기화되어야 한다.
+ * route 안의 로직과 동일한 순수 함수 · 라우트가 바뀌면 여기도 동기화되어야 한다.
+ * 2026-08-30: suggestedDrop 추가 (Owner: "인하가 주 목적").
  */
-function computeSuggestedRaise({ type, newPrice, compShipping, myPrice, myShipping }) {
-  if (type !== 'raise_opportunity') return null;
-  if (newPrice == null || myPrice == null) return null;
-  const myTotal = myPrice + (myShipping || 0);
+const UNDERCUT = 0.50;
+
+function computeSuggestions({ type, newPrice, compShipping, myPrice, myShipping }) {
+  if (newPrice == null || myPrice == null) return { suggestedRaise: null, suggestedDrop: null };
+  const myTotal   = myPrice + (myShipping || 0);
   const compTotal = newPrice + (compShipping || 0);
-  const targetTotal = +(compTotal - 0.50).toFixed(2);
-  if (targetTotal <= myTotal) return null;
-  const targetMyPrice = +(targetTotal - (myShipping || 0)).toFixed(2);
-  if (targetMyPrice <= myPrice) return null;
-  return targetMyPrice;
+  let suggestedRaise = null;
+  let suggestedDrop  = null;
+  if (myTotal > compTotal) {
+    const targetTotal = +(compTotal - UNDERCUT).toFixed(2);
+    const targetMyPrice = +(targetTotal - (myShipping || 0)).toFixed(2);
+    if (targetMyPrice > 0 && targetMyPrice < myPrice) suggestedDrop = targetMyPrice;
+  } else if (type === 'raise_opportunity' && myTotal < compTotal) {
+    const targetTotal = +(compTotal - UNDERCUT).toFixed(2);
+    if (targetTotal > myTotal) {
+      const targetMyPrice = +(targetTotal - (myShipping || 0)).toFixed(2);
+      if (targetMyPrice > myPrice) suggestedRaise = targetMyPrice;
+    }
+  }
+  return { suggestedRaise, suggestedDrop };
 }
+
+//   compat wrapper (기존 케이스 그대로 유지)
+function computeSuggestedRaise(args) { return computeSuggestions(args).suggestedRaise; }
+function computeSuggestedDrop(args)  { return computeSuggestions(args).suggestedDrop; }
 
 //   ── Owner 실제 케이스 (3M Scotch Brite) ──
 test('Owner 버그 케이스 — 내가 이미 비싼데 판매가만 낮음 → 인상 제안 X', () => {
@@ -43,6 +56,43 @@ test('Owner 버그 케이스 — 내가 이미 비싼데 판매가만 낮음 →
     myShipping: 10.00,   // 내 배송
   });
   assert.equal(r, null, '내 총액 $34.98 > 경쟁사 총액 $31.99 이므로 인상 제안 X');
+});
+
+//   ── 신규 · 인하 제안 ──
+test('내 총액 > 경쟁사 총액 → suggestedDrop 반환 (인하가 주 목적)', () => {
+  const r = computeSuggestedDrop({
+    type: 'price_change',
+    newPrice: 31.99, compShipping: 0,
+    myPrice: 24.98, myShipping: 10.00,
+  });
+  //   compTotal 31.99 · target 31.49 · targetMyPrice 21.49
+  assert.equal(r, 21.49);
+});
+
+test('내가 이미 저렴 → suggestedDrop X (더 낮출 필요 없음)', () => {
+  const r = computeSuggestedDrop({
+    type: 'price_change',
+    newPrice: 40.00, compShipping: 5.00,   // compTotal 45
+    myPrice: 30.00, myShipping: 10.00,     // myTotal 40 · 이미 저렴
+  });
+  assert.equal(r, null);
+});
+
+test('인하 제안이 음수/0 이 되면 반환 X (원가 밑 방지)', () => {
+  const r = computeSuggestedDrop({
+    type: 'price_change',
+    newPrice: 3.00, compShipping: 0,       // compTotal 3
+    myPrice: 5.00, myShipping: 10.00,      // myTotal 15 · 비쌈
+  });
+  //   target 2.50 · targetMyPrice = 2.50 - 10 = -7.50 → null
+  assert.equal(r, null);
+});
+
+test('type 무관 · 총액 비교만으로 인하 제안 (price_crash 든 price_change 든)', () => {
+  const args = { newPrice: 20, compShipping: 0, myPrice: 25, myShipping: 5 };
+  assert.equal(computeSuggestedDrop({ ...args, type: 'price_crash' }), 14.50);
+  assert.equal(computeSuggestedDrop({ ...args, type: 'price_change' }), 14.50);
+  assert.equal(computeSuggestedDrop({ ...args, type: 'raise_opportunity' }), 14.50);
 });
 
 //   ── 정상 케이스: 내가 저렴한데 경쟁사 인상 → 나도 따라 올릴 여지 ──

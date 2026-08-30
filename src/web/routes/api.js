@@ -2959,16 +2959,30 @@ router.get('/battle/alerts', async (req, res) => {
       const myPrice = p ? Number(p.price_usd) || null : null;
       const myShipping = p ? Number(p.shipping_usd) || 0 : 0;
 
+      // 2026-08-30 Owner 지적 ("내리는게 주 목적"): 이전엔 인상 제안만 있고
+      //   인하 제안이 아예 없었음. 총액 비교해서:
+      //     - myTotal < compTotal (내가 저렴) & 경쟁사 인상 : 인상 여지 → suggestedRaise
+      //     - myTotal > compTotal (내가 비쌈)              : 인하 필요 → suggestedDrop
+      //   두 필드 모두 판매가로 반환 (배송 별도) · UI 는 각각 다른 색 버튼으로 표시.
+      //   Undercut 상수 $0.50 (autoRepricer 의 KILL_PRICE_UNDERCUT 과 동일 스케일).
+      const UNDERCUT_USD = 0.50;
       let suggestedRaise = null;
-      if (a.type === 'raise_opportunity' && newPrice != null && myPrice != null) {
+      let suggestedDrop  = null;
+      if (newPrice != null && myPrice != null) {
         const myTotal   = myPrice + myShipping;
         const compTotal = newPrice + compShipping;
-        // 경쟁사 인상 후 총액 - $0.50 로 나도 총액을 맞춘다. 그 총액이 내 현재 총액보다 여전히 높을 때만.
-        const targetTotal = +(compTotal - 0.50).toFixed(2);
-        if (targetTotal > myTotal) {
-          // 총액 targetTotal 을 맞추기 위한 내 판매가 = target - 내 배송비.
+        if (myTotal > compTotal) {
+          // 인하 · 경쟁사 총액 - undercut 로 총액을 맞춘다.
+          const targetTotal = +(compTotal - UNDERCUT_USD).toFixed(2);
           const targetMyPrice = +(targetTotal - myShipping).toFixed(2);
-          if (targetMyPrice > myPrice) suggestedRaise = targetMyPrice;
+          if (targetMyPrice > 0 && targetMyPrice < myPrice) suggestedDrop = targetMyPrice;
+        } else if (a.type === 'raise_opportunity' && myTotal < compTotal) {
+          // 인상 (마진 회복) — 경쟁사가 인상해서 우리도 따라 올릴 여유가 생겼을 때만.
+          const targetTotal = +(compTotal - UNDERCUT_USD).toFixed(2);
+          if (targetTotal > myTotal) {
+            const targetMyPrice = +(targetTotal - myShipping).toFixed(2);
+            if (targetMyPrice > myPrice) suggestedRaise = targetMyPrice;
+          }
         }
       }
 
@@ -2994,6 +3008,7 @@ router.get('/battle/alerts', async (req, res) => {
         changePct: alertData.changePct || null,
         competitorUrl: c?.competitor_url || (a.competitor_id ? `https://www.ebay.com/itm/${a.competitor_id}` : null),
         suggestedRaise,
+        suggestedDrop,
       };
     });
 

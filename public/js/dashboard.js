@@ -3493,8 +3493,13 @@ async function loadBattleAlerts() {
           myInfo = ' <span style="color:#f57c00">· 내 SKU 매칭 없음</span>';
         }
 
-        // 인상 제안
+        // 인상 · 인하 제안 (2026-08-30 Owner 지적: 인하가 주 목적)
         var raiseAction = '';
+        var dropAction = '';
+        if (a.suggestedDrop && a.myItemId) {
+          dropAction = '<button onclick="applyKillPrice(\'' + a.myItemId + '\',' + a.suggestedDrop + ',\'' + a.sku + '\')" ' +
+            'style="background:#c62828;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;margin-right:4px">📉 $' + a.suggestedDrop.toFixed(2) + ' 로 인하</button>';
+        }
         if (a.suggestedRaise && a.myItemId) {
           raiseAction = '<button onclick="applyKillPrice(\'' + a.myItemId + '\',' + a.suggestedRaise + ',\'' + a.sku + '\')" ' +
             'style="background:#2e7d32;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">💰 $' + a.suggestedRaise.toFixed(2) + ' 로 인상</button>';
@@ -3511,7 +3516,7 @@ async function loadBattleAlerts() {
             '<div style="flex:1;min-width:0">' +
               '<div style="font-size:12px;font-weight:600;color:#333;margin-bottom:2px">' + icon + ' ' + titleShort + ' <span style="color:#888;font-weight:400">· ' + (a.seller || '?') + '</span></div>' +
               '<div style="font-size:12px;margin-bottom:4px">' + priceInfo + myInfo + '</div>' +
-              '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' + raiseAction + links + '</div>' +
+              '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' + dropAction + raiseAction + links + '</div>' +
             '</div>' +
           '</div>'
         );
