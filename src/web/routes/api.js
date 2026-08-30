@@ -2350,26 +2350,17 @@ router.post('/battle/add-competitor', async (req, res) => {
       return res.status(400).json({ success: false, error: 'mySku와 competitorItemId가 필요합니다' });
     }
 
-    // eBay Shopping API → Browse API fallback으로 경쟁사 가격 조회
+    // 2026-08-30 Owner audit (Approach 1 · #2): 옛 Shopping API 1차 시도 제거.
+    //   `getCompetitorItemDetail` 은 open.api.ebay.com DNS 소멸로 항상 실패했음 →
+    //   매 클릭마다 실패 응답 대기 (지연) + 로그 오염만 발생. Browse API 만 사용.
+    //   Browse 자체 실패 시 아이템은 여전히 fallback (itemId 만) 로 저장됨.
     const ebay = getEbayAPI();
     const itemId = String(competitorItemId).trim();
     let item = null;
-
-    // 1차: Shopping API
     try {
-      item = await ebay.getCompetitorItemDetail(itemId);
+      item = await ebay._fetchViaBrowseAPI(itemId);
     } catch (e) {
-      console.warn('[add-competitor] Shopping API failed:', e.message);
-    }
-
-    // 2차: Browse API fallback (Shopping API rate limit 대비)
-    if (!item) {
-      try {
-        console.log('[add-competitor] Trying Browse API for', itemId);
-        item = await ebay._fetchViaBrowseAPI(itemId);
-      } catch (e) {
-        console.warn('[add-competitor] Browse API also failed:', e.message);
-      }
+      console.warn('[add-competitor] Browse API failed:', e.message);
     }
 
     // competitor_prices 테이블에 저장 (API 실패해도 item ID로 직접 저장)
@@ -3050,10 +3041,12 @@ router.post('/battle/refresh-sellers', async (req, res) => {
 });
 
 // GET /api/battle/competitor/:itemId — 경쟁사 단일 상품 상세
+// 2026-08-30 Owner audit (Approach 1 · #2): 옛 Shopping API 대체.
+//   `getCompetitorItemDetail` 은 DNS 소멸로 상시 404 반환했음 → Browse API 로 교체.
 router.get('/battle/competitor/:itemId', async (req, res) => {
   try {
     const ebay = getEbayAPI();
-    const item = await ebay.getCompetitorItemDetail(req.params.itemId);
+    const item = await ebay._fetchViaBrowseAPI(String(req.params.itemId).trim());
     if (!item) {
       return res.status(404).json({ error: '상품을 찾을 수 없습니다' });
     }

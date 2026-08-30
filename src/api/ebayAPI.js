@@ -1118,67 +1118,12 @@ class EbayAPI {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  /**
-   * Shopping API 공통 호출 (OAuth 토큰 + 자동 갱신)
-   * @param {string} callName - API 호출명 (GetSingleItem, GetMultipleItems)
-   * @param {Object} params - 추가 쿼리 파라미터
-   * @param {number} timeout - 타임아웃 (ms)
-   * @returns {Object} API 응답 JSON
-   */
-  async callShoppingAPI(callName, params = {}, timeout = 15000) {
-    let url = 'https://open.api.ebay.com/shopping'
-      + `?callname=${callName}`
-      + '&responseencoding=JSON'
-      + `&appid=${this.appId}`
-      + '&siteid=0'
-      + '&version=967';
-
-    // 추가 파라미터 URL에 붙이기
-    for (const [key, value] of Object.entries(params)) {
-      url += `&${key}=${encodeURIComponent(value)}`;
-    }
-
-    // Application Token 발급/캐시 후 헤더에 추가
-    const headers = {};
-    try {
-      const appToken = await this.getApplicationToken();
-      headers['X-EBAY-API-IAF-TOKEN'] = appToken;
-    } catch (e) {
-      console.warn('Application token 발급 실패, appid만으로 호출:', e.message);
-    }
-
-    try {
-      const response = await axios.get(url, { headers, timeout });
-      const data = response.data;
-
-      // Failure 에러 처리
-      if (data.Ack === 'Failure') {
-        const errors = Array.isArray(data.Errors) ? data.Errors : (data.Errors ? [data.Errors] : []);
-        const errMsgs = errors.map(e => e.LongMessage || e.ShortMessage || '').join(' ');
-        const errCodes = errors.map(e => String(e.ErrorCode || '')).join(',');
-
-        // 토큰 에러 시 캐시 무효화 후 재시도 (1회)
-        const isTokenError = errMsgs.includes('token') || errMsgs.includes('Token') || errMsgs.includes('IAF');
-        const isRateLimit = errCodes.includes('18') || errMsgs.includes('limited');
-
-        if (isTokenError && !isRateLimit && !this._tokenRefreshed) {
-          console.log('Shopping API 토큰 에러, Application Token 재발급...');
-          this._appToken = null;
-          this._appTokenExpiry = 0;
-          this._tokenRefreshed = true;
-          return this.callShoppingAPI(callName, params, timeout);
-        }
-
-        throw new Error(`Shopping API Error: ${errMsgs || 'Unknown'}`);
-      }
-
-      this._tokenRefreshed = false;
-      return data;
-    } catch (error) {
-      if (error.message.startsWith('Shopping API Error:')) throw error;
-      throw new Error(`Shopping API ${callName} 실패: ${error.message}`);
-    }
-  }
+  // 2026-08-30 Owner audit (Approach 1 · #2): Shopping API 관련 dead code 제거.
+  //   `open.api.ebay.com/shopping` 는 eBay 서비스 종료로 DNS 자체가 소멸 (ENOTFOUND).
+  //   `callShoppingAPI` · `getCompetitorItemDetail` 모두 실 호출 시 반드시 실패 →
+  //   응답 지연 + 로그 오염만 발생. 유일한 caller 였던
+  //   `/api/battle/add-competitor` · `/api/battle/competitor/:itemId` 는 이 커밋에서
+  //   `_fetchViaBrowseAPI` 직접 호출로 교체됨. 관련 method 완전 제거.
 
   /**
    * 경쟁사 상품 정보 조회 (eBay Browse API 기반)
@@ -1234,42 +1179,6 @@ class EbayAPI {
       console.warn(`Browse API getCompetitorItems: ${itemIds.length}개 중 ${failed}개 조회 실패(ended/404/rate-limit 포함)`);
     }
     return results;
-  }
-
-  /**
-   * 단일 경쟁사 상품 상세 조회 (eBay Shopping API - GetSingleItem)
-   * @param {string} itemId - eBay Item ID
-   * @returns {Object|null} 상품 정보
-   */
-  async getCompetitorItemDetail(itemId) {
-    try {
-      const data = await this.callShoppingAPI('GetSingleItem', {
-        ItemID: itemId,
-        IncludeSelector: 'Details,ShippingCosts,ItemSpecifics'
-      }, 10000);
-
-      if (data.Ack === 'Success' || data.Ack === 'Warning') {
-        const item = data.Item;
-        return {
-          itemId: item.ItemID,
-          title: item.Title || '',
-          price: parseFloat(item.ConvertedCurrentPrice?.Value) || 0,
-          currency: item.ConvertedCurrentPrice?.CurrencyID || 'USD',
-          shippingCost: parseFloat(item.ShippingCostSummary?.ShippingServiceCost?.Value) || 0,
-          quantitySold: parseInt(item.QuantitySold) || 0,
-          seller: item.Seller?.UserID || '',
-          sellerFeedbackScore: parseInt(item.Seller?.FeedbackScore) || 0,
-          listingStatus: item.ListingStatus || '',
-          viewItemURL: item.ViewItemURLForNaturalSearch || '',
-          galleryURL: item.GalleryURL || '',
-          quantityAvailable: (parseInt(item.Quantity) || 0) - (parseInt(item.QuantitySold) || 0),
-        };
-      }
-      return null;
-    } catch (error) {
-      console.error('Shopping API GetSingleItem 실패:', error.message);
-      return null;
-    }
   }
 
   /**
