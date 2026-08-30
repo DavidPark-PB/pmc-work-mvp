@@ -2772,13 +2772,56 @@ router.get('/repricer/report', async (req, res) => {
 });
 
 // POST /api/battle/monitor — 수동으로 경쟁사 모니터링 실행
+//
+// 2026-08-30 Owner audit (Approach 1 · #7) 방어:
+//   `runCompetitorMonitor()` 는 활성 경쟁사 전량 (~1,049) 을 Browse API 로 조회.
+//   confirm 없는 POST 는 400 으로 burst estimate 만 반환 · 사장님이 대화상자 확인
+//   후 `?confirm=true` 로 재요청. 15분 쿨다운 · 연속 클릭 시 429.
+let _lastBattleMonitorRunAt = 0;
+const BATTLE_MONITOR_COOLDOWN_MS = 15 * 60 * 1000;
 router.post('/battle/monitor', async (req, res) => {
+  // burst 예상치 · confirm 다이얼로그에 표시
+  let estimatedBrowseCalls = null;
+  try {
+    const { getClient } = require('../../db/supabaseClient');
+    const db = getClient();
+    const { count } = await db.from('competitor_prices')
+      .select('*', { count: 'exact', head: true })
+      .neq('competitor_id', '')
+      .not('competitor_id', 'is', null);
+    estimatedBrowseCalls = count;
+  } catch (_) { /* count 실패해도 방어는 유지 */ }
+
+  const confirmed = req.query.confirm === 'true' || req.body?.confirm === true;
+  if (!confirmed) {
+    return res.status(400).json({
+      success: false,
+      requiresConfirm: true,
+      estimatedBrowseCalls,
+      message: `이 작업은 활성 경쟁사 ${estimatedBrowseCalls ?? '~1000'}개를 Browse API 로 재조회합니다 (일일 quota 상당량 소진). 확인 후 confirm=true 로 재요청하세요.`,
+    });
+  }
+
+  const now = Date.now();
+  const sinceLastMs = now - _lastBattleMonitorRunAt;
+  if (_lastBattleMonitorRunAt > 0 && sinceLastMs < BATTLE_MONITOR_COOLDOWN_MS) {
+    const retryAfterSeconds = Math.ceil((BATTLE_MONITOR_COOLDOWN_MS - sinceLastMs) / 1000);
+    res.set('Retry-After', String(retryAfterSeconds));
+    return res.status(429).json({
+      success: false,
+      cooldown: true,
+      retryAfterSeconds,
+      message: `쿨다운 중 · ${retryAfterSeconds}초 후 재시도 가능 (연속 클릭 방지)`,
+    });
+  }
+  _lastBattleMonitorRunAt = now;
+
   try {
     const { runCompetitorMonitor } = require('../../services/competitorMonitor');
     const result = await runCompetitorMonitor();
     battleCache = null;
     battleCacheTime = 0;
-    res.json({ success: true, ...result });
+    res.json({ success: true, estimatedBrowseCalls, ...result });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

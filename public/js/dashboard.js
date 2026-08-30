@@ -3521,9 +3521,25 @@ async function runCompetitorMonitor(btn) {
   btn.disabled = true;
   btn.textContent = '체크 중...';
   try {
-    var r = await fetch(API + '/battle/monitor', { method: 'POST' });
+    // 2026-08-30 (Approach 1 #7): 이 작업은 활성 경쟁사 전량 (~1,049) 을 Browse
+    //   API 로 재조회 → 일일 quota 대량 소진. 백엔드가 confirm 없으면 400 으로
+    //   burst estimate 만 반환. 사장님이 확인 다이얼로그 후 확정 재요청.
+    var r0 = await fetch(API + '/battle/monitor', { method: 'POST' });
+    var d0 = await r0.json();
+    if (d0.requiresConfirm) {
+      var est = d0.estimatedBrowseCalls || '약 1000';
+      var ok = confirm('⚠️ 경쟁사 ' + est + '개를 Browse API 로 재조회합니다.\n\n' +
+        '일일 quota (5,000/일) 상당량을 즉시 소진합니다.\n' +
+        '오늘 quota 이미 부족하면 실패 가능.\n\n계속하시겠습니까?');
+      if (!ok) { btn.textContent = '🔍 경쟁사 변동 체크'; btn.disabled = false; return; }
+    }
+    var r = await fetch(API + '/battle/monitor?confirm=true', { method: 'POST' });
     var d = await r.json();
-    if (!d.success) throw new Error(d.error);
+    if (d.cooldown) {
+      alert('쿨다운 중 · ' + d.retryAfterSeconds + '초 후 재시도 가능 (연속 클릭 방지)');
+      return;
+    }
+    if (!d.success) throw new Error(d.error || d.message);
     var alertCount = d.alerts ? d.alerts.length : 0;
     alert('경쟁사 변동 체크 완료!\n확인: ' + (d.checked || 0) + '개\n알림: ' + alertCount + '개');
     loadBattleAlerts();
