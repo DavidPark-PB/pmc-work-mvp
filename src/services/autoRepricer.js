@@ -37,10 +37,6 @@ async function runAutoRepricer(dryRun = true, deps = {}) {
   }
 
   const db = deps.db || getClient();
-  const ebay = deps.ebay || (() => {
-    const EbayAPI = require('../api/ebayAPI');
-    return new EbayAPI();
-  })();
   const report = { processed: 0, changed: 0, skipped: [], errors: [], changes: [], mode: dryRun ? 'dry_run' : 'live' };
 
   console.log(`[AutoRepricer] Starting (${dryRun ? 'DRY RUN' : 'LIVE'})...`);
@@ -88,12 +84,32 @@ async function runAutoRepricer(dryRun = true, deps = {}) {
   } catch (e) { /* table might not exist */ }
 
   // 2. Get my eBay listings
+  //
+  // 2026-08-30 Owner audit (Approach 1 · #1) — 이 함수는 dryRun 강제 (line 30-33)라
+  //   Trading GetMyeBaySelling 페이지 스캔 (25 pages × 1 회/일 = 25 Trading calls/day)
+  //   결과가 어차피 미적용. DB `ebay_products` 는 productSync (10/22 KST) 로 신선하게
+  //   유지되므로 대체 안전 · Trading 순수 25 calls/day 절감.
+  //   deps.ebay 주입 시 (테스트) 만 legacy Trading path 유지 (backward compat).
   let myListings = [];
-  for (let page = 1; page <= 25; page++) {
-    const result = await ebay.getActiveListings(page, 200);
-    if (!result.items || result.items.length === 0) break;
-    myListings = myListings.concat(result.items);
-    if (!result.hasMore) break;
+  if (deps.ebay && typeof deps.ebay.getActiveListings === 'function') {
+    for (let page = 1; page <= 25; page++) {
+      const result = await deps.ebay.getActiveListings(page, 200);
+      if (!result.items || result.items.length === 0) break;
+      myListings = myListings.concat(result.items);
+      if (!result.hasMore) break;
+    }
+  } else {
+    const { data: myRows, error: myErr } = await db.from('ebay_products')
+      .select('item_id, sku, title, price_usd')
+      .neq('status', 'ended')
+      .gt('price_usd', 0);
+    if (myErr) throw myErr;
+    myListings = (myRows || []).map(r => ({
+      sku: r.sku,
+      itemId: r.item_id,
+      title: r.title || '',
+      price: r.price_usd,
+    }));
   }
 
   // Build lookup: sku/itemId → listing
