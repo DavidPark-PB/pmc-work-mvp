@@ -3474,6 +3474,7 @@ async function loadBattleAlerts() {
         // 내 가격 vs 경쟁
         // 2026-08-30 fix: newCompTotal 은 경쟁사 판매가 + 경쟁사 배송비(compShipping).
         //   이전엔 판매가만 total 로 취급해서 경쟁사 배송이 있으면 diff 가 잘못 나왔음.
+        //   2026-08-30 UX: 경쟁사 배송비도 화면에 명시 · Owner 오해 재발 방지.
         var myInfo = '';
         if (a.myPrice != null) {
           var myTotal = a.myPrice + (a.myShipping || 0);
@@ -3484,6 +3485,8 @@ async function loadBattleAlerts() {
             var diff = +(myTotal - newCompTotal).toFixed(2);
             var diffColor = diff > 0 ? '#c62828' : '#2e7d32';
             var diffText = diff > 0 ? '내가 $' + diff.toFixed(2) + ' 비쌈' : '내가 $' + Math.abs(diff).toFixed(2) + ' 저렴';
+            myInfo += ' · 경쟁사 $' + a.newPrice.toFixed(2);
+            if (a.compShipping) myInfo += ' (+$' + a.compShipping.toFixed(2) + ' 배송)';
             myInfo += ' <span style="color:' + diffColor + ';font-weight:600">· ' + diffText + '</span>';
           }
         } else {
