@@ -2944,17 +2944,32 @@ router.get('/battle/alerts', async (req, res) => {
       let alertData = {};
       try { alertData = JSON.parse(a.data || '{}'); } catch (e) {}
 
-      // 마진 회복 기회 = 경쟁사 인상 후 가격에서 -$0.50 정도로 우리도 인상
+      // 마진 회복 기회 = 경쟁사 인상 후 총액에서 -$0.50 로 우리도 인상.
+      //
+      // 2026-08-30 버그 fix (Owner 스크린샷): 이전 로직은 판매가만 비교했음
+      //   (target = newPrice - 0.50 > myPrice). 배송비를 무시해서, 내 총액이
+      //   이미 경쟁사 총액보다 비싼데도 판매가만 낮으면 인상 제안을 냈다.
+      //   예: 내 24.98+10=34.98 vs 경쟁사 31.99+0=31.99 → 이미 내가 $2.99 비쌈인데
+      //   "$31.49 로 인상" 제안 → 총액 $41.49 로 더 벌어짐.
+      //   지금은 총액(판매가+배송) 기준으로 비교하고, 인상 제안 판매가는
+      //   목표 총액에서 내 배송비를 빼서 산출한다.
       const oldPrice = Number(alertData.oldPrice) || null;
-      const newPrice = Number(alertData.newPrice) || null;
+      const newPrice = Number(alertData.newPrice) || null;   // 경쟁사 판매가 (배송 별도)
+      const compShipping = c ? Number(c.competitor_shipping) || 0 : 0;
       const myPrice = p ? Number(p.price_usd) || null : null;
       const myShipping = p ? Number(p.shipping_usd) || 0 : 0;
 
       let suggestedRaise = null;
-      if (a.type === 'raise_opportunity' && newPrice && myPrice) {
-        // 새 경쟁가 - $0.50 로 인상 제안, 단 현재 내 가격보다 낮으면 제안 X
-        const target = +(newPrice - 0.50).toFixed(2);
-        if (target > myPrice) suggestedRaise = target;
+      if (a.type === 'raise_opportunity' && newPrice != null && myPrice != null) {
+        const myTotal   = myPrice + myShipping;
+        const compTotal = newPrice + compShipping;
+        // 경쟁사 인상 후 총액 - $0.50 로 나도 총액을 맞춘다. 그 총액이 내 현재 총액보다 여전히 높을 때만.
+        const targetTotal = +(compTotal - 0.50).toFixed(2);
+        if (targetTotal > myTotal) {
+          // 총액 targetTotal 을 맞추기 위한 내 판매가 = target - 내 배송비.
+          const targetMyPrice = +(targetTotal - myShipping).toFixed(2);
+          if (targetMyPrice > myPrice) suggestedRaise = targetMyPrice;
+        }
       }
 
       return {
@@ -2975,6 +2990,7 @@ router.get('/battle/alerts', async (req, res) => {
         imageUrl: p?.image_url || null,
         oldPrice,
         newPrice,
+        compShipping,   // frontend 가 정확한 경쟁사 총액을 계산할 수 있게 노출
         changePct: alertData.changePct || null,
         competitorUrl: c?.competitor_url || (a.competitor_id ? `https://www.ebay.com/itm/${a.competitor_id}` : null),
         suggestedRaise,
