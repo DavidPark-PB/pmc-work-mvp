@@ -191,9 +191,20 @@ async function executePriceWrite(req, deps = {}) {
   }
 
   // ── 3. Marketplace API (mockable) ────────────────────────────────────────
-  const ebay = deps.ebay || require('../api/ebayAPI').getInstance
-    ? deps.ebay || require('../api/ebayAPI').getInstance()
-    : deps.ebay;
+  //   2026-08-30 fix: 이전 코드 `deps.ebay || require(...).getInstance ? ... : deps.ebay`
+  //     는 `||` 가 `?:` 보다 우선이라 실제로는 (deps.ebay || getInstance_함수참조)
+  //     truthy 검사 후 truthy 이면 (deps.ebay || getInstance()) 호출을 시도했음.
+  //     EbayAPI 는 `getInstance` static 을 export 하지 않으므로 `getInstance` 는
+  //     undefined · deps.ebay 없으면 조건 자체가 falsy · else 분기로 undefined 반환.
+  //     결과: 지금까지 이 gate 로 실 eBay 호출이 단 한 번도 성공 못 함
+  //     (사장님이 오늘 인하 버튼 클릭 시 "no ebay client available" 로 처음 발견).
+  //   Owner 원칙: MANUAL_APPROVED context 는 사장님이 명시 승인한 경로 · gate 는
+  //     idempotency/audit/kill-switch 유지하되 marketplace 호출은 정상 수행.
+  let ebay = deps.ebay;
+  if (!ebay) {
+    const EbayAPI = require('../api/ebayAPI');
+    ebay = new EbayAPI();
+  }
   if (!ebay || typeof ebay.updateItem !== 'function') {
     await markRun(db, runId, 'failed', now(), { error: 'no_ebay_client' });
     const eventId = await safePublish(deps, {

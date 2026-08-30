@@ -168,9 +168,14 @@ async function executeEbayProductEdit(req, ctx = {}, deps = {}) {
 
   // ── 3. QUANTITY mutation (legacy — this phase does not cover stock) ────
   if (qtyNum !== null) {
-    const ebay = deps.ebay || require('../api/ebayAPI').getInstance
-      ? deps.ebay || require('../api/ebayAPI').getInstance()
-      : deps.ebay;
+    // 2026-08-30 fix: 동일 broken conditional 이 이 파일에도 있었음
+    //   (priceExecutionGate.js:194 참고). `||` 우선순위로 인해 `deps.ebay` 없으면
+    //   getInstance 미정의 → 항상 falsy → deps.ebay = undefined → "no ebay client available".
+    let ebay = deps.ebay;
+    if (!ebay) {
+      const EbayAPI = require('../api/ebayAPI');
+      ebay = new EbayAPI();
+    }
     if (!ebay || typeof ebay.updateItem !== 'function') {
       result.ok = false;
       result.body.success = false;
