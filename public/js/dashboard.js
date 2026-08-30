@@ -3450,8 +3450,24 @@ async function loadBattleAlerts() {
       raise_opportunity: '📈',
     };
 
+    // 2026-08-30 Owner 요청: 앞에 체크박스로 선택 → 일괄 즉시 반영.
+    //   각 항목 중 액션(drop/raise) 제안이 있는 것만 checkbox 노출.
+    //   direction 은 항목별 자동 결정 (drop 우선 · 없으면 raise).
+    var toolbar =
+      '<div id="battleAlertsToolbar" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 0;margin-bottom:6px;border-bottom:1px solid #ffe0b2">' +
+        '<label style="font-size:12px;color:#333;font-weight:600;cursor:pointer">' +
+          '<input type="checkbox" id="battleAlertsAll" onchange="toggleAllBattleAlerts(this)" style="margin-right:4px;vertical-align:middle"> 전체 선택' +
+        '</label>' +
+        '<button type="button" onclick="selectBattleAlertsByDirection(\'drop\')" style="background:#f0f0f0;border:1px solid #ccc;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px">📉 인하만</button>' +
+        '<button type="button" onclick="selectBattleAlertsByDirection(\'raise\')" style="background:#f0f0f0;border:1px solid #ccc;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px">💰 인상만</button>' +
+        '<button type="button" onclick="selectBattleAlertsByDirection(\'none\')" style="background:#f0f0f0;border:1px solid #ccc;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px">선택 해제</button>' +
+        '<button type="button" id="battleAlertsApplyBtn" onclick="batchApplyBattleAlerts()" style="background:#7c4dff;color:#fff;border:none;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:700;margin-left:auto">🔥 선택 일괄 적용</button>' +
+        '<span id="battleAlertsStatus" style="font-size:11px;color:#888;margin-left:8px"></span>' +
+      '</div>';
+
     el.innerHTML =
       '<div style="font-weight:700;font-size:13px;margin-bottom:8px">최근 알림 (' + d.alerts.length + '건, 최근 10건 표시)</div>' +
+      toolbar +
       recent.map(function(a) {
         var icon = icons[a.type] || '📌';
         var img = a.imageUrl
@@ -3506,6 +3522,22 @@ async function loadBattleAlerts() {
             'style="background:#2e7d32;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">💰 $' + a.suggestedRaise.toFixed(2) + ' 로 인상</button>';
         }
 
+        // 체크박스 · 액션 제안 있는 항목만. drop 우선 (Owner: "인하가 주 목적").
+        var checkbox = '<div style="width:24px;flex-shrink:0"></div>';   // 자리 유지용 placeholder
+        if ((a.suggestedDrop || a.suggestedRaise) && a.myItemId) {
+          var dir = a.suggestedDrop ? 'drop' : 'raise';
+          var priceForBatch = a.suggestedDrop || a.suggestedRaise;
+          checkbox = '<div style="width:24px;flex-shrink:0;display:flex;align-items:flex-start;padding-top:12px">' +
+            '<input type="checkbox" class="battle-alert-check" ' +
+              'data-item-id="' + a.myItemId + '" ' +
+              'data-sku="' + (a.sku || '') + '" ' +
+              'data-price="' + priceForBatch + '" ' +
+              'data-direction="' + dir + '" ' +
+              'onchange="updateBattleAlertsToolbar()" ' +
+              'style="cursor:pointer;transform:scale(1.2)">' +
+          '</div>';
+        }
+
         // 링크
         var links = '';
         if (a.myUrl) links += '<a href="' + a.myUrl + '" target="_blank" style="color:#1976d2;font-size:11px;margin-right:8px">내 리스팅</a>';
@@ -3513,6 +3545,7 @@ async function loadBattleAlerts() {
 
         return (
           '<div style="display:flex;gap:10px;padding:8px 0;border-top:1px solid #ffe0b2">' +
+            checkbox +
             img +
             '<div style="flex:1;min-width:0">' +
               '<div style="font-size:12px;font-weight:600;color:#333;margin-bottom:2px">' + icon + ' ' + titleShort + ' <span style="color:#888;font-weight:400">· ' + (a.seller || '?') + '</span></div>' +
@@ -3523,9 +3556,110 @@ async function loadBattleAlerts() {
         );
       }).join('');
     el.style.display = 'block';
+    updateBattleAlertsToolbar();
   } catch (e) {
     console.error('loadBattleAlerts', e);
   }
+}
+
+// ── Battle Alerts 일괄 처리 (2026-08-30 Owner 요청) ────────────────────────
+function toggleAllBattleAlerts(masterCb) {
+  document.querySelectorAll('.battle-alert-check').forEach(function(cb) { cb.checked = masterCb.checked; });
+  updateBattleAlertsToolbar();
+}
+function selectBattleAlertsByDirection(dir) {
+  document.querySelectorAll('.battle-alert-check').forEach(function(cb) {
+    if (dir === 'none') cb.checked = false;
+    else cb.checked = cb.dataset.direction === dir;
+  });
+  var master = document.getElementById('battleAlertsAll');
+  if (master) master.checked = false;
+  updateBattleAlertsToolbar();
+}
+function updateBattleAlertsToolbar() {
+  var checked = document.querySelectorAll('.battle-alert-check:checked');
+  var dropCount = 0, raiseCount = 0;
+  checked.forEach(function(cb) {
+    if (cb.dataset.direction === 'drop') dropCount++;
+    else if (cb.dataset.direction === 'raise') raiseCount++;
+  });
+  var status = document.getElementById('battleAlertsStatus');
+  if (status) {
+    if (checked.length === 0) status.textContent = '';
+    else status.textContent = '선택 ' + checked.length + '건 (📉' + dropCount + ' · 💰' + raiseCount + ')';
+  }
+}
+
+// 개별 apply 를 silent 모드로 재사용 · alert/confirm 없이 결과만 반환.
+async function _applyKillPriceRaw(itemId, price, sku) {
+  try {
+    var res = await fetch(API + '/battle/kill-price', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ itemId: itemId, newPrice: price, sku: sku }),
+    });
+    var result = await res.json();
+    return { success: !!result.success, error: result.error || null, itemId: itemId };
+  } catch (e) {
+    return { success: false, error: e && e.message ? e.message : String(e), itemId: itemId };
+  }
+}
+
+async function batchApplyBattleAlerts() {
+  var checked = document.querySelectorAll('.battle-alert-check:checked');
+  if (checked.length === 0) { alert('선택된 항목이 없습니다.\n\n체크박스로 항목 선택 후 다시 시도하세요.'); return; }
+
+  var items = [];
+  checked.forEach(function(cb) {
+    items.push({
+      itemId: cb.dataset.itemId,
+      sku: cb.dataset.sku,
+      price: Number(cb.dataset.price),
+      direction: cb.dataset.direction,
+    });
+  });
+  var dropCount = items.filter(function(i) { return i.direction === 'drop'; }).length;
+  var raiseCount = items.filter(function(i) { return i.direction === 'raise'; }).length;
+  var msg = '선택 ' + items.length + '건 일괄 적용\n\n' +
+    '📉 인하: ' + dropCount + '건\n' +
+    '💰 인상: ' + raiseCount + '건\n\n' +
+    '실제 eBay 가격이 즉시 변경됩니다. 진행하시겠습니까?';
+  if (!confirm(msg)) return;
+
+  var applyBtn = document.getElementById('battleAlertsApplyBtn');
+  var status = document.getElementById('battleAlertsStatus');
+  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = '진행 중…'; }
+
+  var ok = 0, fail = 0, done = 0;
+  var failures = [];
+  var CONCURRENCY = 3;   // eBay Trading API 안전 concurrency
+  var queue = items.slice();
+
+  async function worker() {
+    while (queue.length > 0) {
+      var item = queue.shift();
+      var r = await _applyKillPriceRaw(item.itemId, item.price, item.sku);
+      done++;
+      if (r.success) ok++;
+      else { fail++; failures.push({ itemId: item.itemId, sku: item.sku, error: r.error }); }
+      if (status) status.textContent = '진행 ' + done + '/' + items.length + ' · ✓' + ok + ' · ✗' + fail;
+    }
+  }
+  var workers = [];
+  for (var i = 0; i < Math.min(CONCURRENCY, items.length); i++) workers.push(worker());
+  await Promise.all(workers);
+
+  if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = '🔥 선택 일괄 적용'; }
+
+  var summary = '일괄 적용 완료\n\n✓ 성공: ' + ok + '건\n✗ 실패: ' + fail + '건';
+  if (fail > 0 && failures.length > 0) {
+    var first = failures.slice(0, 3).map(function(f) { return '· ' + f.itemId + ': ' + (f.error || '알 수 없는 오류'); }).join('\n');
+    summary += '\n\n실패 (처음 3건):\n' + first;
+    if (failures.length > 3) summary += '\n... 외 ' + (failures.length - 3) + '건 (콘솔 참고)';
+    console.warn('[batchApplyBattleAlerts] failures:', failures);
+  }
+  alert(summary);
+  loadBattleAlerts();
 }
 
 async function runCompetitorMonitor(btn) {
