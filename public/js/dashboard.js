@@ -3494,14 +3494,15 @@ async function loadBattleAlerts() {
         }
 
         // 인상 · 인하 제안 (2026-08-30 Owner 지적: 인하가 주 목적)
+        //   this 를 4번째 인자로 넘겨서 함수가 버튼 element 확보 (id 없어도 동작).
         var raiseAction = '';
         var dropAction = '';
         if (a.suggestedDrop && a.myItemId) {
-          dropAction = '<button onclick="applyKillPrice(\'' + a.myItemId + '\',' + a.suggestedDrop + ',\'' + a.sku + '\')" ' +
+          dropAction = '<button onclick="applyKillPrice(\'' + a.myItemId + '\',' + a.suggestedDrop + ',\'' + a.sku + '\',this)" ' +
             'style="background:#c62828;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;margin-right:4px">📉 $' + a.suggestedDrop.toFixed(2) + ' 로 인하</button>';
         }
         if (a.suggestedRaise && a.myItemId) {
-          raiseAction = '<button onclick="applyKillPrice(\'' + a.myItemId + '\',' + a.suggestedRaise + ',\'' + a.sku + '\')" ' +
+          raiseAction = '<button onclick="applyKillPrice(\'' + a.myItemId + '\',' + a.suggestedRaise + ',\'' + a.sku + '\',this)" ' +
             'style="background:#2e7d32;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">💰 $' + a.suggestedRaise.toFixed(2) + ' 로 인상</button>';
         }
 
@@ -4801,16 +4802,24 @@ async function battleUpdateStock(itemId, qty, input) {
   }
 }
 
-async function applyKillPrice(itemId, price, sku) {
-  const btn = document.getElementById(`kill-${itemId}`) || document.getElementById(`raise-${itemId}`);
-  if (!btn) return;
+// 2026-08-30 fix (Owner: "인하 버튼 눌러도 반응이 없지"):
+//   이전엔 `kill-${itemId}` id 로만 button 을 찾았음 → 알림 화면의 새 인상/인하
+//   버튼은 id 가 없어 첫 줄에서 조용히 return · confirm 도 안 뜨고 fetch 도 안 나감.
+//   caller 가 event.target (`this`) 을 4번째 인자로 넘길 수 있게 하고, 없으면
+//   id fallback · 그것도 없으면 그냥 진행 (early-return 절대 안 함).
+//   또한 성공 시 명시적 alert · 알림 목록 자동 새로고침.
+async function applyKillPrice(itemId, price, sku, btnEl) {
+  const btn = btnEl
+    || document.getElementById(`kill-${itemId}`)
+    || document.getElementById(`raise-${itemId}`)
+    || null;
   // Find item data for detailed confirm
   var item = battleData && battleData.items ? battleData.items.find(function(i) { return i.itemId === itemId; }) : null;
-  var msg = '$' + price.toFixed(2) + '로 가격을 변경하시겠습니까?';
+  var msg = '$' + price.toFixed(2) + ' 로 가격을 변경하시겠습니까?';
   if (item) {
     var myNewTotal = price + (item.myShipping || 0);
     var compTotal = item.cheapestTotal || 0;
-    msg = '킬프라이스 적용\n\n' +
+    msg = '가격 변경 적용\n\n' +
       '내 새 가격: $' + price.toFixed(2) + ' + 배송 $' + (item.myShipping || 0).toFixed(2) + ' = $' + myNewTotal.toFixed(2) + '\n' +
       '경쟁사 합계: $' + compTotal.toFixed(2) + '\n' +
       '차이: -$' + (compTotal - myNewTotal).toFixed(2) + ' (내가 더 쌈)\n\n' +
@@ -4818,8 +4827,8 @@ async function applyKillPrice(itemId, price, sku) {
   }
   if (!confirm(msg)) return;
 
-  btn.disabled = true;
-  btn.textContent = '적용 중...';
+  var originalText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '적용 중...'; }
 
   try {
     const res = await fetch(`${API}/battle/kill-price`, {
@@ -4830,10 +4839,12 @@ async function applyKillPrice(itemId, price, sku) {
     const result = await res.json();
 
     if (result.success) {
-      btn.textContent = '✓ $' + price.toFixed(2);
-      btn.style.background = '#2e7d32';
-      btn.style.color = '#fff';
-      // Update local data immediately
+      if (btn) {
+        btn.textContent = '✓ $' + price.toFixed(2);
+        btn.style.background = '#2e7d32';
+        btn.style.color = '#fff';
+      }
+      // Update local battleData if present
       if (battleData && battleData.items) {
         var found = battleData.items.find(function(i) { return i.itemId === itemId; });
         if (found) {
@@ -4841,18 +4852,21 @@ async function applyKillPrice(itemId, price, sku) {
           found.myTotal = price + (found.myShipping || 0);
           found.diff = found.myTotal - (found.cheapestTotal || 0);
           found.losing = found.diff > 0;
-          found.killPrice = 0; // Already applied
-          renderBattleTable(battleData.items);
+          found.killPrice = 0;
+          try { renderBattleTable(battleData.items); } catch (_) {}
         }
       }
+      // 명시적 성공 피드백 · Owner 지적 "작동한건지 안한건지 모르잖아"
+      alert('✅ 가격 변경 완료 · $' + price.toFixed(2));
+      // 알림 목록 새로고침 (버튼이 새로 렌더되면서 이 알림은 사라지거나 갱신됨)
+      if (typeof loadBattleAlerts === 'function') { try { loadBattleAlerts(); } catch (_) {} }
     } else {
-      alert('킬프라이스 실패: ' + (result.error || '알 수 없는 오류'));
-      btn.textContent = '적용';
-      btn.disabled = false;
+      alert('❌ 가격 변경 실패\n\n' + (result.error || '알 수 없는 오류'));
+      if (btn) { btn.textContent = originalText || '적용'; btn.disabled = false; }
     }
   } catch (e) {
-    btn.textContent = '오류';
-    btn.disabled = false;
+    alert('❌ 네트워크 오류\n\n' + (e && e.message ? e.message : String(e)));
+    if (btn) { btn.textContent = originalText || '오류'; btn.disabled = false; }
   }
 }
 
