@@ -130,10 +130,10 @@
     document.getElementById('ob-recommendations').innerHTML = recsHtml;
 
     // quick links — dashboard.js 의 navigateTo 활용 (없으면 location.href)
+    //   2026-08-30 Owner 지시: WMS 주문 메뉴 숨김 → 브리핑 퀵버튼도 함께 제거.
     const quickHtml = `
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button data-page="tasks"        type="button" class="ob-quick" style="padding:8px 14px;background:#1565c0;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">📋 업무 보기</button>
-        <button data-page="wms-orders"   type="button" class="ob-quick" style="padding:8px 14px;background:#1565c0;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">📦 WMS 주문 보기</button>
         <button data-page="orders"       type="button" class="ob-quick" style="padding:8px 14px;background:#5d3a00;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">💰 발주 보기</button>
         <button data-page="safety-runs"  type="button" class="ob-quick" style="padding:8px 14px;background:#37474f;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">📜 실행 로그 보기</button>
         <button data-page="exception-tasks" type="button" class="ob-quick" style="padding:8px 14px;background:#4a1a1a;border:none;border-radius:6px;color:#ffcdd2;cursor:pointer;font-size:13px;">⚠️ 자동 예외 콘솔</button>
