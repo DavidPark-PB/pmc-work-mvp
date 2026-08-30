@@ -87,7 +87,10 @@ function navigateTo(page) {
     case 'ops-products':  if (window.opsProducts)  opsProducts.load();  break;
     case 'ops-inventory': if (window.opsInventory) opsInventory.load(); break;
     case 'ops-pricing':   if (window.opsPricing)   opsPricing.load();   break;
-    case 'ops-profit':    if (window.opsProfit)     opsProfit.load();    break;
+    case 'ops-profit':
+      if (window.opsProfitOms) opsProfitOms.load();
+      if (window.opsProfit)    opsProfit.load();
+      break;
     case 'ops-competitor':if (window.opsCompetitor) opsCompetitor.load();break;
     case 'ops-logs':      if (window.opsLogs)       opsLogs.load();      break;
     // ── 카탈로그 가격 (Google Sheets) ──

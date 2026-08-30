@@ -3395,9 +3395,28 @@
 
   <!-- ops-profit: 수익 분석 -->
   <div id="page-ops-profit" class="page">
+    <!-- 2026-08-30 Owner: 실제 판매 실적 (OMS) 기반 수익. 기존 카탈로그 표는 유지 (원가/판매가 검증용). -->
+    <div class="card" id="opsProfitOmsCard">
+      <div class="card-header" style="flex-wrap:wrap;gap:8px">
+        <h3>📊 실제 판매 수익 <span style="color:#888;font-size:12px;font-weight:400">— OMS 기반 · 지금 eBay·Shopify 만 (기타 채널 주문 미연동)</span></h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="opsProfitOmsPeriod" style="padding:6px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px">
+            <option value="7">지난 7일</option>
+            <option value="30" selected>지난 30일</option>
+            <option value="90">지난 90일</option>
+            <option value="365">지난 1년</option>
+          </select>
+          <button class="refresh-btn" onclick="opsProfitOms.load()">새로고침</button>
+        </div>
+      </div>
+      <div id="opsProfitOmsBody" style="padding:12px 8px">
+        <div class="empty" style="text-align:center;color:#888;padding:20px">로딩...</div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-header" style="flex-wrap:wrap;gap:8px">
-        <h3>수익 분석</h3>
+        <h3>수익 분석 <span style="color:#888;font-size:12px;font-weight:400">— 카탈로그 예상 마진 (등록된 판매가·원가 기준)</span></h3>
         <div style="display:flex;gap:8px;align-items:center">
           <input id="opsProfitSearch" type="text" placeholder="SKU / 상품명 검색..."
             style="padding:6px 10px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px;width:220px">

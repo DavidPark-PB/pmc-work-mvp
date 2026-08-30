@@ -689,6 +689,88 @@ const opsProfit = (() => {
   return { load, search, goPage };
 })();
 
+// ─── 6b. PROFIT / OMS (2026-08-30 Owner 지시: 실제 판매 실적 기반) ─────────
+
+const opsProfitOms = (() => {
+  function _fmtUsd(n) { return '$' + Number(n || 0).toFixed(2); }
+  function _fmtInt(n) { return Number(n || 0).toLocaleString(); }
+  function _card(label, value, sub, color) {
+    return `
+      <div style="flex:1;min-width:160px;background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:12px">
+        <div style="color:#888;font-size:11px;margin-bottom:4px">${label}</div>
+        <div style="color:${color || '#fff'};font-size:20px;font-weight:700">${value}</div>
+        ${sub ? `<div style="color:#666;font-size:10px;margin-top:2px">${sub}</div>` : ''}
+      </div>`;
+  }
+  async function load() {
+    const host = document.getElementById('opsProfitOmsBody');
+    if (!host) return;
+    const period = document.getElementById('opsProfitOmsPeriod')?.value || '30';
+    host.innerHTML = '<div class="empty" style="text-align:center;color:#888;padding:20px">계산 중... (배송 견적 포함 · 몇 초 소요)</div>';
+    try {
+      const r = await opsApi.get(`/profit/oms?period=${encodeURIComponent(period)}`);
+      const s = r.summary || {};
+      const marginColor = s.marginPct >= 20 ? '#69f0ae' : (s.marginPct >= 10 ? '#ffd54f' : '#ef9a9a');
+      const netColor = s.netProfitUsd >= 0 ? '#69f0ae' : '#ef9a9a';
+      const cards = [
+        _card('주문 수', _fmtInt(s.totalOrders), `${_fmtInt(s.totalLines)} 라인`),
+        _card('매출', _fmtUsd(s.revenueUsd), '실 판매 총액 (USD 환산)'),
+        _card('원가', _fmtUsd(s.costUsd), 'unit_cost_snapshot 합계'),
+        _card('수수료', _fmtUsd(s.feeUsd), '채널별 요율'),
+        _card('배송 (예상)', _fmtUsd(s.shippingUsd), '무게·부피 기반 최저가'),
+        _card('순이익', _fmtUsd(s.netProfitUsd), `마진 <span style="color:${marginColor}">${(s.marginPct || 0).toFixed(1)}%</span>`, netColor),
+      ].join('');
+
+      const channelRows = (r.byChannel || []).map(c => `
+        <tr>
+          <td style="padding:6px 8px;font-weight:600">${c.channel}</td>
+          <td style="padding:6px 8px;text-align:right">${_fmtInt(c.orders)}</td>
+          <td style="padding:6px 8px;text-align:right">${_fmtUsd(c.revenueUsd)}</td>
+          <td style="padding:6px 8px;text-align:right">${_fmtUsd(c.costUsd)}</td>
+          <td style="padding:6px 8px;text-align:right;color:#f8bbd0">${_fmtUsd(c.feeUsd)} <span style="color:#888;font-size:10px">(${c.feeRate != null ? (c.feeRate * 100).toFixed(1) + '%' : 'n/a'})</span></td>
+          <td style="padding:6px 8px;text-align:right;color:#f8bbd0">${_fmtUsd(c.shippingUsd)}</td>
+          <td style="padding:6px 8px;text-align:right;font-weight:700;color:${c.netProfitUsd >= 0 ? '#69f0ae' : '#ef9a9a'}">${_fmtUsd(c.netProfitUsd)}</td>
+          <td style="padding:6px 8px;text-align:right;color:${c.marginPct >= 20 ? '#69f0ae' : (c.marginPct >= 10 ? '#ffd54f' : '#ef9a9a')}">${(c.marginPct || 0).toFixed(1)}%</td>
+        </tr>`).join('');
+
+      const w = r.warnings || {};
+      const warnLine = (w.costMissingLines || w.shippingQuoteFailed || w.unknownChannel)
+        ? `<div style="margin-top:10px;padding:8px 10px;background:#3e2723;border-left:3px solid #ff9800;border-radius:4px;color:#ffcc80;font-size:11px">
+             ⚠️ ${w.costMissingLines ? `원가 스냅샷 없는 라인 ${w.costMissingLines}건 (SKU 매칭 안 됨 → 원가 0 처리)` : ''}
+             ${w.shippingQuoteFailed ? ` · 배송 견적 실패 ${w.shippingQuoteFailed}건` : ''}
+             ${w.unknownChannel ? ` · 알 수 없는 채널 ${w.unknownChannel}건` : ''}
+           </div>`
+        : '';
+
+      host.innerHTML = `
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${cards}</div>
+        <div style="margin-bottom:6px;color:#888;font-size:11px">채널별 breakdown · 환율 ${r.exchangeRate} KRW/USD · 기간 ${r.period} (${r.since ? r.since.slice(0,10) : ''} 부터)</div>
+        <div class="table-wrap">
+          <table class="data-table" style="width:100%">
+            <thead>
+              <tr>
+                <th style="text-align:left;padding:6px 8px">채널</th>
+                <th style="text-align:right;padding:6px 8px">주문</th>
+                <th style="text-align:right;padding:6px 8px">매출</th>
+                <th style="text-align:right;padding:6px 8px">원가</th>
+                <th style="text-align:right;padding:6px 8px">수수료</th>
+                <th style="text-align:right;padding:6px 8px">배송(예상)</th>
+                <th style="text-align:right;padding:6px 8px;color:#4caf50">순이익</th>
+                <th style="text-align:right;padding:6px 8px">마진율</th>
+              </tr>
+            </thead>
+            <tbody>${channelRows || '<tr><td colspan="8" class="empty" style="text-align:center;color:#888;padding:14px">해당 기간 확정 판매 없음</td></tr>'}</tbody>
+          </table>
+        </div>
+        ${warnLine}
+      `;
+    } catch (e) {
+      host.innerHTML = `<div class="empty" style="color:#ef9a9a;text-align:center;padding:20px">오류: ${e.message || e}</div>`;
+    }
+  }
+  return { load };
+})();
+
 // ─── 7. COMPETITOR ──────────────────────────────────────────────────────────
 
 const opsCompetitor = (() => {
@@ -879,6 +961,7 @@ window.opsInventory  = opsInventory;
 window.opsListings   = opsListings;
 window.opsPricing    = opsPricing;
 window.opsProfit     = opsProfit;
+window.opsProfitOms  = opsProfitOms;
 window.opsCompetitor = opsCompetitor;
 window.opsLogs       = opsLogs;
 window.opsNotif      = opsNotif;

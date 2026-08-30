@@ -979,4 +979,22 @@ router.get('/profit', async (req, res) => {
   }
 });
 
+// ─── 9b. PROFIT / OMS-BASED (2026-08-30 Owner 지시) ─────────────────────────
+//
+// 실제 판매 실적 (oms_orders + oms_order_items) 기반 수익 분석.
+// 계산 근거·경계 조건은 src/services/omsProfitService.js 상단 주석 참고.
+//
+// GET /api/ops/profit/oms?period=30
+router.get('/profit/oms', async (req, res) => {
+  try {
+    const raw = Number(req.query.period);
+    const periodDays = Number.isFinite(raw) && raw > 0 && raw <= 365 ? Math.floor(raw) : 30;
+    const { computeOmsProfit } = require('../../services/omsProfitService');
+    const result = await computeOmsProfit({ periodDays });
+    res.json(result);
+  } catch (err) {
+    sendError(res, 500, 'OMS profit computation failed', err.message);
+  }
+});
+
 module.exports = router;
