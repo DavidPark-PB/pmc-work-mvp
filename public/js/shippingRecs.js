@@ -333,6 +333,9 @@
           <span>🏷️ SKU: <code style="color:#81d4fa;">${esc(it.sku || '(빈 값)')}</code></span>
           ${it.matched ? `<span style="color:#81c784;">✓ ${esc(it.internal_sku)}</span>` : ''}
         </div>
+        ${renderSkuEnrichmentPanel(it)}
+        ${renderCostEditPanel(it)}
+        ${renderSupplierEditPanel(it)}
         ${renderWeightEditPanel(it)}
         ${renderQuotesTable(mergedQuotes, !!fedexCache, it.order_id)}
         <div id="rec-fedex-result-${it.order_id}"></div>
@@ -345,6 +348,294 @@
         ` : ''}
       </div>
     `;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // SKU Enrichment (2026-08-31) — SKU 마스터 자동 표시 · 원가/소싱처/마진
+  // ════════════════════════════════════════════════════════════════════════
+
+  function fmtKrw(n) {
+    if (n == null || !Number.isFinite(Number(n))) return '-';
+    return Math.round(Number(n)).toLocaleString('ko-KR') + '원';
+  }
+  function fmtDateShort(iso) {
+    if (!iso) return '';
+    try { return String(iso).slice(0, 10); } catch (_) { return ''; }
+  }
+
+  // SKU 마스터 카드 · 자동 표시 (무게 · 크기 · 원가 · 소싱처 · 마진)
+  // 사장님 요청: 없는 항목은 강한 경고 · 있는 항목은 초록. 데이터베이스 용어 안 씀.
+  function renderSkuEnrichmentPanel(it) {
+    if (!it.matched) return '';   // 매칭 안된 SKU 는 enrichment 표시 안 함
+    const en = it.sku_enrichment || {};
+    const pe = it.profit_estimate || {};
+
+    const weightBadge = en.weight_gram > 0
+      ? `<span style="color:#81c784;">✅ 무게 ${en.weight_gram}g</span>`
+      : `<span style="color:#ffb74d;">⚠️ 무게 미입력</span>`;
+
+    const hasDims = en.length_cm && en.width_cm && en.height_cm;
+    const dimBadge = hasDims
+      ? `<span style="color:#81c784;">✅ 크기 ${en.length_cm}×${en.width_cm}×${en.height_cm}cm</span>`
+      : `<span style="color:#ffb74d;">⚠️ 크기 미입력</span>`;
+
+    const costBadge = en.cost_krw != null && en.cost_krw > 0
+      ? `<span style="color:#81c784;">✅ 원가 ${fmtKrw(en.cost_krw)}</span>`
+      : `<span style="color:#ff5252;background:#3a1a1a;padding:2px 8px;border-radius:4px;">⚠️ 원가 미입력</span>`;
+
+    const supplierBadge = en.supplier_name
+      ? `<span style="color:#81c784;">✅ 소싱처 ${esc(en.supplier_name)}${en.supplier_channel ? ` <span style="color:#888;">(${esc(en.supplier_channel)})</span>` : ''}</span>`
+      : `<span style="color:#ff5252;background:#3a1a1a;padding:2px 8px;border-radius:4px;">⚠️ 소싱처 미입력</span>`;
+
+    // 편집 버튼 (원가/소싱처)
+    const costEditBtn = `<button type="button" onclick="pmcShippingRecs.toggleCostEdit(${it.order_id})"
+      style="margin-left:6px;padding:2px 8px;background:#0f0f23;border:1px solid #7c4dff;border-radius:3px;color:#b39ddb;cursor:pointer;font-size:10px;font-weight:600;">
+      ${en.cost_krw > 0 ? '수정' : '입력'}</button>`;
+    const supplierEditBtn = `<button type="button" onclick="pmcShippingRecs.toggleSupplierEdit(${it.order_id})"
+      style="margin-left:6px;padding:2px 8px;background:#0f0f23;border:1px solid #7c4dff;border-radius:3px;color:#b39ddb;cursor:pointer;font-size:10px;font-weight:600;">
+      ${en.supplier_name ? '변경' : '선택'}</button>`;
+
+    // 예상 이익/마진
+    let profitLine = '';
+    if (pe.reason === 'ok') {
+      const profitColor = pe.profitKrw > 0 ? '#81c784' : '#ff8a80';
+      profitLine = `
+        <div style="margin-top:6px;padding:6px 10px;background:#0d1a26;border-left:3px solid ${profitColor};border-radius:4px;font-size:11px;">
+          <span style="color:#81d4fa;">💰 예상 이익</span>
+          <strong style="color:${profitColor};margin-left:8px;">${fmtKrw(pe.profitKrw)}</strong>
+          <span style="color:#aaa;margin-left:8px;">마진 <strong style="color:${profitColor};">${pe.marginPct != null ? pe.marginPct + '%' : '-'}</strong></span>
+          <span style="color:#666;margin-left:12px;font-size:10px;">
+            매출 ${fmtKrw(pe.revenueKrw)} − 원가 ${fmtKrw(pe.costKrw)} − 배송 ${fmtKrw(pe.shippingKrw)} − 수수료 ${fmtKrw(pe.feeKrw)}${pe.feeRate != null ? ` (${(pe.feeRate*100).toFixed(1)}%)` : ''}
+          </span>
+        </div>`;
+    } else {
+      const missMap = {
+        no_cost: '원가 미입력',
+        no_shipping: '배송비 계산 대기',
+        no_payment_amount: '판매가 정보 없음',
+        unknown_platform: `수수료율 미정의 (${esc(it.platform || '?')})`,
+      };
+      const missText = missMap[pe.reason] || pe.reason || '데이터 부족';
+      profitLine = `
+        <div style="margin-top:6px;padding:6px 10px;background:#1a1a2e;border-left:3px solid #ffb74d;border-radius:4px;font-size:11px;color:#ffb74d;">
+          💰 예상 이익 <strong>계산 불가</strong> — ${missText}
+          ${pe.revenueKrw != null ? `<span style="color:#666;margin-left:12px;font-size:10px;">매출 ${fmtKrw(pe.revenueKrw)}${pe.feeKrw != null ? ` · 수수료 ${fmtKrw(pe.feeKrw)}` : ''}</span>` : ''}
+        </div>`;
+    }
+
+    return `
+      <div style="margin-top:8px;padding:8px 10px;background:#0d1a2a;border:1px solid #1f2f4a;border-radius:6px;">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          ${weightBadge}
+          ${dimBadge}
+          <span>${costBadge}${costEditBtn}</span>
+          <span>${supplierBadge}${supplierEditBtn}</span>
+        </div>
+        ${profitLine}
+      </div>
+    `;
+  }
+
+  // ── 원가 편집 폼 ────────────────────────────────────────────────────────
+  function renderCostEditPanel(it) {
+    if (!it.matched || !it.internal_sku) return '';
+    const en = it.sku_enrichment || {};
+    return `
+      <div id="rec-cedit-${it.order_id}" style="display:none;margin-top:8px;padding:10px;background:#1a1035;border:1px solid #4a3a6a;border-radius:6px;">
+        <div style="color:#b39ddb;font-size:10px;font-weight:600;margin-bottom:6px;">💰 원가 입력 · SKU <code style="color:#81d4fa;">${esc(it.internal_sku)}</code></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <label style="color:#aaa;font-size:11px;">원가(KRW)</label>
+          <input id="rec-cost-${it.order_id}" type="number" step="1" min="0" value="${en.cost_krw != null ? en.cost_krw : ''}"
+            style="width:100px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+          <label style="color:#aaa;font-size:11px;">사유(선택)</label>
+          <input id="rec-costreason-${it.order_id}" type="text" placeholder="예: 매입 인상"
+            style="width:150px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+          <button type="button" onclick="pmcShippingRecs.saveCost(${it.order_id}, '${esc(it.internal_sku)}', '${esc(it.order_no || '')}')"
+            style="padding:4px 12px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">💾 저장</button>
+          <span id="rec-cstatus-${it.order_id}" style="color:#888;font-size:10px;"></span>
+        </div>
+        ${en.cost_source ? `<div style="color:#666;font-size:10px;margin-top:6px;">현재 출처: ${esc(en.cost_source)}${en.cost_updated_at ? ` · ${fmtDateShort(en.cost_updated_at)}` : ''}</div>` : ''}
+      </div>
+    `;
+  }
+
+  // ── 소싱처 편집 폼 ──────────────────────────────────────────────────────
+  function renderSupplierEditPanel(it) {
+    if (!it.matched || !it.internal_sku) return '';
+    const en = it.sku_enrichment || {};
+    return `
+      <div id="rec-sedit-${it.order_id}" style="display:none;margin-top:8px;padding:10px;background:#1a1035;border:1px solid #4a3a6a;border-radius:6px;">
+        <div style="color:#b39ddb;font-size:10px;font-weight:600;margin-bottom:6px;">🏭 소싱처 선택 · SKU <code style="color:#81d4fa;">${esc(it.internal_sku)}</code></div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <label style="color:#aaa;font-size:11px;">검색</label>
+          <input id="rec-sq-${it.order_id}" type="text" placeholder="공급처 이름 입력..." oninput="pmcShippingRecs.filterSuppliers(${it.order_id})"
+            style="width:150px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+          <select id="rec-sselect-${it.order_id}"
+            style="min-width:180px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+            <option value="">-- 선택 --</option>
+          </select>
+          <label style="color:#aaa;font-size:11px;">매입가(KRW · 선택)</label>
+          <input id="rec-spprice-${it.order_id}" type="number" step="1" min="0" placeholder="0"
+            style="width:80px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+          <button type="button" onclick="pmcShippingRecs.saveSupplier(${it.order_id}, '${esc(it.internal_sku)}', '${esc(it.order_no || '')}')"
+            style="padding:4px 12px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">💾 저장</button>
+          <span id="rec-sstatus-${it.order_id}" style="color:#888;font-size:10px;"></span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+          <span style="color:#666;font-size:10px;">신규 공급처 없으면:</span>
+          <input id="rec-snew-${it.order_id}" type="text" placeholder="새 공급처 이름"
+            style="width:180px;padding:4px 6px;background:#0f0f23;border:1px solid #333;border-radius:4px;color:#fff;font-size:11px;">
+          <button type="button" onclick="pmcShippingRecs.addSupplier(${it.order_id})"
+            style="padding:4px 10px;background:#3a3a5a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:10px;">+ 추가</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // 소싱처 목록 캐시 · 페이지 로드 시 1회 · 자동완성용
+  const suppliersCache = { list: null, loadedAt: 0 };
+
+  async function loadSuppliers(force) {
+    const now = Date.now();
+    if (!force && suppliersCache.list && (now - suppliersCache.loadedAt) < 5 * 60_000) return suppliersCache.list;
+    try {
+      const res = await fetch('/api/suppliers?active=true');
+      const j = await res.json();
+      suppliersCache.list = (j.data || []).map(s => ({ id: s.id, name: s.name, channel: s.channel }));
+      suppliersCache.loadedAt = now;
+    } catch (_) {
+      suppliersCache.list = suppliersCache.list || [];
+    }
+    return suppliersCache.list;
+  }
+
+  function _populateSupplierSelect(orderId, filterQ) {
+    const sel = document.getElementById('rec-sselect-' + orderId);
+    if (!sel) return;
+    const list = suppliersCache.list || [];
+    const q = (filterQ || '').trim().toLowerCase();
+    const filtered = q ? list.filter(s => (s.name || '').toLowerCase().includes(q)) : list;
+    sel.innerHTML = '<option value="">-- 선택 --</option>' + filtered.slice(0, 50).map(s =>
+      `<option value="${s.id}">${esc(s.name)}${s.channel ? ` (${esc(s.channel)})` : ''}</option>`
+    ).join('');
+  }
+
+  function filterSuppliers(orderId) {
+    const q = document.getElementById('rec-sq-' + orderId)?.value || '';
+    _populateSupplierSelect(orderId, q);
+  }
+
+  async function toggleCostEdit(orderId) {
+    const el = document.getElementById('rec-cedit-' + orderId);
+    if (!el) return;
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+
+  async function toggleSupplierEdit(orderId) {
+    const el = document.getElementById('rec-sedit-' + orderId);
+    if (!el) return;
+    if (el.style.display === 'none') {
+      el.style.display = 'block';
+      await loadSuppliers(false);
+      _populateSupplierSelect(orderId, '');
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
+  async function saveCost(orderId, internalSku, orderNo) {
+    const status = document.getElementById('rec-cstatus-' + orderId);
+    const cost = parseFloat(document.getElementById('rec-cost-' + orderId)?.value);
+    const reason = document.getElementById('rec-costreason-' + orderId)?.value?.trim() || null;
+    if (!Number.isFinite(cost) || cost < 0) {
+      if (status) { status.textContent = '⚠️ 원가는 0 이상 숫자'; status.style.color = '#ffb74d'; }
+      return;
+    }
+    if (status) { status.textContent = '⏳ 저장 중...'; status.style.color = '#81d4fa'; }
+    try {
+      const res = await fetch(`/api/sku-master/${encodeURIComponent(internalSku)}/cost`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cost_krw: cost,
+          source: 'shipping_manual',
+          source_ref: orderNo || `order_id:${orderId}`,
+          reason,
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.success) throw new Error(j.error || '실패');
+      const msg = j.unchanged ? '✅ 동일 값 · 변경 없음' : '✅ 저장됨 — 마진 재계산 중...';
+      if (status) { status.textContent = msg; status.style.color = '#81c784'; }
+      setTimeout(() => refresh(), 600);
+    } catch (e) {
+      if (status) { status.textContent = '❌ 실패: ' + e.message; status.style.color = '#ff8a80'; }
+    }
+  }
+
+  async function saveSupplier(orderId, internalSku, orderNo) {
+    const status = document.getElementById('rec-sstatus-' + orderId);
+    const supplierId = parseInt(document.getElementById('rec-sselect-' + orderId)?.value, 10);
+    const purchasePrice = parseFloat(document.getElementById('rec-spprice-' + orderId)?.value);
+    if (!Number.isFinite(supplierId) || supplierId <= 0) {
+      if (status) { status.textContent = '⚠️ 공급처 선택'; status.style.color = '#ffb74d'; }
+      return;
+    }
+    if (status) { status.textContent = '⏳ 저장 중...'; status.style.color = '#81d4fa'; }
+    try {
+      const body = {
+        supplier_id: supplierId,
+        source: 'shipping_manual',
+        source_ref: orderNo || `order_id:${orderId}`,
+        set_as_current: true,
+      };
+      if (Number.isFinite(purchasePrice) && purchasePrice > 0) {
+        body.purchase_price = purchasePrice;
+        body.currency = 'KRW';
+        body.purchased_at = new Date().toISOString().slice(0, 10);
+      }
+      const res = await fetch(`/api/sku-master/${encodeURIComponent(internalSku)}/supplier`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.success) throw new Error(j.error || '실패');
+      if (status) { status.textContent = '✅ 저장됨 — 새로고침 중...'; status.style.color = '#81c784'; }
+      setTimeout(() => refresh(), 600);
+    } catch (e) {
+      if (status) { status.textContent = '❌ 실패: ' + e.message; status.style.color = '#ff8a80'; }
+    }
+  }
+
+  async function addSupplier(orderId) {
+    const status = document.getElementById('rec-sstatus-' + orderId);
+    const name = document.getElementById('rec-snew-' + orderId)?.value?.trim();
+    if (!name) {
+      if (status) { status.textContent = '⚠️ 이름 입력'; status.style.color = '#ffb74d'; }
+      return;
+    }
+    if (status) { status.textContent = '⏳ 공급처 추가 중...'; status.style.color = '#81d4fa'; }
+    try {
+      const res = await fetch('/api/suppliers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || '실패');
+      const sup = j.data;
+      // 캐시 갱신 + select 재populate + 방금 추가한 것 자동 선택
+      await loadSuppliers(true);
+      _populateSupplierSelect(orderId, '');
+      const sel = document.getElementById('rec-sselect-' + orderId);
+      if (sel && sup?.id) sel.value = String(sup.id);
+      const nameInput = document.getElementById('rec-snew-' + orderId);
+      if (nameInput) nameInput.value = '';
+      if (status) { status.textContent = `✅ ${sup?.name || name} 추가됨 · [저장] 클릭`; status.style.color = '#81c784'; }
+    } catch (e) {
+      if (status) { status.textContent = '❌ 실패: ' + e.message; status.style.color = '#ff8a80'; }
+    }
   }
 
   function toggle(carrierKey) {
@@ -436,12 +727,28 @@
           box_length: l, box_width: w, box_height: h,
         }),
       });
-      const j = await res.json();
-      if (!j.success) throw new Error(j.error || '실패');
-      if (status) { status.textContent = '✅ 저장됨 — 견적 재계산 중...'; status.style.color = '#81c784'; }
+      // HTTP 계층 오류를 우선 감지 (404 주문번호 매칭 실패 · 500 DB 오류 등)
+      let j = null;
+      try { j = await res.json(); } catch (_) { j = null; }
+      if (!res.ok) {
+        const detail = (j && (j.error || j.message)) || `HTTP ${res.status}`;
+        throw new Error(detail);
+      }
+      if (!j || j.success !== true) {
+        throw new Error((j && j.error) || '알 수 없는 실패');
+      }
+      // 저장 확인된 뒤에만 성공 처리
+      let msg = '✅ 저장됨 — 견적 재계산 중...';
+      if (j.masterUpdate && j.masterUpdate.ok === false && /multi-qty/.test(j.masterUpdate.reason || '')) {
+        msg = '✅ 주문 무게 저장됨 (수량>1 이라 sku_master 단품값 자동반영은 skip) — 견적 재계산 중...';
+      } else if (j.masterUpdate && j.masterUpdate.ok === true) {
+        msg = `✅ 저장됨 · sku_master.weight_gram=${j.masterUpdate.weight_gram}g — 견적 재계산 중...`;
+      }
+      if (status) { status.textContent = msg; status.style.color = '#81c784'; }
       // 페덱스 캐시 무효화 — 무게 바뀌었으니 재호출 필요
       fedexQuoteCache.delete(orderId);
       // 전체 새로고침 — 5개 견적 + dimensions_cm 다시 그려짐
+      //   서버가 성공 확인해준 뒤에만 refresh
       setTimeout(() => refresh(), 600);
     } catch (e) {
       if (status) { status.textContent = '❌ 저장 실패: ' + e.message; status.style.color = '#ff8a80'; }
@@ -593,5 +900,8 @@
     load, refresh, onStatusChange, onDaysChange, toggle, printGroup, exportGroup,
     quoteFedex, labelFedex, viewLabel,
     toggleWeightEdit, saveWeight,
+    // SKU Enrichment (2026-08-31)
+    toggleCostEdit, toggleSupplierEdit, filterSuppliers,
+    saveCost, saveSupplier, addSupplier,
   };
 })();

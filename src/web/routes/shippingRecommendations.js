@@ -34,6 +34,7 @@ const { getClient } = require('../../db/supabaseClient');
 const recommender = require('../../services/shippingRecommender');
 const orderShipmentRepo = require('../../db/orderShipmentRepository');
 const shippingCalc = require('../../services/shippingWeightCalculator');
+const { CHANNEL_FEE_RATE } = require('../../services/omsProfitService');
 
 const router = express.Router();
 router.use(requireAdmin);
@@ -54,7 +55,9 @@ async function listOrdersByStatus({ status, fromDate, toDate }) {
   let q = getClient().from('orders')
     .select(`
       id, order_no, platform, order_date, status,
-      sku, title, quantity, buyer_name, country, country_code, carrier
+      sku, title, quantity, buyer_name, country, country_code, carrier,
+      weight_kg, box_length, box_width, box_height,
+      payment_amount, currency
     `)
     .order('order_date', { ascending: false })
     .limit(1000);
@@ -84,14 +87,72 @@ async function listOrdersByStatus({ status, fromDate, toDate }) {
  */
 async function lookupSkuMasterMap(skus) {
   const unique = [...new Set(skus.filter(s => s && String(s).trim()).map(s => String(s).trim()))];
-  if (unique.length === 0) return new Map();
+  if (unique.length === 0) return { skuMap: new Map(), supplierMap: new Map() };
   const { data, error } = await getClient().from('sku_master')
-    .select('internal_sku, title, weight_gram, status, length_cm, width_cm, height_cm')
+    .select(`
+      id, internal_sku, title, weight_gram, status, length_cm, width_cm, height_cm,
+      weight_status, default_packaging_weight_g, shipping_group,
+      cost_krw, supplier_id,
+      weight_source, dims_source, cost_source,
+      weight_measured_at, dims_measured_at, cost_updated_at
+    `)
     .in('internal_sku', unique);
   if (error) throw error;
-  const map = new Map();
-  for (const r of data || []) map.set(r.internal_sku, r);
-  return map;
+  const skuMap = new Map();
+  for (const r of data || []) skuMap.set(r.internal_sku, r);
+
+  // 소싱처 이름 join · N+1 방지 위해 별 조회
+  const supplierIds = [...new Set((data || []).map(r => r.supplier_id).filter(Boolean))];
+  const supplierMap = new Map();
+  if (supplierIds.length > 0) {
+    const { data: sups } = await getClient().from('suppliers')
+      .select('id, name, channel')
+      .in('id', supplierIds);
+    for (const s of sups || []) supplierMap.set(s.id, s);
+  }
+  return { skuMap, supplierMap };
+}
+
+// 사장님 지시: 배송관리 UI 에서 예상 배송비 + 원가 + 수수료 → 예상 이익 자동 표시.
+// 기존 omsProfitService.CHANNEL_FEE_RATE 재사용 (별도 공식 안 만듬).
+// 환율: env EXCHANGE_RATE_KRW_PER_USD (omsProfitService 와 동일 소스) · 기본 1350.
+function getExchangeRate() {
+  const raw = Number(process.env.EXCHANGE_RATE_KRW_PER_USD || process.env.PROFIT_EXCHANGE_RATE);
+  return Number.isFinite(raw) && raw > 0 ? raw : 1350;
+}
+
+// 판매가 (KRW) · 배송비 (KRW) · 원가 (KRW) · 수수료율 → { revenueKrw, feeKrw, profitKrw, marginPct }
+// 하나라도 없으면 null 필드 · 계산 불가 명시.
+function estimateProfit({ paymentAmount, currency, platform, costKrw, shippingKrw }) {
+  const exchangeRate = getExchangeRate();
+  const feeRate = CHANNEL_FEE_RATE[String(platform || '').toLowerCase()];
+  const price = Number(paymentAmount);
+  if (!Number.isFinite(price) || price <= 0) return { revenueKrw: null, reason: 'no_payment_amount' };
+  const cur = String(currency || 'USD').toUpperCase();
+  const revenueKrw = cur === 'KRW' ? price : (cur === 'USD' ? price * exchangeRate : price);
+  const feeKrw = feeRate != null ? Math.round(revenueKrw * feeRate) : null;
+
+  if (!Number.isFinite(Number(costKrw)) || Number(costKrw) <= 0) {
+    return { revenueKrw: Math.round(revenueKrw), feeKrw, feeRate, profitKrw: null, marginPct: null, reason: 'no_cost' };
+  }
+  if (!Number.isFinite(Number(shippingKrw)) || Number(shippingKrw) <= 0) {
+    return { revenueKrw: Math.round(revenueKrw), feeKrw, feeRate, profitKrw: null, marginPct: null, reason: 'no_shipping' };
+  }
+  if (feeRate == null) {
+    return { revenueKrw: Math.round(revenueKrw), feeKrw: null, feeRate: null, profitKrw: null, marginPct: null, reason: 'unknown_platform' };
+  }
+  const profitKrw = Math.round(revenueKrw - Number(costKrw) - feeKrw - Number(shippingKrw));
+  const marginPct = revenueKrw > 0 ? +((profitKrw / revenueKrw) * 100).toFixed(2) : null;
+  return {
+    revenueKrw: Math.round(revenueKrw),
+    feeKrw,
+    feeRate,
+    costKrw: Number(costKrw),
+    shippingKrw: Number(shippingKrw),
+    profitKrw,
+    marginPct,
+    reason: 'ok',
+  };
 }
 
 // 캐리어 순서대로 정렬할 group helper — 견적 엔진의 5개 배송사 + REVIEW
@@ -120,7 +181,7 @@ router.get('/', async (req, res) => {
     const fromDate = new Date(now.getTime() - (days - 1) * 86400000).toISOString().slice(0, 10);
 
     const orders = await listOrdersByStatus({ status, fromDate, toDate });
-    const skuMap = await lookupSkuMasterMap(orders.map(o => o.sku));
+    const { skuMap, supplierMap } = await lookupSkuMasterMap(orders.map(o => o.sku));
 
     const groups = _initialGroups();
     const carrierIndex = new Map();
@@ -129,17 +190,70 @@ router.get('/', async (req, res) => {
     for (const o of orders) {
       const matched = skuMap.get(o.sku ? String(o.sku).trim() : '');
       const matchInfo = recommender.buildMatchInfo(o.sku, matched);
-      const weightGram = matched ? matched.weight_gram : null;
       const countryCode = o.country_code || null;
 
-      // 부피중량 계산용 — sku_master 치수 우선
-      const dimensions = matched ? {
-        lengthCm: Number(matched.length_cm) || 0,
-        widthCm:  Number(matched.width_cm)  || 0,
-        heightCm: Number(matched.height_cm) || 0,
-      } : null;
+      // ── 무게 우선순위 (2026-08-25 확정 정책) ──
+      //   1) orders.weight_kg (사용자가 저장 화면에서 직접 입력한 주문 총량) — 최우선
+      //   2) sku_master.weight_gram (단품값 · 다음 주문 fallback)
+      //   3) null (미등록 · review)
+      //   ※ recommend/carrier grouping/FedEx 견적 모두 동일한 effective weight 를 사용한다.
+      //   ※ orders.weight_kg 는 이미 '주문 전체 무게' 정책 (memory: project_shipping_weight_policy)
+      //     이라 quantity 를 다시 곱하지 않는다.
+      const orderWeightGram = Number(o.weight_kg) > 0
+        ? Math.round(Number(o.weight_kg) * 1000)
+        : null;
+      const weightGram = orderWeightGram
+        || (matched && Number(matched.weight_gram) > 0
+              ? Number(matched.weight_gram)
+              : null);
+      const weightSource = orderWeightGram ? 'order_override' : (weightGram ? 'sku_master' : null);
+
+      // 부피중량 계산용 — orders.box_* 가 있으면 우선, 없으면 sku_master 치수
+      const dimensions = (Number(o.box_length) > 0 || Number(o.box_width) > 0 || Number(o.box_height) > 0)
+        ? {
+            lengthCm: Number(o.box_length) || 0,
+            widthCm:  Number(o.box_width)  || 0,
+            heightCm: Number(o.box_height) || 0,
+          }
+        : (matched ? {
+            lengthCm: Number(matched.length_cm) || 0,
+            widthCm:  Number(matched.width_cm)  || 0,
+            heightCm: Number(matched.height_cm) || 0,
+          } : null);
 
       const rec = recommender.recommend({ weightGram, countryCode, matchInfo, dimensions });
+
+      // SKU Enrichment (2026-08-31) — 배송관리 UI 자동 표시용 필드
+      const cheapestQuoteKrw = Array.isArray(rec.quotes) && rec.quotes[0]
+        ? Number(rec.quotes[0].total) || null
+        : null;
+      const supplier = matched?.supplier_id ? supplierMap.get(matched.supplier_id) : null;
+      const skuEnrichment = matched ? {
+        sku_master_id:     matched.id,
+        weight_gram:       matched.weight_gram || null,
+        weight_status:     matched.weight_status || 'unknown',
+        weight_source:     matched.weight_source || null,
+        weight_measured_at: matched.weight_measured_at || null,
+        default_packaging_weight_g: matched.default_packaging_weight_g || null,
+        length_cm:         matched.length_cm || null,
+        width_cm:          matched.width_cm || null,
+        height_cm:         matched.height_cm || null,
+        dims_source:       matched.dims_source || null,
+        cost_krw:          matched.cost_krw != null ? Number(matched.cost_krw) : null,
+        cost_source:       matched.cost_source || null,
+        cost_updated_at:   matched.cost_updated_at || null,
+        supplier_id:       matched.supplier_id || null,
+        supplier_name:     supplier?.name || null,
+        supplier_channel:  supplier?.channel || null,
+        shipping_group:    matched.shipping_group || null,
+      } : null;
+      const profitEstimate = matched ? estimateProfit({
+        paymentAmount: o.payment_amount,
+        currency:      o.currency,
+        platform:      o.platform,
+        costKrw:       matched.cost_krw != null ? Number(matched.cost_krw) : null,
+        shippingKrw:   cheapestQuoteKrw,
+      }) : null;
 
       const item = {
         order_id:       o.id,
@@ -154,7 +268,10 @@ router.get('/', async (req, res) => {
         sku:            o.sku,            // orders.sku 원본
         title:          o.title,
         quantity:       o.quantity,
+        payment_amount: o.payment_amount != null ? Number(o.payment_amount) : null,
+        currency:       o.currency || null,
         weight_gram:    weightGram,
+        weight_source:  weightSource,   // 'order_override' | 'sku_master' | null · 프론트가 사용자 입력 유지 여부 판단
         dimensions_cm:  dimensions && (dimensions.lengthCm || dimensions.widthCm || dimensions.heightCm)
                           ? { l: dimensions.lengthCm, w: dimensions.widthCm, h: dimensions.heightCm }
                           : null,
@@ -171,6 +288,9 @@ router.get('/', async (req, res) => {
         },
         // 견적 비교 — 5개 배송사 가격 (최저가 정렬). 직원 화면에서 펼쳐 보기.
         quotes: Array.isArray(rec.quotes) ? rec.quotes : null,
+        // SKU Enrichment · 배송관리 카드에서 자동 표시
+        sku_enrichment:   skuEnrichment,
+        profit_estimate:  profitEstimate,
       };
 
       const idx = carrierIndex.get(rec.carrier.key);
@@ -259,7 +379,7 @@ router.post('/export', async (req, res) => {
       .in('id', orderIds);
     if (e1) throw e1;
 
-    const skuMap = await lookupSkuMasterMap((orders || []).map(o => o.sku));
+    const { skuMap } = await lookupSkuMasterMap((orders || []).map(o => o.sku));
 
     // 2) CarrierSheets lazy init (실패 시 빠르게 응답)
     const CarrierSheets = require('../../services/carrierSheets');

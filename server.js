@@ -139,6 +139,11 @@ app.post('/api/auth/logout', logoutHandler);
 // Telegram webhook — external call from Telegram servers, no auth
 app.use('/api/telegram/webhook', require('./src/web/routes/telegramWebhook'));
 
+// Accio Work MCP — external HTTPS call from Accio Desktop, Bearer token auth (env COMMERCE_MCP_TOKEN).
+// READ-ONLY 재고 조회 하나만 (commerce.check_inventory). Owner Directive 2026-08-31 First Live Connection Test.
+// Env 없으면 route 자체가 503 (실수 배포 방지). authGuard 이전 mount · 자체 Bearer 검증.
+app.use('/api/mcp/commerce', require('./src/web/routes/mcpCommerce'));
+
 app.use(authGuard);
 
 // 레거시 관리자 계정은 업무관리 쓰기 차단 (users FK 제약)
@@ -181,6 +186,8 @@ app.use('/api/sku-master/search', require('./src/web/routes/skuMasterSearch'));
 // 원가/무게/치수 CSV 일괄 임포트 — /api/sku-master 의 /:id 라우트보다 먼저 mount 필요
 app.use('/api/sku-master/import', require('./src/web/routes/skuMasterImport'));
 app.use('/api/sku-master', require('./src/web/routes/skuMaster'));
+// SKU Enrichment Loop (2026-08-31) — cost/supplier/enrichment endpoints (path segment 2 → skuMaster.js 의 /:id 와 안 충돌)
+app.use('/api', require('./src/web/routes/skuEnrichment'));
 // B2C Inventory Distribution · Phase 3 — Channel Matrix API (read: authGuard · write: requireAdmin 내부)
 app.use('/api/b2c/sku', require('./src/web/routes/b2cChannelMatrix'));
 // B2C Inventory Distribution · Phase 5 — Controlled Task Queue admin API (requireAdmin 라우터 안)
