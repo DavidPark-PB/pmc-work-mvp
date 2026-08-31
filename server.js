@@ -139,11 +139,6 @@ app.post('/api/auth/logout', logoutHandler);
 // Telegram webhook — external call from Telegram servers, no auth
 app.use('/api/telegram/webhook', require('./src/web/routes/telegramWebhook'));
 
-// Accio Work MCP — external HTTPS call from Accio Desktop, Bearer token auth (env COMMERCE_MCP_TOKEN).
-// READ-ONLY 재고 조회 하나만 (commerce.check_inventory). Owner Directive 2026-08-31 First Live Connection Test.
-// Env 없으면 route 자체가 503 (실수 배포 방지). authGuard 이전 mount · 자체 Bearer 검증.
-app.use('/api/mcp/commerce', require('./src/web/routes/mcpCommerce'));
-
 app.use(authGuard);
 
 // 레거시 관리자 계정은 업무관리 쓰기 차단 (users FK 제약)
