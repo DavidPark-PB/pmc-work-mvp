@@ -80,7 +80,11 @@ class OrderSync {
         order_date: o.orderDate || null,
         platform: o.platform || '',
         order_no: o.orderId || '',
-        sku: o.sku || '',
+        // 2026-09-02 · Owner Directive · Option 3 defensive fallback:
+        // parser 가 SKU 를 못 뽑았을 때 ItemID 를 대체값으로 사용 (parser 이미 4-tier 하지만
+        // 다른 fetch 함수 · 향후 신규 함수 안전 위해 storage 단계 fallback 유지).
+        // 기존 o.sku 가 있으면 절대 ItemID 로 덮지 않음.
+        sku: o.sku || o.itemId || '',
         title: o.title || '',
         quantity: parseInt(o.quantity) || 1,
         payment_amount: parseFloat(o.amount) || 0,

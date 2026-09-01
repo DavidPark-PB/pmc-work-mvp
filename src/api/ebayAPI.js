@@ -902,6 +902,9 @@ class EbayAPI {
           const txn = txnMatch ? txnMatch[1] : '';
           const itemMatch = txn.match(/<Item>([\s\S]*?)<\/Item>/);
           const item = itemMatch ? itemMatch[1] : '';
+          // Variation block (variation listing 전용 · variation-specific SKU 담김)
+          const variationMatch = txn.match(/<Variation>([\s\S]*?)<\/Variation>/);
+          const variation = variationMatch ? variationMatch[1] : '';
 
           // 사장님 보고 2026-06-23: OrderStatus=AwaitingShipment 만 필터링했으나
           // 900건이 반환됨 (seller hub 는 35건). 원인 — eBay 의 OrderStatus 가
@@ -925,7 +928,17 @@ class EbayAPI {
             price: parseFloat(this.extractValue(order, 'Total') || '0'),
             quantity: parseInt(this.extractValue(txn, 'QuantityPurchased') || '1'),
             title: this.extractValue(item, 'Title') || '',
-            sku: this.extractValue(txn, 'SKU') || this.extractValue(item, 'SKU') || '',
+            // SKU 우선순위 (2026-09-02 · Owner Directive · Option 3):
+            //   1) Transaction.SKU (top-level · seller-set custom label)
+            //   2) Item.SKU
+            //   3) Variation.SKU (variation listing 전용 · variation-specific SKU)
+            //   4) Item.ItemID (항상 존재 · sku_master.internal_sku 에 eBay ItemID 형식 시딩됨 · CLAUDE.md 참조)
+            // 기존 seller SKU 는 절대 덮어쓰지 않음 · 없을 때만 ItemID fallback.
+            sku: this.extractValue(txn, 'SKU')
+              || this.extractValue(item, 'SKU')
+              || this.extractValue(variation, 'SKU')
+              || this.extractValue(item, 'ItemID')
+              || '',
             itemId: this.extractValue(item, 'ItemID') || '',
             shippingName: this.extractValue(addr, 'Name'),
             shippingStreet: [this.extractValue(addr, 'Street1'), this.extractValue(addr, 'Street2')].filter(Boolean).join(' '),
