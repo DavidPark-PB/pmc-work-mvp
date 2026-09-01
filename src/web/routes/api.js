@@ -3830,11 +3830,62 @@ router.get('/orders/sync', async (req, res) => {
 });
 
 // GET /api/orders/recent — DB/시트에서 최근 주문 읽기
+//
+// 2026-09-01 · SKU Enrichment 확장:
+//   - 기존 응답 field 는 전부 그대로 유지 (frontend 회귀 방지).
+//   - matched SKU 에 한해 `sku_enrichment` · `profit_estimate` · `internal_sku` · `matched`
+//     · `shipping_quote_krw` 필드 추가 (배송 관리 페이지에서 사용).
+//   - 매치 실패 order 는 새 필드가 null · 기존 UI 무영향.
+//   - Profit 공식 · 배송 quote 는 shippingRecs 화면과 동일 helper 사용 (별도 공식 X).
 router.get('/orders/recent', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
     const status = req.query.status || null;
     const result = await dataSource.getRecentOrders(limit, status);
+
+    // enrichment 필드 subject: helper 로 sku_master + supplier join
+    const {
+      lookupSkuMasterMap, estimateProfit, buildSkuEnrichment,
+    } = require('../../services/skuEnrichmentPresenter');
+    const shippingRateEngine = require('../../services/shippingRateEngine');
+    const orders = result.orders || [];
+    const { skuMap, supplierMap } = await lookupSkuMasterMap(orders.map(o => o.sku));
+
+    for (const o of orders) {
+      const matched = o.sku ? skuMap.get(String(o.sku).trim()) : null;
+      o.internal_sku = matched ? matched.internal_sku : null;
+      o.matched      = !!matched;
+      o.sku_enrichment = buildSkuEnrichment(matched, supplierMap);
+
+      // 배송비 예상 · matched + country 있으면 견적 (실패 fallback: null)
+      let shippingKrw = null;
+      if (matched && o.countryCode) {
+        try {
+          const weightG = Number(matched.weight_gram) || 0;
+          if (weightG > 0) {
+            const quotes = shippingRateEngine.getQuotes({
+              country: o.countryCode,
+              actualKg: weightG / 1000,
+              lengthCm: Number(matched.length_cm) || 0,
+              widthCm:  Number(matched.width_cm)  || 0,
+              heightCm: Number(matched.height_cm) || 0,
+            });
+            if (Array.isArray(quotes) && quotes[0]) {
+              shippingKrw = Number(quotes[0].total) || null;
+            }
+          }
+        } catch (_) { /* quote 실패 · null · profit=no_shipping */ }
+      }
+      o.shipping_quote_krw = shippingKrw;
+      o.profit_estimate = matched ? estimateProfit({
+        paymentAmount: o.paymentAmount,
+        currency:      o.currency,
+        platform:      o.platform,
+        costKrw:       matched.cost_krw != null ? Number(matched.cost_krw) : null,
+        shippingKrw,
+      }) : null;
+    }
+
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Order recent error:', error.message);

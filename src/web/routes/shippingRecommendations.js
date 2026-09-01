@@ -34,7 +34,12 @@ const { getClient } = require('../../db/supabaseClient');
 const recommender = require('../../services/shippingRecommender');
 const orderShipmentRepo = require('../../db/orderShipmentRepository');
 const shippingCalc = require('../../services/shippingWeightCalculator');
-const { CHANNEL_FEE_RATE } = require('../../services/omsProfitService');
+// SKU enrichment · 배송관리 page 와 공유. 2026-09-01 helper 로 추출.
+const {
+  lookupSkuMasterMap,
+  estimateProfit,
+  buildSkuEnrichment,
+} = require('../../services/skuEnrichmentPresenter');
 
 const router = express.Router();
 router.use(requireAdmin);
@@ -78,82 +83,9 @@ async function listOrdersByStatus({ status, fromDate, toDate }) {
   return data || [];
 }
 
-/**
- * orders.sku 의 unique list → sku_master 의 internal_sku 와 매칭.
- * 매칭 성공: Map<sku, sku_master row>
- *
- * 정책: orders.sku === sku_master.internal_sku 의 정확 매칭만 (단순화). 부분 매칭 / fuzzy X.
- * sku_master 의 box_length/width/height 도 함께 가져옴 — 견적 엔진의 부피중량 계산용.
- */
-async function lookupSkuMasterMap(skus) {
-  const unique = [...new Set(skus.filter(s => s && String(s).trim()).map(s => String(s).trim()))];
-  if (unique.length === 0) return { skuMap: new Map(), supplierMap: new Map() };
-  const { data, error } = await getClient().from('sku_master')
-    .select(`
-      id, internal_sku, title, weight_gram, status, length_cm, width_cm, height_cm,
-      weight_status, default_packaging_weight_g, shipping_group,
-      cost_krw, supplier_id,
-      weight_source, dims_source, cost_source,
-      weight_measured_at, dims_measured_at, cost_updated_at
-    `)
-    .in('internal_sku', unique);
-  if (error) throw error;
-  const skuMap = new Map();
-  for (const r of data || []) skuMap.set(r.internal_sku, r);
-
-  // 소싱처 이름 join · N+1 방지 위해 별 조회
-  const supplierIds = [...new Set((data || []).map(r => r.supplier_id).filter(Boolean))];
-  const supplierMap = new Map();
-  if (supplierIds.length > 0) {
-    const { data: sups } = await getClient().from('suppliers')
-      .select('id, name, channel')
-      .in('id', supplierIds);
-    for (const s of sups || []) supplierMap.set(s.id, s);
-  }
-  return { skuMap, supplierMap };
-}
-
-// 사장님 지시: 배송관리 UI 에서 예상 배송비 + 원가 + 수수료 → 예상 이익 자동 표시.
-// 기존 omsProfitService.CHANNEL_FEE_RATE 재사용 (별도 공식 안 만듬).
-// 환율: env EXCHANGE_RATE_KRW_PER_USD (omsProfitService 와 동일 소스) · 기본 1350.
-function getExchangeRate() {
-  const raw = Number(process.env.EXCHANGE_RATE_KRW_PER_USD || process.env.PROFIT_EXCHANGE_RATE);
-  return Number.isFinite(raw) && raw > 0 ? raw : 1350;
-}
-
-// 판매가 (KRW) · 배송비 (KRW) · 원가 (KRW) · 수수료율 → { revenueKrw, feeKrw, profitKrw, marginPct }
-// 하나라도 없으면 null 필드 · 계산 불가 명시.
-function estimateProfit({ paymentAmount, currency, platform, costKrw, shippingKrw }) {
-  const exchangeRate = getExchangeRate();
-  const feeRate = CHANNEL_FEE_RATE[String(platform || '').toLowerCase()];
-  const price = Number(paymentAmount);
-  if (!Number.isFinite(price) || price <= 0) return { revenueKrw: null, reason: 'no_payment_amount' };
-  const cur = String(currency || 'USD').toUpperCase();
-  const revenueKrw = cur === 'KRW' ? price : (cur === 'USD' ? price * exchangeRate : price);
-  const feeKrw = feeRate != null ? Math.round(revenueKrw * feeRate) : null;
-
-  if (!Number.isFinite(Number(costKrw)) || Number(costKrw) <= 0) {
-    return { revenueKrw: Math.round(revenueKrw), feeKrw, feeRate, profitKrw: null, marginPct: null, reason: 'no_cost' };
-  }
-  if (!Number.isFinite(Number(shippingKrw)) || Number(shippingKrw) <= 0) {
-    return { revenueKrw: Math.round(revenueKrw), feeKrw, feeRate, profitKrw: null, marginPct: null, reason: 'no_shipping' };
-  }
-  if (feeRate == null) {
-    return { revenueKrw: Math.round(revenueKrw), feeKrw: null, feeRate: null, profitKrw: null, marginPct: null, reason: 'unknown_platform' };
-  }
-  const profitKrw = Math.round(revenueKrw - Number(costKrw) - feeKrw - Number(shippingKrw));
-  const marginPct = revenueKrw > 0 ? +((profitKrw / revenueKrw) * 100).toFixed(2) : null;
-  return {
-    revenueKrw: Math.round(revenueKrw),
-    feeKrw,
-    feeRate,
-    costKrw: Number(costKrw),
-    shippingKrw: Number(shippingKrw),
-    profitKrw,
-    marginPct,
-    reason: 'ok',
-  };
-}
+// lookupSkuMasterMap · estimateProfit · getExchangeRate 는
+// src/services/skuEnrichmentPresenter.js 로 추출됨 (2026-09-01 배송관리 page 와 공유).
+// 동작/응답 shape 은 identical.
 
 // 캐리어 순서대로 정렬할 group helper — 견적 엔진의 5개 배송사 + REVIEW
 function _initialGroups() {
@@ -223,30 +155,11 @@ router.get('/', async (req, res) => {
 
       const rec = recommender.recommend({ weightGram, countryCode, matchInfo, dimensions });
 
-      // SKU Enrichment (2026-08-31) — 배송관리 UI 자동 표시용 필드
+      // SKU Enrichment (2026-08-31) — 배송관리 UI 자동 표시용 필드 · helper 재사용
       const cheapestQuoteKrw = Array.isArray(rec.quotes) && rec.quotes[0]
         ? Number(rec.quotes[0].total) || null
         : null;
-      const supplier = matched?.supplier_id ? supplierMap.get(matched.supplier_id) : null;
-      const skuEnrichment = matched ? {
-        sku_master_id:     matched.id,
-        weight_gram:       matched.weight_gram || null,
-        weight_status:     matched.weight_status || 'unknown',
-        weight_source:     matched.weight_source || null,
-        weight_measured_at: matched.weight_measured_at || null,
-        default_packaging_weight_g: matched.default_packaging_weight_g || null,
-        length_cm:         matched.length_cm || null,
-        width_cm:          matched.width_cm || null,
-        height_cm:         matched.height_cm || null,
-        dims_source:       matched.dims_source || null,
-        cost_krw:          matched.cost_krw != null ? Number(matched.cost_krw) : null,
-        cost_source:       matched.cost_source || null,
-        cost_updated_at:   matched.cost_updated_at || null,
-        supplier_id:       matched.supplier_id || null,
-        supplier_name:     supplier?.name || null,
-        supplier_channel:  supplier?.channel || null,
-        shipping_group:    matched.shipping_group || null,
-      } : null;
+      const skuEnrichment = buildSkuEnrichment(matched, supplierMap);
       const profitEstimate = matched ? estimateProfit({
         paymentAmount: o.payment_amount,
         currency:      o.currency,

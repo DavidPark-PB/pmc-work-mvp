@@ -6935,7 +6935,251 @@ function shippingRenderRow(order) {
   }
   html += '</div></td></tr>';
 
+  // SKU Enrichment (2026-09-01) · matched=true 인 주문만 표시. 기존 배송 flow 무영향.
+  html += shippingRenderEnrichmentRow(order, rowIdx);
+
   return html;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// SKU Enrichment · 배송 관리 페이지 (Owner Directive 2026-09-01)
+//   /api/orders/recent 응답의 order.sku_enrichment · order.profit_estimate 사용.
+//   백엔드 API: PATCH /api/sku-master/:sku/cost · /supplier (기존 endpoint 재사용).
+// ════════════════════════════════════════════════════════════════════════
+
+function _fmtKrw(n) {
+  if (n == null || !Number.isFinite(Number(n))) return '-';
+  return Math.round(Number(n)).toLocaleString('ko-KR') + '원';
+}
+
+function shippingRenderEnrichmentRow(order, rowIdx) {
+  if (!order.matched) return '';   // 매칭 실패 주문은 표시 안 함 (사장님 지시 · 오염 방지 gate)
+  const en = order.sku_enrichment || {};
+  const pe = order.profit_estimate || {};
+  const internalSku = order.internal_sku || '';
+  const orderNo = order.orderNo || order['주문번호'] || '';
+
+  const weightBadge = en.weight_gram > 0
+    ? `<span style="color:#2e7d32">✅ 무게 ${en.weight_gram}g</span>`
+    : `<span style="color:#ef6c00">⚠️ 무게 미입력</span>`;
+  const hasDims = en.length_cm && en.width_cm && en.height_cm;
+  const dimBadge = hasDims
+    ? `<span style="color:#2e7d32">✅ 크기 ${en.length_cm}×${en.width_cm}×${en.height_cm}cm</span>`
+    : `<span style="color:#ef6c00">⚠️ 크기 미입력</span>`;
+  const costBadge = en.cost_krw != null && en.cost_krw > 0
+    ? `<span style="color:#2e7d32">✅ 원가 ${_fmtKrw(en.cost_krw)}</span>`
+    : `<span style="color:#c62828;background:#ffebee;padding:2px 8px;border-radius:4px">⚠️ 원가 미입력</span>`;
+  const supplierBadge = en.supplier_name
+    ? `<span style="color:#2e7d32">✅ 소싱처 ${esc(en.supplier_name)}${en.supplier_channel ? ` <span style="color:#888">(${esc(en.supplier_channel)})</span>` : ''}</span>`
+    : `<span style="color:#c62828;background:#ffebee;padding:2px 8px;border-radius:4px">⚠️ 소싱처 미입력</span>`;
+
+  const costEditBtn = `<button type="button" onclick="shippingToggleCostEdit('${esc(rowIdx)}')" style="margin-left:6px;padding:2px 8px;background:#fff;border:1px solid #7b1fa2;border-radius:3px;color:#7b1fa2;cursor:pointer;font-size:10px;font-weight:600">${en.cost_krw > 0 ? '수정' : '입력'}</button>`;
+  const supplierEditBtn = `<button type="button" onclick="shippingToggleSupplierEdit('${esc(rowIdx)}')" style="margin-left:6px;padding:2px 8px;background:#fff;border:1px solid #7b1fa2;border-radius:3px;color:#7b1fa2;cursor:pointer;font-size:10px;font-weight:600">${en.supplier_name ? '변경' : '선택'}</button>`;
+
+  let profitLine = '';
+  if (pe.reason === 'ok') {
+    const profitColor = pe.profitKrw > 0 ? '#2e7d32' : '#c62828';
+    profitLine = `<div style="margin-top:6px;padding:6px 10px;background:#e3f2fd;border-left:3px solid ${profitColor};border-radius:4px;font-size:11px">
+      <span style="color:#0277bd">💰 예상 이익</span>
+      <strong style="color:${profitColor};margin-left:8px">${_fmtKrw(pe.profitKrw)}</strong>
+      <span style="color:#555;margin-left:8px">마진 <strong style="color:${profitColor}">${pe.marginPct != null ? pe.marginPct + '%' : '-'}</strong></span>
+      <span style="color:#888;margin-left:12px;font-size:10px">매출 ${_fmtKrw(pe.revenueKrw)} − 원가 ${_fmtKrw(pe.costKrw)} − 배송 ${_fmtKrw(pe.shippingKrw)} − 수수료 ${_fmtKrw(pe.feeKrw)}${pe.feeRate != null ? ' (' + (pe.feeRate*100).toFixed(1) + '%)' : ''}</span>
+    </div>`;
+  } else {
+    const missMap = {
+      no_cost: '원가 미입력',
+      no_shipping: '배송비 계산 대기 (무게 필요)',
+      no_payment_amount: '판매가 정보 없음',
+      unknown_platform: `수수료율 미정의 (${esc(order.platform || '?')})`,
+    };
+    profitLine = `<div style="margin-top:6px;padding:6px 10px;background:#fff3e0;border-left:3px solid #ef6c00;border-radius:4px;font-size:11px;color:#ef6c00">
+      💰 예상 이익 <strong>계산 불가</strong> — ${missMap[pe.reason] || pe.reason || '데이터 부족'}
+      ${pe.revenueKrw != null ? `<span style="color:#888;margin-left:12px;font-size:10px">매출 ${_fmtKrw(pe.revenueKrw)}${pe.feeKrw != null ? ' · 수수료 ' + _fmtKrw(pe.feeKrw) : ''}</span>` : ''}
+    </div>`;
+  }
+
+  // 편집 폼 (숨김 · toggle)
+  const costEditForm = `<div id="enrich-cedit-${rowIdx}" style="display:none;margin-top:6px;padding:8px;background:#f3e5f5;border:1px solid #ce93d8;border-radius:4px">
+    <div style="color:#7b1fa2;font-size:10px;font-weight:600;margin-bottom:4px">💰 원가 입력 · SKU <code style="color:#0277bd">${esc(internalSku)}</code></div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <label style="color:#555;font-size:10px">원가(KRW)</label>
+      <input id="enrich-cost-${rowIdx}" type="number" step="1" min="0" value="${en.cost_krw != null ? en.cost_krw : ''}" style="width:100px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px">
+      <label style="color:#555;font-size:10px">사유(선택)</label>
+      <input id="enrich-costreason-${rowIdx}" type="text" placeholder="예: 매입 인상" style="width:140px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px">
+      <button type="button" onclick="shippingSaveCost('${esc(rowIdx)}','${esc(internalSku)}','${esc(orderNo)}')" style="padding:3px 10px;background:#7b1fa2;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:11px;font-weight:600">💾 저장</button>
+      <span id="enrich-cstatus-${rowIdx}" style="color:#666;font-size:10px"></span>
+    </div>
+  </div>`;
+
+  const supplierEditForm = `<div id="enrich-sedit-${rowIdx}" style="display:none;margin-top:6px;padding:8px;background:#f3e5f5;border:1px solid #ce93d8;border-radius:4px">
+    <div style="color:#7b1fa2;font-size:10px;font-weight:600;margin-bottom:4px">🏭 소싱처 선택 · SKU <code style="color:#0277bd">${esc(internalSku)}</code></div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <label style="color:#555;font-size:10px">검색</label>
+      <input id="enrich-sq-${rowIdx}" type="text" placeholder="공급처 이름..." oninput="shippingFilterSuppliers('${esc(rowIdx)}')" style="width:140px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px">
+      <select id="enrich-sselect-${rowIdx}" style="min-width:180px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px"><option value="">-- 선택 --</option></select>
+      <label style="color:#555;font-size:10px">매입가(선택)</label>
+      <input id="enrich-spprice-${rowIdx}" type="number" step="1" min="0" placeholder="0" style="width:80px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px">
+      <button type="button" onclick="shippingSaveSupplier('${esc(rowIdx)}','${esc(internalSku)}','${esc(orderNo)}')" style="padding:3px 10px;background:#7b1fa2;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:11px;font-weight:600">💾 저장</button>
+      <span id="enrich-sstatus-${rowIdx}" style="color:#666;font-size:10px"></span>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px">
+      <span style="color:#888;font-size:10px">신규 공급처:</span>
+      <input id="enrich-snew-${rowIdx}" type="text" placeholder="새 공급처 이름" style="width:180px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px">
+      <button type="button" onclick="shippingAddSupplier('${esc(rowIdx)}')" style="padding:3px 8px;background:#666;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:10px">+ 추가</button>
+    </div>
+  </div>`;
+
+  let html = `<tr id="enrich-row-${rowIdx}"><td colspan="8" style="padding:0">`;
+  html += `<div style="background:#eef7fb;padding:8px 16px;border-bottom:1px solid #cfe;font-size:11px;line-height:1.5">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+      <strong style="color:#0277bd">📦 SKU 정보</strong>
+      <span style="color:#666;font-size:10px">SKU <code style="color:#0277bd">${esc(internalSku)}</code></span>
+      ${weightBadge}
+      ${dimBadge}
+      <span>${costBadge}${costEditBtn}</span>
+      <span>${supplierBadge}${supplierEditBtn}</span>
+    </div>
+    ${costEditForm}
+    ${supplierEditForm}
+    ${profitLine}
+  </div></td></tr>`;
+  return html;
+}
+
+function shippingToggleCostEdit(rowIdx) {
+  const el = document.getElementById('enrich-cedit-' + rowIdx);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+function shippingToggleSupplierEdit(rowIdx) {
+  const el = document.getElementById('enrich-sedit-' + rowIdx);
+  if (!el) return;
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    shippingLoadSuppliers(false).then(() => _shippingPopulateSupplierSelect(rowIdx, ''));
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+// suppliers 캐시 · shippingRecs.js 와 별개 (dashboard.js scope)
+var _shippingSuppliersCache = { list: null, at: 0 };
+async function shippingLoadSuppliers(force) {
+  const now = Date.now();
+  if (!force && _shippingSuppliersCache.list && (now - _shippingSuppliersCache.at) < 5 * 60_000) {
+    return _shippingSuppliersCache.list;
+  }
+  try {
+    const res = await fetch('/api/suppliers?active=true');
+    const j = await res.json();
+    _shippingSuppliersCache.list = (j.data || []).map(s => ({ id: s.id, name: s.name, channel: s.channel }));
+    _shippingSuppliersCache.at = now;
+  } catch (_) {
+    _shippingSuppliersCache.list = _shippingSuppliersCache.list || [];
+  }
+  return _shippingSuppliersCache.list;
+}
+function _shippingPopulateSupplierSelect(rowIdx, filterQ) {
+  const sel = document.getElementById('enrich-sselect-' + rowIdx);
+  if (!sel) return;
+  const q = (filterQ || '').trim().toLowerCase();
+  const list = _shippingSuppliersCache.list || [];
+  const filtered = q ? list.filter(s => (s.name || '').toLowerCase().includes(q)) : list;
+  sel.innerHTML = '<option value="">-- 선택 --</option>' + filtered.slice(0, 50).map(s =>
+    `<option value="${s.id}">${esc(s.name)}${s.channel ? ' (' + esc(s.channel) + ')' : ''}</option>`
+  ).join('');
+}
+function shippingFilterSuppliers(rowIdx) {
+  const q = document.getElementById('enrich-sq-' + rowIdx)?.value || '';
+  _shippingPopulateSupplierSelect(rowIdx, q);
+}
+
+async function shippingSaveCost(rowIdx, internalSku, orderNo) {
+  const status = document.getElementById('enrich-cstatus-' + rowIdx);
+  const cost = parseFloat(document.getElementById('enrich-cost-' + rowIdx)?.value);
+  const reason = document.getElementById('enrich-costreason-' + rowIdx)?.value?.trim() || null;
+  if (!Number.isFinite(cost) || cost < 0) {
+    if (status) { status.textContent = '⚠️ 원가는 0 이상 숫자'; status.style.color = '#ef6c00'; }
+    return;
+  }
+  if (status) { status.textContent = '⏳ 저장 중...'; status.style.color = '#0277bd'; }
+  try {
+    const res = await fetch('/api/sku-master/' + encodeURIComponent(internalSku) + '/cost', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cost_krw: cost, source: 'shipping_manual',
+        source_ref: orderNo || ('row:' + rowIdx), reason,
+      }),
+    });
+    const j = await res.json();
+    if (!res.ok || !j.success) throw new Error(j.error || '실패');
+    const msg = j.unchanged ? '✅ 동일 값 · 변경 없음' : '✅ 저장됨 — 재조회 중...';
+    if (status) { status.textContent = msg; status.style.color = '#2e7d32'; }
+    setTimeout(() => shippingLoadRecent(), 600);
+  } catch (e) {
+    if (status) { status.textContent = '❌ 실패: ' + e.message; status.style.color = '#c62828'; }
+  }
+}
+
+async function shippingSaveSupplier(rowIdx, internalSku, orderNo) {
+  const status = document.getElementById('enrich-sstatus-' + rowIdx);
+  const supplierId = parseInt(document.getElementById('enrich-sselect-' + rowIdx)?.value, 10);
+  const purchasePrice = parseFloat(document.getElementById('enrich-spprice-' + rowIdx)?.value);
+  if (!Number.isFinite(supplierId) || supplierId <= 0) {
+    if (status) { status.textContent = '⚠️ 공급처 선택'; status.style.color = '#ef6c00'; }
+    return;
+  }
+  if (status) { status.textContent = '⏳ 저장 중...'; status.style.color = '#0277bd'; }
+  try {
+    const body = {
+      supplier_id: supplierId, source: 'shipping_manual',
+      source_ref: orderNo || ('row:' + rowIdx), set_as_current: true,
+    };
+    if (Number.isFinite(purchasePrice) && purchasePrice > 0) {
+      body.purchase_price = purchasePrice; body.currency = 'KRW';
+      body.purchased_at = new Date().toISOString().slice(0, 10);
+    }
+    const res = await fetch('/api/sku-master/' + encodeURIComponent(internalSku) + '/supplier', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await res.json();
+    if (!res.ok || !j.success) throw new Error(j.error || '실패');
+    if (status) { status.textContent = '✅ 저장됨 — 재조회 중...'; status.style.color = '#2e7d32'; }
+    setTimeout(() => shippingLoadRecent(), 600);
+  } catch (e) {
+    if (status) { status.textContent = '❌ 실패: ' + e.message; status.style.color = '#c62828'; }
+  }
+}
+
+async function shippingAddSupplier(rowIdx) {
+  const status = document.getElementById('enrich-sstatus-' + rowIdx);
+  const name = document.getElementById('enrich-snew-' + rowIdx)?.value?.trim();
+  if (!name) {
+    if (status) { status.textContent = '⚠️ 이름 입력'; status.style.color = '#ef6c00'; }
+    return;
+  }
+  if (status) { status.textContent = '⏳ 공급처 추가 중...'; status.style.color = '#0277bd'; }
+  try {
+    const res = await fetch('/api/suppliers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || '실패');
+    const sup = j.data;
+    await shippingLoadSuppliers(true);
+    _shippingPopulateSupplierSelect(rowIdx, '');
+    const sel = document.getElementById('enrich-sselect-' + rowIdx);
+    if (sel && sup?.id) sel.value = String(sup.id);
+    const input = document.getElementById('enrich-snew-' + rowIdx);
+    if (input) input.value = '';
+    if (status) { status.textContent = `✅ ${sup?.name || name} 추가됨 · [저장] 클릭`; status.style.color = '#2e7d32'; }
+  } catch (e) {
+    if (status) { status.textContent = '❌ 실패: ' + e.message; status.style.color = '#c62828'; }
+  }
 }
 
 function shippingToggleAddr(rowIdx) {
