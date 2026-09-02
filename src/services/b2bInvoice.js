@@ -859,8 +859,10 @@ class B2BInvoiceService {
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(templatePath);
-    const ws = workbook.getWorksheet('MASTER');
-    if (!ws) throw new Error('MASTER 시트를 템플릿에서 찾을 수 없습니다');
+    // 2026-09-02 · Owner Directive: 사장님 template 파일에는 여러 날짜별 시트가 있을 수 있음
+    //   (예: 0722, 0625, ...). 첫 시트를 자동 사용 · 이름 하드코드 (MASTER) 안 함.
+    const ws = workbook.getWorksheet('MASTER') || workbook.worksheets[0];
+    if (!ws) throw new Error('template xlsx 에 시트가 하나도 없습니다');
 
     const isQuote = String(docType).toUpperCase() === 'QUOTE';
 
