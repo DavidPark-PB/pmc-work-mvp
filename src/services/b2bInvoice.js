@@ -864,6 +864,22 @@ class B2BInvoiceService {
     const ws = workbook.getWorksheet('MASTER') || workbook.worksheets[0];
     if (!ws) throw new Error('template xlsx 에 시트가 하나도 없습니다');
 
+    // Defensive: 모든 formula 를 계산된 값으로 대체 (2026-09-02 · shared formula error 방지)
+    //   spliceRows 시 shared formula master 가 지워지면 남은 clone 이 orphan 되어
+    //   "Shared Formula master must exist above and or left of clone" 발생.
+    //   Formula 자체를 없애면 문제 원천 봉쇄. code 가 명시적으로 세팅하는 셀 (TOTAL/SHIPPING/QTY 등)
+    //   은 그 후 override 되므로 값 손실 없음.
+    workbook.eachSheet((sheet) => {
+      sheet.eachRow({ includeEmpty: true }, (row) => {
+        row.eachCell({ includeEmpty: false }, (cell) => {
+          const v = cell.value;
+          if (v && typeof v === 'object' && (v.formula || v.sharedFormula)) {
+            cell.value = v.result != null ? v.result : null;
+          }
+        });
+      });
+    });
+
     const isQuote = String(docType).toUpperCase() === 'QUOTE';
 
     // 날짜 포맷: "2026-04-22" → "Apr.22,2026"
