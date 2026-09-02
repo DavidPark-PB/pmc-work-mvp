@@ -880,6 +880,22 @@ class B2BInvoiceService {
       });
     });
 
+    // 인보이스 영역 밖 잔재 데이터 clear (2026-09-02 · Owner Directive) —
+    //   사장님이 준 template 은 · 실 인보이스 파일 (다른 참고 데이터가 오른쪽/아래에 남아있음).
+    //   인보이스 영역 = A~J 열 (col 1-10) · row 1-55.
+    //   그 밖 셀은 · 값을 null 로 (병합/서식은 유지 · 값만 clear · PDF export 시 안 보임).
+    const INVOICE_LAST_COL = 10; // J
+    const INVOICE_LAST_ROW = 55;
+    workbook.eachSheet((sheet) => {
+      sheet.eachRow({ includeEmpty: false }, (row, rowNum) => {
+        row.eachCell({ includeEmpty: false }, (cell, colNum) => {
+          if (colNum > INVOICE_LAST_COL || rowNum > INVOICE_LAST_ROW) {
+            cell.value = null;
+          }
+        });
+      });
+    });
+
     const isQuote = String(docType).toUpperCase() === 'QUOTE';
 
     // 날짜 포맷: "2026-04-22" → "Apr.22,2026"
