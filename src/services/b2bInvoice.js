@@ -1165,6 +1165,9 @@ class B2BInvoiceService {
       });
     } catch (e) { console.warn('[updateInvoice] Supabase 동기화 실패:', e.message); }
 
+    // pdf cache invalidate — 다음 다운로드 시 최신 데이터로 재생성
+    await this._invalidatePdfCache(invoiceNo);
+
     console.log(`✅ 인보이스 ${invoiceNo} 메타 수정`);
     return { invoiceNo, ...fields };
   }
@@ -1220,6 +1223,9 @@ class B2BInvoiceService {
       try { await this._updateBuyerStats(buyerId); } catch {}
     }
 
+    // 4. pdf cache invalidate — 삭제된 인보이스의 pdf 도 함께 제거
+    await this._invalidatePdfCache(invoiceNo);
+
     console.log(`🗑 인보이스 ${invoiceNo} 영구 삭제`);
     return { invoiceNo, deleted: true };
   }
@@ -1270,6 +1276,17 @@ class B2BInvoiceService {
    * @param {string} format - 'xlsx' 또는 'pdf'
    */
   async downloadInvoice(invoiceNo, format = 'xlsx') {
+    // ─── PDF cache-first (Owner Directive 2026-09-02) ───────────────────
+    //   Supabase Storage 에 이미 생성된 pdf 있으면 그대로 반환.
+    //   → Drive quota exceeded 근본 해결. 인보이스당 최대 1번만 Drive 변환.
+    //   편집/삭제 시 _invalidatePdfCache 로 자동 삭제.
+    if (format === 'pdf') {
+      try {
+        const cached = await this._getPdfFromCache(invoiceNo);
+        if (cached) return { buffer: cached, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
+      } catch (e) { console.warn(`[downloadInvoice] pdf cache lookup 실패 (${invoiceNo}):`, e.message); }
+    }
+
     const invoices = await this.getInvoices({ includeVoided: true });
     let inv = invoices.find(i => i.InvoiceNo === invoiceNo);
 
@@ -1330,6 +1347,7 @@ class B2BInvoiceService {
         const xlsxBuffer = Buffer.from(await blob.arrayBuffer());
         if (format === 'pdf') {
           const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`);
+          await this._putPdfToCache(invoiceNo, pdfBuffer);
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
         return {
@@ -1350,6 +1368,7 @@ class B2BInvoiceService {
             await this.drive.downloadFile(inv.DriveFileId),
             `temp-${invoiceNo}`
           );
+          await this._putPdfToCache(invoiceNo, pdfBuffer);
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
         const xlsxBuffer = await this.drive.downloadFile(inv.DriveFileId);
@@ -1387,6 +1406,7 @@ class B2BInvoiceService {
     //  PDF 버튼이 사실상 .xlsx 를 다운로드시키는 버그가 있었음)
     if (format === 'pdf') {
       const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`);
+      await this._putPdfToCache(invoiceNo, pdfBuffer);
       return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
     }
 
@@ -1395,6 +1415,39 @@ class B2BInvoiceService {
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       fileName: `${invoiceNo}.xlsx`,
     };
+  }
+
+  // ─── PDF cache (Supabase Storage b2b-invoices/{invoiceNo}.pdf) ────────
+  //   Owner Directive 2026-09-02: PDF 만 Supabase 저장 · 인보이스당 1장 · 재사용.
+  //   Drive quota 근본 회피. 편집/삭제 시 invalidate.
+  _pdfCachePath(invoiceNo) { return `${invoiceNo}.pdf`; }
+
+  async _getPdfFromCache(invoiceNo) {
+    const { getClient } = require('../db/supabaseClient');
+    const db = getClient();
+    const { data: blob, error } = await db.storage.from('b2b-invoices').download(this._pdfCachePath(invoiceNo));
+    if (error || !blob) return null;
+    return Buffer.from(await blob.arrayBuffer());
+  }
+
+  async _putPdfToCache(invoiceNo, pdfBuffer) {
+    if (!pdfBuffer || !pdfBuffer.length) return;
+    try {
+      const { getClient } = require('../db/supabaseClient');
+      const db = getClient();
+      const { error } = await db.storage.from('b2b-invoices').upload(this._pdfCachePath(invoiceNo), pdfBuffer, {
+        contentType: 'application/pdf', upsert: true,
+      });
+      if (error) console.warn(`[pdf cache] upload 실패 (${invoiceNo}):`, error.message);
+    } catch (e) { console.warn(`[pdf cache] upload 예외 (${invoiceNo}):`, e.message); }
+  }
+
+  async _invalidatePdfCache(invoiceNo) {
+    try {
+      const { getClient } = require('../db/supabaseClient');
+      const db = getClient();
+      await db.storage.from('b2b-invoices').remove([this._pdfCachePath(invoiceNo)]);
+    } catch (e) { console.warn(`[pdf cache] invalidate 실패 (${invoiceNo}):`, e.message); }
   }
 
   // ────────────────────── 전송 ──────────────────────
