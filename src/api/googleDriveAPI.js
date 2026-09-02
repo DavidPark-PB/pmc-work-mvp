@@ -103,15 +103,45 @@ class GoogleDriveAPI {
   }
 
   /**
-   * Google Sheets/Docs → PDF 변환 다운로드
+   * Google Sheets → PDF 변환 다운로드
+   *
+   * 2026-09-02 · Owner Directive: files.export 는 옵션이 없어서 결과 PDF 가
+   *   여러 시트 · gridlines · 시트 이름 등 다 포함되고 · 원본 xlsx 서식 (열 폭 · 셀 크기)
+   *   과 다르게 rendering. Sheets export URL 방식으로 전환 · 첫 시트만 · A4 세로 ·
+   *   가로 폭 fit · gridlines/시트명/페이지번호 off · 여백 최소.
+   *
+   * gid=0 → 첫 sheet (인보이스는 항상 master template 의 첫 시트 사용).
+   *         2/3/4 페이지에 있는 다른 시트는 자동 제외.
    */
   async exportAsPdf(fileId) {
     await this._ensureDrive();
-    const response = await this.drive.files.export(
-      { fileId, mimeType: 'application/pdf' },
-      { responseType: 'arraybuffer' }
-    );
-    return Buffer.from(response.data);
+    const params = new URLSearchParams({
+      format: 'pdf',
+      gid: '0',              // 첫 시트만 (INVOICE) · 나머지 시트 제외
+      portrait: 'true',      // 세로
+      size: 'A4',
+      scale: '2',            // 2 = fit to width (열이 A4 폭에 딱 맞게 축소/확대)
+      sheetnames: 'false',
+      printtitle: 'false',
+      pagenumbers: 'false',
+      gridlines: 'false',
+      fzr: 'false',
+      top_margin: '0.5',
+      bottom_margin: '0.5',
+      left_margin: '0.5',
+      right_margin: '0.5',
+      horizontal_alignment: 'CENTER',
+      vertical_alignment: 'TOP',
+    });
+    const url = `https://docs.google.com/spreadsheets/d/${fileId}/export?${params.toString()}`;
+    const tokenObj = await this.auth.getAccessToken();
+    const token = typeof tokenObj === 'string' ? tokenObj : (tokenObj?.token || tokenObj?.access_token);
+    const axios = require('axios');
+    const res = await axios.get(url, {
+      responseType: 'arraybuffer',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return Buffer.from(res.data);
   }
 
   /**
