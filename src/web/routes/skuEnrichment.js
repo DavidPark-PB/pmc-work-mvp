@@ -59,7 +59,7 @@ function pgErrorToStatus(error) {
 // PATCH /api/sku-master/:internalSku/cost
 //   body: { cost_krw: number, source?: string, source_ref?: string, reason?: string }
 // ══════════════════════════════════════════════════════════════════════════
-router.patch('/sku-master/:internalSku/cost', async (req, res) => {
+router.patch('/:internalSku/cost', async (req, res) => {
   try {
     const internalSku = String(req.params.internalSku || '').trim();
     if (!internalSku) return res.status(400).json({ success: false, error: 'internalSku 필요' });
@@ -121,7 +121,7 @@ router.patch('/sku-master/:internalSku/cost', async (req, res) => {
 //     set_as_current?: boolean   · true 면 sku_master.supplier_id 도 업데이트 (default true when supplier_id 제공)
 //   }
 // ══════════════════════════════════════════════════════════════════════════
-router.patch('/sku-master/:internalSku/supplier', async (req, res) => {
+router.patch('/:internalSku/supplier', async (req, res) => {
   try {
     const internalSku = String(req.params.internalSku || '').trim();
     if (!internalSku) return res.status(400).json({ success: false, error: 'internalSku 필요' });
@@ -193,7 +193,7 @@ router.patch('/sku-master/:internalSku/supplier', async (req, res) => {
 //     recentSupplierHistory: [{ supplier_name, purchase_price, purchased_at, source }, ...],
 //   }
 // ══════════════════════════════════════════════════════════════════════════
-router.get('/sku-master/:internalSku/enrichment', async (req, res) => {
+router.get('/:internalSku/enrichment', async (req, res) => {
   try {
     const internalSku = String(req.params.internalSku || '').trim();
     if (!internalSku) return res.status(400).json({ success: false, error: 'internalSku 필요' });

@@ -181,8 +181,11 @@ app.use('/api/sku-master/search', require('./src/web/routes/skuMasterSearch'));
 // 원가/무게/치수 CSV 일괄 임포트 — /api/sku-master 의 /:id 라우트보다 먼저 mount 필요
 app.use('/api/sku-master/import', require('./src/web/routes/skuMasterImport'));
 app.use('/api/sku-master', require('./src/web/routes/skuMaster'));
-// SKU Enrichment Loop (2026-08-31) — cost/supplier/enrichment endpoints (path segment 2 → skuMaster.js 의 /:id 와 안 충돌)
-app.use('/api', require('./src/web/routes/skuEnrichment'));
+// SKU Enrichment Loop (2026-08-31) — cost/supplier/enrichment endpoints.
+// mount path 는 /api/sku-master (좁게). 2026-09-02 fix: 이전에는 /api 로 mount 되어
+// router.use(requireAdmin) 가 /api/expenses · /api/attendance 등 직원 route 도 gate → 전체 회귀.
+// mount 를 좁혀 requireAdmin scope 을 /api/sku-master/* 로 격리.
+app.use('/api/sku-master', require('./src/web/routes/skuEnrichment'));
 // B2C Inventory Distribution · Phase 3 — Channel Matrix API (read: authGuard · write: requireAdmin 내부)
 app.use('/api/b2c/sku', require('./src/web/routes/b2cChannelMatrix'));
 // B2C Inventory Distribution · Phase 5 — Controlled Task Queue admin API (requireAdmin 라우터 안)
