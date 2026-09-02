@@ -1008,6 +1008,26 @@ class B2BInvoiceService {
       ws.getCell(`J${r}`).numFmt = fmt;
     }
 
+    // 6. 모든 셀 wrapText 강제 (2026-09-02 Owner Directive) —
+    //    template 열 폭이 짧아 긴 item 이름 (Pokemon Card Game MEGA Scarlet & Violet)
+    //    · Origin (Republic of Korea) · Payment info 이메일이 잘리는 문제 근본 해결.
+    //    Excel/Google Sheets 는 wrapText 켜지면 셀 안 자동 줄바꿈 + 행 높이 자동 확장.
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        const prev = cell.alignment || {};
+        cell.alignment = { ...prev, wrapText: true };
+      });
+    });
+
+    // 7. Item 행 최소 높이 확보 — 긴 상품명 두 줄 될 때 · Excel 이 auto 지만 · 보험용
+    for (let i = 0; i < itemCount; i++) {
+      const r = ws.getRow(ITEM_FIRST_ROW + i);
+      if (!r.height || r.height < 22) r.height = 22;
+    }
+    // Origin (E20) · 두 줄 대비
+    const row20 = ws.getRow(20);
+    if (!row20.height || row20.height < 22) row20.height = 22;
+
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
   }
