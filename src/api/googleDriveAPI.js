@@ -105,22 +105,34 @@ class GoogleDriveAPI {
   /**
    * Google Sheets → PDF 변환 다운로드
    *
-   * 2026-09-02 · Owner Directive: files.export 는 옵션이 없어서 결과 PDF 가
-   *   여러 시트 · gridlines · 시트 이름 등 다 포함되고 · 원본 xlsx 서식 (열 폭 · 셀 크기)
-   *   과 다르게 rendering. Sheets export URL 방식으로 전환 · 첫 시트만 · A4 세로 ·
-   *   가로 폭 fit · gridlines/시트명/페이지번호 off · 여백 최소.
+   * 2026-09-02 · Owner Directive: files.export 는 옵션 없어서 여러 시트 · gridlines
+   *   등 다 포함. Sheets export URL 로 · 첫 시트만 · A4 · fit width · gridlines off.
    *
-   * gid=0 → 첫 sheet (인보이스는 항상 master template 의 첫 시트 사용).
-   *         2/3/4 페이지에 있는 다른 시트는 자동 제외.
+   * 첫 시트 gid 는 · xlsx 변환 시 자동 할당 · 0 이 아닐 수 있음 → sheets.get 으로
+   * 첫 시트 sheetId 획득 후 gid 파라미터에 사용.
    */
   async exportAsPdf(fileId) {
     await this._ensureDrive();
+    const { google } = require('googleapis');
+    const sheets = google.sheets({ version: 'v4', auth: this.auth });
+
+    // 첫 시트 gid 획득 (xlsx→sheets 변환 시 · 첫 시트가 gid=0 이 아닐 수 있음)
+    let firstGid = '0';
+    try {
+      const meta = await sheets.spreadsheets.get({
+        spreadsheetId: fileId,
+        fields: 'sheets(properties(sheetId,index,title))',
+      });
+      const first = (meta.data.sheets || []).find(s => s.properties?.index === 0) || meta.data.sheets?.[0];
+      if (first?.properties?.sheetId != null) firstGid = String(first.properties.sheetId);
+    } catch (e) { console.warn('[exportAsPdf] sheets.get 실패 · gid=0 fallback:', e.message); }
+
     const params = new URLSearchParams({
       format: 'pdf',
-      gid: '0',              // 첫 시트만 (INVOICE) · 나머지 시트 제외
-      portrait: 'true',      // 세로
+      gid: firstGid,         // 첫 시트만 (INVOICE) · 나머지 시트 제외
+      portrait: 'true',
       size: 'A4',
-      scale: '2',            // 2 = fit to width (열이 A4 폭에 딱 맞게 축소/확대)
+      scale: '2',            // 2 = fit to width
       sheetnames: 'false',
       printtitle: 'false',
       pagenumbers: 'false',
@@ -137,11 +149,22 @@ class GoogleDriveAPI {
     const tokenObj = await this.auth.getAccessToken();
     const token = typeof tokenObj === 'string' ? tokenObj : (tokenObj?.token || tokenObj?.access_token);
     const axios = require('axios');
-    const res = await axios.get(url, {
-      responseType: 'arraybuffer',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    return Buffer.from(res.data);
+    try {
+      const res = await axios.get(url, {
+        responseType: 'arraybuffer',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      return Buffer.from(res.data);
+    } catch (e) {
+      // Sheets export URL 이 특정 조합에 400 반환 시 · files.export fallback
+      const status = e.response?.status;
+      console.warn(`[exportAsPdf] Sheets export URL 실패 (${status}) · files.export fallback`);
+      const fallback = await this.drive.files.export(
+        { fileId, mimeType: 'application/pdf' },
+        { responseType: 'arraybuffer' }
+      );
+      return Buffer.from(fallback.data);
+    }
   }
 
   /**
