@@ -117,22 +117,32 @@ class GoogleDriveAPI {
   /**
    * xlsx 파일 → Google Sheets로 변환 업로드 → PDF export → 삭제
    * (xlsx를 PDF로 변환하는 우회 방법)
+   *
+   * 2026-09-02 · Owner Directive fix: service account 자체 Drive quota=0 이라
+   *   임시 파일 create 자체가 storageQuotaExceeded 실패. 사장님 shared drive
+   *   PMCCoperation > 02_B2B invoice 폴더에 임시 create · quota 문제 해결.
+   *   env B2B_TEMP_FOLDER_ID override 지원.
    */
   async convertXlsxToPdf(xlsxBuffer, tempName = 'temp-invoice') {
     await this._ensureDrive();
     const { Readable } = require('stream');
 
-    // 1. xlsx를 Google Sheets로 변환 업로드
+    const parentFolderId = process.env.B2B_TEMP_FOLDER_ID
+      || '1FduYLrs9G8qU197QoYqYtLY0Il3t4Tet'; // PMCCoperation > 02_B2B invoice
+
+    // 1. xlsx를 Google Sheets로 변환 업로드 (shared drive parent 지정)
     const uploaded = await this.drive.files.create({
       requestBody: {
         name: tempName,
         mimeType: 'application/vnd.google-apps.spreadsheet', // 변환
+        parents: [parentFolderId],
       },
       media: {
         mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         body: Readable.from(xlsxBuffer),
       },
       fields: 'id',
+      supportsAllDrives: true,
     });
 
     const tempFileId = uploaded.data.id;
@@ -142,9 +152,9 @@ class GoogleDriveAPI {
       const pdfBuffer = await this.exportAsPdf(tempFileId);
       return pdfBuffer;
     } finally {
-      // 3. 임시 파일 삭제
+      // 3. 임시 파일 삭제 (permanent · shared drive)
       try {
-        await this.drive.files.delete({ fileId: tempFileId });
+        await this.drive.files.delete({ fileId: tempFileId, supportsAllDrives: true });
       } catch (e) {
         console.warn('임시 파일 삭제 실패:', e.message);
       }

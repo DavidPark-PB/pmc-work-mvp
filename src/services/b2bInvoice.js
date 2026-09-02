@@ -1348,6 +1348,7 @@ class B2BInvoiceService {
         if (format === 'pdf') {
           const pdfBuffer = await this.drive.convertXlsxToPdf(xlsxBuffer, `temp-${invoiceNo}`);
           await this._putPdfToCache(invoiceNo, pdfBuffer);
+          await this._savePdfToBuyerFolder(invoiceNo, inv.BuyerName, pdfBuffer);
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
         return {
@@ -1369,6 +1370,7 @@ class B2BInvoiceService {
             `temp-${invoiceNo}`
           );
           await this._putPdfToCache(invoiceNo, pdfBuffer);
+          await this._savePdfToBuyerFolder(invoiceNo, inv.BuyerName, pdfBuffer);
           return { buffer: pdfBuffer, mimeType: 'application/pdf', fileName: `${invoiceNo}.pdf` };
         }
         const xlsxBuffer = await this.drive.downloadFile(inv.DriveFileId);
@@ -1415,6 +1417,58 @@ class B2BInvoiceService {
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       fileName: `${invoiceNo}.xlsx`,
     };
+  }
+
+  // ─── B2B PDF · shared drive buyer folder 저장 (Owner Directive 2026-09-02) ─
+  //   PMCCoperation > 02_B2B invoice > {buyerName}/{invoiceNo}.pdf
+  //   사장님이 Drive UI 에서 바이어별로 정리된 인보이스를 즉시 찾을 수 있게.
+  //   실패해도 Supabase cache 는 별도 성공 (best effort · 배송 흐름 안 막음).
+  _b2bParentFolderId() {
+    return process.env.B2B_TEMP_FOLDER_ID || '1FduYLrs9G8qU197QoYqYtLY0Il3t4Tet';
+  }
+
+  async _getOrCreateBuyerFolder(buyerName) {
+    const parentId = this._b2bParentFolderId();
+    const name = String(buyerName || '').trim() || 'Unknown';
+    const escaped = name.replace(/'/g, "\\'");
+    const q = `name = '${escaped}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`;
+    const found = await this.drive.drive.files.list({
+      q, fields: 'files(id)', supportsAllDrives: true, includeItemsFromAllDrives: true, pageSize: 1,
+    });
+    if (found.data.files?.length) return found.data.files[0].id;
+    const created = await this.drive.drive.files.create({
+      requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+      fields: 'id', supportsAllDrives: true,
+    });
+    return created.data.id;
+  }
+
+  async _savePdfToBuyerFolder(invoiceNo, buyerName, pdfBuffer) {
+    if (!pdfBuffer || !pdfBuffer.length) return;
+    if (!buyerName || !String(buyerName).trim()) {
+      console.warn(`[buyer folder pdf] ${invoiceNo}: buyerName 없음 · skip`);
+      return;
+    }
+    try {
+      const { Readable } = require('stream');
+      const folderId = await this._getOrCreateBuyerFolder(buyerName);
+      // 인보이스당 1장 유지 · 동일 이름 있으면 permanent delete
+      const existing = await this.drive.drive.files.list({
+        q: `name = '${invoiceNo}.pdf' and '${folderId}' in parents and trashed = false`,
+        fields: 'files(id)', supportsAllDrives: true, includeItemsFromAllDrives: true, pageSize: 5,
+      });
+      for (const f of existing.data.files || []) {
+        try { await this.drive.drive.files.delete({ fileId: f.id, supportsAllDrives: true }); } catch {}
+      }
+      await this.drive.drive.files.create({
+        requestBody: { name: `${invoiceNo}.pdf`, parents: [folderId], mimeType: 'application/pdf' },
+        media: { mimeType: 'application/pdf', body: Readable.from(pdfBuffer) },
+        fields: 'id', supportsAllDrives: true,
+      });
+      console.log(`[buyer folder pdf] ${invoiceNo}.pdf → ${buyerName}/ 저장`);
+    } catch (e) {
+      console.warn(`[buyer folder pdf] ${invoiceNo} 저장 실패 (무시):`, e.message);
+    }
   }
 
   // ─── PDF cache (Supabase Storage b2b-invoices/{invoiceNo}.pdf) ────────
