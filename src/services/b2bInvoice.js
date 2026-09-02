@@ -1027,14 +1027,13 @@ class B2BInvoiceService {
       });
     });
 
-    // 7. Item 행 최소 높이 확보 — 긴 상품명 두 줄 될 때 · Excel 이 auto 지만 · 보험용
-    for (let i = 0; i < itemCount; i++) {
-      const r = ws.getRow(ITEM_FIRST_ROW + i);
-      if (!r.height || r.height < 22) r.height = 22;
+    // 7. Item body row 최소 높이 (21~37) · Origin row (17)
+    for (let r = ITEM_FIRST_ROW; r < ITEM_FIRST_ROW + MAX_ITEM_ROWS; r++) {
+      const rr = ws.getRow(r);
+      if (!rr.height || rr.height < 22) rr.height = 22;
     }
-    // Origin (E20) · 두 줄 대비
-    const row20 = ws.getRow(20);
-    if (!row20.height || row20.height < 22) row20.height = 22;
+    const origRow = ws.getRow(17);
+    if (!origRow.height || origRow.height < 22) origRow.height = 22;
 
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
