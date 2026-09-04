@@ -64,6 +64,7 @@
                 <th style="padding:10px;text-align:right;" title="주 15시간 이상 + 결근 0회인 주에 발생">주휴수당</th>
                 <th style="padding:10px;text-align:center;">상여/인센티브</th>
                 <th style="padding:10px;text-align:right;">총 지급액</th>
+                <th style="padding:10px;text-align:right;color:#ffb74d;" title="근로자 부담분 · 매달 예상 (기본급 기준 · 소득세 별도)">예상 4대보험</th>
               </tr>
             </thead>
             <tbody id="pay-tbody"></tbody>
@@ -114,6 +115,19 @@
       return { ...s, bonusInput };
     }));
 
+    // 4대보험 (근로자 부담분 · 매달 예상 · 2026 표준 요율 · 소득세 별도)
+    //   국민연금 4.5% · 건강보험 3.545% · 장기요양 = 건강×12.95% · 고용 0.9%
+    //   합계 ≈ 기본급 × 9.4%
+    function estimate4Insurance(basePay) {
+      const base = Number(basePay) || 0;
+      if (base <= 0) return { total: 0, np: 0, hi: 0, ltc: 0, ei: 0 };
+      const np = Math.round(base * 0.045);
+      const hi = Math.round(base * 0.03545);
+      const ltc = Math.round(hi * 0.1295);
+      const ei = Math.round(base * 0.009);
+      return { total: np + hi + ltc + ei, np, hi, ltc, ei };
+    }
+
     tbody.innerHTML = enriched.map(s => {
       const badges = [];
       if (s.late > 0) badges.push(`<span title="지각" style="padding:1px 5px;background:#ff9800;color:#fff;border-radius:6px;font-size:10px;">⏰${s.late}</span>`);
@@ -121,6 +135,8 @@
       if (s.absence > 0) badges.push(`<span title="결근" style="padding:1px 5px;background:#e94560;color:#fff;border-radius:6px;font-size:10px;">❌${s.absence}</span>`);
       if (s.dayOff > 0) badges.push(`<span title="휴무" style="padding:1px 5px;background:#0288d1;color:#fff;border-radius:6px;font-size:10px;">🌴${s.dayOff}</span>`);
       const attCell = badges.length ? badges.join(' ') : '<span style="color:#555;">-</span>';
+      const ins = estimate4Insurance(s.basePay);
+      const insTooltip = `국민연금 ${money(ins.np)} · 건강보험 ${money(ins.hi)} · 장기요양 ${money(ins.ltc)} · 고용 ${money(ins.ei)}\n(근로자 부담 · 매달 예상 · 소득세 별도)`;
       return `
       <tr style="border-bottom:1px solid #2a2a4a;">
         <td style="padding:10px;"><strong>${esc(s.displayName)}</strong></td>
@@ -138,9 +154,23 @@
           </div>
         </td>
         <td style="padding:10px;text-align:right;font-weight:700;">${money(s.totalPay)}</td>
+        <td style="padding:10px;text-align:right;color:#ffb74d;font-weight:600;" title="${esc(insTooltip)}">${money(ins.total)}</td>
       </tr>
     `;
     }).join('');
+
+    // 상단 요약 카드에 · 총 예상 4대보험 추가
+    const totalIns = enriched.reduce((sum, s) => sum + estimate4Insurance(s.basePay).total, 0);
+    const gtEl = document.getElementById('grand-total');
+    if (gtEl && !document.getElementById('grand-ins')) {
+      const insDiv = document.createElement('div');
+      insDiv.id = 'grand-ins-wrap';
+      insDiv.style.cssText = 'margin-top:6px;font-size:12px;color:#ffb74d;';
+      insDiv.innerHTML = `이 달 총 예상 4대보험 (근로자 부담 · 소득세 별도): <strong id="grand-ins">${money(totalIns)}</strong>`;
+      gtEl.parentNode.appendChild(insDiv);
+    } else if (document.getElementById('grand-ins')) {
+      document.getElementById('grand-ins').textContent = money(totalIns);
+    }
   }
 
   async function saveBonus(employeeId) {
