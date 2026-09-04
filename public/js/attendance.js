@@ -132,6 +132,31 @@
         <div style="margin-top:6px;font-size:10px;color:#666;">※ 주휴수당은 월~일 주 기준 추정치입니다. 월 경계에 걸친 주는 정확한 정산이 「급여 관리 → 2주 급여 확정」에서 됩니다.</div>
       </div>
 
+      <!-- 📅 내 일정 (Owner Directive 2026-09-04) — 개인/업무 일정 등록 + 리스트 -->
+      <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <h3 style="color:#fff;font-size:14px;margin:0;">📅 내 일정 <span style="color:#888;font-weight:400;font-size:11px;">(휴가 · 외근 · 회의 · 업무 · 미리 등록)</span></h3>
+        </div>
+        <form id="sch-form" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px;">
+          <select id="sch-type" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+            <option value="vacation">🌴 연차</option>
+            <option value="half_day">🌤 반차</option>
+            <option value="outside">🚗 외근</option>
+            <option value="meeting">👥 회의</option>
+            <option value="task">📋 업무</option>
+            <option value="other">📌 기타</option>
+          </select>
+          <input type="date" id="sch-start" required style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          <input type="date" id="sch-end" placeholder="종료일 (선택)" title="여러 일 연속인 경우 종료일 · 하루면 비워둠" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          <input type="text" id="sch-title" placeholder="제목 (예: 개인 연차)" required maxlength="200" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          <button type="submit" style="padding:8px 14px;background:#7c4dff;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">✓ 등록</button>
+        </form>
+        <input type="text" id="sch-desc" placeholder="메모 (선택)" maxlength="500" style="width:100%;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;margin-bottom:10px;">
+        <div id="sch-list-wrap" style="max-height:200px;overflow-y:auto;background:#0f0f23;border:1px solid #2a2a4a;border-radius:6px;padding:8px;">
+          <div id="sch-list" style="font-size:12px;color:#888;">로딩...</div>
+        </div>
+      </div>
+
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:0;overflow:auto;">
         <table style="width:100%;border-collapse:collapse;color:#fff;font-size:13px;">
           <thead>
@@ -160,6 +185,76 @@
     document.getElementById('att-date').value = todayStr();
     document.getElementById('att-form').addEventListener('submit', submitAtt);
     document.getElementById('filter-month').addEventListener('change', refresh);
+    // 📅 일정 · 시작일 default = 오늘 · form submit 바인딩 · 리스트 로드
+    const schStart = document.getElementById('sch-start');
+    if (schStart) schStart.value = todayStr();
+    const schForm = document.getElementById('sch-form');
+    if (schForm) schForm.addEventListener('submit', submitSchedule);
+    loadMySchedules();
+  }
+
+  // ─── 📅 일정 (Owner Directive 2026-09-04) ─────────────────────────
+  const SCH_TYPE_LABELS = {
+    vacation: '🌴 연차', half_day: '🌤 반차', outside: '🚗 외근',
+    meeting: '👥 회의', task: '📋 업무', other: '📌 기타',
+  };
+  async function loadMySchedules() {
+    const host = document.getElementById('sch-list');
+    if (!host) return;
+    try {
+      const res = await fetch('/api/schedules/mine');
+      const j = await res.json();
+      if (!res.ok || !j.success) throw new Error(j.error || '실패');
+      const items = j.data || [];
+      if (!items.length) { host.innerHTML = '<div style="color:#666;padding:8px 0;">등록된 일정이 없습니다.</div>'; return; }
+      host.innerHTML = items.map(it => {
+        const label = SCH_TYPE_LABELS[it.event_type] || '📌';
+        const dateRange = it.end_date && it.end_date !== it.event_date
+          ? `${it.event_date} ~ ${it.end_date}` : it.event_date;
+        return `
+          <div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #1f1f3a;">
+            <span style="min-width:70px;color:#aaa;font-size:11px;">${label}</span>
+            <span style="min-width:160px;color:#888;font-family:monospace;font-size:11px;">${esc(dateRange)}</span>
+            <span style="flex:1;color:#fff;">${esc(it.title)}</span>
+            ${it.description ? `<span style="color:#888;font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(it.description)}">${esc(it.description)}</span>` : ''}
+            <button type="button" onclick="pmcAttendance.deleteSchedule(${it.id})" style="padding:3px 8px;background:transparent;border:1px solid #555;border-radius:3px;color:#aaa;cursor:pointer;font-size:10px;">삭제</button>
+          </div>`;
+      }).join('');
+    } catch (e) { host.innerHTML = `<div style="color:#ff8a80;">로딩 실패: ${esc(e.message)}</div>`; }
+  }
+
+  async function submitSchedule(e) {
+    e.preventDefault();
+    const type = document.getElementById('sch-type').value;
+    const start = document.getElementById('sch-start').value;
+    const end = document.getElementById('sch-end').value || null;
+    const title = document.getElementById('sch-title').value.trim();
+    const desc = document.getElementById('sch-desc').value.trim() || null;
+    if (!start || !title) { alert('시작일 · 제목 필수'); return; }
+    try {
+      const res = await fetch('/api/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_type: type, event_date: start, end_date: end, title, description: desc, all_day: true }),
+      });
+      const j = await res.json();
+      if (!res.ok || !j.success) throw new Error(j.error || '실패');
+      // reset
+      document.getElementById('sch-title').value = '';
+      document.getElementById('sch-desc').value = '';
+      document.getElementById('sch-end').value = '';
+      loadMySchedules();
+    } catch (e) { alert('등록 실패: ' + e.message); }
+  }
+
+  async function deleteSchedule(id) {
+    if (!confirm('일정을 삭제하시겠습니까?')) return;
+    try {
+      const res = await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
+      const j = await res.json();
+      if (!res.ok || !j.success) throw new Error(j.error || '실패');
+      loadMySchedules();
+    } catch (e) { alert('삭제 실패: ' + e.message); }
   }
 
   async function refresh() {
@@ -747,5 +842,5 @@
     document.head.appendChild(st);
   })();
 
-  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll, editRow, cancelEdit, clockIn, clockOut, openRecalculateModal };
+  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll, editRow, cancelEdit, clockIn, clockOut, openRecalculateModal, deleteSchedule };
 })();
