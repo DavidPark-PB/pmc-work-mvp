@@ -345,10 +345,16 @@ app.listen(PORT, () => {
   }
 
   // OAuth 토큰 자동 갱신 (3시간마다 — Shopee 4h, eBay 2h 만료)
-  const { refreshAllTokens } = require('./src/jobs/tokenRefresh');
-  refreshAllTokens(); // 서버 시작 시 즉시 1회 실행
-  setInterval(refreshAllTokens, 3 * 60 * 60 * 1000); // 이후 3시간마다
-  console.log('OAuth 토큰 자동 갱신: 3시간 주기로 실행됨');
+  //   R1-C1 (2026-09-05): safeRefreshAllTokens · 각 provider 를 per-channel
+  //     scheduler lease 로 감쌈. Railway rolling deploy 시 두 프로세스가
+  //     같은 refresh_token 을 동시에 rotate 하려 시도하는 race 방어.
+  //     Cadence (3시간) 유지 · 외부 wrapper 는 rejection 재던지지 않음
+  //     (defense-in-depth · Promise.allSettled + 내부 try/catch 이미 방어).
+  //     Global unhandledRejection handler 추가 없음 (owner rule).
+  const { safeRefreshAllTokens } = require('./src/jobs/tokenRefresh');
+  void safeRefreshAllTokens('boot'); // 서버 시작 시 즉시 1회 실행
+  setInterval(() => { void safeRefreshAllTokens('interval'); }, 3 * 60 * 60 * 1000);
+  console.log('OAuth 토큰 자동 갱신: 3시간 주기로 실행됨 (per-channel lease · R1-C1)');
 
   // SKU 점수 자동 업데이트 (매일 02:00)
   const { scheduleSkuScoreUpdate } = require('./src/jobs/collectSkuData');
