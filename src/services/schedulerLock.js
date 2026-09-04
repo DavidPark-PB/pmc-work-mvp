@@ -169,7 +169,14 @@ async function withLease(lockKey, options, fn) {
   // ── kill switch: pass-through mode ────────────────────────────────────
   if (process.env.SCHEDULER_LOCK_ENABLED === '0') {
     _log('LOCK_DISABLED', { job: lockKey, run_id: runId });
-    const value = await fn({ runId, isLeaseLost: () => false });
+    const value = await fn({
+      runId,
+      isLeaseLost: () => false,
+      // No lease infrastructure · caller can safely proceed. Return true so
+      // money-facing callers don't block on a disabled subsystem. If Owner
+      // wants hard-off, they should not run the money job at all.
+      verifyOwnership: async () => true,
+    });
     return { acquired: true, ran: true, leaseLost: false, value };
   }
 
@@ -188,7 +195,14 @@ async function withLease(lockKey, options, fn) {
     }
     // fail-open: run without lease · surface a distinct log
     _log('LOCK_INFRA_BYPASS', { job: lockKey, run_id: runId });
-    const value = await fn({ runId, isLeaseLost: () => false });
+    const value = await fn({
+      runId,
+      isLeaseLost: () => false,
+      // No lease acquired · caller has already accepted the risk (fail-open).
+      // Return true so verifyOwnership doesn't compound the failure into a
+      // second FAIL CLOSED downstream. Fail-open is opt-in by policy.
+      verifyOwnership: async () => true,
+    });
     return { acquired: false, ran: true, leaseLost: false, value };
   }
 
@@ -245,6 +259,26 @@ async function withLease(lockKey, options, fn) {
   };
 
   // ── run fn ────────────────────────────────────────────────────────────
+  //   ctx.verifyOwnership() — public API for money-facing callers to
+  //     synchronously verify (via fresh RPC round-trip · not local flag)
+  //     that this run still holds the lease immediately before an
+  //     external write. Uses the heartbeat RPC underneath, so a successful
+  //     verify also extends expires_at (natural TTL renewal per write).
+  //
+  //     Returns true if we still own the lease · false if a different
+  //     run has taken over. THROWS on RPC infrastructure failure — the
+  //     caller MUST treat exceptions as ownership-lost and FAIL CLOSED.
+  //     Do not silently return false on RPC error here; propagating the
+  //     exception forces the caller to make an explicit decision.
+  const verifyOwnership = async () => {
+    const hb = await _heartbeat(lockKey, runId, ttlSec);
+    if (!hb.ok && !leaseLost) {
+      leaseLost = true;
+      _log('LEASE_LOST', { job: lockKey, run_id: runId, via: 'verifyOwnership' });
+    }
+    return hb.ok === true;
+  };
+
   _log('START', { job: lockKey, run_id: runId });
   startHeartbeat();
   const startedAt = Date.now();
@@ -253,6 +287,7 @@ async function withLease(lockKey, options, fn) {
     const value = await fn({
       runId,
       isLeaseLost: () => leaseLost,
+      verifyOwnership,
     });
     const durationMs = Date.now() - startedAt;
     _log('SUCCESS', {

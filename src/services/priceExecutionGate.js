@@ -56,6 +56,12 @@ const GATE_REASON = Object.freeze({
   // is still pending/started is NOT the same failure mode as a guardrail
   // read failure. Callers can retry after the concurrent run settles.
   EXECUTION_IN_PROGRESS: 'GATE_EXECUTION_IN_PROGRESS',
+  // R1-B (2026-09-05): scheduler lease ownership was lost (or
+  // unverifiable) between pipeline start and this specific eBay write.
+  // Only emitted when the caller supplied deps.ownershipVerifier.
+  // Backward-compatible: legacy callers omit the verifier · this reason
+  // never fires for them.
+  OWNERSHIP_LOST: 'GATE_OWNERSHIP_LOST',
 });
 
 /** Terminal automation_runs.status values the gate treats as "already settled".
@@ -217,6 +223,49 @@ async function executePriceWrite(req, deps = {}) {
       outcome: OUTCOME.FAILED, reasonCode: GATE_REASON.MARKETPLACE_FAILED,
       runId, eventId, error: 'no ebay client available',
     };
+  }
+
+  // ── 3b. R1-B · scheduler lease ownership final fence (opt-in) ────────────
+  //   When the caller (autoRepricer under runRepricingPipeline's lease)
+  //   passes deps.ownershipVerifier, run it IMMEDIATELY before ebay.updateItem.
+  //   No DB query · Telegram · sleep · expensive calc between this and the
+  //   marketplace call · minimises the TOCTOU window between verify and write.
+  //
+  //   Backward compat: legacy callers (retirementActionService, repricingService,
+  //   MANUAL_APPROVED paths) do not pass a verifier · this block is a no-op
+  //   for them · pre-R1-B behavior preserved.
+  //
+  //   FAIL CLOSED policy:
+  //     verifier returns false                       → BLOCK (OWNERSHIP_LOST)
+  //     verifier throws (RPC unreachable / timeout)  → BLOCK (OWNERSHIP_LOST)
+  //   Either way · no ebay.updateItem call · no state sync · audit as BLOCKED
+  //   run so the request_id burns and next replay returns IDEMPOTENT_REPLAY.
+  if (typeof deps.ownershipVerifier === 'function') {
+    let ownershipOk = false;
+    let ownershipError = null;
+    try {
+      ownershipOk = await deps.ownershipVerifier();
+    } catch (e) {
+      ownershipError = (e && e.message) ? e.message : String(e);
+    }
+    if (!ownershipOk) {
+      await markRun(db, runId, 'cancelled', now(), {
+        blocked: 'ownership_lost',
+        error: ownershipError,
+      });
+      const eventId = await safePublish(deps, {
+        event_type: 'PriceBlocked', sku: req.sku, item_id: req.itemId,
+        old_price: req.oldPrice, new_price: req.newPrice,
+        currency: req.currency || 'USD', actor: req.actor,
+        reason_code_gate: GATE_REASON.OWNERSHIP_LOST,
+      });
+      return {
+        outcome: OUTCOME.BLOCKED,
+        reasonCode: GATE_REASON.OWNERSHIP_LOST,
+        runId, eventId,
+        error: ownershipError || 'scheduler lease ownership lost or unverified',
+      };
+    }
   }
 
   let apiResult;

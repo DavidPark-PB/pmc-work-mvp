@@ -24,6 +24,17 @@ const telegram = require('../services/telegramBot');
 const { getClient } = require('../db/supabaseClient');
 const { calculatePrices } = require('../services/pricingEngine');
 const PlatformRepository = require('../db/platformRepository');
+const { withLease } = require('../services/schedulerLock');
+
+//   R1-B (2026-09-05) · distributed lease key + config for this pipeline.
+//   ttlSec / heartbeatSec chosen conservatively per Owner directive · prefer
+//   avoiding false takeover over faster crash-recovery. Actual worst-case
+//   pipeline runtime is ~90s (dryrun) or ~180s (live · capped at
+//   MAX_DAILY_CHANGES=50 * ~2.5s per write); 1800s TTL keeps a wide margin
+//   against Railway pauses · long eBay retries · network hiccups.
+const LEASE_KEY = 'scheduler:repricing-pipeline';
+const LEASE_TTL_SEC       = 1800;
+const LEASE_HEARTBEAT_SEC = 60;
 
 // --- 설정 ---
 const CONFIG = {
@@ -372,13 +383,21 @@ async function sendTelegramReport({ monitorResult, proposals, repricerReport, dr
 
 
 /**
- * 메인 파이프라인 실행
+ * Inner pipeline body — factored out so the outer wrapper can hold the
+ * distributed lease around it (R1-B). All existing behavior lives here
+ * verbatim; the wrapper adds only concurrent-run protection.
+ *
  * @param {object} opts
- * @param {boolean} opts.dryRun - true=시뮬레이션, false=실적용 (기본: CONFIG.DRY_RUN)
- * @param {boolean} opts.autoApplyRaiseOnly - true=인상만 자동적용, false=리포트만
- * @param {boolean} opts.silent - true=텔레그램 알림 없음 (테스트용)
+ * @param {boolean} opts.dryRun            — true=시뮬레이션 · false=실적용 (기본 CONFIG.DRY_RUN)
+ * @param {boolean} opts.autoApplyRaiseOnly — true=인상만 자동적용 · false=리포트만
+ * @param {boolean} opts.silent            — true=텔레그램 알림 없음 (테스트용)
+ * @param {Function} [opts.ownershipVerifier]
+ *   R1-B (2026-09-05) · async () → boolean · injected by the lease wrapper.
+ *   Passed through to runAutoRepricer for cooperative loop stop AND for the
+ *   priceExecutionGate write-boundary fence. Never called from this function
+ *   directly · pipeline steps are read-only DB queries and Telegram.
  */
-async function runRepricingPipeline({ dryRun, autoApplyRaiseOnly, silent } = {}) {
+async function _runPipelineInner({ dryRun, autoApplyRaiseOnly, silent, ownershipVerifier } = {}) {
   let isDryRun = dryRun !== undefined ? dryRun : CONFIG.DRY_RUN;
   const raiseOnly = autoApplyRaiseOnly !== undefined ? autoApplyRaiseOnly : CONFIG.AUTO_APPLY_RAISE_ONLY;
 
@@ -421,14 +440,17 @@ async function runRepricingPipeline({ dryRun, autoApplyRaiseOnly, silent } = {})
   }
 
   // Step 4a: 자동 적용 (설정된 경우)
+  //   R1-B · ownershipVerifier propagated into runAutoRepricer so the loop
+  //   can early-stop AND the gate can fence the actual eBay write.
+  const repricerDeps = ownershipVerifier ? { ownershipVerifier } : {};
   let repricerReport = null;
   try {
     if (!isDryRun) {
       console.log('[RepricingPipeline] Step 4: Running auto repricer (live)...');
-      repricerReport = await runAutoRepricer(false);
+      repricerReport = await runAutoRepricer(false, repricerDeps);
     } else {
       console.log('[RepricingPipeline] Step 4: Running auto repricer (dry run)...');
-      repricerReport = await runAutoRepricer(true);
+      repricerReport = await runAutoRepricer(true, repricerDeps);
     }
   } catch (e) {
     console.error('[RepricingPipeline] Repricer error:', e.message);
@@ -461,10 +483,84 @@ async function runRepricingPipeline({ dryRun, autoApplyRaiseOnly, silent } = {})
     changed: repricerReport?.changed || 0,
     errors: repricerReport?.errors?.length || 0,
     durationMs: duration,
+    //   R1-B · surface whether autoRepricer aborted mid-loop due to
+    //   scheduler lease loss. Additive · legacy callers ignore it.
+    leaseLost: repricerReport?.leaseLost === true,
   };
 
   console.log(`[RepricingPipeline] Done in ${duration}ms:`, JSON.stringify(result));
   return result;
 }
 
-module.exports = { runRepricingPipeline, analyzeAndPropose, sendTelegramReport, CONFIG };
+/**
+ * 메인 파이프라인 실행 — R1-B distributed-lease wrapper.
+ *
+ * All 3 existing call sites (cron · admin manual API · Telegram buttons)
+ * automatically get concurrent-run protection because they all go through
+ * this function. Backward-compatible return shape: on skip the caller
+ * still gets numeric fields (alerts, proposals, changed = 0) plus
+ * additive skip fields (skipped, skipReason).
+ *
+ * @param {object} opts
+ * @param {boolean} opts.dryRun - true=시뮬레이션, false=실적용 (기본: CONFIG.DRY_RUN)
+ * @param {boolean} opts.autoApplyRaiseOnly - true=인상만 자동적용, false=리포트만
+ * @param {boolean} opts.silent - true=텔레그램 알림 없음 (테스트용)
+ */
+async function runRepricingPipeline({ dryRun, autoApplyRaiseOnly, silent } = {}) {
+  const leaseResult = await withLease(
+    LEASE_KEY,
+    {
+      ttlSec: LEASE_TTL_SEC,
+      heartbeatSec: LEASE_HEARTBEAT_SEC,
+      failPolicy: 'closed',   // money-facing · never run without a lease
+    },
+    async (ctx) => {
+      //   Pass ctx.verifyOwnership through as the money-boundary fence.
+      //   runAutoRepricer uses it for both loop early-stop and gate
+      //   write-preflight (immediately before ebay.updateItem).
+      return await _runPipelineInner({
+        dryRun,
+        autoApplyRaiseOnly,
+        silent,
+        ownershipVerifier: ctx.verifyOwnership,
+      });
+    }
+  );
+
+  if (leaseResult.ran && leaseResult.value) {
+    return leaseResult.value;
+  }
+
+  //   Backward-compatible skip shape. Existing callers spread `...result`
+  //   into JSON responses; give them the same numeric fields as a normal
+  //   "no-alerts" return, plus explicit skip markers.
+  const skipReason = leaseResult.acquired === false ? 'locked' : 'lease_infra_error';
+  console.log(`[RepricingPipeline] Skipped · reason=${skipReason}`);
+  return {
+    dryRun: true,
+    alerts: 0,
+    priceAlerts: 0,
+    proposals: 0,
+    raises: 0,
+    drops: 0,
+    holds: 0,
+    changed: 0,
+    errors: 0,
+    durationMs: 0,
+    leaseLost: false,
+    skipped: true,
+    skipReason,
+  };
+}
+
+module.exports = {
+  runRepricingPipeline,
+  analyzeAndPropose,
+  sendTelegramReport,
+  CONFIG,
+  //   R1-B · exposed for tests only. Do not use from other callers.
+  _runPipelineInner,
+  _LEASE_KEY: LEASE_KEY,
+  _LEASE_TTL_SEC: LEASE_TTL_SEC,
+  _LEASE_HEARTBEAT_SEC: LEASE_HEARTBEAT_SEC,
+};

@@ -25,6 +25,11 @@ function _autoRepricerRequestId({ sku, itemId, direction, newPrice, dateStr }) {
  * @param {boolean} dryRun - true = simulate only, false = actually change prices
  * @param {object} [deps]  dependency injection (tests)
  *   deps.db, deps.ebay, deps.gateExecute, deps.gateDeps
+ *   deps.ownershipVerifier  (R1-B, optional) — async () => boolean.
+ *     When present, called before each SKU iteration for cooperative
+ *     early-stop AND passed through to priceExecutionGate for the
+ *     write-boundary fence right before ebay.updateItem. Legacy callers
+ *     (no verifier) get unchanged behavior — never blocked by this path.
  */
 async function runAutoRepricer(dryRun = true, deps = {}) {
   // Owner directive (2026-08-10, Phase 1 Commit 5A):
@@ -38,6 +43,11 @@ async function runAutoRepricer(dryRun = true, deps = {}) {
 
   const db = deps.db || getClient();
   const report = { processed: 0, changed: 0, skipped: [], errors: [], changes: [], mode: dryRun ? 'dry_run' : 'live' };
+  //   R1-B · cooperative stop when scheduler lease is lost mid-run.
+  //   Only set to true when deps.ownershipVerifier is provided AND returns
+  //   false / throws · never on any other error path so legacy callers see
+  //   the same report shape.
+  report.leaseLost = false;
 
   console.log(`[AutoRepricer] Starting (${dryRun ? 'DRY RUN' : 'LIVE'})...`);
 
@@ -139,6 +149,20 @@ async function runAutoRepricer(dryRun = true, deps = {}) {
 
   // 4. Process each SKU with competitor
   for (const [sku, comp] of Object.entries(compBySku)) {
+    //   R1-B · cheap cooperative early-stop. Verifier is a lease heartbeat
+    //   underneath; if the pipeline lost ownership (network partition or
+    //   takeover), skip the rest of the loop to save DB reads and Telegram
+    //   noise. The gate STILL re-verifies immediately before ebay.updateItem
+    //   as the money-safety boundary · this loop check is optimisation only.
+    if (typeof deps.ownershipVerifier === 'function') {
+      let leaseOk = false;
+      try { leaseOk = await deps.ownershipVerifier(); } catch (_e) { leaseOk = false; }
+      if (!leaseOk) {
+        report.leaseLost = true;
+        console.warn('[AutoRepricer] LEASE_LOST during loop · aborting remaining SKUs at processed=' + report.processed);
+        break;
+      }
+    }
     if (!dryRun && report.changed >= MAX_DAILY_CHANGES - todayChanges) {
       report.skipped.push({ sku, reason: 'daily_limit_reached' });
       break;
@@ -339,6 +363,14 @@ async function runAutoRepricer(dryRun = true, deps = {}) {
 async function _applyViaGate({ sku, itemId, oldPrice, newPrice, direction, reason, dateStr, deps }) {
   const gateFn = deps.gateExecute || priceExecutionGate.executePriceWrite;
   const requestId = _autoRepricerRequestId({ sku, itemId, direction, newPrice, dateStr });
+  //   R1-B · propagate scheduler lease ownership verifier to the gate
+  //   so the FINAL write-boundary fence fires immediately before
+  //   ebay.updateItem. If deps.gateDeps.ownershipVerifier is already
+  //   present (test override), keep it · else inject from deps.
+  const gateDeps = Object.assign({}, deps.gateDeps || {});
+  if (typeof deps.ownershipVerifier === 'function' && typeof gateDeps.ownershipVerifier !== 'function') {
+    gateDeps.ownershipVerifier = deps.ownershipVerifier;
+  }
   return await gateFn({
     sku: sku || `unknown-sku-${itemId}`,
     itemId: String(itemId),
@@ -351,7 +383,7 @@ async function _applyViaGate({ sku, itemId, oldPrice, newPrice, direction, reaso
     currency: 'USD',
     // reason string is preserved via safetyExec input_snapshot metadata:
     // deps.gateDeps can carry additional context, but we don't need it here.
-  }, deps.gateDeps || {});
+  }, gateDeps);
 }
 
 /** Map gate outcome enum to autoRepricer's legacy status vocabulary. */
