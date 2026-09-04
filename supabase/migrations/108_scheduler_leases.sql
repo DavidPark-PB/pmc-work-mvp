@@ -206,13 +206,18 @@ begin
 
   v_new_expires := v_now + make_interval(secs => p_ttl_seconds);
 
-  update scheduler_leases
+  -- Alias qualification is required inside this function because the
+  -- RETURNS TABLE column `expires_at` shadows any unqualified reference
+  -- to the same-named column of `scheduler_leases` (plpgsql treats OUT
+  -- parameters as scope variables · Postgres reports "ambiguous" without
+  -- the alias · caught in R1-A production verify).
+  update scheduler_leases as l
      set heartbeat_at = v_now,
          expires_at   = v_new_expires
-   where lock_key   = p_lock_key
-     and owner_id   = p_owner_id
-     and run_id     = p_run_id
-     and expires_at > v_now;
+   where l.lock_key   = p_lock_key
+     and l.owner_id   = p_owner_id
+     and l.run_id     = p_run_id
+     and l.expires_at > v_now;
 
   get diagnostics v_rows = row_count;
 
