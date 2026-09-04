@@ -6913,8 +6913,15 @@ function shippingRenderRow(order) {
     html += `</div>`;
   }
   html += '</td>';
-  // 상태
-  html += `<td style="${TD}white-space:nowrap;color:${statusColor};font-weight:600">${esc(status)}</td>`;
+  // 상태 (+ SHIPPED 이고 carrier 있으면 · 재입력 버튼)
+  const isShipped = String(status).toUpperCase() === 'SHIPPED';
+  const canResubmit = isShipped && !!carrier;
+  html += `<td style="${TD}white-space:nowrap;color:${statusColor};font-weight:600">${esc(status)}`;
+  if (canResubmit) {
+    html += ` <button type="button" onclick="shippingResubmit('${esc(rowIdx)}','${esc(carrier)}')"
+      style="margin-left:4px;padding:2px 8px;background:#fff;border:1px solid #ff8f00;border-radius:10px;color:#ff8f00;cursor:pointer;font-size:10px;font-weight:600" title="배송사 시트에 재입력">↻ 재입력</button>`;
+  }
+  html += '</td>';
 
   html += '</tr>';
 
@@ -7185,6 +7192,26 @@ async function shippingAddSupplier(rowIdx) {
 function shippingToggleAddr(rowIdx) {
   const el = document.getElementById(`addr-row-${rowIdx}`);
   if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+// 2026-09-04 · SHIPPED 주문 재입력 · 배송사 시트에 다시 추가 + status=READY
+async function shippingResubmit(orderNo, carrier) {
+  if (!orderNo || !carrier) return;
+  const ok = confirm(`주문 "${orderNo}" 을 배송사 "${carrier}" 시트에 다시 추가하고 · 상태를 READY 로 되돌리시겠습니까?\n\n(재발송 · 잘못 SHIPPED 처리된 경우 사용)`);
+  if (!ok) return;
+  try {
+    const res = await fetch('/api/orders/set-carrier', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rowIndex: orderNo, carrier }),
+    });
+    const j = await res.json();
+    if (!res.ok || !j.success) throw new Error(j.error || '실패');
+    alert(`✅ 재입력 완료 — ${carrier} 시트에 추가됨. 상태 READY.`);
+    shippingLoadRecent();
+  } catch (e) {
+    alert('❌ 재입력 실패: ' + e.message);
+  }
 }
 
 function shippingFilter() {
