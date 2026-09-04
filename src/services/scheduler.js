@@ -371,6 +371,12 @@ function start() {
   }, { timezone: TZ });
 
   // 매일 새벽 3시 — 도래한 정기결제를 expenses로 발행
+  //   R1-D1-A (2026-09-05): fire() 는 per-rule distributed lease 로 보호되어
+  //     rolling deploy 중 동시 실행 시 하나만 실제 INSERT 를 수행함. 이 loop
+  //     의 aggregation 은 이제 실 발행 (fired) 과 정상 SKIP_LOCKED · lease
+  //     infra error · body throw 를 정확히 구분해서 카운트한다. classify
+  //     helper 는 recurringRepository 에서 shared · 같은 로직을 route.js
+  //     /fire-due 도 사용.
   cron.schedule('0 3 * * *', async () => {
     try {
       const recurringRepo = require('../db/recurringRepository');
@@ -380,11 +386,18 @@ function start() {
       const results = await Promise.allSettled(
         due.map(r => recurringRepo.fire(r, { expenseRepo }))
       );
-      const fired = results.filter(x => x.status === 'fulfilled').length;
+      let fired = 0, skippedLocked = 0, skippedError = 0, failed = 0;
       results.forEach((x, i) => {
-        if (x.status === 'rejected') console.warn(`[scheduler] recurring fire fail id=${due[i].id}:`, x.reason?.message || x.reason);
+        const bucket = recurringRepo.classifyFireResult(x);
+        if (bucket === 'fired')          fired++;
+        else if (bucket === 'skipped_locked') skippedLocked++;
+        else if (bucket === 'skipped_error')  skippedError++;
+        else                             failed++;
+        if (x.status === 'rejected') {
+          console.warn(`[scheduler] recurring fire fail id=${due[i].id}:`, x.reason?.message || x.reason);
+        }
       });
-      if (due.length > 0) console.log(`[scheduler] recurring: ${fired}/${due.length}건 발행`);
+      if (due.length > 0) console.log(`[scheduler] recurring: ${fired}/${due.length} 발행 · locked ${skippedLocked} · lease_error ${skippedError} · failed ${failed}`);
     } catch (e) {
       console.error('[scheduler] recurring error:', e.message);
     }

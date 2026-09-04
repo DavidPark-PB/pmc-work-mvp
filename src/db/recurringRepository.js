@@ -5,6 +5,46 @@
  */
 const { getClient } = require('./supabaseClient');
 const { normalize } = require('../services/expenseCategories');
+const { withLease } = require('../services/schedulerLock');
+
+//   R1-D1-A (2026-09-05) · concurrent-run serialization.
+//   Test hook · lets unit tests inject a fake Supabase client for `update()`
+//   without going through the real DB. Only wired into fire()'s downstream
+//   update() path so production code paths (list/create/getById/etc.) keep
+//   the real singleton.
+let _clientForTests = null;
+function _setClientForTests(c) { _clientForTests = c; }
+function _resetClientForTests() { _clientForTests = null; }
+function _db() { return _clientForTests || getClient(); }
+
+//   R1-D1-A · per-rule lease config. Conservative TTL/heartbeat matches
+//   R1-C1 baseline · prefer avoiding false takeover over faster crash
+//   recovery. fire() critical section is short (~500ms typical) but
+//   300s absorbs Railway pauses and any Supabase retry.
+const LEASE_KEY_PREFIX      = 'scheduler:recurring-expense:rule:';
+const LEASE_TTL_SEC         = 300;
+const LEASE_HEARTBEAT_SEC   = 30;
+
+/**
+ * R1-D1-A · classify a fire() outcome (from Promise.allSettled OR a raw
+ * fire() return value) into one of four aggregation buckets. Both cron
+ * aggregation (scheduler.js) and per-rule route accumulation (route.js
+ * /fire-due) call this so the aggregation stays consistent across
+ * callers and is testable in one place.
+ *
+ * Buckets:
+ *   'fired'          · fire() ran to completion · expense INSERT + recurring UPDATE done
+ *   'skipped_locked' · another instance/run held the lease · nothing written
+ *   'skipped_error'  · lease infra RPC error · nothing written (fail-closed)
+ *   'failed'         · fire() body threw · rejected promise · partial state may exist
+ */
+function classifyFireResult(x) {
+  if (x && x.status === 'rejected') return 'failed';
+  const v = (x && x.status === 'fulfilled') ? x.value : x;
+  if (!v || !v.skipped) return 'fired';
+  if (v.skipReason === 'lease_error') return 'skipped_error';
+  return 'skipped_locked';
+}
 
 const MISSING = new Set(['42P01', 'PGRST205']);
 const MISSING_MSG = '정기결제 DB 마이그레이션이 적용되지 않았습니다 (013).';
@@ -144,7 +184,10 @@ async function update(id, updates) {
     }
   }
 
-  const { data, error } = await getClient().from('recurring_payments')
+  //   R1-D1-A · route through _db() so unit tests can inject a fake client
+  //   for fire()'s downstream update. Production behavior identical: _db()
+  //   returns getClient() when no test override is set.
+  const { data, error } = await _db().from('recurring_payments')
     .update(patch).eq('id', id).select().single();
   if (error) throwFriendly(error);
   return decorate(data);
@@ -170,26 +213,108 @@ async function listDue({ asOf = new Date() } = {}) {
 /**
  * 정기결제 1건을 expense로 발행 + next_due_at 전진.
  * expenseRepo.createExpense는 rowCount 등 부가처리 포함.
+ *
+ * R1-D1-A (2026-09-05) · per-rule distributed lease.
+ *   Every fire() call — from the 03:00 cron, POST /:id/run, or POST
+ *   /fire-due — acquires `scheduler:recurring-expense:rule:${id}` before
+ *   touching expenses. During a Railway rolling deploy two Node processes
+ *   overlap for a window and previously both would INSERT the same
+ *   expense row for the same recurring rule. This lease prevents that.
+ *
+ *   IMPORTANT: this is CONCURRENT-RUN serialization only. Crash-replay
+ *   (expense INSERT succeeds → recurring UPDATE fails → next run fires
+ *   the same expense again) is NOT solved here. That is D1-B, which
+ *   will add a partial UNIQUE index and ON CONFLICT handling in
+ *   expenses. Do NOT describe this commit as "exactly-once".
+ *
+ * Return shape:
+ *   success (fire ran):
+ *     { expense, nextDueAt }                      — legacy shape preserved
+ *   SKIP_LOCKED (another instance holds the lease):
+ *     { skipped: true, skipReason: 'locked', recurringId }
+ *   lease infra failure (RPC unreachable etc.):
+ *     { skipped: true, skipReason: 'lease_error', recurringId, error }
+ *
+ *   Callers MUST inspect `skipped` before counting as an emitted
+ *   expense. classifyFireResult() bins these correctly.
  */
 async function fire(recurring, { expenseRepo, asOf = new Date() }) {
-  const expense = await expenseRepo.createExpense({
-    paidAt: recurring.nextDueAt,
-    amount: recurring.amount,
-    currency: recurring.currency,
-    category: recurring.category,
-    merchant: recurring.name,
-    memo: recurring.memo,
-    cardLast4: recurring.cardLast4,
-    source: 'recurring',
+  //   Validate rule id BEFORE constructing the lock key. An undefined/null/
+  //   empty id would produce the shared key
+  //   `scheduler:recurring-expense:rule:undefined` and let two rules with
+  //   missing ids block each other. Fail fast, before any DB call.
+  if (recurring == null || recurring.id == null || recurring.id === '') {
+    throw new Error('recurring.id required for fire()');
+  }
+  const numericId = Number(recurring.id);
+  if (!Number.isFinite(numericId)) {
+    throw new Error(`recurring.id must be a finite number (got ${JSON.stringify(recurring.id)})`);
+  }
+  const lockKey = `${LEASE_KEY_PREFIX}${numericId}`;
+
+  const leaseResult = await withLease(
+    lockKey,
+    {
+      ttlSec: LEASE_TTL_SEC,
+      heartbeatSec: LEASE_HEARTBEAT_SEC,
+      failPolicy: 'closed',   // money-facing · never run without a lease
+    },
+    async (_ctx) => {
+      //   Original fire body · order unchanged (expense INSERT → recurring
+      //   UPDATE). D1-A does not restructure this into an atomic RPC.
+      const expense = await expenseRepo.createExpense({
+        paidAt: recurring.nextDueAt,
+        amount: recurring.amount,
+        currency: recurring.currency,
+        category: recurring.category,
+        merchant: recurring.name,
+        memo: recurring.memo,
+        cardLast4: recurring.cardLast4,
+        source: 'recurring',
+        recurringId: recurring.id,
+        createdBy: recurring.createdBy,
+      });
+      const next = advanceDueDate(recurring.nextDueAt, recurring.cycle, recurring.dayOfCycle);
+      await update(recurring.id, { nextDueAt: next });
+      return { expense, nextDueAt: next };
+    }
+  );
+
+  if (leaseResult.ran && leaseResult.value) {
+    //   Legacy success shape preserved verbatim so route handlers and cron
+    //   aggregators keep working.
+    return leaseResult.value;
+  }
+  //   Distinguish infra error from normal contention · caller MUST see
+  //   both as `skipped=true` (never fired) but the skipReason drives
+  //   HTTP status / log level.
+  if (leaseResult.error) {
+    return {
+      skipped: true,
+      skipReason: 'lease_error',
+      recurringId: recurring.id,
+      error: (leaseResult.error && leaseResult.error.message)
+        ? leaseResult.error.message
+        : String(leaseResult.error),
+    };
+  }
+  return {
+    skipped: true,
+    skipReason: 'locked',
     recurringId: recurring.id,
-    createdBy: recurring.createdBy,
-  });
-  const next = advanceDueDate(recurring.nextDueAt, recurring.cycle, recurring.dayOfCycle);
-  await update(recurring.id, { nextDueAt: next });
-  return { expense, nextDueAt: next };
+  };
 }
 
 module.exports = {
   list, getById, create, update, remove, listDue, fire,
   computeFirstDueAt, advanceDueDate,
+  //   R1-D1-A · shared classification helper · consumed by scheduler.js
+  //   and route.js so aggregation is consistent across callers.
+  classifyFireResult,
+  //   Internals · exported for tests only.
+  _LEASE_KEY_PREFIX: LEASE_KEY_PREFIX,
+  _LEASE_TTL_SEC: LEASE_TTL_SEC,
+  _LEASE_HEARTBEAT_SEC: LEASE_HEARTBEAT_SEC,
+  _setClientForTests,
+  _resetClientForTests,
 };
