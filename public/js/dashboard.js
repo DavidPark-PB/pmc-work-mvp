@@ -532,11 +532,170 @@ async function loadDashboard() {
     loadDashboardMasterProducts();
     // 재무 요약 (재무 권한자만)
     loadFinanceSummary();
+    // 📅 팀 일정 캘린더 (Owner Directive 2026-09-04)
+    loadTeamCalendar();
   } catch (err) {
     console.error('Dashboard load failed:', err);
   } finally {
     showLoading(false);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 📅 팀 일정 캘린더 (Owner Directive 2026-09-04) — 대시보드 상단
+//   모든 직원 일정 (휴가/외근/회의/업무) + 출퇴근 근무일 표시
+//   좌/우 화살표로 월 이동, 오늘 버튼, 셀 클릭 시 그 날짜 상세
+// ═══════════════════════════════════════════════════════════════════
+var _teamCalMonth = null;  // 'YYYY-MM'
+var _teamCalEvents = [];   // schedule events
+var _teamCalAttendance = new Map(); // user_id → Set of dates with attendance
+
+function _teamCalMonthStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
+function _teamCalUserColor(userId) {
+  // hash 기반 색 · 각 직원 자동 색깔
+  const colors = ['#e57373','#ba68c8','#7986cb','#4fc3f7','#4db6ac','#81c784','#dce775','#ffb74d','#a1887f','#90a4ae'];
+  return colors[Math.abs(Number(userId) || 0) % colors.length];
+}
+const CAL_TYPE_LABELS = {
+  vacation: '🌴', half_day: '🌤', outside: '🚗',
+  meeting: '👥', task: '📋', other: '📌',
+};
+
+async function loadTeamCalendar(monthStr) {
+  const host = document.getElementById('teamCalendarCard');
+  if (!host) return;
+  const now = new Date();
+  _teamCalMonth = monthStr || _teamCalMonth || _teamCalMonthStr(now);
+  const [y, m] = _teamCalMonth.split('-').map(Number);
+  const first = new Date(y, m - 1, 1);
+  const last = new Date(y, m, 0);
+  const fromStr = `${_teamCalMonth}-01`;
+  const toStr = `${_teamCalMonth}-${String(last.getDate()).padStart(2,'0')}`;
+
+  // 병렬 · schedules + attendance (근무일정)
+  const [schRes, attRes] = await Promise.all([
+    fetch(`/api/schedules?from=${fromStr}&to=${toStr}`).catch(() => null),
+    fetch(`/api/attendance?month=${_teamCalMonth}`).catch(() => null),
+  ]);
+  _teamCalEvents = [];
+  _teamCalAttendance = new Map();
+  if (schRes && schRes.ok) {
+    const j = await schRes.json();
+    if (j && j.success) _teamCalEvents = j.data || [];
+  }
+  if (attRes && attRes.ok) {
+    const j = await attRes.json();
+    (j?.data || []).forEach(a => {
+      const status = String(a.status || '').toLowerCase();
+      // 근무 상태만 (day_off/absence 제외)
+      if (['regular','late','early_leave'].includes(status)) {
+        if (!_teamCalAttendance.has(a.employee_id)) _teamCalAttendance.set(a.employee_id, new Set());
+        _teamCalAttendance.get(a.employee_id).add(String(a.date));
+      }
+    });
+  }
+  renderTeamCalendar();
+}
+
+function _teamCalChangeMonth(delta) {
+  const [y, m] = _teamCalMonth.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  loadTeamCalendar(_teamCalMonthStr(d));
+}
+function _teamCalToday() {
+  loadTeamCalendar(_teamCalMonthStr(new Date()));
+}
+
+function renderTeamCalendar() {
+  const host = document.getElementById('teamCalendarCard');
+  if (!host) return;
+  const [y, m] = _teamCalMonth.split('-').map(Number);
+  const first = new Date(y, m - 1, 1);
+  const last = new Date(y, m, 0);
+  const firstWeekday = first.getDay(); // 0=Sun
+  const daysInMonth = last.getDate();
+  const totalCells = Math.ceil((firstWeekday + daysInMonth) / 7) * 7;
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  // 각 날짜 · 그날 이벤트 (schedule + attendance)
+  function eventsForDate(dateStr) {
+    const items = [];
+    // schedules
+    for (const ev of _teamCalEvents) {
+      const start = ev.event_date;
+      const end = ev.end_date || start;
+      if (dateStr >= start && dateStr <= end) items.push(ev);
+    }
+    // attendance (근무)
+    _teamCalAttendance.forEach((dates, uid) => {
+      if (dates.has(dateStr)) items.push({ event_type: '_work', user_id: uid, user_display_name: null, title: '근무' });
+    });
+    return items;
+  }
+
+  // Weekday header
+  const WD = ['일','월','화','수','목','금','토'];
+  let html = `
+    <div class="card" style="padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3 style="margin:0;color:#fff;font-size:16px;">📅 팀 일정 · ${_teamCalMonth}</h3>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <button type="button" onclick="_teamCalChangeMonth(-1)" style="padding:5px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">◀</button>
+          <button type="button" onclick="_teamCalToday()" style="padding:5px 10px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">오늘</button>
+          <button type="button" onclick="_teamCalChangeMonth(1)" style="padding:5px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">▶</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font-size:11px;">
+        ${WD.map((d, i) => `<div style="text-align:center;padding:6px 0;color:${i===0?'#ff8a80':(i===6?'#81d4fa':'#aaa')};font-weight:600;">${d}</div>`).join('')}
+  `;
+
+  for (let cell = 0; cell < totalCells; cell++) {
+    const dayNum = cell - firstWeekday + 1;
+    if (dayNum < 1 || dayNum > daysInMonth) {
+      html += `<div style="min-height:70px;background:#0a0a1a;border:1px solid #1a1a2e;border-radius:4px;"></div>`;
+      continue;
+    }
+    const dateStr = `${_teamCalMonth}-${String(dayNum).padStart(2,'0')}`;
+    const dow = new Date(y, m-1, dayNum).getDay();
+    const dowColor = dow === 0 ? '#ff8a80' : (dow === 6 ? '#81d4fa' : '#aaa');
+    const isToday = dateStr === todayStr;
+    const events = eventsForDate(dateStr);
+    const workCount = events.filter(e => e.event_type === '_work').length;
+    const scheduleEvents = events.filter(e => e.event_type !== '_work');
+    const shown = scheduleEvents.slice(0, 3);
+    const more = scheduleEvents.length - shown.length;
+    html += `
+      <div style="min-height:70px;background:${isToday?'#1a2a4a':'#0f0f23'};border:1px solid ${isToday?'#7c4dff':'#2a2a4a'};border-radius:4px;padding:4px;display:flex;flex-direction:column;gap:2px;overflow:hidden;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="color:${dowColor};font-weight:${isToday?'700':'500'};font-size:12px;">${dayNum}</span>
+          ${workCount > 0 ? `<span title="근무 ${workCount}명" style="font-size:9px;padding:1px 5px;background:#2a4a2a;border-radius:8px;color:#81c784;">근무 ${workCount}</span>` : ''}
+        </div>
+        ${shown.map(ev => {
+          const icon = CAL_TYPE_LABELS[ev.event_type] || '📌';
+          const color = _teamCalUserColor(ev.user_id);
+          const name = ev.user_display_name || ev.user_username || '?';
+          return `<div style="font-size:10px;padding:1px 4px;background:${color}22;border-left:2px solid ${color};color:#fff;border-radius:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${esc(name + ' · ' + ev.title)}">${icon} ${esc(name)}</div>`;
+        }).join('')}
+        ${more > 0 ? `<div style="font-size:9px;color:#888;padding-left:4px;">+ ${more} 더</div>` : ''}
+      </div>`;
+  }
+
+  html += `
+      </div>
+      <div style="margin-top:10px;font-size:10px;color:#888;">
+        일정: 🌴 연차 · 🌤 반차 · 🚗 외근 · 👥 회의 · 📋 업무 · 📌 기타 · 색깔은 직원별
+      </div>
+    </div>
+  `;
+  host.innerHTML = html;
+}
+
+// 전역 노출 (onclick 사용)
+if (typeof window !== 'undefined') {
+  window._teamCalChangeMonth = _teamCalChangeMonth;
+  window._teamCalToday = _teamCalToday;
 }
 
 // 대시보드 매출 기간 선택 (기본 month = 이번달 1일~오늘)
