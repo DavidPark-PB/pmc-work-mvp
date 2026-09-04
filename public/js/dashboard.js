@@ -7124,6 +7124,8 @@ function shippingRenderEnrichmentRow(order, rowIdx) {
   const pe = order.profit_estimate || {};
   const internalSku = order.internal_sku || '';
   const orderNo = order.orderNo || order['주문번호'] || '';
+  const qty = Number(order.quantity || order['수량']) || 1;
+  const isMultiQty = qty > 1;
 
   const weightBadge = en.weight_gram > 0
     ? `<span style="color:#2e7d32">✅ 무게 ${en.weight_gram}g</span>`
@@ -7138,6 +7140,11 @@ function shippingRenderEnrichmentRow(order, rowIdx) {
   const supplierBadge = en.supplier_name
     ? `<span style="color:#2e7d32">✅ 소싱처 ${esc(en.supplier_name)}${en.supplier_channel ? ` <span style="color:#888">(${esc(en.supplier_channel)})</span>` : ''}</span>`
     : `<span style="color:#c62828;background:#ffebee;padding:2px 8px;border-radius:4px">⚠️ 소싱처 미입력</span>`;
+
+  // 무게/크기 편집 버튼 · qty=1 만 · 사장님 spec: qty>1 은 read-only (SKU 오염 방지)
+  const measureBtn = isMultiQty
+    ? `<span style="margin-left:6px;padding:2px 8px;background:#e0e0e0;color:#888;border-radius:3px;font-size:10px" title="수량 ${qty}개 주문 · SKU 마스터 자동 저장 불가">🔒 수량 ${qty}</span>`
+    : `<button type="button" onclick="shippingToggleMeasureEdit('${esc(rowIdx)}')" style="margin-left:6px;padding:2px 8px;background:#fff;border:1px solid #0277bd;border-radius:3px;color:#0277bd;cursor:pointer;font-size:10px;font-weight:600">📐 무게/크기</button>`;
 
   const costEditBtn = `<button type="button" onclick="shippingToggleCostEdit('${esc(rowIdx)}')" style="margin-left:6px;padding:2px 8px;background:#fff;border:1px solid #7b1fa2;border-radius:3px;color:#7b1fa2;cursor:pointer;font-size:10px;font-weight:600">${en.cost_krw > 0 ? '수정' : '입력'}</button>`;
   const supplierEditBtn = `<button type="button" onclick="shippingToggleSupplierEdit('${esc(rowIdx)}')" style="margin-left:6px;padding:2px 8px;background:#fff;border:1px solid #7b1fa2;border-radius:3px;color:#7b1fa2;cursor:pointer;font-size:10px;font-weight:600">${en.supplier_name ? '변경' : '선택'}</button>`;
@@ -7195,21 +7202,90 @@ function shippingRenderEnrichmentRow(order, rowIdx) {
     </div>
   </div>`;
 
+  // 📐 무게/크기 편집 폼 (qty=1 만 · qty>1 은 button 안 노출)
+  const measureEditForm = isMultiQty ? '' : `<div id="enrich-medit-${rowIdx}" style="display:none;margin-top:6px;padding:8px;background:#e1f5fe;border:1px solid #81d4fa;border-radius:4px">
+    <div style="color:#0277bd;font-size:10px;font-weight:600;margin-bottom:4px">📐 무게/크기 입력 · SKU <code>${esc(internalSku)}</code></div>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+      <label style="color:#555;font-size:10px">무게(g)</label>
+      <input id="enrich-w-${rowIdx}" type="number" step="1" min="1" value="${en.weight_gram || ''}" placeholder="예: 400" style="width:80px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px">
+      <span style="color:#888;font-size:10px">|</span>
+      <label style="color:#555;font-size:10px">크기(cm)</label>
+      <input id="enrich-l-${rowIdx}" type="number" step="0.1" min="0" value="${en.length_cm || ''}" placeholder="가로" style="width:60px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px">
+      <span style="color:#888">×</span>
+      <input id="enrich-ww-${rowIdx}" type="number" step="0.1" min="0" value="${en.width_cm || ''}" placeholder="세로" style="width:60px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px">
+      <span style="color:#888">×</span>
+      <input id="enrich-h-${rowIdx}" type="number" step="0.1" min="0" value="${en.height_cm || ''}" placeholder="높이" style="width:60px;padding:3px 6px;border:1px solid #bbb;border-radius:3px;font-size:11px">
+      <button type="button" onclick="shippingSaveMeasure('${esc(rowIdx)}','${esc(internalSku)}','${esc(orderNo)}')" style="padding:3px 10px;background:#0277bd;border:0;border-radius:3px;color:#fff;cursor:pointer;font-size:11px;font-weight:600">💾 저장</button>
+      <span id="enrich-mstatus-${rowIdx}" style="color:#666;font-size:10px"></span>
+    </div>
+    <div style="margin-top:4px;color:#888;font-size:10px">무게만 · 크기만 · 둘 다 · 자유. 크기는 세 값 (가로·세로·높이) 모두 입력해야 저장됨 (부분 저장 안 됨).</div>
+  </div>`;
+
+  // qty>1 안내 · 편집 안 됨 표시
+  const multiQtyWarn = isMultiQty
+    ? `<div style="margin-top:6px;padding:6px 10px;background:#fff3e0;border-left:3px solid #ef6c00;border-radius:4px;font-size:11px;color:#ef6c00">
+        ⚠️ 수량 <strong>${qty}개</strong> 주문 · 이 주문의 포장 무게/크기는 SKU Master에 자동 저장되지 않습니다 (단품값 오차 방지). 값 표시만 · SKU 마스터는 별도 수정 필요.
+      </div>`
+    : '';
+
   let html = `<tr id="enrich-row-${rowIdx}"><td colspan="8" style="padding:0">`;
   html += `<div style="background:#eef7fb;padding:8px 16px;border-bottom:1px solid #cfe;font-size:11px;line-height:1.5">
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
       <strong style="color:#0277bd">📦 SKU 정보</strong>
       <span style="color:#666;font-size:10px">SKU <code style="color:#0277bd">${esc(internalSku)}</code></span>
-      ${weightBadge}
-      ${dimBadge}
+      <span>${weightBadge}${dimBadge ? ' · ' + dimBadge : ''}${measureBtn}</span>
       <span>${costBadge}${costEditBtn}</span>
       <span>${supplierBadge}${supplierEditBtn}</span>
     </div>
+    ${measureEditForm}
     ${costEditForm}
     ${supplierEditForm}
+    ${multiQtyWarn}
     ${profitLine}
   </div></td></tr>`;
   return html;
+}
+
+// 📐 무게/크기 편집 (2026-09-04 V1.1) · qty=1 만 · save-weight partial
+function shippingToggleMeasureEdit(rowIdx) {
+  const el = document.getElementById('enrich-medit-' + rowIdx);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function shippingSaveMeasure(rowIdx, internalSku, orderNo) {
+  const status = document.getElementById('enrich-mstatus-' + rowIdx);
+  const setStatus = (msg, color) => { if (status) { status.textContent = msg; status.style.color = color; } };
+  const wRaw = document.getElementById('enrich-w-' + rowIdx)?.value?.trim() || '';
+  const lRaw = document.getElementById('enrich-l-' + rowIdx)?.value?.trim() || '';
+  const wwRaw = document.getElementById('enrich-ww-' + rowIdx)?.value?.trim() || '';
+  const hRaw = document.getElementById('enrich-h-' + rowIdx)?.value?.trim() || '';
+
+  const body = { orderNo, sku: internalSku };
+  if (wRaw) body.weight_kg = Number(wRaw) / 1000;  // g → kg
+  const dimsAny = lRaw || wwRaw || hRaw;
+  if (dimsAny) {
+    if (!lRaw || !wwRaw || !hRaw) { setStatus('⚠️ 크기는 세 값 모두 입력', '#ef6c00'); return; }
+    body.box_length = Number(lRaw);
+    body.box_width = Number(wwRaw);
+    body.box_height = Number(hRaw);
+  }
+  if (!wRaw && !dimsAny) { setStatus('⚠️ 무게 또는 크기 하나 이상 입력', '#ef6c00'); return; }
+
+  setStatus('⏳ 저장 중...', '#0277bd');
+  try {
+    const res = await fetch('/api/orders/save-weight', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await res.json();
+    if (!res.ok || !j.success) throw new Error(j.error || '실패');
+    const parts = [];
+    if (j.weight_saved) parts.push('무게');
+    if (j.dims_saved) parts.push('크기');
+    setStatus(`✅ ${parts.join(' + ')} 저장됨 — 재조회 중...`, '#2e7d32');
+    setTimeout(() => shippingLoadRecent(), 600);
+  } catch (e) { setStatus('❌ 실패: ' + e.message, '#c62828'); }
 }
 
 function shippingToggleCostEdit(rowIdx) {

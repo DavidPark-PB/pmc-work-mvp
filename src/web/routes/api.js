@@ -4481,47 +4481,69 @@ router.get('/orders/:orderNo/koreapost-track', async (req, res) => {
 
 // PATCH /api/orders/save-weight — 주문 기반 무게/치수 저장 (SKU 없어도 동작)
 //
-// 정책 (2026-08-25 수정):
+// 2026-09-04 · V1.1 · Partial update 지원:
+//   - weight 만 · dims 만 · 또는 둘 다 · 자유 조합
+//   - blank/undefined 필드는 · orders/sku_master 저장 skip · 기존 값 보존
+//   - dims 는 · 세 개 다 유효 (>0) 여야 저장 (부분 dims 저장 → NULL 오염 방지)
+//   - qty > 1 · sku_master 자동 반영 안 함 (기존 정책)
+//   - matched=false · sku_master write 시도 · 결과 empty (기존 정책 · master 무영향)
+//
+// 정책 근거:
 //   - orders.weight_kg 는 주문 전체 무게 (총량). shippingRecommendations 리스트/견적에서 최우선 사용됨.
 //   - sku_master.weight_gram 은 단품(per-unit) 무게. quantity=1 인 주문에 한해 안전 반영.
-//     (quantity>1 이면 orders.weight_kg / quantity 로 나누어야 정확 → 오차 방지 위해 skip 하고 warning 반환)
-//   - products.weight_kg 는 레거시 호환. 현재 리스트/견적에서 읽지 않음 (orphan write).
-//     기존 재고/주문 화면과의 호환을 위해 유지하되, 실패해도 저장은 계속.
-//   - orders update matched=0 → 404. sku_master update error → 부분 실패 표기하고 200 유지 (orders 저장은 성공).
-//   - 어떤 DB 에러든 프론트에 명확히 전달.
+//   - products.weight_kg 는 레거시 호환. 실패해도 저장은 계속.
+//   - orders update matched=0 → 404. sku_master update error → 부분 실패 표기 · 200 유지.
 router.patch('/orders/save-weight', async (req, res) => {
   try {
     const { orderNo, sku, weight_kg, box_length, box_width, box_height } = req.body;
     if (!orderNo) return res.status(400).json({ success: false, error: 'orderNo 필요' });
     const { getClient } = require('../../db/supabaseClient');
     const db = getClient();
-    const wt = parseFloat(weight_kg);
-    if (!Number.isFinite(wt) || wt <= 0) {
+
+    // Partial input parsing · undefined/null/''/'0' 다 구분
+    const has = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+    const wtProvided = has(weight_kg);
+    const wt = wtProvided ? parseFloat(weight_kg) : null;
+    if (wtProvided && (!Number.isFinite(wt) || wt <= 0)) {
       return res.status(400).json({ success: false, error: 'weight_kg 는 양수여야 합니다' });
     }
-    const bl = parseFloat(box_length) || 0;
-    const bw = parseFloat(box_width) || 0;
-    const bh = parseFloat(box_height) || 0;
+    const blProvided = has(box_length);
+    const bwProvided = has(box_width);
+    const bhProvided = has(box_height);
+    const dimsAnyProvided = blProvided || bwProvided || bhProvided;
+    const bl = blProvided ? parseFloat(box_length) : 0;
+    const bw = bwProvided ? parseFloat(box_width) : 0;
+    const bh = bhProvided ? parseFloat(box_height) : 0;
+    const dimsComplete = blProvided && bwProvided && bhProvided && bl > 0 && bw > 0 && bh > 0;
 
-    // 1) orders 테이블 update (authoritative override) — matched row 수를 반드시 확인
+    if (!wtProvided && !dimsAnyProvided) {
+      return res.status(400).json({ success: false, error: 'weight_kg 또는 dims 중 하나 이상 필요' });
+    }
+    if (dimsAnyProvided && !dimsComplete) {
+      return res.status(400).json({ success: false, error: 'dims 는 세 값 (length·width·height) 모두 0 초과여야 합니다. 부분 저장 안 함 (기존 값 오염 방지).' });
+    }
+
+    // 1) orders 테이블 update — 제공된 필드만 (undefined 는 skip · 기존값 보존)
+    const orderUpdates = {};
+    if (wtProvided) orderUpdates.weight_kg = wt;
+    if (dimsComplete) {
+      orderUpdates.box_length = bl;
+      orderUpdates.box_width  = bw;
+      orderUpdates.box_height = bh;
+    }
     const { data: ordersUpdated, error: ordersErr } = await db
       .from('orders')
-      .update({ weight_kg: wt, box_length: bl, box_width: bw, box_height: bh })
+      .update(orderUpdates)
       .eq('order_no', orderNo)
       .select('id, order_no, quantity');
     if (ordersErr) {
       return res.status(500).json({ success: false, error: `orders update 실패: ${ordersErr.message}` });
     }
     if (!ordersUpdated || ordersUpdated.length === 0) {
-      // silent-failure 방지: 주문번호 매칭 실패
       return res.status(404).json({ success: false, error: '주문번호 매칭 실패', orderNo });
     }
 
-    // 2) SKU 매칭 시 sku_master 반영 — quantity=1 인 경우에만 안전
-    //    - weight_gram: 단품값. qty=1 만 자동 반영 (qty>1 이면 나눗셈 오차 방지 위해 skip).
-    //    - length/width/height_cm: 주문 박스 크기 = 단품 크기 라는 가정 (qty=1 에서만 자연 성립).
-    //    - source tracking (105): weight_source · dims_source = 'shipping_measured' · ref = order_no.
-    //    - weight_status = 'measured' (051 마이그 spec).
+    // 2) sku_master 반영 — qty=1 + matched 만 · 각 필드 partial
     let masterUpdate = null;
     if (sku) {
       const orderRow = ordersUpdated[0];
@@ -4529,41 +4551,44 @@ router.patch('/orders/save-weight', async (req, res) => {
       const skuKey = String(sku).trim();
       if (skuKey) {
         if (qty === 1) {
-          const perUnitGram = Math.round(wt * 1000);
           const nowIso = new Date().toISOString();
-          const updates = {
-            weight_gram: perUnitGram,
-            weight_status: 'measured',
-            weight_source: 'shipping_measured',
-            weight_source_ref: orderNo,
-            weight_measured_at: nowIso,
-            updated_at: nowIso,
-          };
-          // dimensions 도 함께 저장 · 입력된 값만 반영 (0/null 은 스킵 · 기존값 보존)
-          if (bl > 0 && bw > 0 && bh > 0) {
-            updates.length_cm = bl;
-            updates.width_cm  = bw;
-            updates.height_cm = bh;
-            updates.dims_source = 'shipping_measured';
-            updates.dims_source_ref = orderNo;
-            updates.dims_measured_at = nowIso;
+          const masterUpdates = { updated_at: nowIso };
+          if (wtProvided) {
+            masterUpdates.weight_gram = Math.round(wt * 1000);
+            masterUpdates.weight_status = 'measured';
+            masterUpdates.weight_source = 'shipping_measured';
+            masterUpdates.weight_source_ref = orderNo;
+            masterUpdates.weight_measured_at = nowIso;
           }
-          const { data: mUpdated, error: mErr } = await db
-            .from('sku_master')
-            .update(updates)
-            .eq('internal_sku', skuKey)
-            .select('id, internal_sku, weight_gram, length_cm, width_cm, height_cm');
-          if (mErr) {
-            masterUpdate = { ok: false, reason: `sku_master update 실패: ${mErr.message}` };
-          } else if (!mUpdated || mUpdated.length === 0) {
-            masterUpdate = { ok: false, reason: 'sku_master 에 internal_sku 없음 (무시)' };
+          if (dimsComplete) {
+            masterUpdates.length_cm = bl;
+            masterUpdates.width_cm  = bw;
+            masterUpdates.height_cm = bh;
+            masterUpdates.dims_source = 'shipping_measured';
+            masterUpdates.dims_source_ref = orderNo;
+            masterUpdates.dims_measured_at = nowIso;
+          }
+          const fieldsSet = Object.keys(masterUpdates).length > 1; // updated_at 외 뭔가 있으면
+          if (fieldsSet) {
+            const { data: mUpdated, error: mErr } = await db
+              .from('sku_master')
+              .update(masterUpdates)
+              .eq('internal_sku', skuKey)
+              .select('id, internal_sku, weight_gram, length_cm, width_cm, height_cm');
+            if (mErr) {
+              masterUpdate = { ok: false, reason: `sku_master update 실패: ${mErr.message}` };
+            } else if (!mUpdated || mUpdated.length === 0) {
+              masterUpdate = { ok: false, reason: 'sku_master 에 internal_sku 없음 (무시)' };
+            } else {
+              masterUpdate = {
+                ok: true,
+                sku: skuKey,
+                weight_saved: wtProvided,
+                dims_saved: dimsComplete,
+              };
+            }
           } else {
-            masterUpdate = {
-              ok: true,
-              sku: skuKey,
-              weight_gram: perUnitGram,
-              dims_saved: !!updates.length_cm,
-            };
+            masterUpdate = { ok: false, reason: 'master 반영할 필드 없음' };
           }
         } else {
           masterUpdate = { ok: false, reason: `multi-qty(${qty}) — sku_master 는 단품값이라 자동반영 안전하지 않음. orders 만 저장됨. 사장님 확인 후 SKU 마스터 별도 수정 필요.` };
@@ -4571,18 +4596,25 @@ router.patch('/orders/save-weight', async (req, res) => {
       }
     }
 
-    // 3) products 테이블 (레거시 호환) — 존재하면 update, 실패해도 전체 저장 성공은 유지
+    // 3) products 테이블 (레거시) — 실패 무해
     let productsUpdate = null;
     if (sku) {
       try {
         const { data: existing, error: eExist } = await db
           .from('products').select('sku').eq('sku', sku).maybeSingle();
         if (!eExist && existing) {
-          const { error: pErr } = await db.from('products')
-            .update({ weight_kg: wt, box_length: bl, box_width: bw, box_height: bh })
-            .eq('sku', sku);
-          if (pErr) productsUpdate = { ok: false, reason: `products update 실패: ${pErr.message}` };
-          else productsUpdate = { ok: true };
+          const prodUpdates = {};
+          if (wtProvided) prodUpdates.weight_kg = wt;
+          if (dimsComplete) {
+            prodUpdates.box_length = bl;
+            prodUpdates.box_width  = bw;
+            prodUpdates.box_height = bh;
+          }
+          if (Object.keys(prodUpdates).length > 0) {
+            const { error: pErr } = await db.from('products').update(prodUpdates).eq('sku', sku);
+            if (pErr) productsUpdate = { ok: false, reason: `products update 실패: ${pErr.message}` };
+            else productsUpdate = { ok: true };
+          }
         } else {
           productsUpdate = { ok: false, reason: 'products 에 sku 없음 (무시)' };
         }
@@ -4594,7 +4626,8 @@ router.patch('/orders/save-weight', async (req, res) => {
     res.json({
       success: true,
       orderNo,
-      weight_kg: wt,
+      weight_saved: wtProvided,
+      dims_saved: dimsComplete,
       matchedRows: ordersUpdated.length,
       masterUpdate,
       productsUpdate,

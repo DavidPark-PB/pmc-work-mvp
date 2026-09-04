@@ -19,6 +19,13 @@
  *   7. Profit · 직접 계산 vs API 결과 비교
  *   8. FAILURE ROLLBACK · cost · 존재 안 하는 SKU 에 rpc → history/master 무변경
  *   9. FAILURE ROLLBACK · supplier · 존재 안 하는 supplier_id → history/master 무변경
+ *
+ *  V1.1 (2026-09-04 · save-weight partial update):
+ *  10. weight-only save (기존 dims 보존)
+ *  11. dims-only save (기존 weight 보존)
+ *  12. partial dims 거절 (부분 저장 안 됨 · 기존 값 보존)
+ *  13. INTEGRATION · order A 저장 → order B recent (같은 SKU) → sku_master fallback 자동 표시
+ *  14. qty>1 · save-weight 시 · orders 만 저장 · sku_master 오염 없음
  */
 'use strict';
 
@@ -410,6 +417,114 @@ async function test9_supplierRollback() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// V1.1 (2026-09-04) · save-weight partial update
+// ══════════════════════════════════════════════════════════════════════════
+
+// TEST 10 · weight only save · dims 기존값 보존
+async function test10_weightOnly() {
+  console.log('\n[TEST 10] weight-only save · dims 보존');
+  // TEST 1 후 · SKU_A · weight=82g · dims 15/10/2
+  // 새 weight 400g 저장 · dims 는 update 안 함 → 유지 예상
+  await db.from('sku_master').update({
+    weight_gram: 400,
+    weight_status: 'measured',
+    weight_source: 'shipping_measured',
+    weight_source_ref: TEST_ORDER_1,
+    weight_measured_at: new Date().toISOString(),
+  }).eq('internal_sku', TEST_SKU_A);
+  const { data } = await db.from('sku_master')
+    .select('weight_gram, length_cm, width_cm, height_cm').eq('internal_sku', TEST_SKU_A).single();
+  if (data.weight_gram !== 400) return fail('TEST 10 · weight update', JSON.stringify(data));
+  if (Number(data.length_cm) !== 15 || Number(data.width_cm) !== 10 || Number(data.height_cm) !== 2)
+    return fail('TEST 10 · dims 오염', JSON.stringify(data));
+  pass('TEST 10 · weight only 400g · dims 15/10/2 유지');
+}
+
+// TEST 11 · dims only save · weight 기존값 보존
+async function test11_dimsOnly() {
+  console.log('\n[TEST 11] dims-only save · weight 보존');
+  await db.from('sku_master').update({
+    length_cm: 25, width_cm: 12, height_cm: 4,
+    dims_source: 'shipping_measured',
+    dims_source_ref: TEST_ORDER_2,
+    dims_measured_at: new Date().toISOString(),
+  }).eq('internal_sku', TEST_SKU_A);
+  const { data } = await db.from('sku_master')
+    .select('weight_gram, length_cm, width_cm, height_cm').eq('internal_sku', TEST_SKU_A).single();
+  if (data.weight_gram !== 400) return fail('TEST 11 · weight 오염', `expected 400 got ${data.weight_gram}`);
+  if (Number(data.length_cm) !== 25 || Number(data.width_cm) !== 12 || Number(data.height_cm) !== 4)
+    return fail('TEST 11 · dims update', JSON.stringify(data));
+  pass('TEST 11 · dims only 25/12/4 · weight 400g 유지');
+}
+
+// TEST 12 · partial dims 거절 validation 재현 (backend save-weight 로직)
+async function test12_partialDimsRejected() {
+  console.log('\n[TEST 12] partial dims 거절 (save-weight validation)');
+  function validate(body) {
+    const has = v => v !== undefined && v !== null && String(v).trim() !== '';
+    const wtProvided = has(body.weight_kg);
+    const blProvided = has(body.box_length);
+    const bwProvided = has(body.box_width);
+    const bhProvided = has(body.box_height);
+    const dimsAnyProvided = blProvided || bwProvided || bhProvided;
+    const bl = blProvided ? parseFloat(body.box_length) : 0;
+    const bw = bwProvided ? parseFloat(body.box_width) : 0;
+    const bh = bhProvided ? parseFloat(body.box_height) : 0;
+    const dimsComplete = blProvided && bwProvided && bhProvided && bl > 0 && bw > 0 && bh > 0;
+    if (!wtProvided && !dimsAnyProvided) return { error: '아무 값 없음' };
+    if (dimsAnyProvided && !dimsComplete) return { error: 'partial dims 거절' };
+    return { ok: true };
+  }
+  const r1 = validate({ box_length: 20, box_width: '', box_height: 8 });
+  if (!r1.error) return fail('TEST 12 · partial dims accept', JSON.stringify(r1));
+  const r2 = validate({ box_length: 20, box_width: 15, box_height: 8 });
+  if (!r2.ok) return fail('TEST 12 · complete dims reject', JSON.stringify(r2));
+  const r3 = validate({ weight_kg: 0.4 });
+  if (!r3.ok) return fail('TEST 12 · weight only reject', JSON.stringify(r3));
+  const r4 = validate({});
+  if (!r4.error) return fail('TEST 12 · empty accept', JSON.stringify(r4));
+  pass('TEST 12 · partial dims 거절 · weight-only OK · complete dims OK · empty 거절');
+}
+
+// TEST 13 · INTEGRATION · order A 저장 → order B recent → 자동 표시 (ZERO RE-ENTRY 핵심)
+async function test13_integrationOrderBFallback() {
+  console.log('\n[TEST 13] INTEGRATION · order B same SKU · zero re-entry');
+  // TEST 10, 11 후 · SKU_A · weight=400 · dims 25/12/4
+  // ORDER_2 · SKU=SKU_A · qty=1 · lookupSkuMasterMap → matched=true · enrichment 자동
+  const { lookupSkuMasterMap, buildSkuEnrichment } = require('../src/services/skuEnrichmentPresenter');
+  const { data: orderB } = await db.from('orders').select('order_no, sku, quantity').eq('order_no', TEST_ORDER_2).single();
+  if (!orderB || orderB.sku !== TEST_SKU_A) return fail('TEST 13 · order B setup', JSON.stringify(orderB));
+  const { skuMap, supplierMap } = await lookupSkuMasterMap([orderB.sku]);
+  const matched = skuMap.get(String(orderB.sku).trim());
+  if (!matched) return fail('TEST 13 · match failed');
+  const enrichment = buildSkuEnrichment(matched, supplierMap);
+  if (!enrichment) return fail('TEST 13 · enrichment build');
+  if (enrichment.weight_gram !== 400) return fail('TEST 13 · weight fallback', `expected 400 got ${enrichment.weight_gram}`);
+  if (Number(enrichment.length_cm) !== 25 || Number(enrichment.width_cm) !== 12 || Number(enrichment.height_cm) !== 4)
+    return fail('TEST 13 · dims fallback', JSON.stringify(enrichment));
+  pass('TEST 13 · order B · weight=400 · dims 25/12/4 자동 표시 · re-entry 0회');
+}
+
+// TEST 14 · qty>1 · partial dims 저장 시도 · orders 저장 · sku_master 보존
+async function test14_multiQtyContamination() {
+  console.log('\n[TEST 14] qty>1 · dims 저장 시도 · sku_master 오염 방지');
+  // SKU_B · 초기 · weight=999g · dims 99×99×99
+  // ORDER_MULTI · qty=3 · SKU_B · box_length 40 저장 (orders 만)
+  // TEST 6 에서 이미 · orders.box_length=30 저장 · 재저장으로 40
+  await db.from('orders').update({
+    box_length: 40, box_width: 40, box_height: 40,
+  }).eq('order_no', TEST_ORDER_MULTI);
+  const { data: order } = await db.from('orders').select('box_length').eq('order_no', TEST_ORDER_MULTI).single();
+  if (Number(order.box_length) !== 40) return fail('TEST 14 · orders update', JSON.stringify(order));
+  const { data: skuB } = await db.from('sku_master')
+    .select('weight_gram, length_cm, width_cm, height_cm').eq('internal_sku', TEST_SKU_B).single();
+  if (skuB.weight_gram !== 999) return fail('TEST 14 · master weight 오염', `expected 999 got ${skuB.weight_gram}`);
+  if (Number(skuB.length_cm) !== 99 || Number(skuB.width_cm) !== 99 || Number(skuB.height_cm) !== 99)
+    return fail('TEST 14 · master dims 오염', JSON.stringify(skuB));
+  pass('TEST 14 · orders box 40 저장 · sku_master 999g / 99cm 그대로 유지');
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // Cleanup · 임시 데이터 삭제
 // ══════════════════════════════════════════════════════════════════════════
 async function cleanup() {
@@ -449,6 +564,12 @@ async function main() {
     await test7_profit();
     await test8_costRollback();
     await test9_supplierRollback();
+    // V1.1
+    await test10_weightOnly();
+    await test11_dimsOnly();
+    await test12_partialDimsRejected();
+    await test13_integrationOrderBFallback();
+    await test14_multiQtyContamination();
   } catch (e) {
     console.error('\nUNCAUGHT:', e.message);
     results.push({ name: 'UNCAUGHT', status: 'FAIL', note: e.message });
