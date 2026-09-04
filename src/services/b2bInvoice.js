@@ -859,42 +859,8 @@ class B2BInvoiceService {
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(templatePath);
-    // 2026-09-02 · Owner Directive: 사장님 template 파일에는 여러 날짜별 시트가 있을 수 있음
-    //   (예: 0722, 0625, ...). 첫 시트를 자동 사용 · 이름 하드코드 (MASTER) 안 함.
-    const ws = workbook.getWorksheet('MASTER') || workbook.worksheets[0];
-    if (!ws) throw new Error('template xlsx 에 시트가 하나도 없습니다');
-
-    // Defensive: 모든 formula 를 계산된 값으로 대체 (2026-09-02 · shared formula error 방지)
-    //   spliceRows 시 shared formula master 가 지워지면 남은 clone 이 orphan 되어
-    //   "Shared Formula master must exist above and or left of clone" 발생.
-    //   Formula 자체를 없애면 문제 원천 봉쇄. code 가 명시적으로 세팅하는 셀 (TOTAL/SHIPPING/QTY 등)
-    //   은 그 후 override 되므로 값 손실 없음.
-    workbook.eachSheet((sheet) => {
-      sheet.eachRow({ includeEmpty: true }, (row) => {
-        row.eachCell({ includeEmpty: false }, (cell) => {
-          const v = cell.value;
-          if (v && typeof v === 'object' && (v.formula || v.sharedFormula)) {
-            cell.value = v.result != null ? v.result : null;
-          }
-        });
-      });
-    });
-
-    // 인보이스 영역 밖 잔재 데이터 clear (2026-09-02 · Owner Directive) —
-    //   사장님이 준 template 은 · 실 인보이스 파일 (다른 참고 데이터가 오른쪽/아래에 남아있음).
-    //   인보이스 영역 = A~J 열 (col 1-10) · row 1-55.
-    //   그 밖 셀은 · 값을 null 로 (병합/서식은 유지 · 값만 clear · PDF export 시 안 보임).
-    const INVOICE_LAST_COL = 10; // J
-    const INVOICE_LAST_ROW = 55;
-    workbook.eachSheet((sheet) => {
-      sheet.eachRow({ includeEmpty: false }, (row, rowNum) => {
-        row.eachCell({ includeEmpty: false }, (cell, colNum) => {
-          if (colNum > INVOICE_LAST_COL || rowNum > INVOICE_LAST_ROW) {
-            cell.value = null;
-          }
-        });
-      });
-    });
+    const ws = workbook.getWorksheet('MASTER');
+    if (!ws) throw new Error('MASTER 시트를 템플릿에서 찾을 수 없습니다');
 
     const isQuote = String(docType).toUpperCase() === 'QUOTE';
 
@@ -907,18 +873,14 @@ class B2BInvoiceService {
       return `${MONTHS[d.getMonth()]}.${d.getDate()},${d.getFullYear()}`;
     };
 
-    // 셀 좌표 — 2026-09-02 Owner spec 대로 재설계된 template (B~K, 17개 item rows).
-    // 헤더 B1:K1 · 주소 B2:K2 · 이메일 B3:K3 · INVOICE B4:K5 (병합).
-    // Buyer: B6 Messrs · B7 address · B8:E8 email · B9:C9 phone · I7:J7 invoiceNo.
-    // 조건: C12~C17 라벨 · E12~E17 값.
-    // 표 헤더 row 20 · body row 21~37 · TOTAL row 38.
-
-    // 0) 문서 타입 — QUOTATION 이면 B4 셀 값 교체
+    // 0) 문서 타입 — 템플릿의 "INVOICE" 제목을 견적서일 때 교체 (B5:K6 merged)
     if (isQuote) {
-      ws.getCell('B4').value = ' QUOTATION';
+      ws.getCell('B5').value = ' QUOTATION';
     }
 
-    // 1) Buyer 정보
+    // 1) 바이어 정보 (B7~B11) — B컬럼이 5.43 로 좁아서 긴 주소가 올바로 안보임.
+    //    B:F 로 확장 merge + wrapText 로 안정적 렌더.
+    //    필드 lookup 은 케이스 혼용 방어 (일부 legacy 데이터가 lowercase).
     const pick = (...keys) => {
       for (const k of keys) {
         const v = buyer && buyer[k];
@@ -930,75 +892,105 @@ class B2BInvoiceService {
     const buyerAddress = pick('Address', 'address');
     const buyerEmail   = pick('Email', 'email');
     const buyerPhone   = pick('Phone', 'phone') || pick('WhatsApp', 'whatsapp');
+    const buyerNotes   = pick('Notes', 'notes');
 
-    ws.getCell('B6').value = buyerName ? `Messrs. :${buyerName}` : 'Messrs. :';
-    ws.getCell('B7').value = buyerAddress;
-    ws.getCell('B8').value = buyerEmail;
-    ws.getCell('B9').value = buyerPhone;
+    const emailPhone = [buyerEmail, buyerPhone].filter(Boolean).join(' / ');
+    ws.getCell('B7').value = buyerName ? `Messrs. :${buyerName}` : 'Messrs. :';
+    ws.getCell('B8').value = buyerAddress;
+    ws.getCell('B9').value = emailPhone;
+    // VAT/EORI — buyer 스키마에 없어서 Notes에서 추출 (있으면). 없으면 템플릿 샘플 클리어.
+    const vatMatch  = buyerNotes.match(/VAT\s*[:\-]?\s*(\S+)/i);
+    const eoriMatch = buyerNotes.match(/EORI\s*[:\-]?\s*(\S+)/i);
+    ws.getCell('B10').value = vatMatch  ? `VAT: ${vatMatch[1]}`   : '';
+    ws.getCell('B11').value = eoriMatch ? `EORI: ${eoriMatch[1]}` : '';
 
-    // 2) invoiceNo (I7:J7 merged in template)
-    ws.getCell('I7').value = invoiceNo ? `no:${invoiceNo}` : '';
+    // B7, B8, B9, B11 을 B:F 로 merge + wrap (B10 은 템플릿상 이미 B:C merge — 건너뜀).
+    // horizontal 은 템플릿 원본 그대로 유지 (override 하지 않음 — 기존 왼쪽 정렬 유지).
+    for (const r of [7, 8, 9, 11]) {
+      const range = `B${r}:F${r}`;
+      try { ws.unMergeCells(range); } catch {}
+      try { ws.mergeCells(range); } catch {}
+      const c = ws.getCell(`B${r}`);
+      const prev = c.alignment || {};
+      c.alignment = { ...prev, wrapText: true, vertical: prev.vertical || 'middle' };
+    }
+    // 긴 주소가 잘리지 않도록 B8 행 높이 확장 (최소 28)
+    const row8 = ws.getRow(8);
+    if (!row8.height || row8.height < 28) row8.height = 28;
 
-    // 3) 조건 (E12~E17)
-    ws.getCell('E12').value = formatDate(invoiceDate);
-    // E13 Shipping terms · E14 Packing · E15 Payment · E16 Delivery · E17 Origin
-    // FOB · Export Standard Packing · Delivery · Origin 은 template sample 그대로 override 안 함
-    // Payment 만 · buyer.PaymentTerms 있으면 그것 · 없으면 기본
-    const pt = (pick('PaymentTerms', 'paymentTerms') || '').trim();
-    const looksGeneric = !pt || /^net\s*\d+$/i.test(pt);
-    ws.getCell('E15').value = looksGeneric ? '100% T/T in advance' : pt;
+    // 2) 인보이스/견적서 번호 (I7:J7 merged)
+    ws.getCell('I7').value = invoiceNo;
+
+    // 3) 조건 (E열 = 값, D = ':' , C = 라벨)
+    ws.getCell('E15').value = formatDate(invoiceDate);
+    ws.getCell('E16').value = 'FOB';
+    ws.getCell('E17').value = 'Export Standard Packing';
     if (isQuote) {
-      // 견적서는 · Delivery 자리에 · Validity 추가 · 여기는 spec 상 별도 처리 필요 없음
-      // 원본 code · C18/E18 사용 · 새 spec 은 · E16 에 Delivery · 여기 안 넣음 (원본 template sample 유지)
+      ws.getCell('C18').value = 'Validity';
+      ws.getCell('E18').value = validUntil ? formatDate(validUntil) : 'Within 14 days';
+    } else {
+      // PaymentTerms 가 'Net 30' 처럼 legacy default 면 무시하고 표준 문구 사용
+      const pt = (pick('PaymentTerms', 'paymentTerms') || '').trim();
+      const looksGeneric = !pt || /^net\s*\d+$/i.test(pt);
+      ws.getCell('E18').value = looksGeneric ? '100% T/T in advance' : pt;
     }
+    ws.getCell('E19').value = 'Asap after payment';
+    ws.getCell('E20').value = 'Republic of Korea';
 
-    // 4) 품목 · row 21~37 (총 17개) · TOTAL row 38 고정
-    const ITEM_FIRST_ROW = 21;
-    const MAX_ITEM_ROWS = 17;
-    const TOTAL_ROW = 38;
+    // 4) 품목 — 템플릿상 기본 20행(23~42). 실제 품목 수만큼만 채우고
+    //    남는 빈 행은 splice 로 삭제해서 shipping/TOTAL 이 마지막 품목 바로 밑에 붙음.
+    const ITEM_FIRST_ROW = 23;
+    const TEMPLATE_ITEM_LAST_ROW = 42;
+    const TEMPLATE_MAX_ITEMS = TEMPLATE_ITEM_LAST_ROW - ITEM_FIRST_ROW + 1; // 20
     const itemList = items || [];
-    const shippingAmount = Number(shipping) || 0;
-    const shipRow = shippingAmount > 0 ? 1 : 0;
-    if (itemList.length + shipRow > MAX_ITEM_ROWS) {
-      throw new Error(`품목 수 초과 (${itemList.length}${shipRow ? ' + shipping' : ''} = ${itemList.length + shipRow}개). 최대 ${MAX_ITEM_ROWS}개. 인보이스 분할 필요.`);
+    if (itemList.length > TEMPLATE_MAX_ITEMS) {
+      throw new Error(`품목 수 초과 (${itemList.length}개). 템플릿 최대 ${TEMPLATE_MAX_ITEMS}개. 인보이스 분할 필요.`);
     }
+    const itemCount = Math.max(1, itemList.length); // 최소 1행 유지 (Shipping/TOTAL 스타일 보존)
 
-    // 4-1. 기존 body cell (21~37) · sample data 완전 clear (template 에 sample 있음)
-    for (let r = ITEM_FIRST_ROW; r <= ITEM_FIRST_ROW + MAX_ITEM_ROWS - 1; r++) {
-      ws.getCell(`B${r}`).value = null;
-      ws.getCell(`C${r}`).value = null;
-      ws.getCell(`G${r}`).value = null;
-      ws.getCell(`I${r}`).value = null;
-      ws.getCell(`J${r}`).value = null;
-    }
-
-    // 4-2. 품목 데이터 기입 · 순번 · 이름 · 수량 · 단가 · 금액
-    for (let i = 0; i < itemList.length; i++) {
-      const r = ITEM_FIRST_ROW + i;
+    // 1. 품목 데이터 기입 — 1..itemCount 행만
+    for (let i = 0; i < itemCount; i++) {
+      const row = ITEM_FIRST_ROW + i;
       const it = itemList[i];
-      ws.getCell(`B${r}`).value = i + 1;
-      ws.getCell(`C${r}`).value = it.name || it.sku || '';
-      ws.getCell(`G${r}`).value = Number(it.qty) || 0;
-      ws.getCell(`I${r}`).value = Number(it.price) || 0;
-      const itemTotal = Number(it.total) || (Number(it.qty) || 0) * (Number(it.price) || 0);
-      ws.getCell(`J${r}`).value = itemTotal;
+      ws.getCell(`B${row}`).value = i + 1; // NO. 자동 번호
+      if (it) {
+        ws.getCell(`C${row}`).value = it.name || it.sku || '';
+        ws.getCell(`G${row}`).value = Number(it.qty) || 0;
+        ws.getCell(`I${row}`).value = Number(it.price) || 0;
+        const itemTotal = Number(it.total) || (Number(it.qty) || 0) * (Number(it.price) || 0);
+        ws.getCell(`J${row}`).value = itemTotal;
+      }
     }
 
-    // 4-3. Shipping 행 (있으면 · 마지막 item 다음 row)
-    if (shipRow) {
-      const r = ITEM_FIRST_ROW + itemList.length;
-      ws.getCell(`B${r}`).value = itemList.length + 1;
-      ws.getCell(`C${r}`).value = 'shipping charge';
-      ws.getCell(`G${r}`).value = 1;
-      ws.getCell(`I${r}`).value = shippingAmount;
-      ws.getCell(`J${r}`).value = shippingAmount;
+    // 2. 남는 빈 행 제거 — shipping/TOTAL 이 위로 올라옴
+    const rowsToRemove = TEMPLATE_MAX_ITEMS - itemCount;
+    if (rowsToRemove > 0) {
+      ws.spliceRows(ITEM_FIRST_ROW + itemCount, rowsToRemove);
     }
 
-    // 4-4. TOTAL row 38
+    // 이제 shipping / TOTAL 의 실제 행 번호
+    const SHIPPING_ROW = ITEM_FIRST_ROW + itemCount;         // 마지막 품목 + 1
+    const TOTAL_ROW = SHIPPING_ROW + 1;
+
+    // 3. Shipping 행 NO. 컬럼 (B) 자동 번호 + 금액 주입 ("1 × amount = amount")
+    ws.getCell(`B${SHIPPING_ROW}`).value = itemCount + 1;
+    const shippingAmount = Number(shipping) || 0;
+    if (shippingAmount > 0) {
+      ws.getCell(`G${SHIPPING_ROW}`).value = 1;
+      ws.getCell(`I${SHIPPING_ROW}`).value = shippingAmount;
+      ws.getCell(`J${SHIPPING_ROW}`).value = shippingAmount;
+    } else {
+      ws.getCell(`G${SHIPPING_ROW}`).value = null;
+      ws.getCell(`I${SHIPPING_ROW}`).value = null;
+      ws.getCell(`J${SHIPPING_ROW}`).value = null;
+    }
+
+    // 4. TOTAL 행 — formula 는 spliceRows 후에도 참조 범위가 자동 갱신되지만
+    //    명시적 값으로 세팅해 안전하게.
     ws.getCell(`J${TOTAL_ROW}`).value = Number(total) || 0;
+    // 총 수량 G 셀 — 남아있는 formula 가 있을 수 있으므로 합계 직접 주입
     const totalQty = itemList.reduce((s, it) => s + (Number(it?.qty) || 0), 0);
     if (totalQty > 0) ws.getCell(`G${TOTAL_ROW}`).value = totalQty;
-    // I38 은 · template sample "box" 그대로 (사장님 spec)
 
     // 5. 통화별 셀 포맷 동적 적용 — 템플릿의 $ 포맷을 invoice 통화에 맞춰 교체.
     const ccy = String(currency || 'USD').toUpperCase();
@@ -1027,13 +1019,14 @@ class B2BInvoiceService {
       });
     });
 
-    // 7. Item body row 최소 높이 (21~37) + Origin row (17)
-    for (let r = ITEM_FIRST_ROW; r < ITEM_FIRST_ROW + MAX_ITEM_ROWS; r++) {
-      const rr = ws.getRow(r);
-      if (!rr.height || rr.height < 22) rr.height = 22;
+    // 7. Item 행 최소 높이 확보 — 긴 상품명 두 줄 될 때 · Excel 이 auto 지만 · 보험용
+    for (let i = 0; i < itemCount; i++) {
+      const r = ws.getRow(ITEM_FIRST_ROW + i);
+      if (!r.height || r.height < 22) r.height = 22;
     }
-    const origRow = ws.getRow(17);
-    if (!origRow.height || origRow.height < 22) origRow.height = 22;
+    // Origin (E20) · 두 줄 대비
+    const row20 = ws.getRow(20);
+    if (!row20.height || row20.height < 22) row20.height = 22;
 
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
