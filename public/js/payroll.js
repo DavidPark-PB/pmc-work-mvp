@@ -64,7 +64,7 @@
                 <th style="padding:10px;text-align:right;" title="주 15시간 이상 + 결근 0회인 주에 발생">주휴수당</th>
                 <th style="padding:10px;text-align:center;">상여/인센티브</th>
                 <th style="padding:10px;text-align:right;">총 지급액</th>
-                <th style="padding:10px;text-align:right;color:#ffb74d;" title="근로자 부담분 · 매달 예상 (기본급 기준 · 소득세 별도)">예상 4대보험</th>
+                <th style="padding:10px;text-align:right;color:#ffb74d;" title="근로자 부담분 · 매달 예상 (기본급 기준 · 4대보험 + 소득세 + 지방소득세)">예상 공제</th>
               </tr>
             </thead>
             <tbody id="pay-tbody"></tbody>
@@ -115,17 +115,21 @@
       return { ...s, bonusInput };
     }));
 
-    // 4대보험 (근로자 부담분 · 매달 예상 · 2026 표준 요율 · 소득세 별도)
+    // 4대보험 + 소득세 (근로자 부담분 · 매달 예상 · 2026 표준)
     //   국민연금 4.5% · 건강보험 3.545% · 장기요양 = 건강×12.95% · 고용 0.9%
-    //   합계 ≈ 기본급 × 9.4%
+    //   소득세: 간이세액표 정확치 어려움 · 대략 기본급 × 1.5% (부양가족 1 기준)
+    //   지방소득세: 소득세 × 10%
+    //   합계 ≈ 기본급 × 11%
     function estimate4Insurance(basePay) {
       const base = Number(basePay) || 0;
-      if (base <= 0) return { total: 0, np: 0, hi: 0, ltc: 0, ei: 0 };
+      if (base <= 0) return { total: 0, np: 0, hi: 0, ltc: 0, ei: 0, it: 0, lt: 0 };
       const np = Math.round(base * 0.045);
       const hi = Math.round(base * 0.03545);
       const ltc = Math.round(hi * 0.1295);
       const ei = Math.round(base * 0.009);
-      return { total: np + hi + ltc + ei, np, hi, ltc, ei };
+      const it = Math.round(base * 0.015);  // 소득세 (대략)
+      const lt = Math.round(it * 0.1);       // 지방소득세
+      return { total: np + hi + ltc + ei + it + lt, np, hi, ltc, ei, it, lt };
     }
 
     tbody.innerHTML = enriched.map(s => {
@@ -136,7 +140,7 @@
       if (s.dayOff > 0) badges.push(`<span title="휴무" style="padding:1px 5px;background:#0288d1;color:#fff;border-radius:6px;font-size:10px;">🌴${s.dayOff}</span>`);
       const attCell = badges.length ? badges.join(' ') : '<span style="color:#555;">-</span>';
       const ins = estimate4Insurance(s.basePay);
-      const insTooltip = `국민연금 ${money(ins.np)} · 건강보험 ${money(ins.hi)} · 장기요양 ${money(ins.ltc)} · 고용 ${money(ins.ei)}\n(근로자 부담 · 매달 예상 · 소득세 별도)`;
+      const insTooltip = `국민연금 ${money(ins.np)} · 건강보험 ${money(ins.hi)} · 장기요양 ${money(ins.ltc)} · 고용 ${money(ins.ei)}\n소득세 ${money(ins.it)} · 지방소득세 ${money(ins.lt)}\n(근로자 부담 · 매달 예상 · 소득세는 간이세액표 대략치)`;
       return `
       <tr style="border-bottom:1px solid #2a2a4a;">
         <td style="padding:10px;"><strong>${esc(s.displayName)}</strong></td>
@@ -166,7 +170,7 @@
       const insDiv = document.createElement('div');
       insDiv.id = 'grand-ins-wrap';
       insDiv.style.cssText = 'margin-top:6px;font-size:12px;color:#ffb74d;';
-      insDiv.innerHTML = `이 달 총 예상 4대보험 (근로자 부담 · 소득세 별도): <strong id="grand-ins">${money(totalIns)}</strong>`;
+      insDiv.innerHTML = `이 달 총 예상 공제 (근로자 부담 · 4대보험 + 소득세): <strong id="grand-ins">${money(totalIns)}</strong>`;
       gtEl.parentNode.appendChild(insDiv);
     } else if (document.getElementById('grand-ins')) {
       document.getElementById('grand-ins').textContent = money(totalIns);
