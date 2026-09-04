@@ -268,3 +268,67 @@ $$;
 
 comment on function release_scheduler_lease is
   'R1-A · release lease · requires (lock_key, owner_id, run_id) all match · fence stale runners.';
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- 5. Permission hardening · backend service_role only.
+-- ══════════════════════════════════════════════════════════════════════════
+-- Postgres CREATE FUNCTION defaults EXECUTE to PUBLIC. In Supabase that
+-- includes the `anon` role (unauthenticated PostgREST callers) and the
+-- `authenticated` role (logged-in users). Without this hardening, anyone
+-- hitting the public REST endpoint could:
+--   · call acquire_scheduler_lease('scheduler:repricing-pipeline', ...) with
+--     a chosen owner/run and hold the money-facing lock for up to 24h,
+--     blocking legitimate scheduler execution (lease-DoS),
+--   · call release_scheduler_lease if they can guess owner_id+run_id
+--     (harder · not impossible if run_ids leak in logs).
+--
+-- Follows the precedent of migration 095 (physical write RPCs). The
+-- defensive `if exists (pg_roles ...)` guards keep the migration idempotent
+-- in local/dev environments where the Supabase roles may not be present.
+--
+-- Scheduler code hits these RPCs with SUPABASE_SERVICE_KEY only
+-- (src/db/supabaseClient.js) · no anon/authenticated path exists in the app.
+
+revoke execute on function acquire_scheduler_lease(text, text, text, integer)    from public;
+revoke execute on function heartbeat_scheduler_lease(text, text, text, integer)  from public;
+revoke execute on function release_scheduler_lease(text, text, text)             from public;
+
+do $revoke_anon$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke execute on function acquire_scheduler_lease(text, text, text, integer)    from anon';
+    execute 'revoke execute on function heartbeat_scheduler_lease(text, text, text, integer)  from anon';
+    execute 'revoke execute on function release_scheduler_lease(text, text, text)             from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke execute on function acquire_scheduler_lease(text, text, text, integer)    from authenticated';
+    execute 'revoke execute on function heartbeat_scheduler_lease(text, text, text, integer)  from authenticated';
+    execute 'revoke execute on function release_scheduler_lease(text, text, text)             from authenticated';
+  end if;
+end $revoke_anon$;
+
+do $grant_service$ begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    execute 'grant execute on function acquire_scheduler_lease(text, text, text, integer)    to service_role';
+    execute 'grant execute on function heartbeat_scheduler_lease(text, text, text, integer)  to service_role';
+    execute 'grant execute on function release_scheduler_lease(text, text, text)             to service_role';
+  end if;
+end $grant_service$;
+
+-- Direct table access is backend-only too · lock it down alongside the RPCs.
+-- No RLS policy is created (RLS off) · we simply revoke default table grants
+-- from anon/authenticated so REST clients cannot bypass the RPC layer to
+-- select/insert/update/delete lease rows directly.
+do $revoke_table$ begin
+  if exists (select 1 from pg_roles where rolname = 'anon') then
+    execute 'revoke all on table scheduler_leases from anon';
+  end if;
+  if exists (select 1 from pg_roles where rolname = 'authenticated') then
+    execute 'revoke all on table scheduler_leases from authenticated';
+  end if;
+end $revoke_table$;
+
+do $grant_table$ begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    execute 'grant select, insert, update, delete on table scheduler_leases to service_role';
+  end if;
+end $grant_table$;
