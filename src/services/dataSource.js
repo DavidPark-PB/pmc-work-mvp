@@ -194,6 +194,12 @@ async function getRecentOrders(limit = 50, status = null) {
       phone: o.phone,
       countryCode: o.country_code,
       email: o.email,
+      // 2026-09-04: 배송관리에서 · 사장님이 입력한 무게/부피 · orders 저장값 그대로 노출
+      //   shippingRateEngine 이 · sku_master 값 대신 · orders 실 값 우선 · 부피중량 정확 계산
+      weightKg: o.weight_kg,
+      boxLength: o.box_length,
+      boxWidth: o.box_width,
+      boxHeight: o.box_height,
     })),
     total: data.length,
   };

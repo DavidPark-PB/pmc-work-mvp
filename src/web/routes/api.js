@@ -3858,17 +3858,23 @@ router.get('/orders/recent', async (req, res) => {
       o.sku_enrichment = buildSkuEnrichment(matched, supplierMap);
 
       // 배송비 예상 · matched + country 있으면 견적 (실패 fallback: null)
+      //   2026-09-04: 사장님이 배송관리에서 입력한 · orders.weight_kg / box_* 우선 사용 · sku_master fallback
+      //   shippingRateEngine 은 · chargeKg = max(actualKg, volKg) · 큰 쪽 자동 사용 (엔진 내부).
       let shippingKrw = null;
       if (matched && o.countryCode) {
         try {
-          const weightG = Number(matched.weight_gram) || 0;
-          if (weightG > 0) {
+          const wKgOrder = Number(o.weightKg) || 0;
+          const wKg = wKgOrder > 0 ? wKgOrder : (Number(matched.weight_gram) || 0) / 1000;
+          const lCm = Number(o.boxLength) > 0 ? Number(o.boxLength) : (Number(matched.length_cm) || 0);
+          const wCm = Number(o.boxWidth)  > 0 ? Number(o.boxWidth)  : (Number(matched.width_cm)  || 0);
+          const hCm = Number(o.boxHeight) > 0 ? Number(o.boxHeight) : (Number(matched.height_cm) || 0);
+          if (wKg > 0) {
             const quotes = shippingRateEngine.getQuotes({
               country: o.countryCode,
-              actualKg: weightG / 1000,
-              lengthCm: Number(matched.length_cm) || 0,
-              widthCm:  Number(matched.width_cm)  || 0,
-              heightCm: Number(matched.height_cm) || 0,
+              actualKg: wKg,
+              lengthCm: lCm,
+              widthCm:  wCm,
+              heightCm: hCm,
             });
             if (Array.isArray(quotes) && quotes[0]) {
               shippingKrw = Number(quotes[0].total) || null;
