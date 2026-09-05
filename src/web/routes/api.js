@@ -790,46 +790,29 @@ router.get('/anomalies', async (req, res) => {
   }
 });
 
-// POST /api/products/ebay/clear-sku — SKU(Custom Label) 일괄 초기화 (Lister 연결 끊기)
-router.post('/products/ebay/clear-sku', async (req, res) => {
-  try {
-    const ebay = getEbayAPI();
-    const { getClient } = require('../../db/supabaseClient');
-    const db = getClient();
-
-    let allItems = [];
-    let page = 1;
-    while (page <= 25) {
-      const result = await ebay.getActiveListings(page, 200);
-      if (!result.items || result.items.length === 0) break;
-      for (const item of result.items) {
-        const sku = item.sku || '';
-        if (sku && !sku.startsWith('PMC-') && !sku.startsWith('pmc-')) {
-          allItems.push({ itemId: item.itemId, sku });
-        }
-      }
-      if (!result.hasMore) break;
-      page++;
-    }
-
-    console.log(`[clear-sku] Found ${allItems.length} items with non-PMC SKU`);
-    let cleared = 0, failed = 0;
-    for (const item of allItems) {
-      const result = await ebay.clearCustomLabel(item.itemId);
-      if (result.success) {
-        cleared++;
-        await db.from('ebay_products').update({ sku: item.itemId }).eq('item_id', item.itemId);
-      } else {
-        failed++;
-      }
-      if (cleared % 20 === 0) await new Promise(r => setTimeout(r, 1000));
-    }
-
-    platformCache = null;
-    res.json({ success: true, total: allItems.length, cleared, failed });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
+// POST /api/products/ebay/clear-sku — DISABLED (R2-E1 · 2026-09-05).
+//
+// The previous implementation iterated every non-PMC-prefixed active
+// listing (up to 5,000 rows) and unconditionally overwrote each
+// ebay_products.sku with the numeric ItemID via ebay.clearCustomLabel +
+// direct DB update. No dry-run, no cap, no confirmation, no idempotency,
+// and eBay Ack=Warning was treated as success. A single invocation could
+// permanently sever hundreds of sku_master joins and silently null every
+// downstream cost/profit computation.
+//
+// Fence: bulk canonical SKU mutation is now disabled. Route stays
+// registered so callers receive an explicit feature_disabled semantic
+// instead of a 404 (which would look like an ordinary misconfiguration).
+// A safe replacement (dry-run + explicit confirmation header + per-batch
+// cap + sku_master pre-check + strict Ack=Success handling) belongs to a
+// separate redesign (R2-E1B) and is intentionally NOT implemented here.
+router.post('/products/ebay/clear-sku', (req, res) => {
+  console.warn('[clear-sku] blocked: feature disabled');
+  res.status(409).json({
+    success: false,
+    error: 'feature_disabled',
+    reason: 'bulk_sku_mutation_disabled_for_safety',
+  });
 });
 
 // POST /api/anomalies/restore-stock — 품절 상품 재고 복구
