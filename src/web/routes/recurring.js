@@ -77,6 +77,19 @@ router.post('/:id/run', async (req, res) => {
           message: '분산 락 인프라 오류 · 잠시 후 재시도하세요',
         });
       }
+      if (result.skipReason === 'stale_occurrence') {
+        //   R1-D1-B · schedule 이 다른 인스턴스/run 에 의해 이미 앞당겨진 상태 ·
+        //   재시도해도 새 expense 안 생김 · 정상 skip
+        return res.json({
+          ok: true,
+          emitted: false,
+          skipped: true,
+          skipReason: 'stale_occurrence',
+          recurringId: r.id,
+          nextDueAt: result.nextDueAt,
+          message: '스케줄이 이미 다음 회차로 진행됨 · 재시도 필요 없음',
+        });
+      }
       //   정상 contention · HTTP 200 · 실제 발행 안 됨
       return res.json({
         ok: true,
@@ -85,6 +98,19 @@ router.post('/:id/run', async (req, res) => {
         skipReason: 'locked',
         recurringId: r.id,
         message: '다른 인스턴스가 이미 발행 중입니다 · 잠시 후 재시도하세요',
+      });
+    }
+    if (result && result.recovered === true) {
+      //   R1-D1-B · crash-replay recovery · 기존 회차 발견 · 스케줄만 복구 ·
+      //   새 expense 생성 X · emitted=false + recovered=true 로 진실 노출
+      return res.json({
+        ok: true,
+        emitted: false,
+        recovered: true,
+        alreadyExists: true,
+        expense: result.expense,
+        nextDueAt: result.nextDueAt,
+        message: '기존 회차가 발견되어 스케줄만 복구되었습니다 · 중복 발행 없음',
       });
     }
     //   기존 legacy shape 유지: expense · nextDueAt 필드
@@ -106,21 +132,26 @@ router.post('/:id/run', async (req, res) => {
 router.post('/fire-due', async (req, res) => {
   try {
     const due = await repo.listDue();
-    let fired = 0, skipped = 0, leaseErrored = 0, failed = 0;
+    //   R1-D1-B · recovered (RPC ALREADY_EXISTS · crash-replay 복구) 와
+    //     stale (RPC STALE_OCCURRENCE · 이미 다음 회차) 를 별도 카운트 ·
+    //     fired 는 실 새 expense INSERT 만 · 진실 유지.
+    let fired = 0, recovered = 0, skipped = 0, leaseErrored = 0, stale = 0, failed = 0;
     for (const r of due) {
       try {
         const result = await repo.fire(r, { expenseRepo });
         const bucket = repo.classifyFireResult(result);
         if (bucket === 'fired')          fired++;
+        else if (bucket === 'recovered') recovered++;
         else if (bucket === 'skipped_locked') skipped++;
         else if (bucket === 'skipped_error')  leaseErrored++;
+        else if (bucket === 'stale')     stale++;
         else                             failed++;
       } catch (e) {
         failed++;
         console.warn(`[recurring] fire fail id=${r.id}:`, e.message);
       }
     }
-    res.json({ ok: true, due: due.length, fired, skipped, leaseErrored, failed });
+    res.json({ ok: true, due: due.length, fired, recovered, skipped, leaseErrored, stale, failed });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

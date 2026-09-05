@@ -386,18 +386,24 @@ function start() {
       const results = await Promise.allSettled(
         due.map(r => recurringRepo.fire(r, { expenseRepo }))
       );
-      let fired = 0, skippedLocked = 0, skippedError = 0, failed = 0;
+      //   R1-D1-B (2026-09-05) · atomic RPC · adds `recovered` (crash-replay
+      //     recovery · schedule advanced but no new expense) and `stale`
+      //     (schedule already advanced elsewhere). `fired` remains
+      //     TRUTHFUL · counts only new expense INSERTs.
+      let fired = 0, recovered = 0, skippedLocked = 0, skippedError = 0, stale = 0, failed = 0;
       results.forEach((x, i) => {
         const bucket = recurringRepo.classifyFireResult(x);
         if (bucket === 'fired')          fired++;
+        else if (bucket === 'recovered') recovered++;
         else if (bucket === 'skipped_locked') skippedLocked++;
         else if (bucket === 'skipped_error')  skippedError++;
+        else if (bucket === 'stale')     stale++;
         else                             failed++;
         if (x.status === 'rejected') {
           console.warn(`[scheduler] recurring fire fail id=${due[i].id}:`, x.reason?.message || x.reason);
         }
       });
-      if (due.length > 0) console.log(`[scheduler] recurring: ${fired}/${due.length} 발행 · locked ${skippedLocked} · lease_error ${skippedError} · failed ${failed}`);
+      if (due.length > 0) console.log(`[scheduler] recurring: ${fired}/${due.length} 발행 · recovered ${recovered} · locked ${skippedLocked} · lease_error ${skippedError} · stale ${stale} · failed ${failed}`);
     } catch (e) {
       console.error('[scheduler] recurring error:', e.message);
     }

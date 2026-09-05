@@ -26,24 +26,39 @@ const LEASE_TTL_SEC         = 300;
 const LEASE_HEARTBEAT_SEC   = 30;
 
 /**
- * R1-D1-A · classify a fire() outcome (from Promise.allSettled OR a raw
- * fire() return value) into one of four aggregation buckets. Both cron
- * aggregation (scheduler.js) and per-rule route accumulation (route.js
- * /fire-due) call this so the aggregation stays consistent across
- * callers and is testable in one place.
+ * R1-D1-A/B · classify a fire() outcome (from Promise.allSettled OR a raw
+ * fire() return value) into one aggregation bucket. Both cron aggregation
+ * (scheduler.js) and per-rule route accumulation (route.js /fire-due)
+ * call this so the aggregation stays consistent across callers and is
+ * testable in one place.
  *
  * Buckets:
- *   'fired'          · fire() ran to completion · expense INSERT + recurring UPDATE done
+ *   'fired'          · new expense INSERT + recurring UPDATE done (RPC CREATED)
+ *   'recovered'      · prior committed occurrence found · schedule advanced ·
+ *                      NO new expense created (RPC ALREADY_EXISTS · crash-replay
+ *                      recovery). Truthful count for the finance dashboard:
+ *                      never bucket recovered as fired.
  *   'skipped_locked' · another instance/run held the lease · nothing written
  *   'skipped_error'  · lease infra RPC error · nothing written (fail-closed)
- *   'failed'         · fire() body threw · rejected promise · partial state may exist
+ *   'stale'          · caller's expected occurrence no longer matches the
+ *                      recurring row's next_due_at (RPC STALE_OCCURRENCE) ·
+ *                      another actor already advanced the schedule
+ *   'failed'         · fire() body threw · rejected promise · partial state
+ *                      may exist (though the RPC transaction is atomic)
  */
 function classifyFireResult(x) {
   if (x && x.status === 'rejected') return 'failed';
   const v = (x && x.status === 'fulfilled') ? x.value : x;
-  if (!v || !v.skipped) return 'fired';
-  if (v.skipReason === 'lease_error') return 'skipped_error';
-  return 'skipped_locked';
+  if (!v) return 'failed';
+  if (v.skipped) {
+    if (v.skipReason === 'lease_error')      return 'skipped_error';
+    if (v.skipReason === 'stale_occurrence') return 'stale';
+    return 'skipped_locked';
+  }
+  //   R1-D1-B · ALREADY_EXISTS is a real recovery outcome · MUST NOT be
+  //   counted as a fresh emission.
+  if (v.outcome === 'ALREADY_EXISTS' || v.recovered === true) return 'recovered';
+  return 'fired';
 }
 
 const MISSING = new Set(['42P01', 'PGRST205']);
@@ -260,23 +275,82 @@ async function fire(recurring, { expenseRepo, asOf = new Date() }) {
       failPolicy: 'closed',   // money-facing · never run without a lease
     },
     async (_ctx) => {
-      //   Original fire body · order unchanged (expense INSERT → recurring
-      //   UPDATE). D1-A does not restructure this into an atomic RPC.
-      const expense = await expenseRepo.createExpense({
-        paidAt: recurring.nextDueAt,
-        amount: recurring.amount,
-        currency: recurring.currency,
-        category: recurring.category,
-        merchant: recurring.name,
-        memo: recurring.memo,
-        cardLast4: recurring.cardLast4,
-        source: 'recurring',
-        recurringId: recurring.id,
-        createdBy: recurring.createdBy,
+      //   R1-D1-B · replace the previous two-statement flow (INSERT expense
+      //   → UPDATE recurring) with a single atomic RPC call. The RPC locks
+      //   the recurring_payments row, validates expected occurrence, checks
+      //   for a prior committed occurrence (crash-replay recovery), then
+      //   INSERTs + advances in ONE transaction. Layer 3 partial UNIQUE
+      //   index is the final backstop if this path is somehow bypassed.
+      //
+      //   Schedule calculation SoT stays in JS · we pass the expected
+      //   current occurrence AND the pre-computed next occurrence · RPC
+      //   only validates, does not derive.
+      const expectedOccurrence = recurring.nextDueAt;
+      const nextOccurrence = advanceDueDate(
+        recurring.nextDueAt, recurring.cycle, recurring.dayOfCycle
+      );
+
+      const { data, error } = await _db().rpc('fire_recurring_expense_atomic', {
+        p_recurring_id:        Number(recurring.id),
+        p_expected_occurrence: expectedOccurrence,
+        p_next_occurrence:     nextOccurrence,
+        p_amount:              Number(recurring.amount),
+        p_currency:            recurring.currency || 'KRW',
+        p_category:            recurring.category || 'uncategorized',
+        p_merchant:            recurring.name || null,
+        p_memo:                recurring.memo || null,
+        p_card_last4:          recurring.cardLast4 || null,
+        p_created_by:          recurring.createdBy || null,
       });
-      const next = advanceDueDate(recurring.nextDueAt, recurring.cycle, recurring.dayOfCycle);
-      await update(recurring.id, { nextDueAt: next });
-      return { expense, nextDueAt: next };
+      if (error) throwFriendly(error);
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) throw new Error('fire_recurring_expense_atomic returned empty result');
+
+      //   Legacy expense shape · enough for observability · callers only
+      //   read id/paid_at in current code.
+      const expenseStub = row.expense_id != null ? {
+        id:           row.expense_id,
+        paid_at:      row.occurrence,
+        amount:       Number(recurring.amount),
+        currency:     recurring.currency || 'KRW',
+        category:     recurring.category || 'uncategorized',
+        merchant:     recurring.name || null,
+        source:       'recurring',
+        recurring_id: recurring.id,
+      } : null;
+
+      if (row.outcome === 'CREATED') {
+        return {
+          expense: expenseStub,
+          nextDueAt: row.next_due_at,
+          outcome: 'CREATED',
+        };
+      }
+      if (row.outcome === 'ALREADY_EXISTS') {
+        //   Crash-replay recovery · schedule advanced · no new expense.
+        //   The `expense` field points at the pre-existing row so callers
+        //   still get a valid reference · `recovered: true` flags the
+        //   distinction · classifyFireResult buckets this as 'recovered'.
+        return {
+          expense: expenseStub,
+          nextDueAt: row.next_due_at,
+          outcome: 'ALREADY_EXISTS',
+          recovered: true,
+        };
+      }
+      if (row.outcome === 'STALE_OCCURRENCE') {
+        //   Another actor already advanced the schedule since we read the
+        //   rule. Nothing to do. Truthful skip · not a failure.
+        return {
+          skipped: true,
+          skipReason: 'stale_occurrence',
+          recurringId: recurring.id,
+          nextDueAt: row.next_due_at,
+        };
+      }
+      //   Unknown outcome · treat as failure so caller does not falsely
+      //   report success. Should never happen given the RPC contract.
+      throw new Error(`fire_recurring_expense_atomic unexpected outcome: ${row.outcome}`);
     }
   );
 
