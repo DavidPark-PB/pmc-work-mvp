@@ -13,6 +13,46 @@ const { getClient: getSupabase } = require('../db/supabaseClient');
 const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID;
 const SHEET_NAME = '주문 배송';
 
+/**
+ * R2-E2A1 (2026-09-05) · UNKNOWN ≠ ZERO for order payment_amount.
+ *
+ * Returns a positive finite numeric OR null (never 0). Rationale:
+ *
+ *   Both eBay and Shopify extractor paths currently coerce a missing
+ *   observation to 0 upstream (ebayAPI.js:928 wraps <Total> in `|| '0'`;
+ *   Shopify's per-line-item price passes through parseFloat which becomes
+ *   NaN then 0 via `|| 0`). At the orderSync write layer we cannot
+ *   distinguish "server returned literal 0" from "server omitted the
+ *   field" — the extractor has already erased the distinction.
+ *
+ *   Empirical evidence (R2-E2 audit · READ ONLY):
+ *     · 5179 orders total · 110 with payment_amount=0 · 5069 positive
+ *     · ALL 110 zero-rows are eBay · ALL pre-2026-06-30
+ *     · Sample zero rows: sku='' + carrier='' + tracking_no='' — every
+ *       one correlates with other missing fields, i.e. malformed
+ *       envelopes, NOT legitimate $0 orders
+ *     · Recent 30d: 0 new zero rows (extractor upstream may have improved
+ *       or the trigger stopped firing — but the collapse is still live)
+ *
+ *   Domain decision: treat literal 0 as UNKNOWN. Any real $0 order (test
+ *   listing, promotional freebie, refund-to-zero) will be preserved as
+ *   NULL instead of 0. Downstream consumers (customs / invoice /
+ *   finance / AI · deferred to R2-E2A2) can then distinguish "not yet
+ *   observed" from "confirmed zero" — where today they see 0 for both.
+ *
+ *   Negative numbers are also treated as UNKNOWN (implausible for
+ *   marketplace order payment; likely upstream sign error).
+ *
+ * @param {*} raw eBay `<Total>` or Shopify `line_item.price` (after fetch)
+ * @returns {number|null} positive finite value, or null (UNKNOWN)
+ */
+function _normalizePaymentAmount(raw) {
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n)) return null;
+  if (n <= 0) return null;
+  return n;
+}
+
 // 시트 헤더 (A~T, 20열)
 const HEADERS = [
   '주문일자', '플랫폼', '주문번호', 'SKU', '상품명',
@@ -87,7 +127,20 @@ class OrderSync {
         sku: o.sku || o.itemId || '',
         title: o.title || '',
         quantity: parseInt(o.quantity) || 1,
-        payment_amount: parseFloat(o.amount) || 0,
+        // R2-E2A1 (2026-09-05) · UNKNOWN ≠ ZERO.
+        //   normalizePaymentAmount() returns the parsed positive numeric OR
+        //   null (never 0). Downstream awaiting-update path preserves the
+        //   last-known DB value when this is null; the new-insert path
+        //   persists NULL explicitly (schema is nullable, migration 001
+        //   line 201). This closes the historical `parseFloat(o.amount) || 0`
+        //   collapse — 110 legacy zero rows (all pre-2026-06-30, 100 %
+        //   correlated with empty sku/carrier/tracking) were malformed
+        //   eBay envelopes coerced to 0 by extractValue() upstream, not
+        //   legitimate $0 orders. On both eBay (ebayAPI.js:928 coerces
+        //   missing <Total> → '0') and Shopify (parseFloat(undefined) → NaN
+        //   → 0), literal 0 arriving here is semantically indistinguishable
+        //   from absence and is treated as UNKNOWN.
+        payment_amount: _normalizePaymentAmount(o.amount),
         currency: o.currency || 'USD',
         buyer_name: o.buyerName || '',
         country: o.country || '',
@@ -112,16 +165,36 @@ class OrderSync {
         // 모든 컬럼을 덮어쓰기 때문에 여기선 carrier/tracking/status 만 fetched 값 그대로
         // 유지하기 위해 추가 select.
         // → 100~200건 짜리 sync 가 200번 update 호출 → quota 초과의 주범. 한 번의 upsert 로.
+        //
+        // R2-E2A1 (2026-09-05) · payment_amount preservation.
+        //   Adds payment_amount to the preserve-select so an UNKNOWN
+        //   incoming observation (normalized to null by
+        //   _normalizePaymentAmount) does not overwrite a previously-known
+        //   good DB value. This closes the R2-D1 interaction that widened
+        //   the update surface: orders now stay in NEW longer, so any
+        //   transient partial eBay response would previously rewrite
+        //   payment_amount to 0 on every sync tick.
         const { data: preserved } = await db.from('orders')
-          .select('order_no, carrier, tracking_no, status')
+          .select('order_no, carrier, tracking_no, status, payment_amount')
           .in('order_no', awaitingRows.map(r => r.order_no));
         const preserveMap = new Map((preserved || []).map(r => [r.order_no, r]));
-        const upsertRows = awaitingRows.map(r => ({
-          ...r,
-          carrier: preserveMap.get(r.order_no)?.carrier ?? r.carrier,
-          tracking_no: preserveMap.get(r.order_no)?.tracking_no ?? r.tracking_no,
-          status: preserveMap.get(r.order_no)?.status ?? r.status,
-        }));
+        const upsertRows = awaitingRows.map(r => {
+          const existing = preserveMap.get(r.order_no);
+          // R2-E2A1 · UNKNOWN incoming (null) → preserve last-known DB
+          // value. KNOWN incoming (positive number) → overwrite. Note the
+          // `!= null` comparison is intentional — treats both null and
+          // undefined as UNKNOWN, positive numbers as KNOWN.
+          const paymentAmount = r.payment_amount != null
+            ? r.payment_amount
+            : (existing?.payment_amount ?? null);
+          return {
+            ...r,
+            carrier: existing?.carrier ?? r.carrier,
+            tracking_no: existing?.tracking_no ?? r.tracking_no,
+            status: existing?.status ?? r.status,
+            payment_amount: paymentAmount,
+          };
+        });
         await db.from('orders').upsert(upsertRows, { onConflict: 'order_no' });
         supabaseUpserted += awaitingRows.length;
       }
@@ -940,3 +1013,5 @@ class OrderSync {
 }
 
 module.exports = OrderSync;
+// R2-E2A1 · exposed for behavioral tests only. Do not use from other callers.
+module.exports._normalizePaymentAmount = _normalizePaymentAmount;
