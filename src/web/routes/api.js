@@ -4157,6 +4157,42 @@ router.get('/orders/shipping-estimate/:orderNo', async (req, res) => {
   }
 });
 
+/**
+ * R2-SHIP-1 (2026-09-05) · Customs value fail-closed helper (B2C shipping).
+ *
+ * Returns the persisted orders.payment_amount as a positive finite numeric
+ * OR null (never a substituted default). Callers on the international B2C
+ * shipping paths (POST /orders/:orderNo/fedex-label and
+ * POST /orders/:orderNo/koreapost-label) MUST fail-closed with HTTP 400
+ * `PAYMENT_UNVERIFIED` when this returns null — silently emitting a $1
+ * customs declaration on an international export label is a legal issue
+ * for PMC as shipper.
+ *
+ * Historical collapses this fence closes:
+ *   · api.js:4203 · `Number(customsValue) || Number(order.payment_amount) || 1`
+ *   · api.js:4211 · `Number(order.payment_amount) || 1` (FedEx unitPrice)
+ *   · api.js:4212 · `Number(order.payment_amount) || 1` (FedEx customsValue)
+ *   · api.js:4379 · `Number(order.payment_amount) || 1` (KP int'l value)
+ *
+ * Owner directive (R2-SHIP-1 §5): request-body `customsValue` MUST NOT
+ * bypass this preflight in this phase. Blue shipping UI does not yet
+ * expose a verified customs editor. A future verified override requires
+ * its own UI + provenance + audit design.
+ *
+ * Domestic Korea Post (ecountDomestic) has no customs field — out of
+ * scope. B2B routes read `b2b_invoices.Total` (different SoT) — out of
+ * scope.
+ *
+ * @param {*} raw persisted orders.payment_amount
+ * @returns {number|null} positive finite value, or null (UNKNOWN)
+ */
+function _verifyCustomsValue(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  if (n <= 0) return null;
+  return n;
+}
+
 // POST /api/orders/:orderNo/fedex-label — FedEx 라이브 라벨 발급 + tracking 자동 채움
 router.post('/orders/:orderNo/fedex-label', async (req, res) => {
   try {
@@ -4182,6 +4218,19 @@ router.post('/orders/:orderNo/fedex-label', async (req, res) => {
       return res.status(400).json({ success: false, error: '주문 주소가 불완전합니다 (street, zip, country 필요)' });
     }
 
+    // R2-SHIP-1 (2026-09-05) · UNKNOWN payment ≠ $1 customs. Reject before
+    // any FedEx call. Body-supplied `customsValue` MUST NOT bypass — owner
+    // directive: unverified DB truth → BLOCK regardless of client override.
+    const verifiedPayment = _verifyCustomsValue(order.payment_amount);
+    if (verifiedPayment == null) {
+      return res.status(400).json({
+        success: false,
+        error: 'PAYMENT_UNVERIFIED',
+        reason: 'verified_customs_value_required',
+        orderNo,
+      });
+    }
+
     const N = Math.max(1, parseInt(packageCount, 10) || 1);
     const packages = Array.from({ length: N }, () => ({
       weightKg: Number(weightKg),
@@ -4200,7 +4249,10 @@ router.post('/orders/:orderNo/fedex-label', async (req, res) => {
       packages,
       serviceType,
       customs: {
-        totalValue: Number(customsValue) || Number(order.payment_amount) || 1,
+        //   R2-SHIP-1 · verifiedPayment (positive finite from
+        //   _verifyCustomsValue) replaces the historical `|| 1` collapses.
+        //   Body `customsValue` intentionally ignored — see preflight above.
+        totalValue: verifiedPayment,
         currency: currency || order.currency || 'USD',
         countryOfManufacture: 'KR',
         commodities: [{
@@ -4208,8 +4260,8 @@ router.post('/orders/:orderNo/fedex-label', async (req, res) => {
           quantity: Number(order.quantity) || 1,
           quantityUnits: 'PCS',
           weight: { units: 'KG', value: Number(weightKg) },
-          unitPrice: { amount: Number(order.payment_amount) || 1, currency: order.currency || 'USD' },
-          customsValue: { amount: Number(order.payment_amount) || 1, currency: order.currency || 'USD' },
+          unitPrice: { amount: verifiedPayment, currency: order.currency || 'USD' },
+          customsValue: { amount: verifiedPayment, currency: order.currency || 'USD' },
           countryOfManufacture: 'KR',
           harmonizedCode: '950430',
         }],
@@ -4319,6 +4371,19 @@ router.post('/orders/:orderNo/koreapost-label', async (req, res) => {
     if (!order) return res.status(404).json({ success: false, error: '주문을 찾을 수 없습니다' });
     if (order.tracking_no) return res.status(409).json({ success: false, error: `이미 발급됨 (tracking_no=${order.tracking_no})` });
 
+    // R2-SHIP-1 (2026-09-05) · UNKNOWN payment ≠ $1 customs. Reject before
+    // any Korea Post API call. No body override accepted in this phase —
+    // owner directive: unverified DB truth → BLOCK.
+    const verifiedPayment = _verifyCustomsValue(order.payment_amount);
+    if (verifiedPayment == null) {
+      return res.status(400).json({
+        success: false,
+        error: 'PAYMENT_UNVERIFIED',
+        reason: 'verified_customs_value_required',
+        orderNo,
+      });
+    }
+
     // 무게: body override > orders.weight_kg
     const wKg = Number(weightKg) || Number(order.weight_kg) || 0;
     const weightG = Math.round(wKg * 1000);
@@ -4376,7 +4441,9 @@ router.post('/orders/:orderNo/koreapost-label', async (req, res) => {
         // 향후 sku_master.koreapost_contents 추가 시 그것 우선.
         contents: undefined,
         qty: Number(order.quantity) || 1,
-        valueUSD: Number(order.payment_amount) || 1,
+        //   R2-SHIP-1 · verifiedPayment replaces the historical `|| 1`
+        //   collapse. Preflight already blocked null/0/NaN/negative above.
+        valueUSD: verifiedPayment,
         currency: order.currency || 'USD',
       },
       serviceType,
@@ -6918,3 +6985,5 @@ router.post('/thumbnail/generate', thumbnailUpload.array('images', 20), async (r
 });
 
 module.exports = router;
+// R2-SHIP-1 · exposed for behavioral tests only. Do not import from other callers.
+module.exports._verifyCustomsValue = _verifyCustomsValue;
