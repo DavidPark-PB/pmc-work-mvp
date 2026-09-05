@@ -179,37 +179,53 @@ class OrderSync {
       errors.push(`Supabase: ${dbErr.message}`);
     }
 
-    // 3-B. Google Sheets 중복 체크 + shipped 자동 제거
-    //   - 시트의 OrderNo 가 현재 eBay awaiting set 에 없으면 → shipped 됨 → 시트 row 비움
-    //   - 시트에 이미 있는 awaiting 주문 → 중복으로 분류 (skip)
+    // 3-B. Google Sheets 중복 체크 · R2-D3 (2026-09-05) absence-based clearing REMOVED.
+    //   Previously this block also cleared existing Sheet rows whose orderNo
+    //   was absent from the current awaiting response — the same absence-
+    //   based inference R2-D1 removed from the DB status path. That
+    //   inference is invalid for eBay fetch failures, empty responses,
+    //   partial responses, pagination gaps, ModTime date-window
+    //   exclusions, and identifier mismatches. All 12+ conditions
+    //   collapsed into "shipped" on the Sheet surface too — silently
+    //   removing legitimate NEW/READY rows whenever eBay fetch failed
+    //   with Shopify success (the same catastrophic scenario R2-D1
+    //   proved in production).
+    //
+    //   R2-D3 invariant (Owner directive 2026-09-05):
+    //     UNKNOWN ≠ DELETE. An operational representation of an internal
+    //     order (Sheet row · dashboard entry · queue item) may be removed
+    //     only from POSITIVE fulfillment evidence. Absence of an external
+    //     API response is never fulfillment evidence.
+    //
+    //   Explicit shipment writers remain untouched:
+    //     · FedEx label creation
+    //     · Korea Post confirm-shipped
+    //     · ecountDomestic auto-label
+    //
+    //   Positive-evidence Sheet cleanup at label success time is a
+    //   separate design (R2-D2 / future territory · Phase 7A-4 evidence
+    //   machinery untouched by this commit).
+    //
+    //   Impact profile:
+    //     · DB truth is protected by R1-D1 · R2-D1 · R2-A · unaffected here
+    //     · /api/orders/recent reads DB (dataSource.getRecentOrders) not
+    //       Sheet · blue 배송관리 dashboard truth untouched
+    //     · Legacy Sheet will accumulate rows for orders whose true
+    //       shipment status is known only in DB; owner can manually
+    //       manage the Sheet if desired · net safer than false silent
+    //       removal
+    //
+    //   Dead code cleanup: `currentAwaitingSet` was used only by the
+    //   removed clearing predicate AND by the unreachable safety net
+    //   inside the newOrders filter (`shippedRowsToClear.length > 0 &&
+    //   !currentAwaitingSet.has(...)` — original author already marked
+    //   "안전장치 — 사실 도달 불가"). Removing the predicate makes both
+    //   references dead · both are removed to keep the file self-consistent.
+    //   `existingMap` is retained · still used by `existingIds` for
+    //   duplicate prevention below.
     const existingMap = await this.getExistingOrderRows(); // { orderNo: rowIndex (1-based) }
-    const currentAwaitingSet = new Set(allOrders.map(o => o.orderId));
-    const shippedRowsToClear = [];
-    for (const [orderNo, rowIdx] of existingMap.entries()) {
-      // 시트에 있는데 eBay awaiting 응답에 없음 = shipped 또는 cancelled
-      if (!currentAwaitingSet.has(orderNo)) {
-        shippedRowsToClear.push(`${SHEET_NAME}!A${rowIdx}:T${rowIdx}`);
-      }
-    }
-    let sheetShippedRemoved = 0;
-    if (shippedRowsToClear.length > 0) {
-      try {
-        // Sheets API batchClear 한 번으로 처리 — quota 절약
-        await this.sheets.batchClearData(SPREADSHEET_ID, shippedRowsToClear);
-        sheetShippedRemoved = shippedRowsToClear.length;
-        console.log(`📦 ${sheetShippedRemoved}개 발송완료 row 시트에서 비움`);
-      } catch (e) {
-        console.warn('⚠️ shipped row 정리 실패 (시트 그대로 남음):', e.message);
-      }
-    }
-
     const existingIds = new Set(existingMap.keys());
     const newOrders = allOrders.filter(o => {
-      // 시트에서 방금 비운 row 의 orderNo 는 existingIds 에 그대로 있으니 따로 걸러야 함
-      if (shippedRowsToClear.length > 0 && !currentAwaitingSet.has(o.orderId)) {
-        // 안전장치 — 사실 도달 불가 (currentAwaitingSet 에 모두 있음)
-        return true;
-      }
       if (existingIds.has(o.orderId)) {
         // 이미 시트에 있고 awaiting 그대로 → 중복 (skip)
         return false;
