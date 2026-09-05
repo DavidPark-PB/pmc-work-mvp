@@ -18,6 +18,42 @@ function _repricingRequestId({ sku, itemId, platform, price, hourBucket }) {
   return `repricing:manual:${sku}:${itemId}:${platform}:${hourBucket}:${Number(price).toFixed(2)}`;
 }
 
+/**
+ * R2-E2B1 (2026-09-05) · UNKNOWN weight ≠ 0g ≠ 5,460 KRW default shipping ≠
+ * valid repricing floor.
+ *
+ * Returns a positive finite numeric OR null (never 0, never a default).
+ * Callers on the repricing calculation path MUST short-circuit with a
+ * BLOCK result and MUST NOT invoke pricingEngine.estimateShippingKRW
+ * when this returns null — silently substituting the 5,460 KRW fallback
+ * for missing weight produces an artificially low margin floor and a
+ * mispriced marketplace write on the MANUAL_APPROVED bypass path
+ * (POST /api/repricing/execute/:sku).
+ *
+ * Domain rejection rules (strict per owner directive):
+ *   · null / undefined / '' / whitespace-only → invalid
+ *   · NaN / Infinity / -Infinity → invalid
+ *   · 0 / negative → invalid (physical SKUs are never truly zero-mass)
+ *   · malformed strings like '0.5kg' → invalid (Number() is strict —
+ *     rejects trailing non-numeric characters unlike parseFloat)
+ *   · positive numeric OR positive numeric string → valid
+ *
+ * This fence is intentionally narrow: it does NOT modify
+ * pricingEngine.estimateShippingKRW's fallback (used by other callers),
+ * does NOT touch priceExecutionGate (system-wide gate hardening is a
+ * separate future audit), and does NOT migrate the SoT to
+ * sku_master.weight_gram (future R2-E2B3).
+ *
+ * @param {*} raw persisted products.weight
+ * @returns {number|null} positive finite weight, or null (UNKNOWN)
+ */
+function _validateProductWeight(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  if (n <= 0) return null;
+  return n;
+}
+
 class RepricingService {
   _getPlatformRepo() {
     const PlatformRepository = require('../db/platformRepository');
@@ -57,6 +93,25 @@ class RepricingService {
     const rule = rules.find(r => r.sku === sku) || rules.find(r => !r.sku) || rules[0];
 
     const currentPrice = parseFloat(product.price_usd) || 0;
+
+    //   R2-E2B1 (2026-09-05) · UNKNOWN weight fail-closed. Reject BEFORE
+    //   the shipping estimator is called — never invent a 5,460 KRW
+    //   default shipping observation, never let a fabricated floor
+    //   participate in the marketplace price recommendation. Reuses the
+    //   existing Engine 1 reason enum BLOCK_LANDING_COST_UNKNOWN so
+    //   priceEventService.createBlockDataTasks routes it into the
+    //   existing LANDING_COST_DATA_MISSING team_task queue (no new
+    //   enum, no migration).
+    const productWeight = _validateProductWeight(product.weight);
+    if (productWeight == null) {
+      return {
+        action: 'block',
+        reason: 'BLOCK_LANDING_COST_UNKNOWN',
+        currentPrice,
+        missing: ['weight'],
+      };
+    }
+
     const compTotal = parseFloat(competitor.competitor_price) + parseFloat(competitor.competitor_shipping || 0);
 
     // Calculate minimum allowed price based on margin floor
@@ -67,8 +122,7 @@ class RepricingService {
     // to 1300; hardcode fallback stays at 1400 to preserve prior behaviour.
     const { getPricingSafetyExchangeRate } = require('../pricing/rates');
     const purchasePrice = parseFloat(product.purchase_price || product.cost_price || 0);
-    const weight = parseFloat(product.weight || 0);
-    const shippingKRW = pricingEngine.estimateShippingKRW(weight);
+    const shippingKRW = pricingEngine.estimateShippingKRW(productWeight);
     const tax = Math.round(purchasePrice * 0.15);
     const totalCostKRW = purchasePrice + shippingKRW + tax;
 
@@ -154,8 +208,15 @@ class RepricingService {
   async executeRepricing(sku, platform = 'ebay', opts = {}) {
     const deps = opts.deps || {};
     const evaluation = opts.evaluation || await this.evaluateRepricing(sku, platform);
+    //   R2-E2B1 · 'block' is a non-actionable outcome from evaluateRepricing
+    //   (e.g. weight unverified). It MUST short-circuit before the gate is
+    //   called — the gate has no landingCost enforcement in the deployed
+    //   contract (only KILL_SWITCH + auto_apply + validateInput), so a
+    //   block-shaped evaluation without recommendedPrice would either crash
+    //   the gate or (worse) pass an undefined/NaN price to eBay.
     if (!evaluation || evaluation.action === 'no_change' ||
-        evaluation.action === 'no_competitor_data' || evaluation.action === 'no_rules') {
+        evaluation.action === 'no_competitor_data' || evaluation.action === 'no_rules' ||
+        evaluation.action === 'block') {
       return { sku, ...evaluation, executed: false };
     }
 
@@ -635,4 +696,4 @@ class RepricingService {
 }
 
 module.exports = RepricingService;
-module.exports._internal = { _repricingRequestId };
+module.exports._internal = { _repricingRequestId, _validateProductWeight };
