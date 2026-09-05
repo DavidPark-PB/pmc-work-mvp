@@ -28,6 +28,36 @@
 const { getClient } = require('../db/supabaseClient');
 const EbayAPI = require('../api/ebayAPI');
 
+/**
+ * R2-A (2026-09-05) · Unknown ≠ Zero invariant.
+ *
+ * Return the first valid observed price from the Browse API item envelope,
+ * or `null` if no field carries a usable value. Callers MUST omit the
+ * `price_usd` key from the DB patch when this returns `null` so that the
+ * previously-stored canonical value is preserved.
+ *
+ * Valid price = finite AND > 0.
+ *   priceExecutionGate.validateInput already rejects p<=0 as GATE_INVALID_PRICE
+ *   (priceExecutionGate.js:344), so treating 0/negative here as invalid keeps
+ *   the entire pricing stack consistent: an eBay listing whose live price is
+ *   0 or negative is not something we would ever write, so it is also not
+ *   something we should synthesise into our canonical column.
+ *
+ * Priority (unchanged from prior behaviour):
+ *   1. item.price
+ *   2. item.priceMin (multi-variant range lower bound)
+ *   3. null (Unknown · caller omits patch key)
+ *
+ * @param {object} item Browse API item envelope
+ * @returns {number|null} valid price OR null (Unknown)
+ */
+function _extractValidPrice(item) {
+  if (!item) return null;
+  if (Number.isFinite(item.price) && item.price > 0) return item.price;
+  if (Number.isFinite(item.priceMin) && item.priceMin > 0) return item.priceMin;
+  return null;
+}
+
 async function runRefreshMyListingsChunk({ maxItems, staleDays, matchedOnly } = {}) {
   const CHUNK      = Math.max(50, parseInt(maxItems)  || parseInt(process.env.MY_LISTING_REFRESH_CHUNK) || 500);
   const STALE_DAYS = Math.max(1,  parseInt(staleDays) || parseInt(process.env.MY_LISTING_STALE_DAYS)   || 14);
@@ -128,6 +158,11 @@ async function runRefreshMyListingsChunk({ maxItems, staleDays, matchedOnly } = 
   const byId = new Map(items.map(x => [String(x.itemId), x]));
   let updated = 0;
   let failed = 0;
+  //   R2-A (2026-09-05) · truthful metric · counts refresh cycles where the
+  //   Browse API returned no valid price and we deliberately preserved the
+  //   existing canonical price_usd instead of writing 0. Summary-level only ·
+  //   no per-item log spam (thousands of SKUs · logs would flood Railway).
+  let pricePreservedMissing = 0;
   const errors = [];
 
   for (const c of candidates) {
@@ -138,12 +173,22 @@ async function runRefreshMyListingsChunk({ maxItems, staleDays, matchedOnly } = 
       continue;
     }
     const shipping = Number.isFinite(item.shippingCost) ? item.shippingCost : 0;
-    const price = Number.isFinite(item.price) ? item.price : (Number.isFinite(item.priceMin) ? item.priceMin : 0);
+    //   R2-A · Unknown ≠ Zero · missing/invalid observation MUST NOT
+    //   overwrite the last-known canonical price with 0. When the Browse
+    //   API returns an envelope but no usable price/priceMin, we build the
+    //   patch WITHOUT the price_usd key so the existing DB value is
+    //   preserved. Other observed fields (shipping · stock · status) still
+    //   update because they carry independent value.
+    const validPrice = _extractValidPrice(item);
     const patch = {
-      price_usd: price,
       shipping_usd: shipping,
       updated_at: new Date().toISOString(),
     };
+    if (validPrice != null) {
+      patch.price_usd = validPrice;
+    } else {
+      pricePreservedMissing++;
+    }
     if (Number.isFinite(item.quantityAvailable)) patch.stock = item.quantityAvailable;
     if (item.status === 'out_of_stock') patch.status = 'active'; // 리스팅 자체는 active
 
@@ -151,19 +196,26 @@ async function runRefreshMyListingsChunk({ maxItems, staleDays, matchedOnly } = 
     if (upErr) {
       failed++;
       errors.push(`${c.item_id}: ${upErr.message}`);
-      // 컬럼 부족 시 최소 필드만 재시도
+      // 컬럼 부족 시 최소 필드만 재시도 · R2-A · price_usd 는 valid 일 때만 포함
       if (upErr.code === '42703') {
-        await db.from('ebay_products').update({
-          price_usd: patch.price_usd, shipping_usd: patch.shipping_usd, updated_at: patch.updated_at,
-        }).eq('item_id', c.item_id);
+        const retry = {
+          shipping_usd: patch.shipping_usd,
+          updated_at: patch.updated_at,
+        };
+        if (validPrice != null) retry.price_usd = validPrice;
+        await db.from('ebay_products').update(retry).eq('item_id', c.item_id);
       }
     } else {
       updated++;
     }
   }
 
-  console.log(`[MyListingRefresher] 완료 — 처리: ${candidates.length}, 갱신: ${updated}, 실패: ${failed}`);
-  return { processed: candidates.length, updated, failed, errors };
+  console.log(`[MyListingRefresher] 완료 — 처리: ${candidates.length}, 갱신: ${updated}, 실패: ${failed}, price_preserved_missing: ${pricePreservedMissing}`);
+  return { processed: candidates.length, updated, failed, pricePreservedMissing, errors };
 }
 
-module.exports = { runRefreshMyListingsChunk };
+module.exports = {
+  runRefreshMyListingsChunk,
+  //   R2-A · exposed for tests only. Do not use from other callers.
+  _extractValidPrice,
+};
