@@ -132,22 +132,48 @@ class OrderSync {
         supabaseUpserted += newRows.length;
       }
 
-      // Mark orders no longer in awaiting shipment as SHIPPED
-      const currentAwaitingOrderNos = new Set(allOrderNos);
-      const { data: dbNewOrders } = await db.from('orders')
-        .select('order_no')
-        .in('status', ['NEW', 'READY'])
-        .eq('platform', 'eBay');
-      shippedCount = 0;
-      if (dbNewOrders) {
-        const toShip = dbNewOrders.filter(o => !currentAwaitingOrderNos.has(o.order_no));
-        if (toShip.length > 0) {
-          const shipNos = toShip.map(o => o.order_no);
-          await db.from('orders').update({ status: 'SHIPPED' }).in('order_no', shipNos);
-          shippedCount = toShip.length;
-          console.log(`📦 ${shippedCount}건 주문 SHIPPED 처리 (eBay awaiting shipment에서 사라짐)`);
-        }
-      }
+      // R2-D1 (2026-09-05) · absence-based SHIPPED mass flip REMOVED.
+      //   Previously this block set orders.status='SHIPPED' for every local
+      //   NEW/READY eBay order that was absent from the current awaiting
+      //   fetch response. That inference collapsed 12+ distinct "not
+      //   returned" conditions — eBay API failure, timeout, rate limit,
+      //   pagination gap, date-window (ModTime 30d) exclusion, ID
+      //   mismatch, cancelled remote, partial response, empty response —
+      //   into a single SHIPPED outcome. When eBay fetch threw and
+      //   Shopify succeeded, `allOrderNos` held only Shopify IDs and every
+      //   local eBay NEW/READY order got mass-flipped.
+      //
+      //   Production evidence (R2-D audit): 4624/4631 (99.85%) eBay
+      //   SHIPPED rows have no tracking; 2026-05-26 · 1000 orders flipped
+      //   in one second; 2026-06-23 · 809 orders flipped in one second
+      //   (that date matches the cancelStatus-filter incident recorded in
+      //   the owner order-sync policy memory).
+      //
+      //   New invariant (Owner directive 2026-09-05):
+      //     An internal order may transition to SHIPPED only from
+      //     POSITIVE shipment evidence. Absence of an external
+      //     observation is never shipment evidence. UNKNOWN ≠ SHIPPED.
+      //
+      //   Positive-evidence writers remain untouched:
+      //     · FedEx label creation (api.js POST /orders/:orderNo/fedex-label)
+      //     · Korea Post confirm-shipped (api.js POST /orders/:orderNo/koreapost-confirm-shipped)
+      //     · ecountDomestic auto-label (ecountDomestic.js)
+      //
+      //   Automatic eBay positive-evidence reconciliation (Trading
+      //   GetOrders OrderStatus=Completed + ShippedTime) is deferred to
+      //   R2-D2. Phase 7A-4 already carries the fetch machinery but is
+      //   NOT touched by this commit per Owner rule.
+      //
+      //   shippedCount stays at its outer `let shippedCount = 0`
+      //   initialization (line 67). This function no longer creates
+      //   SHIPPED transitions from sync alone · reporting 0 is truthful.
+      //
+      //   Residual (out of R2-D1 scope · report only):
+      //     · Same absence-based inference exists a few lines below
+      //       ("shipped row 시트에서 비움") but affects Google Sheets
+      //       rows, not orders.status. DB truth is preserved by this
+      //       cut; sheet UX cleanup is a separate concern (R2-D3
+      //       candidate).
     } catch (dbErr) {
       console.error('⚠️ Supabase order upsert 실패 (시트 저장은 계속):', dbErr.message);
       errors.push(`Supabase: ${dbErr.message}`);
