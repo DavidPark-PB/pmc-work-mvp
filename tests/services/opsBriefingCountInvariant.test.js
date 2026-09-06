@@ -95,6 +95,12 @@ function makeFakeDb(tables) {
       eq(k, v)  { state.filters.push(r => r[k] === v); return q; },
       neq(k, v) { state.filters.push(r => r[k] !== v); return q; },
       in(k, arr){ state.filters.push(r => arr.includes(r[k])); return q; },
+      //   OPS-BRIEF-1B · TODAY_NEW 예측: oms_orders.ordered_at >= todayStartIso.
+      //   Predicate ISO 문자열 비교 — timestamptz 저장값과 동일 lexical 정렬 (both UTC Z).
+      gte(k, v) { state.filters.push(r => r[k] != null && r[k] >= v); return q; },
+      lte(k, v) { state.filters.push(r => r[k] != null && r[k] <= v); return q; },
+      gt(k, v)  { state.filters.push(r => r[k] != null && r[k] >  v); return q; },
+      lt(k, v)  { state.filters.push(r => r[k] != null && r[k] <  v); return q; },
       or(_expr) { /* summarizeOrders 등에서 사용 X — 미구현 pass-through */ return q; },
       order(k, opts) { state.orderKey = k; state.orderAsc = !(opts && opts.ascending === false); return q; },
       limit(n)  { state.limitN = n; return q; },
@@ -599,4 +605,333 @@ test('BRIEF-T12 · drill-down surface uses GET only — no mutation added', () =
   // PATCH /api/tasks/:id (완료 처리) already exists and is UNCHANGED.
   const patchCount = (filterSrc.match(/method:\s*['"]PATCH['"]/g) || []).length;
   assert.equal(patchCount, 1, 'exceptionFilter should still have exactly 1 PATCH call (existing 완료 처리 workflow — untouched)');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// OPS-BRIEF-1B · Canonical OMS briefing counts + card split + KST + UNKNOWN.
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Migrates 오늘 신규 주문 / 미처리 from legacy wms_orders (production 1 row,
+// mock-only sink) to canonical oms_orders (production 1823 rows, active
+// ingestion from eBay + Shopify + deferred channels). Also fixes the
+// Railway UTC-vs-KST 9-15h day-boundary drift the audit surfaced.
+//
+// Contracts under test:
+//   · TODAY_NEW  = count(oms_orders WHERE ordered_at >= KST midnight)
+//   · PENDING    = count(oms_orders WHERE order_status IN [new, confirmed,
+//                  processing, on_hold, ready_to_ship])
+//   · Count unit = order headers, NEVER items (naive join multiplies).
+//   · UNKNOWN ≠ ZERO: independent try/catch per metric — one failure MUST
+//     NOT erase the other's known value.
+//   · OPS-BRIEF-1A exception counters + SKU drill-down UNTOUCHED.
+
+function mkOmsOrder(id, opts = {}) {
+  return {
+    id,
+    channel:        opts.channel ?? 'ebay',
+    external_order_id: opts.external_order_id ?? `EXT-${id}`,
+    order_status:   opts.order_status ?? 'new',
+    fulfillment_status: opts.fulfillment_status ?? 'unfulfilled',
+    payment_status: opts.payment_status ?? 'paid',
+    ordered_at:     opts.ordered_at ?? new Date().toISOString(),
+    imported_at:    opts.imported_at ?? opts.ordered_at ?? new Date().toISOString(),
+    created_at:     opts.created_at ?? new Date().toISOString(),
+    cancelled_at:   opts.cancelled_at ?? null,
+    shipped_at:     opts.shipped_at ?? null,
+  };
+}
+
+test('OMS-T1 · summarizeOrders queries oms_orders, not wms_orders', () => {
+  const src = fs.readFileSync(
+    path.resolve(__dirname, '../../src/services/operationsBriefing.js'), 'utf8'
+  );
+  const start = src.indexOf('async function summarizeOrders');
+  const body  = src.slice(start, src.indexOf('\nasync function ', start));
+  //   TODAY_NEW / PENDING block MUST NOT touch wms_orders.
+  //   (The exception block below is UNCHANGED — it never touched wms_orders.)
+  assert.equal(/from\(\s*['"]wms_orders['"]/.test(body), false,
+    'summarizeOrders MUST NOT read from wms_orders');
+  //   Must delegate to the OMS helper module (source of truth for TODAY_NEW / PENDING).
+  assert.ok(/countTodayNew\(/.test(body),  'summarizeOrders must call countTodayNew helper');
+  assert.ok(/countPendingAction\(/.test(body), 'summarizeOrders must call countPendingAction helper');
+});
+
+test('OMS-T2 · count unit is oms_orders headers, never items (5 orders + 12 items → 5)', async () => {
+  restoreOriginals();
+  const orders = [];
+  for (let i = 1; i <= 5; i++) orders.push(mkOmsOrder(i, {
+    order_status: 'new',
+    ordered_at:  new Date(Date.now() + 60_000).toISOString(),   // ensure >= today
+  }));
+  // 12 items across those orders — a naive join would multiply the count.
+  const items = [];
+  for (let oid = 1; oid <= 5; oid++) {
+    for (let j = 0; j < (oid === 1 ? 4 : 2); j++) {
+      items.push({ id: items.length + 1, order_id: oid, external_line_id: `${oid}-${j}`, quantity: 1 });
+    }
+  }
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [], oms_orders: orders, oms_order_items: items });
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  assert.equal(b.orders.total_today, 5,
+    'TODAY_NEW must count order headers (5), not items (12)');
+  assert.equal(b.orders.pending, 5, 'PENDING must count headers only');
+});
+
+test('OMS-T3 · KST day boundary independent of host TZ (15:30 UTC → 09-07 KST)', () => {
+  restoreOriginals();
+  const { getKstDateContext } = require(
+    require.resolve('../../src/services/oms/omsBriefingCounts')
+  );
+  //   Frozen UTC instant equivalent to 2026-09-07 00:30 KST — inside "today"
+  //   for Korean business day, ~9h ahead of UTC midnight.
+  const ctx = getKstDateContext(new Date('2026-09-06T15:30:00Z'));
+  assert.equal(ctx.dateStr,       '2026-09-07',
+    'KST business date at 15:30 UTC must be 2026-09-07 (not the UTC-day 09-06)');
+  assert.equal(ctx.todayStartIso, '2026-09-06T15:00:00.000Z',
+    'todayStartIso must equal the UTC instant of KST 09-07 00:00:00+09:00');
+});
+
+test('OMS-T4 · late ingestion (ordered yesterday KST, imported today) excluded from TODAY_NEW', async () => {
+  restoreOriginals();
+  const { getKstDateContext } = require(
+    require.resolve('../../src/services/oms/omsBriefingCounts')
+  );
+  const { todayStartIso } = getKstDateContext();
+  const yesterdayKst = new Date(new Date(todayStartIso).getTime() - 86400_000).toISOString();
+
+  const orders = [
+    mkOmsOrder(1, { ordered_at: yesterdayKst,             imported_at: new Date().toISOString(), order_status: 'new' }), // late
+    mkOmsOrder(2, { ordered_at: new Date().toISOString(), imported_at: new Date().toISOString(), order_status: 'new' }), // today
+  ];
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [], oms_orders: orders });
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  assert.equal(b.orders.total_today, 1,
+    'late-ingested yesterday-KST order MUST be excluded from TODAY_NEW (business date semantics)');
+});
+
+test('OMS-T5 · PENDING_ACTION set — includes new/confirmed/processing/on_hold/ready_to_ship, excludes shipped/completed/cancelled/returned', async () => {
+  restoreOriginals();
+  const orders = [
+    mkOmsOrder(1, { order_status: 'new' }),
+    mkOmsOrder(2, { order_status: 'confirmed' }),
+    mkOmsOrder(3, { order_status: 'processing' }),
+    mkOmsOrder(4, { order_status: 'on_hold' }),
+    mkOmsOrder(5, { order_status: 'ready_to_ship' }),
+    mkOmsOrder(6, { order_status: 'shipped' }),      // excluded
+    mkOmsOrder(7, { order_status: 'completed' }),    // excluded
+    mkOmsOrder(8, { order_status: 'cancelled' }),    // excluded
+    mkOmsOrder(9, { order_status: 'returned' }),     // excluded
+  ];
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [], oms_orders: orders });
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  assert.equal(b.orders.pending, 5,
+    'PENDING must equal exactly the 5 actionable statuses — not the 4 terminal ones');
+});
+
+test('OMS-T5b · PENDING_ACTION_STATUSES constant is frozen literal set', () => {
+  const { PENDING_ACTION_STATUSES } = require(
+    require.resolve('../../src/services/oms/omsBriefingCounts')
+  );
+  assert.ok(Object.isFrozen(PENDING_ACTION_STATUSES),
+    'PENDING_ACTION_STATUSES must be Object.freeze()d — future OMS console API MUST reuse the same literal to preserve count = detail');
+  assert.deepEqual(PENDING_ACTION_STATUSES.slice(),
+    ['new', 'confirmed', 'processing', 'on_hold', 'ready_to_ship']);
+});
+
+test('OMS-T6 · cancelled order placed today → in TODAY_NEW, not in PENDING', async () => {
+  restoreOriginals();
+  const now = new Date().toISOString();
+  const orders = [
+    mkOmsOrder(1, { order_status: 'cancelled', ordered_at: now, cancelled_at: now }),
+  ];
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [], oms_orders: orders });
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  assert.equal(b.orders.total_today, 1,
+    'cancelled-today order MUST count toward business-volume TODAY_NEW');
+  assert.equal(b.orders.pending, 0,
+    'cancelled order MUST NOT count as PENDING_ACTION (separate actionable-work truth)');
+});
+
+test('OMS-T7A · TODAY_NEW query fails / PENDING succeeds → total_today=null, pending known', async () => {
+  const orders = [mkOmsOrder(1, { order_status: 'new' })];
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [], oms_orders: orders });
+  // Poison ONLY the .gte('ordered_at', ...) TODAY_NEW query.
+  const orig = db.from.bind(db);
+  db.from = (name) => {
+    if (name !== 'oms_orders') return orig(name);
+    // Two calls per invocation: TODAY_NEW (uses .gte) and PENDING (uses .in).
+    // Return a chainable that inspects which one is being built.
+    const state = { hasGte: false, hasIn: false };
+    const chain = {
+      select() { return chain; }, eq() { return chain; }, neq() { return chain; },
+      gte() { state.hasGte = true; return chain; },
+      in()  { state.hasIn  = true; return chain; },
+      then(ok, err) {
+        if (state.hasGte) return Promise.reject(new Error('simulated TODAY_NEW failure')).catch(err);
+        // PENDING path — return the real count via orig().
+        return orig('oms_orders').select('id', { count:'exact', head:true })
+          .in('order_status', ['new','confirmed','processing','on_hold','ready_to_ship']).then(ok, err);
+      },
+    };
+    return chain;
+  };
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  assert.equal(b.orders.total_today, null, 'TODAY_NEW failure must leave total_today=null');
+  assert.equal(b.orders.pending, 1, 'PENDING must remain known (independent failure handling)');
+});
+
+test('OMS-T7B · PENDING fails / TODAY_NEW succeeds → pending=null, total_today known', async () => {
+  const orders = [mkOmsOrder(1, { order_status: 'new', ordered_at: new Date(Date.now()+60_000).toISOString() })];
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [], oms_orders: orders });
+  const orig = db.from.bind(db);
+  db.from = (name) => {
+    if (name !== 'oms_orders') return orig(name);
+    const state = { hasGte: false, hasIn: false };
+    const chain = {
+      select() { return chain; }, eq() { return chain; }, neq() { return chain; },
+      gte() { state.hasGte = true; return chain; },
+      in()  { state.hasIn  = true; return chain; },
+      then(ok, err) {
+        if (state.hasIn) return Promise.reject(new Error('simulated PENDING failure')).catch(err);
+        // TODAY_NEW real path.
+        return orig('oms_orders').select('id', { count:'exact', head:true })
+          .gte('ordered_at', new Date(0).toISOString()).then(ok, err);
+      },
+    };
+    return chain;
+  };
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  assert.equal(b.orders.pending, null, 'PENDING failure must leave pending=null');
+  assert.equal(b.orders.total_today, 1, 'TODAY_NEW must remain known (independent failure handling)');
+});
+
+test('OMS-T8 · no LIMIT-based count for OMS metrics (structural)', () => {
+  const raw = fs.readFileSync(
+    path.resolve(__dirname, '../../src/services/oms/omsBriefingCounts.js'), 'utf8'
+  );
+  //   Strip comments so docstring text like ".limit(N)" describing the
+  //   removed anti-pattern doesn't false-positive the check.
+  const src = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.equal(/\.limit\s*\(/.test(src), false,
+    'omsBriefingCounts must not use .limit(...) — count: exact + head: true only');
+  assert.ok(/count:\s*['"]exact['"]/.test(src) && /head:\s*true/.test(src),
+    'omsBriefingCounts must use { count: "exact", head: true }');
+});
+
+test('OMS-T9 · KST dateStr used by summarizeTasks overdue boundary is KST-based', () => {
+  //   getTodayBriefing derives dateStr from getKstDateContext and passes it to
+  //   summarizeTasks (line ~64). We verify structurally that the getKstDateContext
+  //   helper is the one producing dateStr consumed downstream — closing the
+  //   Railway-UTC-vs-KST overdue drift for tasks in one go.
+  const src = fs.readFileSync(
+    path.resolve(__dirname, '../../src/services/operationsBriefing.js'), 'utf8'
+  );
+  assert.ok(/getKstDateContext\(\)/.test(src),
+    'operationsBriefing must derive its date context from getKstDateContext');
+  assert.ok(/const\s*\{\s*dateStr\s*,\s*todayStartIso\s*\}\s*=\s*getKstDateContext/.test(src),
+    'both dateStr and todayStartIso must come from the same KST-stable helper');
+  //   Old process-local idiom must be gone.
+  assert.equal(/new\s+Date\(\s*now\.getFullYear\(\)\s*,\s*now\.getMonth\(\)\s*,\s*now\.getDate\(\)/.test(src), false,
+    'legacy process-local date construction must be removed');
+});
+
+test('OMS-T10 · OMS UNKNOWN visible in notification body · never silently normal', async () => {
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [], oms_orders: [] });
+  const orig = db.from.bind(db);
+  db.from = (name) => {
+    if (name !== 'oms_orders') return orig(name);
+    const chain = {
+      select() { return chain; }, eq() { return chain; }, neq() { return chain; },
+      gte() { return chain; }, in() { return chain; },
+      then(_ok, err) { return Promise.reject(new Error('simulated OMS failure')).catch(err); },
+    };
+    return chain;
+  };
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  assert.equal(b.orders.total_today, null);
+  assert.equal(b.orders.pending, null);
+
+  const n = opsBrief.buildBriefingNotification(b);
+  assert.ok(/오늘 신규 주문 확인 실패/.test(n.body),
+    'null total_today must produce explicit UNKNOWN wording in body');
+  assert.ok(/미처리 주문 확인 실패/.test(n.body),
+    'null pending must produce explicit UNKNOWN wording in body');
+  assert.equal(/정상 운영/.test(n.body), false,
+    '"정상 운영" MUST NOT appear when OMS counts are unknown');
+
+  const rec = (b.recommendations || []).join('\n');
+  assert.ok(/OMS 주문 카운트 확인 실패/.test(rec),
+    'recommendations must include an OMS UNKNOWN entry when counts are null');
+});
+
+test('OMS-T11 · OPS-BRIEF-1A exception counters unchanged (regression fence)', async () => {
+  restoreOriginals();
+  const rows = [];
+  let id = 1;
+  for (let i = 0; i < 555; i++) rows.push(mkAutoExc(id++, 'SKU_MATCH_FAILED'));
+  for (let i = 0; i < 438; i++) rows.push(mkAutoExc(id++, 'LANDING_COST_DATA_MISSING'));
+  const db = makeFakeDb({ wms_orders: [], team_tasks: rows, oms_orders: [] });
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  //   Exact 1A/H1 truth must reproduce byte-for-byte in the 1B build.
+  assert.equal(b.orders.exception_count,  993, 'exception_count unchanged (993)');
+  assert.equal(b.orders.sku_match_failed, 555, 'sku_match_failed unchanged (555)');
+});
+
+test('OMS-T12 · SKU_MATCH_FAILED drill-down destination + params unchanged in 1B', () => {
+  const src = fs.readFileSync(
+    path.resolve(__dirname, '../../public/js/opsBriefing.js'), 'utf8'
+  );
+  //   skuDrill target must survive card-split unchanged.
+  assert.ok(/page:\s*['"]exception-tasks['"]/.test(src));
+  assert.ok(/params:\s*['"]exceptionType=SKU_MATCH_FAILED&status=open['"]/.test(src));
+  assert.ok(/href:\s*['"][^'"]*page=exception-tasks[^'"]*exceptionType=SKU_MATCH_FAILED[^'"]*status=open['"]/.test(src));
+  //   SKU 매칭 실패 row MUST still attach skuDrill (now inside the new 자동 예외 card).
+  assert.ok(/SKU 매칭 실패[\s\S]{0,300}skuDrill/.test(src));
+});
+
+test('OMS-T13 · known OMS zero renders 0 in UI (not "-" · quiet-zero preserved)', async () => {
+  restoreOriginals();
+  //   Empty oms_orders → both counts return 0 (known). UI JSON shape must
+  //   surface literal 0 numbers (not null · UNKNOWN reserved for query
+  //   failure). Frontend opsBriefing.js already renders 0 as "0" and null
+  //   as "-" via the sectionCard `value == null ? '-' : value` branch.
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [], oms_orders: [] });
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  assert.equal(b.orders.total_today, 0, 'empty OMS → total_today = 0 (KNOWN zero)');
+  assert.equal(b.orders.pending, 0, 'empty OMS → pending = 0 (KNOWN zero)');
+  assert.notEqual(b.orders.total_today, null, 'KNOWN zero must not be indistinguishable from UNKNOWN');
+});
+
+test('OMS-T14 · card composition split — 📦 주문 + ⚠️ 자동 예외 (no more "주문 (WMS)" or "주문 (OMS)")', () => {
+  const raw = fs.readFileSync(
+    path.resolve(__dirname, '../../public/js/opsBriefing.js'), 'utf8'
+  );
+  //   Strip comments so the "라벨: 주문 (OMS) 대신 주문" rationale line doesn't
+  //   count as a UI exposure of the storage acronym.
+  const src = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  //   New card headers present in live code.
+  assert.ok(/📦 주문['"]/.test(src),  'new 주문 card header present');
+  assert.ok(/⚠️ 자동 예외['"]/.test(src), 'new 자동 예외 card header present');
+  //   Legacy heterogeneous title gone from live code.
+  assert.equal(/📦 주문 \(WMS\)/.test(src), false, 'legacy "주문 (WMS)" header must be removed');
+  //   Owner rule §11: no storage acronym exposed in UI.
+  assert.equal(/주문 \(OMS\)/.test(src), false, 'must not expose "OMS" storage acronym in UI');
 });

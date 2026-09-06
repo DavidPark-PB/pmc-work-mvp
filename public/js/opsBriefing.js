@@ -116,11 +116,18 @@
       href:   '/?page=exception-tasks&exceptionType=SKU_MATCH_FAILED&status=open',
     };
 
+    // OPS-BRIEF-1B · 카드 분리 (2026-09-06).
+    //   과거: 단일 "주문 (WMS)" 카드가 order 지표 + task 지표를 혼합 · 데이터 도메인 이질적.
+    //   신규: 📦 주문 (canonical OMS) + ⚠️ 자동 예외 (team_tasks) 두 개로 분리.
+    //   라벨: 사장님 UI 에 storage acronym 노출하지 않음 → "주문 (OMS)" 대신 "주문".
+    //   SKU 매칭 실패 drill target 은 새 자동 예외 카드로 이동 · 목적지/파라미터 완전 동일.
     const sumHtml = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:12px;">
-        ${sectionCard('📦 주문 (WMS)', '#64b5f6', [
-          ['오늘 신규 주문', b.orders?.total_today ?? null],
-          ['미처리 (pending)', b.orders?.pending ?? null, b.orders?.pending > 0 ? '#ffb74d' : '#fff'],
+        ${sectionCard('📦 주문', '#64b5f6', [
+          ['오늘 신규 주문', b.orders?.total_today ?? null, b.orders?.total_today > 0 ? '#64b5f6' : '#fff'],
+          ['미처리', b.orders?.pending ?? null, b.orders?.pending > 0 ? '#ffb74d' : '#fff'],
+        ])}
+        ${sectionCard('⚠️ 자동 예외', '#ef9a9a', [
           ['자동 예외 (전체)', b.orders?.exception_count ?? null, b.orders?.exception_count > 0 ? '#ef9a9a' : '#fff'],
           ['SKU 매칭 실패', b.orders?.sku_match_failed ?? null, b.orders?.sku_match_failed > 0 ? '#ef9a9a' : '#fff', skuDrill],
         ])}

@@ -19,6 +19,11 @@
 'use strict';
 
 const supabaseClient = require('../db/supabaseClient');
+const {
+  getKstDateContext,
+  countTodayNew,
+  countPendingAction,
+} = require('./oms/omsBriefingCounts');
 
 /**
  * 오늘 (서버 로컬 00:00) 부터 지금까지의 운영 요약.
@@ -29,11 +34,12 @@ const supabaseClient = require('../db/supabaseClient');
 async function getTodayBriefing() {
   const supabase = supabaseClient.getClient();
 
-  // 서버 로컬 00:00 → ISO (timestamptz 비교용)
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-  const todayStartIso = todayStart.toISOString();
-  const dateStr = todayStart.toISOString().slice(0, 10);
+  // OPS-BRIEF-1B · KST 일 경계.
+  //   과거 구현: new Date(y,m,d,0,0,0) — 프로세스 로컬 시간 기준. Railway 는 UTC 호스트
+  //   (Dockerfile / config / .env 어디에도 TZ 없음) → UTC 자정 = KST 09:00 이 되어
+  //   KST 아침 최대 9~15시간 window 가 조용히 누락됨. 09:00 KST 브리핑 잡이 특히 심각.
+  //   신규: getKstDateContext 로 Asia/Seoul 고정 (attendanceRepository._koreaParts 와 동일 idiom).
+  const { dateStr, todayStartIso } = getKstDateContext();
 
   const failedSections = [];
   const out = {
@@ -88,19 +94,34 @@ async function getTodayBriefing() {
 // ──────────────────────────────────────────────────────────────────────────
 
 async function summarizeOrders(supabase, todayStartIso) {
-  // wms_orders 의 핵심 4개 필드만 (snapshot 미조회)
-  //   NOTE: wms_orders 자체는 OPS-BRIEF-1B 에서 canonical oms_orders 로 이관 예정.
-  //   1A 는 team_tasks 카운트 진실성 회복만 다룬다 — total_today/pending 는 그대로.
-  const { data: rows, error } = await supabase
-    .from('wms_orders')
-    .select('id, order_status, created_at')
-    .order('id', { ascending: false })
-    .limit(500);
-  if (error) throw error;
-  const all = rows || [];
+  // OPS-BRIEF-1B · Canonical OMS order counts (2026-09-06).
+  //   과거 구현: wms_orders LIMIT 500 → in-memory filter. wms_orders 는 legacy
+  //   mock-only sink (production 1 row) 라 값이 항상 사실상 0. 사장님이 보는 지표가
+  //   실제 주문 현실을 반영하지 못함.
+  //   신규: canonical oms_orders 서버 사이드 exact count.
+  //     total_today = ordered_at >= KST midnight (marketplace 주문 시점 · idx_oms_orders_ordered_at)
+  //     pending     = order_status IN (new, confirmed, processing, on_hold, ready_to_ship)
+  //                   — shipped/completed/cancelled/returned 제외 (owner rule §9)
+  //   API 필드 이름 (total_today, pending) 은 그대로 유지 — 프론트엔드 계약 안정.
+  //   Response 라벨은 public/js/opsBriefing.js 에서 UI 문구 조정 (contract 는 semantic-only 이관).
+  //
+  // 독립 UNKNOWN 처리 (owner rule §7): 두 카운트는 서로 다른 관측이므로 하나가 실패해도
+  //   다른 하나의 알려진 값을 지우면 안 된다. 각각 try/catch, 각각 null 초기값.
+  let total_today = null;
+  try {
+    total_today = await countTodayNew(supabase, todayStartIso);
+  } catch (e) {
+    console.error('[opsBriefing] TODAY_NEW count failed:', e.message);
+    // null 유지 · UI/notification 은 이를 UNKNOWN 으로 렌더.
+  }
 
-  const total_today = all.filter(r => r.created_at >= todayStartIso).length;
-  const pending     = all.filter(r => r.order_status === 'pending').length;
+  let pending = null;
+  try {
+    pending = await countPendingAction(supabase);
+  } catch (e) {
+    console.error('[opsBriefing] PENDING_ACTION count failed:', e.message);
+    // null 유지.
+  }
 
   // OPS-BRIEF-1A · 자동 예외 카드 카운트 진실성.
   //   과거 구현: LIMIT 500 후 in-memory .length — open auto card 총량이 500 을 넘으면
@@ -228,6 +249,15 @@ function buildRecommendations(out, failedSections) {
     recs.push(`오늘 자동화 실패 ${out.safety.failed_runs_today}건 — 실행 로그를 확인하세요.`);
   }
 
+  // 5) OPS-BRIEF-1B · OMS 주문 카운트 UNKNOWN.
+  //   total_today/pending 중 하나라도 null 이면 explicit UNKNOWN 노출 —
+  //   아래 "정상 운영 중입니다" 폴백이 잘못 발화하지 못하게 함.
+  //   Body 세그먼트에도 동일 UNKNOWN 문구가 있으나 recommendation 은 "sku/exception counts"
+  //   와 스코프가 다르므로 분리 유지.
+  if (out.orders?.total_today === null || out.orders?.pending === null) {
+    recs.push('OMS 주문 카운트 확인 실패 — 서버 로그를 확인하세요.');
+  }
+
   // partial 안내
   if (failedSections.length > 0) {
     recs.push(`일부 데이터 조회 실패: ${failedSections.join(', ')} (전체 응답에는 영향 없음)`);
@@ -264,8 +294,21 @@ function buildBriefingNotification(briefing) {
   const s = briefing?.safety || {};
 
   const segments = [];
-  // orders 핵심 — 신규 주문 / 자동 예외
-  if (o.total_today)      segments.push(`신규 주문 ${o.total_today}건`);
+  //   OPS-BRIEF-1B · OMS TODAY_NEW (canonical oms_orders.ordered_at ≥ KST midnight).
+  //     known positive  → 실제 카운트 렌더 (기존 contract 유지)
+  //     known zero      → 생략 (quiet-body)
+  //     unknown (null)  → "오늘 신규 주문 확인 실패" 로 명시 (UNKNOWN ≠ ZERO)
+  if (typeof o.total_today === 'number' && o.total_today > 0) {
+    segments.push(`신규 주문 ${o.total_today}건`);
+  } else if (o.total_today === null) {
+    segments.push('오늘 신규 주문 확인 실패');
+  }
+  //   OPS-BRIEF-1B · OMS PENDING (order_status IN PENDING_ACTION_STATUSES).
+  //     known positive/zero 는 body 에 노출하지 않음 (기존 contract) — recommendation 이 필요 시 노출.
+  //     unknown (null) 만 body 에 명시 → "미처리 주문 확인 실패".
+  if (o.pending === null) {
+    segments.push('미처리 주문 확인 실패');
+  }
   //   OPS-BRIEF-1A-H1 · 자동 예외 exception_count.
   //     known positive  → 실제 카운트 렌더.
   //     known zero      → 기존 contract 유지 (body 에서 생략 · 잡음 감소).
