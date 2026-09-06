@@ -75,13 +75,32 @@
   function render(b) {
     document.getElementById('ob-date').textContent = `📆 ${b.date || '-'} 기준`;
 
+    // OPS-BRIEF-1A · 4번째 tuple 요소 (drill) 가 있고 카운트가 numeric > 0 인 경우에만
+    //   행이 링크로 렌더된다. Zero/UNKNOWN 상태에서는 오해를 유발하는 인터랙션을 만들지 않는다.
+    //   drill 형식: { page, params, href } — exceptionFilter.js 등 대상 페이지 초기화 시
+    //   URL 에서 params 를 읽는다.
     const sectionCard = (title, color, items) => {
-      const rows = items.map(([label, value, valueColor]) => `
-        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1f1f3a;">
-          <span style="color:#aaa;font-size:12px;">${esc(label)}</span>
-          <strong style="color:${valueColor || '#fff'};font-size:14px;">${value == null ? '-' : value}</strong>
-        </div>
-      `).join('');
+      const rows = items.map(([label, value, valueColor, drill]) => {
+        const strong = `<strong style="color:${valueColor || '#fff'};font-size:14px;">${value == null ? '-' : value}</strong>`;
+        const isNumericPositive = typeof value === 'number' && value > 0;
+        if (drill && isNumericPositive) {
+          const chev = '<span style="color:#64b5f6;font-size:11px;margin-left:4px;">›</span>';
+          return `
+            <a class="ob-drill" href="${esc(drill.href)}" data-drill-page="${esc(drill.page)}" data-drill-params="${esc(drill.params || '')}"
+               style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1f1f3a;text-decoration:none;cursor:pointer;"
+               title="자동 예외 콘솔에서 상세 보기">
+              <span style="color:#aaa;font-size:12px;">${esc(label)}${chev}</span>
+              ${strong}
+            </a>
+          `;
+        }
+        return `
+          <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1f1f3a;">
+            <span style="color:#aaa;font-size:12px;">${esc(label)}</span>
+            ${strong}
+          </div>
+        `;
+      }).join('');
       return `
         <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;">
           <div style="color:${color};font-size:14px;font-weight:600;margin-bottom:10px;">${esc(title)}</div>
@@ -90,13 +109,20 @@
       `;
     };
 
+    // OPS-BRIEF-1A · SKU 매칭 실패 drill target. 값이 numeric > 0 일 때만 링크로 렌더됨.
+    const skuDrill = {
+      page:   'exception-tasks',
+      params: 'exceptionType=SKU_MATCH_FAILED&status=open',
+      href:   '/?page=exception-tasks&exceptionType=SKU_MATCH_FAILED&status=open',
+    };
+
     const sumHtml = `
       <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:12px;">
         ${sectionCard('📦 주문 (WMS)', '#64b5f6', [
           ['오늘 신규 주문', b.orders?.total_today ?? null],
           ['미처리 (pending)', b.orders?.pending ?? null, b.orders?.pending > 0 ? '#ffb74d' : '#fff'],
           ['자동 예외 (전체)', b.orders?.exception_count ?? null, b.orders?.exception_count > 0 ? '#ef9a9a' : '#fff'],
-          ['SKU 매칭 실패', b.orders?.sku_match_failed ?? null, b.orders?.sku_match_failed > 0 ? '#ef9a9a' : '#fff'],
+          ['SKU 매칭 실패', b.orders?.sku_match_failed ?? null, b.orders?.sku_match_failed > 0 ? '#ef9a9a' : '#fff', skuDrill],
         ])}
         ${sectionCard('📋 업무 (사람 카드)', '#69f0ae', [
           ['진행 중 (open)', b.tasks?.open ?? null],
@@ -145,6 +171,29 @@
         const page = btn.dataset.page;
         if (typeof showPage === 'function') showPage(page);
         else location.href = '/?page=' + encodeURIComponent(page);
+      });
+    });
+
+    // OPS-BRIEF-1A · metric-row drill wiring.
+    //   URL 을 먼저 갱신 → target page 의 init() 이 URL 파라미터를 읽어
+    //   첫 fetch 부터 필터 적용된 상태로 페인트 (flash-all-then-filter 방지).
+    document.querySelectorAll('.ob-drill').forEach(a => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const page   = a.dataset.drillPage;
+        const params = a.dataset.drillParams || '';
+        try {
+          const u = new URL(location.href);
+          u.searchParams.set('page', page);
+          // stale drill 파라미터 초기화
+          ['exceptionType', 'status'].forEach(k => u.searchParams.delete(k));
+          if (params) {
+            for (const [k, v] of new URLSearchParams(params)) u.searchParams.set(k, v);
+          }
+          history.pushState({}, '', u);
+        } catch (_) { /* URL 지원 없는 브라우저 — showPage/href fallback */ }
+        if (typeof showPage === 'function') showPage(page);
+        else location.href = a.getAttribute('href');
       });
     });
   }

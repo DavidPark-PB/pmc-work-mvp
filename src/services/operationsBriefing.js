@@ -89,6 +89,8 @@ async function getTodayBriefing() {
 
 async function summarizeOrders(supabase, todayStartIso) {
   // wms_orders 의 핵심 4개 필드만 (snapshot 미조회)
+  //   NOTE: wms_orders 자체는 OPS-BRIEF-1B 에서 canonical oms_orders 로 이관 예정.
+  //   1A 는 team_tasks 카운트 진실성 회복만 다룬다 — total_today/pending 는 그대로.
   const { data: rows, error } = await supabase
     .from('wms_orders')
     .select('id, order_status, created_at')
@@ -100,19 +102,35 @@ async function summarizeOrders(supabase, todayStartIso) {
   const total_today = all.filter(r => r.created_at >= todayStartIso).length;
   const pending     = all.filter(r => r.order_status === 'pending').length;
 
-  // 자동 예외 카드 (auto_generated=true) 로 매칭 실패가 추적됨 — team_tasks 에서 별도 집계
-  let exception_count = 0;
-  let sku_match_failed = 0;
+  // OPS-BRIEF-1A · 자동 예외 카드 카운트 진실성.
+  //   과거 구현: LIMIT 500 후 in-memory .length — open auto card 총량이 500 을 넘으면
+  //   조용히 saturation 되어 라벨과 정면 모순. 실측 993 vs 표시 500.
+  //   신규 구현: server-side exact count (LIMIT 없음).
+  //   UNKNOWN ≠ ZERO: 카운트 쿼리 실패 시 null 로 유지 → UI 는 '-' 렌더.
+  //   집계 실패가 0 으로 위장되지 않도록 함.
+  let exception_count = null;
+  let sku_match_failed = null;
   try {
-    const { data: excRows } = await supabase
+    const totalRes = await supabase
       .from('team_tasks')
-      .select('id, exception_type, status, created_at')
+      .select('id', { count: 'exact', head: true })
+      .eq('auto_generated', true)
+      .neq('status', 'done');
+    if (totalRes.error) throw totalRes.error;
+    exception_count = totalRes.count == null ? null : totalRes.count;
+
+    const skuRes = await supabase
+      .from('team_tasks')
+      .select('id', { count: 'exact', head: true })
       .eq('auto_generated', true)
       .neq('status', 'done')
-      .limit(500);
-    exception_count  = (excRows || []).length;
-    sku_match_failed = (excRows || []).filter(r => r.exception_type === 'SKU_MATCH_FAILED').length;
-  } catch (_) { /* exception_count / sku_match_failed 만 집계 실패 — orders 의 다른 값은 보존 */ }
+      .eq('exception_type', 'SKU_MATCH_FAILED');
+    if (skuRes.error) throw skuRes.error;
+    sku_match_failed = skuRes.count == null ? null : skuRes.count;
+  } catch (e) {
+    console.error('[opsBriefing] auto-exception counts failed:', e.message);
+    // 두 metric 을 null 로 유지 — UI 는 '-' 로 렌더, 0 아님.
+  }
 
   return {
     total_today,
