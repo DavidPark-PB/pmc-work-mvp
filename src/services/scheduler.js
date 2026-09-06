@@ -478,6 +478,22 @@ function start() {
     }
   }, { timezone: TZ });
 
+  // ─── R2-SHIP-6F1C-D · eBay tracking observer · 6h 주기 (02/08/14/20) ───
+  //   Owner 승인 (2026-09-06): R2-SHIP-6F1B-S 로 998개 SHIPPED 트래킹 복구 후 ·
+  //   recurring 자동 관찰. GetOrders OrderStatus=Completed · 30d ModTime 창 ·
+  //   SHIPPED-only mutation authorization · READY/NEW 절대 안 씀 (owner 규칙).
+  //   R1 분산 lease scheduler:ebay-tracking-observer · TTL 900s · HB 60s · closed.
+  //   Offset 02/08/14/20 은 aiPubMonitor 00/06/12/18 와 겹치지 않게 · eBay 쿼터 분산.
+  //   Job 자체는 관측만 · 게이트 우회/상태 변경/carrier 덮어쓰기 없음 (owner rule §8).
+  if (!EBAY_API_LOCKED) cron.schedule('0 2,8,14,20 * * *', async () => {
+    try {
+      const job = require('../jobs/ebayTrackingObserverJob');
+      await job.runEbayTrackingObserverJob();
+    } catch (e) {
+      console.error('[scheduler.ebayTrackingObserver] error:', e.message);
+    }
+  }, { timezone: TZ });
+
   scheduled = true;
   console.log(`[scheduler] 활성화 — 9시(digest)·9:15(Inventory Exceptions)·9:30(B2C · default OFF · cron="${B2C_CRON}")·17시(summary)·4시(platform sync)·10/22시(eBay sync)·0/6/12/18시(경쟁사 모니터+리프라이싱+AI-Pub-Undercut)·3시(recurring)·3:30(uploads cleanup)`);
 }
