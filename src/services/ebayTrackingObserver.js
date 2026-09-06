@@ -47,6 +47,11 @@ const TRACKING_SOURCE          = 'ebay_observation';
 const OUTCOME = Object.freeze({
   RUN_COMPLETE:                 'RUN_COMPLETE',
   RUN_INCOMPLETE:               'RUN_INCOMPLETE',
+  //   R2-SHIP-6F1B-S · fail-closed when caller requests writes without an
+  //   explicit mutation-scope contract. Write mode MUST pass eligibleStatuses.
+  //   Silently defaulting to "all statuses" would authorize scope wider than
+  //   the audit-validated 998 SHIPPED cohort and would break owner rule §4.
+  MUTATION_SCOPE_REQUIRED:      'MUTATION_SCOPE_REQUIRED',
 });
 
 const ORDER_CLASS = Object.freeze({
@@ -62,6 +67,10 @@ const WRITE_OUTCOME = Object.freeze({
   CONFLICT:                     'CONFLICT',
   MULTI_PACKAGE:                'MULTI_PACKAGE',
   DB_ORDER_NOT_ELIGIBLE:        'DB_ORDER_NOT_ELIGIBLE',
+  //   R2-SHIP-6F1B-S · candidate exists but its DB status is not in the
+  //   caller-supplied `eligibleStatuses` set. Observer never rewrites status
+  //   (R2-D1 preserved) so this is simply a report/skip.
+  NOT_ELIGIBLE_STATUS:          'NOT_ELIGIBLE_STATUS',
 });
 
 /* ─────────────────────────────── XML helpers ─────────────────────────────── */
@@ -190,30 +199,39 @@ async function fetchAllPages({ ebay, daysWindow, entriesPerPage, now }) {
 async function _fetchDbCohort({ db, orderIds }) {
   //   Fetch the eligible cohort in chunks so a large `IN (?, ?, ...)` never
   //   trips PostgREST URL length limits. 200 IDs per chunk is safe on the
-  //   pooler for a plain equality-list SELECT.
+  //   pooler for a plain equality-list SELECT. Status is fetched too so the
+  //   observer can classify NOT_ELIGIBLE_STATUS accurately for reporting;
+  //   the atomic UPDATE enforces status independently.
   const chunkSize = 200;
-  const map       = new Map(); // order_no → { tracking_no, platform }
+  const map       = new Map(); // order_no → { tracking_no, platform, status }
   for (let i = 0; i < orderIds.length; i += chunkSize) {
     const chunk = orderIds.slice(i, i + chunkSize);
     const { data, error } = await db
       .from('orders')
-      .select('order_no, platform, tracking_no')
+      .select('order_no, platform, tracking_no, status')
       .eq('platform', 'eBay')
       .in('order_no', chunk);
     if (error) throw new Error(`DB fetch cohort chunk starting=${i}: ${error.message}`);
     for (const row of (data || [])) {
-      map.set(row.order_no, { tracking_no: row.tracking_no, platform: row.platform });
+      map.set(row.order_no, { tracking_no: row.tracking_no, platform: row.platform, status: row.status });
     }
   }
   return map;
 }
 
-async function _atomicInsertOnly({ db, orderNo, trackingNo, importedAt }) {
+async function _atomicInsertOnly({ db, orderNo, trackingNo, importedAt, eligibleStatuses }) {
   //   Atomic conditional UPDATE: only writes when
-  //   platform='eBay' AND (tracking_no IS NULL OR tracking_no = '').
+  //   platform='eBay' AND (tracking_no IS NULL OR tracking_no = '')
+  //   AND (if eligibleStatuses supplied) status IN (...eligibleStatuses).
   //   Uses PostgREST .or() with .is/.eq to preserve the invariant even under
   //   concurrent writes. .select() returns the updated row (empty array if
-  //   no row matched · that means either race or DB already had value).
+  //   no row matched · that means race OR DB already had value OR status
+  //   changed since classification OR status is not in the mutation scope).
+  //
+  //   R2-SHIP-6F1B-S · adding status to the atomic predicate closes the
+  //   read-then-update race: if an eBay-observed SHIPPED order flipped to
+  //   READY between fetch and write (or vice versa), the UPDATE returns 0
+  //   rows and observer classifies as ALREADY_KNOWN_OR_RACED. No overwrite.
   const patch = {
     tracking_no:          trackingNo,
     tracking_source:      TRACKING_SOURCE,
@@ -223,13 +241,16 @@ async function _atomicInsertOnly({ db, orderNo, trackingNo, importedAt }) {
     tracking_observed_at: null,
     tracking_imported_at: importedAt,
   };
-  const { data, error } = await db
+  let query = db
     .from('orders')
     .update(patch)
     .eq('order_no', orderNo)
     .eq('platform', 'eBay')
-    .or('tracking_no.is.null,tracking_no.eq.')
-    .select('order_no, tracking_no');
+    .or('tracking_no.is.null,tracking_no.eq.');
+  if (Array.isArray(eligibleStatuses) && eligibleStatuses.length > 0) {
+    query = query.in('status', eligibleStatuses);
+  }
+  const { data, error } = await query.select('order_no, tracking_no');
   if (error) throw new Error(`atomic insert-only ${orderNo}: ${error.message}`);
   const rows = data || [];
   return rows.length === 1;
@@ -256,6 +277,36 @@ async function run(opts = {}) {
   const dryRun          = opts.dryRun !== false; // default true
   const now             = opts.now;
   const deps            = opts.deps || {};
+  //   R2-SHIP-6F1B-S · explicit mutation scope for write mode. Owner rule §4:
+  //   write mode must NOT silently default to all-status mutation. dryRun=true
+  //   observation is broad by design (used for reporting/audits); dryRun=false
+  //   requires the caller to declare which order statuses may mutate.
+  const eligibleStatuses = Array.isArray(opts.eligibleStatuses) && opts.eligibleStatuses.length > 0
+    ? opts.eligibleStatuses.slice()
+    : null;
+
+  if (!dryRun && !eligibleStatuses) {
+    return {
+      counters: {
+        outcome:              OUTCOME.MUTATION_SCOPE_REQUIRED,
+        fetch_reason:         'dryRun=false requires opts.eligibleStatuses (non-empty array)',
+        ebay_orders_seen:     0,
+        no_tracking:          0,
+        one_unique_tracking:  0,
+        multiple_distinct:    0,
+        malformed:            0,
+        db_matches:           0,
+        safe_insert_candidates: 0,
+        already_known_or_raced: 0,
+        conflict:             0,
+        multi_package:        0,
+        db_order_not_eligible: 0,
+        not_eligible_status:  0,
+        inserted:             0,
+      },
+      decisions: [],
+    };
+  }
 
   const ebay            = deps.ebay || (() => { const EbayAPI = require('../api/ebayAPI'); return new EbayAPI(); })();
   const db              = deps.db   || (() => { const { getClient } = require('../db/supabaseClient'); return getClient(); })();
@@ -277,6 +328,7 @@ async function run(opts = {}) {
     conflict:                0,
     multi_package:           0,
     db_order_not_eligible:   0,
+    not_eligible_status:     0,
     inserted:                0,
   };
 
@@ -339,6 +391,22 @@ async function run(opts = {}) {
       }
       continue;
     }
+    //   R2-SHIP-6F1B-S · when eligibleStatuses is provided (write mode always;
+    //   dry-run optional), classify candidates whose DB status is outside the
+    //   scope as NOT_ELIGIBLE_STATUS. This reports the population accurately
+    //   without hiding it from the counter; the atomic UPDATE independently
+    //   enforces the same predicate so a race (SHIPPED → READY between fetch
+    //   and update) results in 0 rows written, not an overwrite.
+    if (eligibleStatuses && !eligibleStatuses.includes(dbRow.status)) {
+      counters.not_eligible_status++;
+      decisions.push({
+        orderId:  o.orderId,
+        outcome:  WRITE_OUTCOME.NOT_ELIGIBLE_STATUS,
+        dbStatus: dbRow.status,
+        tracking: observedNumber,
+      });
+      continue;
+    }
     counters.safe_insert_candidates++;
     if (dryRun) {
       //   Dry-run · classify as candidate but do NOT touch DB
@@ -346,11 +414,18 @@ async function run(opts = {}) {
         orderId:  o.orderId,
         outcome:  'DRY_RUN_CANDIDATE',
         tracking: observedNumber,
+        dbStatus: dbRow.status,
       });
       continue;
     }
-    //   Write mode · atomic insert-only
-    const inserted = await _atomicInsertOnly({ db, orderNo: o.orderId, trackingNo: observedNumber, importedAt });
+    //   Write mode · atomic insert-only · status predicate enforced in DB
+    const inserted = await _atomicInsertOnly({
+      db,
+      orderNo:          o.orderId,
+      trackingNo:       observedNumber,
+      importedAt,
+      eligibleStatuses,
+    });
     if (inserted) {
       counters.inserted++;
       decisions.push({ orderId: o.orderId, outcome: WRITE_OUTCOME.INSERTED, tracking: observedNumber });

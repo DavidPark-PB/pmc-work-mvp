@@ -148,6 +148,18 @@ function makeDbStub({ rows = [] } = {}) {
           const passes = (currentTn == null) || currentTn === '';
           if (!passes) { resolve({ data: [], error: null }); return; }
         }
+        //   R2-SHIP-6F1B-S · model .in('status', [...]) atomic predicate.
+        //   If observer passed a status-scope filter, only rows whose current
+        //   status is in the list may mutate. This closes the SHIPPED→READY
+        //   race in the DB predicate itself, matching production PostgREST
+        //   .in() semantics.
+        const statusInFilter = filters.find(f => f.op === 'in' && f.col === 'status');
+        if (statusInFilter) {
+          if (!statusInFilter.vals.includes(row.status)) {
+            resolve({ data: [], error: null });
+            return;
+          }
+        }
         //   Apply patch to the row · return updated row
         Object.assign(row, patch);
         resolve({ data: [{ order_no: row.order_no, tracking_no: row.tracking_no }], error: null });
@@ -173,7 +185,14 @@ function makeDbStub({ rows = [] } = {}) {
               for (const r of state.values()) {
                 if (platformFilter && r.platform !== platformFilter.val) continue;
                 if (wantSet && !wantSet.has(r.order_no)) continue;
-                result.push({ order_no: r.order_no, platform: r.platform, tracking_no: r.tracking_no });
+                result.push({
+                  order_no:    r.order_no,
+                  platform:    r.platform,
+                  tracking_no: r.tracking_no,
+                  //   R2-SHIP-6F1B-S · observer selects status too so it can
+                  //   classify NOT_ELIGIBLE_STATUS accurately for reporting.
+                  status:      r.status,
+                });
               }
               resolve({ data: result, error: null });
             },
@@ -253,7 +272,7 @@ test('BH-T1 · single eBay tracking + DB NULL → INSERTED + provenance + status
   const ebay = makeEbayStub({ pages: [xml] });
   const db = makeDbStub({ rows: [{ order_no: 'E-1', platform: 'eBay', tracking_no: null, status: 'SHIPPED', carrier: 'KPL' }] });
   const now = () => new Date('2026-09-06T12:00:00Z');
-  const r = await observer.run({ dryRun: false, now, deps: { ebay, db } });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], now, deps: { ebay, db } });
   assert.equal(r.counters.outcome, OUTCOME.RUN_COMPLETE);
   assert.equal(r.counters.inserted, 1);
   //   provenance stamped correctly
@@ -282,8 +301,8 @@ test('BH-T2 · same tracking repeated across 3 transactions → dedupe → INSER
     }) ],
   });
   const ebay = makeEbayStub({ pages: [xml] });
-  const db = makeDbStub({ rows: [{ order_no: 'E-2', platform: 'eBay', tracking_no: null }] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const db = makeDbStub({ rows: [{ order_no: 'E-2', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.one_unique_tracking, 1);
   assert.equal(r.counters.inserted, 1);
   assert.equal(db._state.get('E-2').tracking_no, 'SF-B');
@@ -301,8 +320,8 @@ test('BH-T3 · two DISTINCT tracking values → MULTI_PACKAGE_REVIEW · 0 writes
     }) ],
   });
   const ebay = makeEbayStub({ pages: [xml] });
-  const db = makeDbStub({ rows: [{ order_no: 'E-3', platform: 'eBay', tracking_no: null }] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const db = makeDbStub({ rows: [{ order_no: 'E-3', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.multi_package, 1);
   assert.equal(r.counters.inserted, 0);
   assert.equal(db._state.get('E-3').tracking_no, null);
@@ -314,8 +333,8 @@ test('BH-T4 · eBay no tracking → 0 writes', async () => {
     orderBlocks: [ orderXml({ orderId: 'E-4', transactions: [{ tracking: [] }] }) ],
   });
   const ebay = makeEbayStub({ pages: [xml] });
-  const db = makeDbStub({ rows: [{ order_no: 'E-4', platform: 'eBay', tracking_no: null }] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const db = makeDbStub({ rows: [{ order_no: 'E-4', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.no_tracking, 1);
   assert.equal(r.counters.inserted, 0);
   assert.equal(db._state.get('E-4').tracking_no, null);
@@ -327,8 +346,8 @@ test('BH-T5 · DB already has same tracking → ALREADY_KNOWN_OR_RACED · 0 writ
     orderBlocks: [ orderXml({ orderId: 'E-5', transactions: [{ tracking: [{ number: 'SAME', carrier: 'X' }] }] }) ],
   });
   const ebay = makeEbayStub({ pages: [xml] });
-  const db = makeDbStub({ rows: [{ order_no: 'E-5', platform: 'eBay', tracking_no: 'SAME' }] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const db = makeDbStub({ rows: [{ order_no: 'E-5', platform: 'eBay', tracking_no: 'SAME', status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.already_known_or_raced, 1);
   assert.equal(r.counters.inserted, 0);
 });
@@ -339,8 +358,8 @@ test('BH-T6 · DB has DIFFERENT tracking → CONFLICT · 0 writes · no overwrit
     orderBlocks: [ orderXml({ orderId: 'E-6', transactions: [{ tracking: [{ number: 'EBAY-VAL', carrier: 'X' }] }] }) ],
   });
   const ebay = makeEbayStub({ pages: [xml] });
-  const db = makeDbStub({ rows: [{ order_no: 'E-6', platform: 'eBay', tracking_no: 'DB-VAL' }] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const db = makeDbStub({ rows: [{ order_no: 'E-6', platform: 'eBay', tracking_no: 'DB-VAL', status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.conflict, 1);
   assert.equal(r.counters.inserted, 0);
   //   Value stays DB-VAL · no overwrite
@@ -349,8 +368,8 @@ test('BH-T6 · DB has DIFFERENT tracking → CONFLICT · 0 writes · no overwrit
 
 test('BH-T7 · API error on page 1 → RUN_INCOMPLETE · 0 writes', async () => {
   const ebay = makeEbayStub({ pages: [], throwOnPage: 1 });
-  const db = makeDbStub({ rows: [{ order_no: 'E-7', platform: 'eBay', tracking_no: null }] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const db = makeDbStub({ rows: [{ order_no: 'E-7', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.outcome, OUTCOME.RUN_INCOMPLETE);
   assert.equal(r.counters.inserted, 0);
   assert.equal(db._writes.updateCalls.length, 0);
@@ -369,10 +388,10 @@ test('BH-T8 · API error on middle page → RUN_INCOMPLETE · 0 writes · early 
   //   Page 3 will throw · sweep must abort before any writes
   const ebay = makeEbayStub({ pages: [page1, page2, null], throwOnPage: 3 });
   const db = makeDbStub({ rows: [
-    { order_no: 'E-8a', platform: 'eBay', tracking_no: null },
-    { order_no: 'E-8b', platform: 'eBay', tracking_no: null },
+    { order_no: 'E-8a', platform: 'eBay', tracking_no: null, status: 'SHIPPED' },
+    { order_no: 'E-8b', platform: 'eBay', tracking_no: null, status: 'SHIPPED' },
   ]});
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.outcome, OUTCOME.RUN_INCOMPLETE);
   assert.equal(r.counters.inserted, 0);
   assert.equal(db._writes.updateCalls.length, 0);
@@ -387,7 +406,7 @@ test('BH-T9 · eBay OrderID unknown to DB → DB_ORDER_NOT_ELIGIBLE · 0 writes'
   });
   const ebay = makeEbayStub({ pages: [xml] });
   const db = makeDbStub({ rows: [] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.db_order_not_eligible, 1);
   assert.equal(r.counters.inserted, 0);
 });
@@ -400,7 +419,7 @@ test('BH-T10 · same order_no on non-eBay platform → not eligible · 0 writes 
   const ebay = makeEbayStub({ pages: [xml] });
   //   Row exists but platform='Shopify' · must not match
   const db = makeDbStub({ rows: [{ order_no: 'CROSS-ID', platform: 'Shopify', tracking_no: null }] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.db_order_not_eligible, 1);
   assert.equal(r.counters.inserted, 0);
   assert.equal(db._state.get('CROSS-ID').tracking_no, null);
@@ -412,8 +431,8 @@ test('BH-T11 · whitespace-only tracking → treated as absent · NO_TRACKING', 
     orderBlocks: [ orderXml({ orderId: 'E-11', transactions: [{ tracking: [{ number: '   ', carrier: 'X' }] }] }) ],
   });
   const ebay = makeEbayStub({ pages: [xml] });
-  const db = makeDbStub({ rows: [{ order_no: 'E-11', platform: 'eBay', tracking_no: null }] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const db = makeDbStub({ rows: [{ order_no: 'E-11', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.no_tracking, 1);
   assert.equal(r.counters.inserted, 0);
 });
@@ -424,7 +443,7 @@ test('BH-T12 · dryRun=true → reports safe_insert_candidates · 0 DB writes', 
     orderBlocks: [ orderXml({ orderId: 'E-12', transactions: [{ tracking: [{ number: 'DRY', carrier: 'X' }] }] }) ],
   });
   const ebay = makeEbayStub({ pages: [xml] });
-  const db = makeDbStub({ rows: [{ order_no: 'E-12', platform: 'eBay', tracking_no: null }] });
+  const db = makeDbStub({ rows: [{ order_no: 'E-12', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
   const r = await observer.run({ dryRun: true, deps: { ebay, db } });
   assert.equal(r.counters.safe_insert_candidates, 1);
   assert.equal(r.counters.inserted, 0, 'dryRun MUST NOT write');
@@ -441,7 +460,7 @@ test('BH-T13 · atomic race · DB gets populated between fetch and update → no
   //   concurrent writer before update fires. Simulate by having the stub's
   //   .update chain check for a race flag set between fetch and update.
   const ebay = makeEbayStub({ pages: [xml] });
-  const db = makeDbStub({ rows: [{ order_no: 'E-13', platform: 'eBay', tracking_no: null }] });
+  const db = makeDbStub({ rows: [{ order_no: 'E-13', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
   //   Inject race: monkey-patch the update chain builder to first mutate
   //   state, then run atomic predicate.
   const origFrom = db.from.bind(db);
@@ -456,7 +475,7 @@ test('BH-T13 · atomic race · DB gets populated between fetch and update → no
     };
     return q;
   };
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   //   Observer sees the atomic predicate return 0 rows · classifies as
   //   ALREADY_KNOWN_OR_RACED · does not overwrite
   assert.equal(r.counters.already_known_or_raced, 1);
@@ -480,7 +499,7 @@ test('BH-T14 · observer NEVER writes orders.status', async () => {
     { order_no: 'E-14b', platform: 'eBay', tracking_no: null, status: 'NEW' },
     { order_no: 'E-14c', platform: 'eBay', tracking_no: null, status: 'NEW' },
   ]});
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(db._writes.statusWrites.length, 0, 'observer must never write status');
   //   Also verify state unchanged
   assert.equal(db._state.get('E-14a').status, 'NEW');
@@ -494,10 +513,188 @@ test('BH-T15 · observer NEVER writes orders.carrier', async () => {
     orderBlocks: [ orderXml({ orderId: 'E-15', transactions: [{ tracking: [{ number: 'FIF', carrier: 'SF Express' }] }] }) ],
   });
   const ebay = makeEbayStub({ pages: [xml] });
-  const db = makeDbStub({ rows: [{ order_no: 'E-15', platform: 'eBay', tracking_no: null, carrier: 'KPL' }] });
-  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  const db = makeDbStub({ rows: [{ order_no: 'E-15', platform: 'eBay', tracking_no: null, carrier: 'KPL', status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ["SHIPPED","READY","NEW"], deps: { ebay, db } });
   assert.equal(r.counters.inserted, 1);
   assert.equal(db._writes.carrierWrites.length, 0, 'observer must never write carrier');
   //   PMC carrier stays KPL · eBay ShippingCarrierUsed=SF Express NOT propagated
   assert.equal(db._state.get('E-15').carrier, 'KPL');
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// R2-SHIP-6F1B-S · SHIPPED-only controlled activation tests
+// ─────────────────────────────────────────────────────────────────────
+
+test('BH-S1 · SHIPPED + DB tracking NULL + one eBay tracking → INSERTED', async () => {
+  const xml = makeGetOrdersXml({
+    pages: 1,
+    orderBlocks: [ orderXml({ orderId: 'S-1', transactions: [{ tracking: [{ number: 'SF-S1', carrier: 'SF Express' }] }] }) ],
+  });
+  const ebay = makeEbayStub({ pages: [xml] });
+  const db = makeDbStub({ rows: [{ order_no: 'S-1', platform: 'eBay', tracking_no: null, status: 'SHIPPED', carrier: 'KPL' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ['SHIPPED'], deps: { ebay, db } });
+  assert.equal(r.counters.inserted, 1);
+  assert.equal(db._state.get('S-1').tracking_no, 'SF-S1');
+  assert.equal(db._state.get('S-1').tracking_source, TRACKING_SOURCE);
+});
+
+test('BH-S2 · READY + DB tracking NULL + one eBay tracking → NOT_ELIGIBLE_STATUS · writes 0', async () => {
+  const xml = makeGetOrdersXml({
+    pages: 1,
+    orderBlocks: [ orderXml({ orderId: 'S-2', transactions: [{ tracking: [{ number: 'SF-S2', carrier: 'SF Express' }] }] }) ],
+  });
+  const ebay = makeEbayStub({ pages: [xml] });
+  const db = makeDbStub({ rows: [{ order_no: 'S-2', platform: 'eBay', tracking_no: null, status: 'READY' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ['SHIPPED'], deps: { ebay, db } });
+  assert.equal(r.counters.not_eligible_status, 1);
+  assert.equal(r.counters.inserted, 0);
+  assert.equal(db._state.get('S-2').tracking_no, null);
+  assert.equal(db._state.get('S-2').status, 'READY', 'status not touched');
+});
+
+test('BH-S3 · NEW + DB tracking NULL + one eBay tracking → NOT_ELIGIBLE_STATUS · writes 0', async () => {
+  const xml = makeGetOrdersXml({
+    pages: 1,
+    orderBlocks: [ orderXml({ orderId: 'S-3', transactions: [{ tracking: [{ number: 'SF-S3', carrier: 'SF Express' }] }] }) ],
+  });
+  const ebay = makeEbayStub({ pages: [xml] });
+  const db = makeDbStub({ rows: [{ order_no: 'S-3', platform: 'eBay', tracking_no: null, status: 'NEW' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ['SHIPPED'], deps: { ebay, db } });
+  assert.equal(r.counters.not_eligible_status, 1);
+  assert.equal(r.counters.inserted, 0);
+  assert.equal(db._state.get('S-3').tracking_no, null);
+});
+
+test('BH-S4 · dryRun=false WITHOUT eligibleStatuses → MUTATION_SCOPE_REQUIRED · writes 0', async () => {
+  const ebay = makeEbayStub({ pages: [] });
+  const db = makeDbStub({ rows: [{ order_no: 'S-4', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, deps: { ebay, db } });
+  assert.equal(r.counters.outcome, OUTCOME.MUTATION_SCOPE_REQUIRED);
+  assert.equal(r.counters.inserted, 0);
+  assert.equal(db._writes.updateCalls.length, 0);
+  assert.equal(ebay.calls.length, 0, 'MUTATION_SCOPE_REQUIRED returns before eBay is called');
+});
+
+test('BH-S5 · status changes SHIPPED → READY between fetch and UPDATE → 0 rows · no overwrite', async () => {
+  const xml = makeGetOrdersXml({
+    pages: 1,
+    orderBlocks: [ orderXml({ orderId: 'S-5', transactions: [{ tracking: [{ number: 'SF-S5', carrier: 'SF Express' }] }] }) ],
+  });
+  const ebay = makeEbayStub({ pages: [xml] });
+  const db = makeDbStub({ rows: [{ order_no: 'S-5', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
+  //   Inject race: flip status to READY between fetch and update
+  const origFrom = db.from.bind(db);
+  db.from = function(table) {
+    const q = origFrom(table);
+    const origUpdate = q.update.bind(q);
+    q.update = function(patch) {
+      const cur = db._state.get('S-5');
+      if (cur && cur.status === 'SHIPPED') cur.status = 'READY';
+      return origUpdate(patch);
+    };
+    return q;
+  };
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ['SHIPPED'], deps: { ebay, db } });
+  assert.equal(r.counters.already_known_or_raced, 1);
+  assert.equal(r.counters.inserted, 0);
+  assert.equal(db._state.get('S-5').tracking_no, null, 'no overwrite when status raced');
+});
+
+test('BH-S6 · tracking populated by another writer before UPDATE → 0 rows · preserve winner', async () => {
+  const xml = makeGetOrdersXml({
+    pages: 1,
+    orderBlocks: [ orderXml({ orderId: 'S-6', transactions: [{ tracking: [{ number: 'SF-S6', carrier: 'SF Express' }] }] }) ],
+  });
+  const ebay = makeEbayStub({ pages: [xml] });
+  const db = makeDbStub({ rows: [{ order_no: 'S-6', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
+  const origFrom = db.from.bind(db);
+  db.from = function(table) {
+    const q = origFrom(table);
+    const origUpdate = q.update.bind(q);
+    q.update = function(patch) {
+      const cur = db._state.get('S-6');
+      if (cur && (cur.tracking_no == null || cur.tracking_no === '')) cur.tracking_no = 'RACE-WON';
+      return origUpdate(patch);
+    };
+    return q;
+  };
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ['SHIPPED'], deps: { ebay, db } });
+  assert.equal(r.counters.already_known_or_raced, 1);
+  assert.equal(r.counters.inserted, 0);
+  assert.equal(db._state.get('S-6').tracking_no, 'RACE-WON');
+});
+
+test('BH-S7 · multi-package SHIPPED → MULTI_PACKAGE · writes 0', async () => {
+  const xml = makeGetOrdersXml({
+    pages: 1,
+    orderBlocks: [ orderXml({
+      orderId: 'S-7',
+      transactions: [
+        { tracking: [{ number: 'PKG-A', carrier: 'SF' }] },
+        { tracking: [{ number: 'PKG-B', carrier: 'FedEx' }] },
+      ],
+    }) ],
+  });
+  const ebay = makeEbayStub({ pages: [xml] });
+  const db = makeDbStub({ rows: [{ order_no: 'S-7', platform: 'eBay', tracking_no: null, status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ['SHIPPED'], deps: { ebay, db } });
+  assert.equal(r.counters.multi_package, 1);
+  assert.equal(r.counters.inserted, 0);
+  assert.equal(db._state.get('S-7').tracking_no, null);
+});
+
+test('BH-S8 · SHIPPED with existing DIFFERENT tracking → CONFLICT · writes 0', async () => {
+  const xml = makeGetOrdersXml({
+    pages: 1,
+    orderBlocks: [ orderXml({ orderId: 'S-8', transactions: [{ tracking: [{ number: 'EBAY-NEW', carrier: 'SF' }] }] }) ],
+  });
+  const ebay = makeEbayStub({ pages: [xml] });
+  const db = makeDbStub({ rows: [{ order_no: 'S-8', platform: 'eBay', tracking_no: 'DB-OLD', status: 'SHIPPED' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ['SHIPPED'], deps: { ebay, db } });
+  assert.equal(r.counters.conflict, 1);
+  assert.equal(r.counters.inserted, 0);
+  assert.equal(db._state.get('S-8').tracking_no, 'DB-OLD');
+});
+
+test('BH-S9 · SHIPPED positive insert · status + carrier unchanged', async () => {
+  const xml = makeGetOrdersXml({
+    pages: 1,
+    orderBlocks: [ orderXml({ orderId: 'S-9', transactions: [{ tracking: [{ number: 'SF-S9', carrier: 'SF Express' }] }] }) ],
+  });
+  const ebay = makeEbayStub({ pages: [xml] });
+  const db = makeDbStub({ rows: [{ order_no: 'S-9', platform: 'eBay', tracking_no: null, status: 'SHIPPED', carrier: 'KPL' }] });
+  const r = await observer.run({ dryRun: false, eligibleStatuses: ['SHIPPED'], deps: { ebay, db } });
+  assert.equal(r.counters.inserted, 1);
+  assert.equal(db._state.get('S-9').status, 'SHIPPED', 'status untouched');
+  assert.equal(db._state.get('S-9').carrier, 'KPL', 'carrier untouched');
+  assert.equal(db._writes.statusWrites.length, 0);
+  assert.equal(db._writes.carrierWrites.length, 0);
+});
+
+test('BH-S10 · dryRun=true broad observation · READY/NEW reported · writes 0', async () => {
+  const xml = makeGetOrdersXml({
+    pages: 1,
+    orderBlocks: [
+      orderXml({ orderId: 'S-10a', transactions: [{ tracking: [{ number: 'TA', carrier: 'X' }] }] }),
+      orderXml({ orderId: 'S-10b', transactions: [{ tracking: [{ number: 'TB', carrier: 'X' }] }] }),
+      orderXml({ orderId: 'S-10c', transactions: [{ tracking: [{ number: 'TC', carrier: 'X' }] }] }),
+    ],
+  });
+  const ebay = makeEbayStub({ pages: [xml] });
+  const db = makeDbStub({ rows: [
+    { order_no: 'S-10a', platform: 'eBay', tracking_no: null, status: 'SHIPPED' },
+    { order_no: 'S-10b', platform: 'eBay', tracking_no: null, status: 'READY' },
+    { order_no: 'S-10c', platform: 'eBay', tracking_no: null, status: 'NEW' },
+  ]});
+  //   dryRun=true WITHOUT eligibleStatuses = broad reporting (no scope filter)
+  const r = await observer.run({ dryRun: true, deps: { ebay, db } });
+  //   All 3 are safe_insert_candidates in dry-run mode
+  assert.equal(r.counters.safe_insert_candidates, 3);
+  assert.equal(r.counters.not_eligible_status, 0);
+  assert.equal(r.counters.inserted, 0);
+  assert.equal(db._writes.updateCalls.length, 0, 'dryRun writes 0');
+  //   All 3 rows unchanged
+  assert.equal(db._state.get('S-10a').tracking_no, null);
+  assert.equal(db._state.get('S-10b').tracking_no, null);
+  assert.equal(db._state.get('S-10c').tracking_no, null);
 });
