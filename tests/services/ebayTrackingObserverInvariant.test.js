@@ -105,12 +105,26 @@ function makeEbayStub({ pages = [], throwOnPage = null } = {}) {
   };
 }
 
-function makeDbStub({ rows = [] } = {}) {
-  //   `rows` is an array of { order_no, platform, tracking_no } objects that
-  //   simulate the current `orders` table.
-  const state    = new Map();
-  const upd      = { updateCalls: [], statusWrites: [], carrierWrites: [] };
+function makeDbStub({ rows = [], omsRows = [], evidenceRows = [] } = {}) {
+  //   `rows`         → simulates the current `orders` table.
+  //   `omsRows`      → simulates `oms_orders` for OMS-SHIP-EVIDENCE-E1 identity
+  //                    resolution. Default empty → resolveOmsLinkedOrderId returns
+  //                    {linkedOrderId:null, ambiguous:false} · evidence still
+  //                    persists · legacy path behavior identical to pre-E1.
+  //   `evidenceRows` → pre-existing `channel_order_events` rows (for idempotency
+  //                    tests) · dedup by (channel, payload_hash) partial UNIQUE.
+  const state     = new Map();
+  const omsState  = new Map();  // key: external_order_id → array of {id, channel, external_order_id}
+  const evidence  = new Map();  // key: `${channel}|${payload_hash}` → row
+  const upd       = { updateCalls: [], statusWrites: [], carrierWrites: [] };
   rows.forEach(r => state.set(r.order_no, { ...r }));
+  omsRows.forEach(r => {
+    const list = omsState.get(r.external_order_id) || [];
+    list.push({ ...r });
+    omsState.set(r.external_order_id, list);
+  });
+  evidenceRows.forEach(r => evidence.set(`${r.channel}|${r.payload_hash}`, { ...r }));
+  const evidenceInserts = [];
 
   function makeUpdateChain({ table, patch }) {
     const filters = [];
@@ -170,6 +184,53 @@ function makeDbStub({ rows = [] } = {}) {
 
   const db = {
     from(table) {
+      //   OMS-SHIP-EVIDENCE-E1 · oms_orders identity resolution.
+      //     EXACT (channel, external_order_id) match only. Multiple rows for
+      //     the same key model the ambiguous branch (should never happen in
+      //     production due to unique constraint · but caller must handle it).
+      if (table === 'oms_orders') {
+        const filters = [];
+        const q = {
+          select(_cols) { return q; },
+          eq(col, val) { filters.push({ op: 'eq', col, val }); return q; },
+          async then(resolve) {
+            const chan = filters.find(f => f.col === 'channel');
+            const ext  = filters.find(f => f.col === 'external_order_id');
+            if (!chan || !ext) { resolve({ data: [], error: null }); return; }
+            const list = omsState.get(ext.val) || [];
+            const matched = list.filter(r => r.channel === chan.val);
+            resolve({ data: matched.map(r => ({ id: r.id })), error: null });
+          },
+        };
+        return q;
+      }
+      //   OMS-SHIP-EVIDENCE-E1 · channel_order_events insert.
+      //     Models the (channel, payload_hash) partial UNIQUE via in-memory
+      //     Map lookup. Duplicate → PG error code 23505 · helper interprets
+      //     as benign duplicate (not error).
+      if (table === 'channel_order_events') {
+        return {
+          insert(row) {
+            const captured = { ...row };
+            const chain = {
+              select() { return chain; },
+              async then(resolve) {
+                evidenceInserts.push(captured);
+                const key = `${captured.channel}|${captured.payload_hash}`;
+                if (evidence.has(key)) {
+                  resolve({ data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } });
+                  return;
+                }
+                const idNext = evidence.size + 1;
+                evidence.set(key, { ...captured, id: idNext });
+                resolve({ data: [{ id: idNext }], error: null });
+              },
+            };
+            return chain;
+          },
+        };
+      }
+      //   Legacy `orders` table path — unchanged from R2-SHIP-6F1A.
       return {
         select(_cols) {
           const filters = [];
@@ -204,6 +265,9 @@ function makeDbStub({ rows = [] } = {}) {
     },
     _state: state,
     _writes: upd,
+    _evidence: evidence,
+    _evidenceInserts: evidenceInserts,
+    _omsState: omsState,
   };
   return db;
 }
@@ -466,6 +530,10 @@ test('BH-T13 · atomic race · DB gets populated between fetch and update → no
   const origFrom = db.from.bind(db);
   db.from = function(table) {
     const q = origFrom(table);
+    //   OMS-SHIP-EVIDENCE-E1 · only the legacy `orders` table exposes .update;
+    //   oms_orders / channel_order_events branches don't and would crash the
+    //   race-simulating wrapper. Guard preserves the intent (race is on legacy).
+    if (typeof q.update !== 'function') return q;
     const origUpdate = q.update.bind(q);
     q.update = function(patch) {
       //   Simulate concurrent writer stealing the row
@@ -586,6 +654,10 @@ test('BH-S5 · status changes SHIPPED → READY between fetch and UPDATE → 0 r
   const origFrom = db.from.bind(db);
   db.from = function(table) {
     const q = origFrom(table);
+    //   OMS-SHIP-EVIDENCE-E1 · only the legacy `orders` table exposes .update;
+    //   oms_orders / channel_order_events branches don't and would crash the
+    //   race-simulating wrapper. Guard preserves the intent (race is on legacy).
+    if (typeof q.update !== 'function') return q;
     const origUpdate = q.update.bind(q);
     q.update = function(patch) {
       const cur = db._state.get('S-5');
@@ -610,6 +682,10 @@ test('BH-S6 · tracking populated by another writer before UPDATE → 0 rows · 
   const origFrom = db.from.bind(db);
   db.from = function(table) {
     const q = origFrom(table);
+    //   OMS-SHIP-EVIDENCE-E1 · only the legacy `orders` table exposes .update;
+    //   oms_orders / channel_order_events branches don't and would crash the
+    //   race-simulating wrapper. Guard preserves the intent (race is on legacy).
+    if (typeof q.update !== 'function') return q;
     const origUpdate = q.update.bind(q);
     q.update = function(patch) {
       const cur = db._state.get('S-6');

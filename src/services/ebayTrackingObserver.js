@@ -44,6 +44,13 @@ const DEFAULT_DAYS_WINDOW      = 30;   // eBay ModTime max window per Trading AP
 const MAX_PAGES                = 30;   // runtime safety cap · far above any real day
 const TRACKING_SOURCE          = 'ebay_observation';
 
+//   OMS-SHIP-EVIDENCE-E1 (2026-09-06) · neutral evidence helper.
+//     Extends per-order parsing to retain shipped_time_raw / paid_time_raw /
+//     cancel_status_raw / raw_order_status / trackings[] and persists into
+//     `channel_order_events` (mig 080). Evidence persistence is ADDITIVE ·
+//     legacy tracking write path is byte-identical (R2-SHIP-6F1C-D frozen).
+const shipmentEvidence = require('./oms/ebayShipmentEvidence');
+
 const OUTCOME = Object.freeze({
   RUN_COMPLETE:                 'RUN_COMPLETE',
   RUN_INCOMPLETE:               'RUN_INCOMPLETE',
@@ -183,7 +190,17 @@ async function fetchAllPages({ ebay, daysWindow, entriesPerPage, now }) {
       const orderId    = _extractTag(orderXml, 'OrderID');
       const trackings  = _extractAllShipmentTracking(orderXml);
       const { classification, unique } = classifyOrderObservations(trackings);
-      allOrders.push({ orderId, classification, unique });
+      //   OMS-SHIP-EVIDENCE-E1 · retain per-order raw evidence fields the
+      //   existing parser previously discarded (owner rule §4). PII-free by
+      //   construction: only order-lifecycle scalars + tracking scalars.
+      const rawOrderStatus  = _extractTag(orderXml, 'OrderStatus')  || null;
+      const shippedTimeRaw  = _extractTag(orderXml, 'ShippedTime')  || null;
+      const paidTimeRaw     = _extractTag(orderXml, 'PaidTime')     || null;
+      const cancelStatusRaw = _extractTag(orderXml, 'CancelStatus') || null;
+      allOrders.push({
+        orderId, classification, unique,
+        evidence: { rawOrderStatus, shippedTimeRaw, paidTimeRaw, cancelStatusRaw, trackings: unique },
+      });
     }
     const totalPagesMatch = xml.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/);
     const totalPages      = totalPagesMatch ? parseInt(totalPagesMatch[1], 10) : 1;
@@ -294,7 +311,7 @@ async function run(opts = {}) {
         no_tracking:          0,
         one_unique_tracking:  0,
         multiple_distinct:    0,
-        malformed:            0,
+        malformed:             0,
         db_matches:           0,
         safe_insert_candidates: 0,
         already_known_or_raced: 0,
@@ -303,6 +320,13 @@ async function run(opts = {}) {
         db_order_not_eligible: 0,
         not_eligible_status:  0,
         inserted:             0,
+        //   OMS-SHIP-EVIDENCE-E1 · additive counters (owner rule §16, §25).
+        evidence_inserted:                0,
+        evidence_duplicate:               0,
+        evidence_identity_unlinked:       0,
+        evidence_identity_ambiguous:      0,
+        evidence_error:                   0,
+        legacy_skipped_due_to_evidence:   0,
       },
       decisions: [],
     };
@@ -330,6 +354,13 @@ async function run(opts = {}) {
     db_order_not_eligible:   0,
     not_eligible_status:     0,
     inserted:                0,
+    //   OMS-SHIP-EVIDENCE-E1 · additive counters (owner rule §16, §25).
+    evidence_inserted:                0,
+    evidence_duplicate:               0,
+    evidence_identity_unlinked:       0,
+    evidence_identity_ambiguous:      0,
+    evidence_error:                   0,
+    legacy_skipped_due_to_evidence:   0,
   };
 
   //   STEP 2 · if RUN_INCOMPLETE · preserve DB · report and stop (owner §15)
@@ -343,6 +374,51 @@ async function run(opts = {}) {
     else if (o.classification === ORDER_CLASS.ONE_UNIQUE_TRACKING)    counters.one_unique_tracking++;
     else if (o.classification === ORDER_CLASS.MULTIPLE_DISTINCT_TRACKING) counters.multiple_distinct++;
     else if (o.classification === ORDER_CLASS.MALFORMED)              counters.malformed++;
+  }
+
+  //   OMS-SHIP-EVIDENCE-E1 · STEP 3b · persist neutral shipment evidence.
+  //   Runs AFTER fetch-all-first succeeds and BEFORE the legacy tracking loop
+  //   (owner rule §23). Skipped entirely on dryRun (owner rule §15).
+  //
+  //   Per-order isolation: evidence persistence failure for order X flags X
+  //   as `evidenceFailedOrderIds` so the existing legacy write skips X
+  //   (evidence-first truth · §23 conservative contract). Other orders'
+  //   legacy writes proceed unaffected — R2-SHIP availability is preserved
+  //   under healthy Supabase operation (INSERT ... ON CONFLICT is highly
+  //   reliable; only genuine infra faults trigger evidence_error).
+  const importedAt = (now ? now() : new Date()).toISOString();
+  const evidenceFailedOrderIds = new Set();
+  if (!dryRun) {
+    for (const o of fetchResult.allOrders) {
+      try {
+        const canonical = shipmentEvidence.buildEvidenceCanonical({
+          orderId:         o.orderId,
+          rawOrderStatus:  o.evidence.rawOrderStatus,
+          shippedTimeRaw:  o.evidence.shippedTimeRaw,
+          paidTimeRaw:     o.evidence.paidTimeRaw,
+          cancelStatusRaw: o.evidence.cancelStatusRaw,
+          trackings:       o.evidence.trackings,
+        });
+        const hash = shipmentEvidence.hashEvidence(canonical);
+        const resolved = await shipmentEvidence.resolveOmsLinkedOrderId(db, o.orderId);
+        if (resolved.ambiguous)                    counters.evidence_identity_ambiguous++;
+        else if (resolved.linkedOrderId == null)   counters.evidence_identity_unlinked++;
+        const persist = await shipmentEvidence.persistEvidence(db, {
+          canonical,
+          hash,
+          externalOrderId: o.orderId,
+          rawStatus:       o.evidence.rawOrderStatus,
+          importedAt,
+          linkedOrderId:   resolved.linkedOrderId,
+        });
+        if (persist.inserted)      counters.evidence_inserted++;
+        else if (persist.duplicate) counters.evidence_duplicate++;
+      } catch (e) {
+        counters.evidence_error++;
+        evidenceFailedOrderIds.add(o.orderId);
+        console.error(`[ebayTrackingObserver] evidence persistence failed order=${o.orderId} · ${e && e.message ? e.message : String(e)}`);
+      }
+    }
   }
 
   //   STEP 4 · DB cohort match against ALL scanned OrderIDs (regardless of
@@ -359,13 +435,23 @@ async function run(opts = {}) {
 
   //   STEP 5 · decide + optionally mutate
   const decisions = [];
-  const importedAt = (now ? now() : new Date()).toISOString();
+  //   `importedAt` computed above (STEP 3b) so evidence + legacy write share
+  //   the same server-clock instant. Reused verbatim here.
   for (const o of fetchResult.allOrders) {
     if (o.classification !== ORDER_CLASS.ONE_UNIQUE_TRACKING) {
       if (o.classification === ORDER_CLASS.MULTIPLE_DISTINCT_TRACKING) {
         counters.multi_package++;
         decisions.push({ orderId: o.orderId, outcome: WRITE_OUTCOME.MULTI_PACKAGE, trackings: o.unique.map(x => x.number) });
       }
+      continue;
+    }
+    //   OMS-SHIP-EVIDENCE-E1 · owner rule §23 conservative contract:
+    //     evidence persistence failure for this order → skip legacy mutation.
+    //     Other orders remain unaffected. R2-SHIP legacy write path is
+    //     otherwise byte-identical below.
+    if (evidenceFailedOrderIds.has(o.orderId)) {
+      counters.legacy_skipped_due_to_evidence++;
+      decisions.push({ orderId: o.orderId, outcome: 'LEGACY_SKIPPED_EVIDENCE_ERROR' });
       continue;
     }
     const dbRow = dbMap.get(o.orderId);
