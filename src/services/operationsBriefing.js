@@ -203,6 +203,11 @@ function buildRecommendations(out, failedSections) {
     recs.push(`SKU 매칭 실패 ${out.orders.sku_match_failed}건을 먼저 확인하세요.`);
   } else if (out.orders?.exception_count > 0) {
     recs.push(`자동 예외 카드 ${out.orders.exception_count}건이 대기 중입니다.`);
+  } else if (out.orders?.sku_match_failed === null || out.orders?.exception_count === null) {
+    // OPS-BRIEF-1A-H1 · UNKNOWN ≠ ZERO.
+    //   count 쿼리 실패로 두 metric 이 null 인 경우, positive-only 분기가 조용히 통과해
+    //   아래의 "정상 운영 중입니다" 문구가 잘못 표시되는 것을 막는다. 확인 실패는 반드시 노출.
+    recs.push('자동 예외 카운트 확인 실패 — 서버 로그를 확인하세요.');
   }
 
   // 2) 긴급/지연 업무
@@ -244,6 +249,10 @@ function buildRecommendations(out, failedSections) {
  *   - body 는 ~250자 이내로 컴팩트
  *   - recommendations 상위 2개 포함 (있으면)
  *   - 카운트 0 인 섹션은 body 에서 생략 (잡음 감소)
+ *   - OPS-BRIEF-1A-H1 · UNKNOWN ≠ ZERO. count 쿼리가 실패해 값이 null 인 경우
+ *     truthy check 만으로는 0 과 구분되지 않는다. null 은 반드시 "확인 실패"
+ *     로 명시 렌더 · 사장님이 0 (진짜 평온) 과 UNKNOWN (관측 실패) 를 구분
+ *     할 수 있어야 함.
  *
  * @param {Object} briefing — getTodayBriefing() 결과
  * @returns {{ title: string, body: string, linkUrl: string, type: string }}
@@ -257,7 +266,21 @@ function buildBriefingNotification(briefing) {
   const segments = [];
   // orders 핵심 — 신규 주문 / 자동 예외
   if (o.total_today)      segments.push(`신규 주문 ${o.total_today}건`);
-  if (o.exception_count)  segments.push(`자동 예외 ${o.exception_count}건`);
+  //   OPS-BRIEF-1A-H1 · 자동 예외 exception_count.
+  //     known positive  → 실제 카운트 렌더.
+  //     known zero      → 기존 contract 유지 (body 에서 생략 · 잡음 감소).
+  //     unknown (null)  → "자동 예외 확인 실패" 로 명시. 0 으로 위장하지 않음.
+  if (typeof o.exception_count === 'number' && o.exception_count > 0) {
+    segments.push(`자동 예외 ${o.exception_count}건`);
+  } else if (o.exception_count === null) {
+    segments.push('자동 예외 확인 실패');
+  }
+  //   OPS-BRIEF-1A-H1 · SKU 매칭 실패 sku_match_failed.
+  //     known positive/zero 는 기존 contract 유지 (recommendation 이 positive 를 노출).
+  //     unknown (null) 만 body 에 명시 노출 → "정상 운영" 오해 방지.
+  if (o.sku_match_failed === null) {
+    segments.push('SKU 매칭 실패 확인 실패');
+  }
   // tasks 핵심 — 미처리 / 긴급 / 마감 지남
   if (t.urgent)           segments.push(`긴급 업무 ${t.urgent}건`);
   if (t.overdue)          segments.push(`마감 지남 ${t.overdue}건`);

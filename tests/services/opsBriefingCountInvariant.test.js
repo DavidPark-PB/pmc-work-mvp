@@ -442,6 +442,147 @@ test('BRIEF-T11 · exceptionFilter.js — status=open forwarded to server', () =
     'urlStatusOpen must translate to server-side status=open on refresh()');
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// OPS-BRIEF-1A-H1 · UNKNOWN != ZERO in the 09:00 notification body.
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Before H1, buildBriefingNotification used truthiness (`if (o.exception_count)`)
+// which suppresses `null` and `0` identically. That silently lost UNKNOWN
+// semantics — a failed count query looked exactly like "no issues today".
+//
+// After H1:
+//   known positive  → segment with the actual count (unchanged contract)
+//   known zero      → suppressed (existing quiet-body contract)
+//   unknown (null)  → explicit "확인 실패" segment · never masquerades as zero
+// buildRecommendations also emits an explicit UNKNOWN recommendation so the
+// "정상 운영 중입니다" fallback line cannot fire while a count is unknown.
+
+function fakeBriefing(orders = {}) {
+  // Purchase / safety / tasks default to KNOWN-zero so the fallback line
+  // is the only recommendation candidate absent any auto-exception input.
+  return {
+    date: '2026-09-06',
+    orders: { total_today: 0, pending: 0, exception_count: null, sku_match_failed: null, ...orders },
+    tasks: { open: 0, urgent: 0, overdue: 0, completed_today: 0 },
+    purchase_requests: { pending: 0, approved_today: 0, ordered_today: 0 },
+    safety: { failed_runs_today: 0, rollbackable_runs: 0, rolled_back_today: 0 },
+    recommendations: [],
+  };
+}
+
+test('BRIEF-H1 · exception_count = 0 → known zero suppressed per contract', () => {
+  // Fresh load to shake off any test-side stubs from earlier suites.
+  restoreOriginals();
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = fakeBriefing({ exception_count: 0, sku_match_failed: 0 });
+  const n = opsBrief.buildBriefingNotification(b);
+  assert.equal(/자동 예외/.test(n.body), false,
+    'known-zero exception_count MUST be suppressed (existing quiet-body contract)');
+  assert.equal(/확인 실패/.test(n.body), false,
+    'known zero MUST NOT masquerade as UNKNOWN');
+});
+
+test('BRIEF-H2 · exception_count = null → visible UNKNOWN · distinct from zero', () => {
+  restoreOriginals();
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const bNull = fakeBriefing({ exception_count: null, sku_match_failed: null });
+  const bZero = fakeBriefing({ exception_count: 0, sku_match_failed: 0 });
+  const nNull = opsBrief.buildBriefingNotification(bNull);
+  const nZero = opsBrief.buildBriefingNotification(bZero);
+  assert.ok(/자동 예외 확인 실패/.test(nNull.body),
+    'null exception_count MUST produce an explicit 확인 실패 segment');
+  assert.notEqual(nNull.body, nZero.body,
+    'UNKNOWN and KNOWN-zero notifications MUST be distinguishable to the owner');
+});
+
+test('BRIEF-H3 · sku_match_failed = 0 → known zero suppressed per contract', () => {
+  restoreOriginals();
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = fakeBriefing({ exception_count: 0, sku_match_failed: 0 });
+  const n = opsBrief.buildBriefingNotification(b);
+  assert.equal(/SKU 매칭 실패/.test(n.body), false,
+    'known-zero sku_match_failed MUST be suppressed (contract: recommendation carries positives, body stays quiet)');
+});
+
+test('BRIEF-H4 · sku_match_failed = null → visible UNKNOWN in body', () => {
+  restoreOriginals();
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = fakeBriefing({ exception_count: 0, sku_match_failed: null });
+  const n = opsBrief.buildBriefingNotification(b);
+  assert.ok(/SKU 매칭 실패 확인 실패/.test(n.body),
+    'null sku_match_failed MUST produce an explicit 확인 실패 segment');
+});
+
+test('BRIEF-H5 · positive counts render exact numbers · UNKNOWN wording absent', () => {
+  restoreOriginals();
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = fakeBriefing({ exception_count: 993, sku_match_failed: 555 });
+  const n = opsBrief.buildBriefingNotification(b);
+  assert.ok(/자동 예외 993건/.test(n.body),
+    'positive exception_count must render the actual number');
+  // sku_match_failed positive is intentionally NOT in the body segments — the
+  // recommendations layer surfaces it. Confirm that the H1 UNKNOWN branch does
+  // not fire on known-positive.
+  assert.equal(/자동 예외 확인 실패/.test(n.body), false);
+  assert.equal(/SKU 매칭 실패 확인 실패/.test(n.body), false);
+});
+
+test('BRIEF-H6 · summarizeOrders count failure → notification UNKNOWN · never 0', async () => {
+  // End-to-end: force team_tasks count queries to reject; verify service returns
+  // nulls AND the notification body surfaces UNKNOWN wording (not "정상 운영").
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [] });
+  const orig = db.from.bind(db);
+  db.from = (name) => {
+    if (name !== 'team_tasks') return orig(name);
+    const chain = {
+      select() { return chain; }, eq() { return chain; }, neq() { return chain; },
+      order() { return chain; }, limit() { return chain; },
+      then(_ok, err) { return Promise.reject(new Error('simulated count failure')).catch(err); },
+    };
+    return chain;
+  };
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+  assert.equal(b.orders.exception_count,  null, 'service must expose null on count failure');
+  assert.equal(b.orders.sku_match_failed, null, 'service must expose null on count failure');
+
+  const n = opsBrief.buildBriefingNotification(b);
+  assert.ok(/확인 실패/.test(n.body),
+    'notification body MUST carry an explicit 확인 실패 marker on count failure');
+  assert.equal(/정상 운영/.test(n.body), false,
+    '"정상 운영 중입니다" MUST NOT appear when a count is unknown');
+});
+
+test('BRIEF-H7 · buildRecommendations emits UNKNOWN recommendation when a count is null', async () => {
+  // Poison team_tasks count queries → summarizeOrders yields
+  // exception_count=null / sku_match_failed=null. getTodayBriefing then invokes
+  // buildRecommendations, which MUST emit an explicit UNKNOWN recommendation and
+  // MUST NOT emit the "정상 운영 중입니다" fallback (which used to silently fire
+  // whenever every positive branch failed — treating UNKNOWN as calm).
+  const db = makeFakeDb({ wms_orders: [], team_tasks: [] });
+  const orig = db.from.bind(db);
+  db.from = (name) => {
+    if (name !== 'team_tasks') return orig(name);
+    const chain = {
+      select() { return chain; }, eq() { return chain; }, neq() { return chain; },
+      order() { return chain; }, limit() { return chain; },
+      then(_ok, err) { return Promise.reject(new Error('simulated count failure')).catch(err); },
+    };
+    return chain;
+  };
+  installFakeSupabase(db);
+  const opsBrief = require(OPS_BRIEF_PATH);
+  const b = await opsBrief.getTodayBriefing();
+
+  assert.ok(Array.isArray(b.recommendations), 'recommendations must be present');
+  const rec = b.recommendations.join('\n');
+  assert.ok(/확인 실패/.test(rec),
+    'recommendations MUST include an explicit UNKNOWN recommendation when a count is null');
+  assert.equal(/정상 운영/.test(rec), false,
+    '"정상 운영 중입니다" MUST NOT appear in recommendations when a count is UNKNOWN');
+});
+
 test('BRIEF-T12 · drill-down surface uses GET only — no mutation added', () => {
   const briefSrc = fs.readFileSync(
     path.resolve(__dirname, '../../public/js/opsBriefing.js'), 'utf8'
