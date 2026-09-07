@@ -15,19 +15,57 @@ document.addEventListener('DOMContentLoaded', () => {
   setupNavigation();
   setupEvents();
   setupInlineEditing();
-  loadDashboard();
+  //   OPS-BRIEF-SKU-DRILL-UI-1 (2026-09-07) · honor initial URL ?page= deep-link
+  //   so bookmarks and OPS-BRIEF drill hrefs land on the intended page instead
+  //   of silently falling back to dashboard. Validation lives in _readInitialPage.
+  //   Absent/invalid ?page= → existing dashboard startup preserved bytes-identical.
+  const _initialPage = _readInitialPage(window.location.search, (id) => !!document.getElementById(id));
+  if (_initialPage) {
+    navigateTo(_initialPage);
+  } else {
+    loadDashboard();
+  }
   setInterval(() => { if (currentPage === 'dashboard') loadDashboard(); }, 300000);
 });
 
 // ===== 페이지 라우팅 =====
 
+//   OPS-BRIEF-SKU-DRILL-UI-1 · pure URL → routable-page validator.
+//     · Returns a routable page string, or null (→ default dashboard behavior).
+//     · docHas: injected DOM predicate for testability. Real callers pass
+//       `(id) => !!document.getElementById(id)`.
+//     · Validation shape mirrors navigateTo's known-route surface:
+//         - `orders` alias (redirects to expenses inside navigateTo)
+//         - platform pages (shopify/ebay/naver/alibaba/shopee → #page-products)
+//         - standard `#page-<name>` DOM existence
+//     · `dashboard` explicitly returns null to preserve the untouched default
+//       startup flow (loadDashboard). Non-string / undefined / empty → null.
+//     · Route validation is NOT authorization — admin-only pages
+//       (e.g. exception-tasks) route freely; existing per-page admin guards
+//       inside modules (e.g. pmcExceptionFilter.load user.isAdmin check) still
+//       enforce authorization exactly as before.
+const _PLATFORM_PAGES = Object.freeze(['shopify', 'ebay', 'naver', 'alibaba', 'shopee']);
+function _readInitialPage(search, docHas) {
+  try {
+    const p = new URLSearchParams(search || '').get('page');
+    if (!p || typeof p !== 'string') return null;
+    if (p === 'dashboard') return null;
+    if (p === 'orders') return p;                              // aliased to expenses in navigateTo
+    if (_PLATFORM_PAGES.includes(p)) return p;                 // aliased to page-products
+    if (typeof docHas === 'function' && docHas('page-' + p)) return p;
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function setupNavigation() {
+  //   OPS-BRIEF-SKU-DRILL-UI-1 · sidebar clicks delegate to navigateTo which now
+  //   owns sidebar .active state canonically (see navigateTo's sync block).
+  //   This eliminates the two-writer race where click set .active and
+  //   programmatic drill navigation left the sidebar stale on a different item.
   document.querySelectorAll('.sidebar .menu-item').forEach(item => {
-    item.addEventListener('click', () => {
-      document.querySelectorAll('.sidebar .menu-item').forEach(i => i.classList.remove('active'));
-      item.classList.add('active');
-      navigateTo(item.dataset.page);
-    });
+    item.addEventListener('click', () => navigateTo(item.dataset.page));
   });
 }
 
@@ -40,6 +78,19 @@ function navigateTo(page) {
     return;
   }
   currentPage = page;
+
+  //   OPS-BRIEF-SKU-DRILL-UI-1 · sidebar .active sync (canonical owner).
+  //     Runs on every navigateTo invocation — click, drill deep-link, initial
+  //     URL routing — so the sidebar highlight cannot drift from the visible
+  //     page. `.menu-item[data-page=...]` may be absent for admin-only items
+  //     when the user is not admin (data-admin-only sets display:none) OR for
+  //     routes with no direct sidebar entry (e.g. redirects); in those cases
+  //     the sync clears any stale highlight without adding a new one.
+  try {
+    document.querySelectorAll('.sidebar .menu-item').forEach(i => i.classList.remove('active'));
+    const _menu = document.querySelector('.sidebar .menu-item[data-page="' + String(page).replace(/["\\]/g, '\\$&') + '"]');
+    if (_menu) _menu.classList.add('active');
+  } catch (_) { /* CSS.escape unavailable / non-string page — best-effort */ }
 
   // 페이지 전환
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
