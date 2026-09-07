@@ -608,102 +608,130 @@
   </script>
 
   <div class="sidebar">
-    <div class="menu-title" style="color:#4caf50">업무 관리</div>
+    <!-- ═══════════════════════════════════════════════════════════════════
+         PMC-UI-MAP-2A · Commerce OS V1 sidebar (2026-09-07).
+         Compression: 45+ visible items → ~22 items across 7 primary groups
+         + 1 secondary HR/B2B group. Business-workflow organization.
+         Every hidden entry keeps its DOM · JS · route · DB intact —
+         reachable via ?page=<id> URL. Not a data merge; nav merge only.
+         Default landing (dashboard) INTENTIONALLY unchanged this phase —
+         see UI-MAP-2A report §Risks (dashboard.js:28 5-min refresh
+         + DRILL-T14 test both depend on dashboard-default semantics).
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- ─── 📅 오늘 ─── -->
+    <div class="menu-title" style="color:#ffd54f">📅 오늘</div>
+    <div class="menu-item ops-menu" data-page="ops-briefing" style="color:#ffd54f;font-weight:600">📅 오늘 브리핑</div>
+
+    <!-- ─── 💼 내 업무 ─── -->
+    <div class="menu-title" style="color:#69f0ae">💼 내 업무</div>
+    <div class="menu-item ops-menu" data-page="b2c-my-tasks" style="color:#69f0ae;font-weight:600">🎯 내 업무 (B2C)</div>
     <div class="menu-item" data-page="tasks" style="color:#81c784;font-weight:600">
       📋 업무 지시
       <span id="nav-notif-badge" style="display:none;float:right;background:#e94560;color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;"></span>
     </div>
-    <!-- 2026-08-08: 발주 관리 → 구매·지출 관리 로 통합. 메뉴는 숨김만 (라우팅/JS/DB 유지).
-         알림 클릭 시 dashboard.js 라우팅이 자동으로 expenses 로 리다이렉트. -->
-    <div class="menu-item" data-page="orders" style="display:none;color:#81c784;font-weight:600">
-      🛒 발주 관리
-      <span id="nav-orders-badge" style="display:none;float:right;background:#ffa726;color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;"></span>
-    </div>
+    <div class="menu-item ops-menu" data-page="b2c-qc" data-admin-only style="color:#81d4fa;font-weight:600">🔍 QC</div>
+    <div class="menu-item ops-menu" data-page="exception-tasks" data-admin-only style="color:#81d4fa;font-weight:600">⚠️ 자동 예외</div>
+
+    <!-- ─── 📦 주문·배송 ───
+         "주문" primary listing UI does not exist today (deferred to OMS-CONSOLE-1).
+         Owner briefing card + shipping page cover the operational flow. -->
+    <div class="menu-title" style="color:#0288d1">📦 주문·배송</div>
+    <div class="menu-item" data-page="shipping" style="color:#0288d1;font-weight:600">📦 배송 관리</div>
+
+    <!-- ─── 🛍 상품 ───
+         상품 후보 → opportunity-inbox as primary safe destination.
+         crawl-results still URL-reachable (see hidden block); dead 가져오기
+         button issue documented in UI-MAP-1 §6, not fixed here.
+         채널 리스팅 → single "products" shell with platform filter (already
+         de-facto merged for shopify/ebay/naver/alibaba/shopee since router
+         alias block at dashboard.js:96-101).
+         상품 등록센터 (export) carries data-admin-only + red warning color
+         as UI-only cue that /api/export still lacks admin gate / dry-run /
+         audit wrapper (UI-MAP-1 §15 problem #3 · deferred to UI-MAP-2E). -->
+    <div class="menu-title" style="color:#81d4fa">🛍 상품</div>
+    <div class="menu-item ops-menu" data-page="opportunity-inbox" style="color:#ce93d8;font-weight:600">💡 상품 후보</div>
+    <div class="menu-item ops-menu" data-page="sku-master" data-admin-only style="color:#81d4fa;font-weight:600">📦 SKU 마스터</div>
+    <div class="menu-item" data-page="products" style="color:#81d4fa;font-weight:600">🛍 채널 리스팅</div>
+    <div class="menu-item" data-page="ai-workflow" style="color:#ffd54f;font-weight:700">🪄 AI 상품 제작</div>
+    <div class="menu-item" data-page="export" data-admin-only style="color:#e94560;font-weight:700">🚀 상품 등록센터 (실행 주의)</div>
+
+    <!-- ─── 📦 재고·발주 ─── -->
+    <div class="menu-title" style="color:#ffb74d">📦 재고·발주</div>
+    <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">📦 재고 관리</div>
+    <div class="menu-item" data-page="expenses" style="color:#81c784;font-weight:600">💰 구매·지출 (발주)</div>
+    <div class="menu-item ops-menu" data-page="owner-inventory" data-admin-only style="color:#ffb74d;font-weight:600">📋 인벤토리 결정</div>
+
+    <!-- ─── 💰 수익·전략 ───
+         가격/리프라이싱: no primary owner-facing page today (ops-pricing
+         hidden; repricing pipeline scheduler-only). Deferred. -->
+    <div class="menu-title" style="color:#4db6ac">💰 수익·전략</div>
+    <div class="menu-item ops-menu" data-page="ops-profit" style="color:#81d4fa;font-weight:600">💰 수익 분석</div>
+
+    <!-- ─── ⚙️ 관리자 (모두 admin 전용) ───
+         전체 그룹 data-admin-only 로 non-admin 세션에서는 자동 숨김. -->
+    <div class="menu-title" data-admin-only style="color:#ce93d8">⚙️ 관리자</div>
+    <div class="menu-item ops-menu" data-page="b2c-control" data-admin-only style="color:#ce93d8;font-weight:600">🎛 자동화 Control</div>
+    <div class="menu-item" data-page="sync" data-admin-only>🔄 동기화</div>
+    <div class="menu-item ops-menu" data-page="ops-logs" data-admin-only style="color:#81d4fa;font-weight:600">📋 자동화 로그</div>
+    <div class="menu-item" data-page="settings" data-admin-only style="color:#ff9800;font-weight:600">⚙️ 설정</div>
+    <div class="menu-item" data-page="staff-admin" data-admin-only style="color:#81c784;font-weight:600">👥 직원 관리</div>
+    <a href="https://ccorea-auto-production-1540.up.railway.app" target="_blank" data-admin-only class="menu-item" style="color:#ff5722;font-weight:600;text-decoration:none;display:block">🤖 리스팅 자동화 ↗</a>
+
+    <!-- ─── ⏰ HR & 팀 (secondary group per UI-MAP-2A §3) ─── -->
+    <div class="menu-title" style="color:#81c784;margin-top:16px">── HR & 팀 ──</div>
+    <div class="menu-item active" data-page="dashboard">대시보드</div>
     <div class="menu-item" data-page="attendance" style="color:#81c784;font-weight:600">⏰ 출퇴근</div>
     <div class="menu-item" data-page="payroll" data-admin-only style="color:#81c784;font-weight:600">💰 급여 요약</div>
-    <!-- 주간 업무 — 사용 빈도 낮아 메뉴 숨김 (2026-05-12). 라우트·DB·JS 는 유지하여
-         필요 시 이 줄만 다시 노출하면 복구. workspace 가 사실상 대체. -->
-    <div class="menu-item" data-page="weekly" style="display:none;color:#81c784;font-weight:600">🗓️ 주간 업무</div>
+    <div class="menu-item" data-page="workspace" style="color:#81c784;font-weight:600">📝 내 워크스페이스</div>
+    <div class="menu-item" data-page="feedback" style="color:#81c784;font-weight:600">💬 피드백</div>
     <div class="menu-item" data-page="cs" style="color:#81c784;font-weight:600">💬 CS 지원</div>
-    <div class="menu-item" data-page="expenses" style="color:#81c784;font-weight:600">💰 구매·지출 관리</div>
     <div class="menu-item" data-page="b2b" style="color:#81c784;font-weight:600">📄 B2B 인보이스</div>
     <div class="menu-item" data-page="competitors" style="color:#81c784;font-weight:600">🎯 경쟁업체</div>
     <div class="menu-item" data-page="prospects-list" style="color:#81c784;font-weight:600">📋 리드 리스트업</div>
     <div class="menu-item" data-page="prospects-active" style="color:#81c784;font-weight:600">💬 활성 리드</div>
-    <div class="menu-item" data-page="feedback" style="color:#81c784;font-weight:600">💬 피드백</div>
-    <div class="menu-item" data-page="workspace" style="color:#81c784;font-weight:600">📝 내 워크스페이스</div>
-    <div class="menu-item" data-page="staff-admin" data-admin-only style="color:#81c784;font-weight:600">👥 직원 관리</div>
 
-    <div class="menu-item active" data-page="dashboard">대시보드</div>
-    <div class="menu-title">상품 관리</div>
-    <!-- 마스터 상품 메뉴 제거 — 상품검색/관리로 통합 -->
-    <div class="menu-item" data-page="catalog" style="color:#4db6ac;font-weight:600">📗 카탈로그 가격</div>
-    <div class="menu-item" data-page="products">전체 상품</div>
-    <!-- 상품 등록 메뉴 제거 — automation에서 처리 -->
-    <div class="menu-item" data-page="ai-workflow" style="color:#ffd54f;font-weight:700">🪄 AI 상품 제작 (통합)</div>
-    <!-- 2026-08-09: AI 리메이커/상세페이지 재구성/썸네일 만들기 3종 모두 'AI 상품 제작 (통합)' 에 흡수됨.
-         - AI 리메이커        → 1단계 (eBay ID or 파일 업로드)
-         - 상세페이지 재구성  → 2단계 (PMC 표준 or AI 재구성)
-         - 썸네일 만들기      → 3단계 (플랫폼별 자동 생성)
-         페이지 div/route 는 유지, 사이드바 링크만 숨김. 필요 시 display:none 만 제거하면 복구. -->
+    <!-- ═══════════════════════════════════════════════════════════════════
+         Hidden legacy · display:none (DOM/JS/route/DB all preserved).
+         Every entry remains reachable via ?page=<id> URL and via any
+         existing programmatic navigateTo() / notification click path.
+         PMC-UI-MAP-2A: nav-only hide · no capability deletion.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <!-- 발주 관리 → expenses 통합 (2026-08-08). 알림 뱃지 앵커 유지. -->
+    <div class="menu-item" data-page="orders" style="display:none;color:#81c784;font-weight:600">
+      🛒 발주 관리
+      <span id="nav-orders-badge" style="display:none;float:right;background:#ffa726;color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;"></span>
+    </div>
+    <!-- 주간 업무 → workspace 대체 (2026-05-12) -->
+    <div class="menu-item" data-page="weekly" style="display:none;color:#81c784;font-weight:600">🗓️ 주간 업무</div>
+    <!-- AI 리메이커/재구성/썸네일 → ai-workflow 흡수 (2026-08-09) -->
     <div class="menu-item" data-page="remarker" style="display:none;color:#7c4dff;font-weight:600">AI 리메이커</div>
     <div class="menu-item" data-page="reconstruct" style="display:none;color:#e94560;font-weight:600">상세페이지 재구성</div>
     <div class="menu-item" data-page="thumbnail" style="display:none;color:#ff9800;font-weight:600">썸네일 만들기</div>
-    <div class="menu-title">배송</div>
-    <div class="menu-item" data-page="shipping" style="color:#0288d1;font-weight:600">배송 관리</div>
-    <!-- 사장님 결정 2026-06-23: 모든 배송 기능 (견적 비교 + 페덱스 + 무게 수정) 을 '배송 관리' 한 화면에 통합.
-         아래 두 메뉴는 페이지 div(#page-shipping-recs, #page-shipping-recs-wms) 와 라우팅은 유지하되
-         사이드바에서만 숨김 — 필요하면 style="" 제거로 재노출 가능.
-    <div class="menu-item" data-page="shipping-recs" style="color:#81c784;font-weight:600">📦 배송 추천</div>
-    <div class="menu-item" data-page="shipping-recs-wms" style="color:#ffd54f;font-weight:700">🆕 배송 추천 (자동계산)</div>
-    -->
+    <!-- 배송 추천 두 종 → shipping 통합 (Owner 결정 2026-06-23) -->
     <div class="menu-item" data-page="shipping-recs" style="display:none">📦 배송 추천 (숨김)</div>
     <div class="menu-item" data-page="shipping-recs-wms" style="display:none">🆕 배송 추천 (자동계산) (숨김)</div>
-    <div class="menu-title">분석</div>
-    <div class="menu-item" data-page="battle" style="color:#e94560;font-weight:600">전투 상황판</div>
-    <div class="menu-item" data-page="analysis">매출/마진 분석</div>
-    <div class="menu-item" data-page="ebay-trends">eBay 트렌드</div>
-    <div class="menu-item" data-page="anomalies">이상 탐지</div>
-    <div class="menu-item" data-page="sku-scores">SKU 점수 관리</div>
-    <div class="menu-item" data-page="top">효자상품 TOP</div>
-    <div class="menu-title">플랫폼</div>
-    <div class="menu-item" data-page="shopify">Shopify</div>
-    <div class="menu-item" data-page="ebay">eBay</div>
-    <div class="menu-item" data-page="naver">네이버</div>
-    <div class="menu-item" data-page="alibaba">Alibaba</div>
-    <div class="menu-item" data-page="shopee">Shopee</div>
-    <div class="menu-title">자동화</div>
-    <a href="https://ccorea-auto-production-1540.up.railway.app" target="_blank" class="menu-item" style="color:#ff5722;font-weight:600;text-decoration:none;display:block">리스팅 자동화 ↗</a>
-    <div class="menu-item" data-page="crawl-results">크롤링 결과</div>
-    <div class="menu-title" style="color:#64b5f6;margin-top:8px">── 운영 관리 ──</div>
-    <!-- PR O1 — Daily Operations Briefing (admin / staff 동일 가시성) -->
-    <div class="menu-item ops-menu" data-page="ops-briefing" style="color:#ffd54f;font-weight:600">📅 오늘 브리핑</div>
-    <!-- Phase 8I — Owner Inventory Decision Dashboard (admin only) -->
-    <div class="menu-item ops-menu" data-page="owner-inventory" data-admin-only style="color:#ffb74d;font-weight:600">📋 인벤토리 결정</div>
-    <!-- Phase B2C-7 — Employee Work OS -->
-    <div class="menu-item ops-menu" data-page="b2c-my-tasks" style="color:#69f0ae;font-weight:600">🎯 내 업무 (B2C)</div>
-    <div class="menu-item ops-menu" data-page="b2c-qc" data-admin-only style="color:#81d4fa;font-weight:600">🔍 B2C QC</div>
-    <div class="menu-item ops-menu" data-page="b2c-control" data-admin-only style="color:#ce93d8;font-weight:600">🎛 B2C Control</div>
-    <!-- PR R-Inbox UI — Opportunity Inbox (R0 후속, admin / staff 동일 가시성) -->
-    <div class="menu-item ops-menu" data-page="opportunity-inbox" style="color:#ce93d8;font-weight:600">💡 후보 Inbox</div>
-    <div class="menu-item ops-menu" data-page="ops-products" style="color:#81d4fa;font-weight:600">상품 검색/관리</div>
-    <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">재고 관리</div>
-    <!-- ops-pricing (products.cost_price / price_usd 편집) 은 SKU 마스터 (sku_master.cost_krw) 와 원가 필드 개념이 겹침.
-         혼선 방지를 위해 사이드바에서 숨김. 필요 시 /?page=ops-pricing URL 로 접근. -->
-    <div class="menu-item ops-menu" data-page="ops-pricing" style="display:none;color:#81d4fa;font-weight:600">SKU 원가·판매가 편집</div>
-    <div class="menu-item ops-menu" data-page="ops-profit" style="color:#81d4fa;font-weight:600">수익 분석</div>
-    <div class="menu-item ops-menu" data-page="ops-logs" style="color:#81d4fa;font-weight:600">자동화 로그</div>
-    <!-- WMS Phase 1 — admin 전용 -->
-    <div class="menu-item ops-menu" data-page="sku-master" data-admin-only style="color:#81d4fa;font-weight:600">📦 SKU 마스터</div>
-    <div class="menu-item ops-menu" data-page="exception-tasks" data-admin-only style="color:#81d4fa;font-weight:600">⚠️ 자동 예외</div>
-    <!-- WMS Phase 2 — staff 도 접근 가능 (mock import + 목록 + 상세 통합). 권한 차단보다 실행자 기록 우선.
-         2026-08-30 Owner 지시: OMS 만들려다 잘못 만든 것이라 UI 숨김.
-         라우트/페이지 div/JS(orderList.js, orderImport.js)/DB 는 보존 · 롤백 쉽게. -->
+    <!-- WMS 주문 → owner-hidden (2026-08-30) -->
     <div class="menu-item ops-menu" data-page="wms-orders" style="display:none;color:#81d4fa;font-weight:600">📦 WMS 주문 (숨김)</div>
-    <div class="menu-title">시스템</div>
-    <div class="menu-item" data-page="sync">동기화</div>
-    <div class="menu-item" data-page="settings" style="color:#ff9800;font-weight:600">설정</div>
-    <div class="menu-item" data-page="export" style="color:#4caf50;font-weight:600">상품 내보내기</div>
+    <!-- ops-pricing → sku-master 원가 필드 개념 겹침 · URL 접근 유지 -->
+    <div class="menu-item ops-menu" data-page="ops-pricing" style="display:none;color:#81d4fa;font-weight:600">SKU 원가·판매가 편집 (숨김)</div>
+    <!-- PMC-UI-MAP-2A hidden (2026-09-07): 상세 페이지는 유지 · 사이드바에서만 숨김 · URL/deep-link 여전히 동작 -->
+    <div class="menu-item ops-menu" data-page="ops-products" style="display:none;color:#81d4fa;font-weight:600">상품 검색/관리 (숨김)</div>
+    <div class="menu-item" data-page="catalog" style="display:none;color:#4db6ac;font-weight:600">📗 카탈로그 가격 (숨김)</div>
+    <div class="menu-item" data-page="crawl-results" style="display:none">크롤링 결과 (숨김 · URL 접근)</div>
+    <!-- 플랫폼별 리스팅 → "채널 리스팅" (products) 로 통합. URL 알리아스 유지 (dashboard.js:96-101). -->
+    <div class="menu-item" data-page="shopify" style="display:none">Shopify (숨김)</div>
+    <div class="menu-item" data-page="ebay" style="display:none">eBay (숨김)</div>
+    <div class="menu-item" data-page="naver" style="display:none">네이버 (숨김)</div>
+    <div class="menu-item" data-page="alibaba" style="display:none">Alibaba (숨김)</div>
+    <div class="menu-item" data-page="shopee" style="display:none">Shopee (숨김)</div>
+    <!-- 분석 페이지들 → 사이드바에서 숨김 · URL 접근 유지 -->
+    <div class="menu-item" data-page="battle" style="display:none;color:#e94560;font-weight:600">전투 상황판 (숨김)</div>
+    <div class="menu-item" data-page="analysis" style="display:none">매출/마진 분석 (숨김)</div>
+    <div class="menu-item" data-page="ebay-trends" style="display:none">eBay 트렌드 (숨김)</div>
+    <div class="menu-item" data-page="anomalies" style="display:none">이상 탐지 (숨김)</div>
+    <div class="menu-item" data-page="sku-scores" style="display:none">SKU 점수 관리 (숨김)</div>
+    <div class="menu-item" data-page="top" style="display:none">효자상품 TOP (숨김)</div>
   </div>
 
   <div class="main">
