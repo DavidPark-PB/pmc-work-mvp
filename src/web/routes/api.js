@@ -5815,7 +5815,16 @@ router.put('/platform-registry/settings/:key', async (req, res) => {
 // ===========================
 
 // POST /api/export — export product to platforms
-router.post('/export', async (req, res) => {
+//   PMC-EXPORT-SAFETY-2A (2026-09-08) · requireAdmin gate.
+//     Real marketplace createProduct calls MUST come only from real admin
+//     sessions. Non-admin real staff → 403. Legacy shared-password admin
+//     is additionally blocked at the earlier blockLegacyWrites middleware
+//     via '/api/export' in WRITE_PATHS_FOR_REAL_USER (auth.js:268-283).
+//     Downstream ProductExporter safety (dryRun default, idempotency,
+//     existing-listing precheck, UNKNOWN state, SoT write-back, adapter
+//     contract fix, weight fail-closed) is deferred to phases
+//     EXPORT-SAFETY-2B..2H per PMC-EXPORT-SAFETY-1 §16.
+router.post('/export', requireAdmin, async (req, res) => {
   try {
     const { sku, platforms: targetPlatforms } = req.body;
     if (!sku || !targetPlatforms || targetPlatforms.length === 0) {
@@ -5830,7 +5839,11 @@ router.post('/export', async (req, res) => {
 });
 
 // POST /api/export/retry — retry failed exports
-router.post('/export/retry', async (req, res) => {
+//   PMC-EXPORT-SAFETY-2A · same requireAdmin gate as /export.
+//     Note: this route currently ignores the request body and re-runs ALL
+//     status='failed' rows including ambiguous timeouts (documented risk
+//     in PMC-EXPORT-SAFETY-1 §10 · deferred to EXPORT-SAFETY-2D).
+router.post('/export/retry', requireAdmin, async (req, res) => {
   try {
     const exporter = new ProductExporter();
     const results = await exporter.retryFailedExports();

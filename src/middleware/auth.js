@@ -263,7 +263,9 @@ function requireFinanceAccess(req, res, next) {
  * 레거시 관리자 계정(공유 비번 로그인, userId=0)으로는 쓰기 작업 차단.
  * 업무관리 DB 작업은 users 테이블에 있는 실제 id가 필요함 (FK 제약).
  * 적용 대상: /api/tasks, /api/purchase-requests, /api/attendance, /api/payroll,
- *          /api/bonuses, /api/feedback, /api/users, /api/admin, /api/notifications
+ *          /api/bonuses, /api/feedback, /api/users, /api/admin, /api/notifications,
+ *          /api/export (PMC-EXPORT-SAFETY-2A · 2026-09-08 · marketplace 실쓰기 방지 ·
+ *          `/api/export`, `/api/export/retry` 모두 startsWith 매칭으로 커버됨)
  */
 const WRITE_PATHS_FOR_REAL_USER = [
   '/api/tasks',
@@ -275,6 +277,11 @@ const WRITE_PATHS_FOR_REAL_USER = [
   '/api/users',
   '/api/admin',
   '/api/notifications',
+  //   PMC-EXPORT-SAFETY-2A · single entry covers both POST /api/export and
+  //   POST /api/export/retry via existing startsWith(w + '/') matching at :283.
+  //   Route-local requireAdmin on both handlers is the second layer (defense
+  //   in depth) since legacy sessions synthesize isAdmin=true (auth.js:140-150).
+  '/api/export',
 ];
 function blockLegacyWrites(req, res, next) {
   if (!req.user?.isLegacy) return next();

@@ -198,55 +198,47 @@ test('NAV-5 · every hidden sidebar entry preserves DOM/JS/route intact', () => 
 // ═════════════════════════════════════════════════════════════════════
 
 test('NAV-6 · commit touches only frontend files (no backend / API / service / DB / test-except-nav)', () => {
-  //   Compare working tree vs HEAD. This test runs BEFORE commit (as a
-  //   guardrail). After commit, the assertion moves to comparing HEAD~1..HEAD.
-  //   Here we support both: prefer `git diff HEAD --name-only` if commit
-  //   not yet made, else `git show --name-only HEAD` on the freshly-made
-  //   commit. Any test running here should see only:
-  //     public/index.html
-  //     tests/web/pmcUiMap2A.test.js
-  //   in the diff scope.
-  let diffFiles;
+  //   PMC-UI-MAP-2A landed as commit f3e3b5d. This guardrail asserts the
+  //   FROZEN commit's file scope was frontend-only. We inspect the commit
+  //   directly (git show --name-only f3e3b5d) rather than the working tree,
+  //   so subsequent unrelated commits (e.g. PMC-EXPORT-SAFETY-2A editing
+  //   src/middleware/auth.js + src/web/routes/api.js) do NOT trip this check.
+  //   The assertion is now stricter, not looser: it will fail if f3e3b5d
+  //   itself contained a forbidden path.
+  const FROZEN_COMMIT = 'f3e3b5d';
+  let commitFiles;
   try {
-    //   Try to detect if there's an unpushed HEAD commit whose scope is exactly this fix.
-    const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: REPO, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
-    const unstaged = execFileSync('git', ['diff', '--name-only'], { cwd: REPO, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
-    diffFiles = new Set([...staged, ...unstaged]);
+    commitFiles = new Set(
+      execFileSync('git', ['show', '--name-only', '--pretty=format:', FROZEN_COMMIT],
+        { cwd: REPO, encoding: 'utf8' })
+        .trim().split('\n').filter(Boolean)
+    );
   } catch (_) {
-    diffFiles = new Set();
+    //   If the commit isn't in local history, fall back to working-tree
+    //   check (pre-push development mode).
+    const staged   = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: REPO, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+    const unstaged = execFileSync('git', ['diff', '--name-only'],             { cwd: REPO, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+    commitFiles = new Set([...staged, ...unstaged]);
   }
-  //   Whitelist of files that PMC-UI-MAP-2A is allowed to touch.
+  //   Whitelist of files PMC-UI-MAP-2A is allowed to touch.
   const ALLOWED = new Set([
     'public/index.html',
     'tests/web/pmcUiMap2A.test.js',
   ]);
-  //   Any file in the diff that ISN'T allowed AND is a backend/API/service/DB
-  //   file MUST be absent. Baseline dirty state exists (~211 files) that we
-  //   must not confuse with our own changes; only enforce the negative.
   const FORBIDDEN_PATTERNS = [
     /^src\/api\//, /^src\/services\//, /^src\/jobs\//, /^src\/engines\//,
     /^src\/web\/routes\//, /^src\/db\//, /^src\/middleware\//,
     /^supabase\/migrations\//, /^scripts\//,
   ];
   const violations = [];
-  for (const f of diffFiles) {
+  for (const f of commitFiles) {
     if (ALLOWED.has(f)) continue;
     for (const pat of FORBIDDEN_PATTERNS) {
-      if (pat.test(f)) {
-        //   Baseline dirty allowance: src/api/ebayAPI.js is Phase 7A-4 unstaged
-        //   work that MUST remain untouched (comparing against HEAD picks it
-        //   up in `unstaged`). It's not part of this phase.
-        if (f === 'src/api/ebayAPI.js') continue;
-        //   Same for tests/oms/physicalCanonicalWriterPreflight.test.js and
-        //   other pre-existing baseline-dirty files. Allow specific known
-        //   baseline paths.
-        if (f === 'tests/oms/physicalCanonicalWriterPreflight.test.js') continue;
-        violations.push(f);
-      }
+      if (pat.test(f)) violations.push(f);
     }
   }
   assert.deepEqual(violations, [],
-    `PMC-UI-MAP-2A must not modify backend/API/service files. Violations: ${violations.join(', ')}`);
+    `PMC-UI-MAP-2A commit ${FROZEN_COMMIT} must not modify backend/API/service files. Violations: ${violations.join(', ')}`);
 });
 
 // ═════════════════════════════════════════════════════════════════════
