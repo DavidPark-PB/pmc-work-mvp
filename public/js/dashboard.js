@@ -1822,8 +1822,19 @@ async function loadExportPage() {
     }
   } catch (e) {}
 
-  // Export button
-  document.getElementById('runExportBtn').onclick = runExport;
+  //   PMC-EXPORT-SAFETY-2B · two-step preview → execute wiring.
+  //     runExportBtn  = 미리보기 (dry-run, no marketplace/DB write)
+  //     executeExportBtn = 실제 등록 (execute:true) — disabled until preview
+  //     returns; re-disabled on any SKU/platform change.
+  document.getElementById('runExportBtn').onclick = runExportPreview;
+  var execBtn = document.getElementById('executeExportBtn');
+  if (execBtn) execBtn.onclick = confirmAndExecuteExport;
+  //   Invalidate execute-ready state whenever the SKU or platform selection
+  //   changes — prevents "preview showed X, executed Y" drift.
+  var skuInput = document.getElementById('exportSku');
+  if (skuInput) skuInput.oninput = invalidateExportExecuteState;
+  var pfBox = document.getElementById('exportPlatformCheckboxes');
+  if (pfBox) pfBox.addEventListener('change', invalidateExportExecuteState);
 
   // Export status
   document.getElementById('refreshExportStatus').onclick = loadExportStatus;
@@ -1835,57 +1846,161 @@ async function loadExportPage() {
   document.getElementById('saveTranslateBtn').onclick = saveTranslation;
 }
 
-async function runExport() {
-  const sku = document.getElementById('exportSku').value.trim();
-  if (!sku) { alert('SKU를 입력하세요'); return; }
+//   PMC-EXPORT-SAFETY-2B · preview-and-execute-ready state.
+//     `lastPreview` holds the last successful preview along with the SKU +
+//     sorted platform list it was computed for. `confirmAndExecuteExport`
+//     refuses to run if the current form values do not match, preventing
+//     "previewed X, executed Y" drift when the user edits after preview.
+var lastPreview = null;
 
-  const checked = document.querySelectorAll('#exportPlatformCheckboxes input:checked');
-  const platforms = Array.from(checked).map(cb => cb.value);
-  if (platforms.length === 0) { alert('플랫폼을 선택하세요'); return; }
+function _currentExportForm() {
+  var sku = document.getElementById('exportSku').value.trim();
+  var checked = document.querySelectorAll('#exportPlatformCheckboxes input:checked');
+  var platforms = Array.from(checked).map(function(cb) { return cb.value; });
+  return { sku: sku, platforms: platforms, key: sku + '|' + platforms.slice().sort().join(',') };
+}
 
-  const progressDiv = document.getElementById('exportProgress');
-  const logDiv = document.getElementById('exportLog');
-  const bar = document.getElementById('exportProgressBar');
-  const resultDiv = document.getElementById('exportResult');
+function invalidateExportExecuteState() {
+  lastPreview = null;
+  var btn = document.getElementById('executeExportBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'not-allowed';
+  }
+}
+
+async function runExportPreview() {
+  var form = _currentExportForm();
+  if (!form.sku) { alert('SKU를 입력하세요'); return; }
+  if (form.platforms.length === 0) { alert('플랫폼을 선택하세요'); return; }
+
+  var progressDiv = document.getElementById('exportProgress');
+  var logDiv = document.getElementById('exportLog');
+  var bar = document.getElementById('exportProgressBar');
+  var resultDiv = document.getElementById('exportResult');
+
+  //   Any preview attempt invalidates the previous execute-ready state first
+  //   — the user must see a fresh successful preview before执 can re-enable.
+  invalidateExportExecuteState();
 
   progressDiv.style.display = 'block';
   resultDiv.style.display = 'none';
   logDiv.innerHTML = '';
   bar.style.width = '10%';
+  bar.style.background = '';
 
-  addExportLog(logDiv, `${sku} 상품을 ${platforms.join(', ')} 플랫폼에 내보내기 시작...`);
+  addExportLog(logDiv, form.sku + ' 미리보기: ' + form.platforms.join(', ') + ' (마켓플레이스/DB 쓰기 없음)');
   bar.style.width = '30%';
 
   try {
-    const res = await fetch(`${API}/export`, {
+    //   execute:false is explicit — backend defaults to preview even without
+    //   it, but we make the intent obvious on the wire.
+    var res = await fetch(API + '/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sku, platforms })
+      body: JSON.stringify({ sku: form.sku, platforms: form.platforms, execute: false })
     });
-    const data = await res.json();
+    var data = await res.json();
     bar.style.width = '100%';
 
     if (data.error) {
       addExportLog(logDiv, data.error, 'error');
-    } else {
-      const results = data.results || {};
-      for (const [pf, r] of Object.entries(results)) {
-        if (r.success) {
-          addExportLog(logDiv, `${pf}: 등록 성공 (가격: ${r.price || '-'})`, 'success');
-        } else {
-          addExportLog(logDiv, `${pf}: 실패 - ${r.error || 'unknown'}`, 'error');
-        }
+      return;
+    }
+    var results = data.results || {};
+    var anyBlockers = false;
+    for (var pf in results) {
+      if (!Object.prototype.hasOwnProperty.call(results, pf)) continue;
+      var r = results[pf] || {};
+      var line = pf + ' 미리보기 · 가격 ' + (r.computed_price != null ? r.computed_price : '-') +
+                 ' · 수량 ' + (r.computed_quantity != null ? r.computed_quantity : '-');
+      addExportLog(logDiv, line, r.supported ? '' : 'error');
+      if (r.blockers && r.blockers.length) {
+        anyBlockers = true;
+        addExportLog(logDiv, '  차단: ' + r.blockers.join(', '), 'error');
       }
-      resultDiv.style.display = 'block';
-      const successCount = Object.values(results).filter(r => r.success).length;
-      resultDiv.innerHTML = `<div class="card" style="background:#e8f5e9;border:1px solid #81c784">
-        <strong>${successCount}/${platforms.length}</strong> 플랫폼 등록 완료
-      </div>`;
+      if (r.warnings && r.warnings.length) {
+        addExportLog(logDiv, '  경고: ' + r.warnings.join(', '), '');
+      }
+    }
+    resultDiv.style.display = 'block';
+    resultDiv.innerHTML = anyBlockers
+      ? '<div class="card" style="background:#ffebee;border:1px solid #e57373">차단 사유가 있습니다. 실제 등록 불가.</div>'
+      : '<div class="card" style="background:#e3f2fd;border:1px solid #64b5f6">미리보기 완료. "실제 등록" 버튼을 눌러 마켓플레이스에 등록하세요.</div>';
+
+    if (!anyBlockers) {
+      lastPreview = { formKey: form.key, sku: form.sku, platforms: form.platforms, results: results };
+      var btn = document.getElementById('executeExportBtn');
+      if (btn) {
+        btn.disabled = false;
+        btn.style.opacity = '1';
+        btn.style.cursor = 'pointer';
+      }
     }
   } catch (e) {
     bar.style.width = '100%';
     bar.style.background = '#e53935';
-    addExportLog(logDiv, '내보내기 오류: ' + e.message, 'error');
+    addExportLog(logDiv, '미리보기 오류: ' + e.message, 'error');
+  }
+}
+
+async function confirmAndExecuteExport() {
+  //   Fresh-preview guard: form must match the last successful preview.
+  var form = _currentExportForm();
+  if (!lastPreview || lastPreview.formKey !== form.key) {
+    alert('입력이 변경되었습니다. 다시 미리보기를 실행하세요.');
+    invalidateExportExecuteState();
+    return;
+  }
+  var msg = '실제 마켓플레이스에 상품을 생성합니다.\n' +
+            'SKU: ' + form.sku + '\n' +
+            '플랫폼: ' + form.platforms.join(', ') + '\n\n' +
+            '계속하시겠습니까?';
+  if (!confirm(msg)) return;
+
+  var logDiv = document.getElementById('exportLog');
+  var bar = document.getElementById('exportProgressBar');
+  var resultDiv = document.getElementById('exportResult');
+  bar.style.width = '30%';
+  bar.style.background = '';
+  addExportLog(logDiv, '실제 등록 실행: ' + form.sku + ' → ' + form.platforms.join(', '));
+
+  try {
+    //   execute:true (strict boolean) is the only value the backend accepts
+    //   to reach the marketplace write path.
+    var res = await fetch(API + '/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sku: form.sku, platforms: form.platforms, execute: true })
+    });
+    var data = await res.json();
+    bar.style.width = '100%';
+    if (data.error) {
+      addExportLog(logDiv, data.error, 'error');
+      return;
+    }
+    var results = data.results || {};
+    for (var pf in results) {
+      if (!Object.prototype.hasOwnProperty.call(results, pf)) continue;
+      var r = results[pf] || {};
+      if (r.success) {
+        addExportLog(logDiv, pf + ': 등록 성공 (가격: ' + (r.price || '-') + ')', 'success');
+      } else {
+        addExportLog(logDiv, pf + ': 실패 - ' + (r.error || 'unknown'), 'error');
+      }
+    }
+    resultDiv.style.display = 'block';
+    var successCount = Object.values(results).filter(function(r) { return r.success; }).length;
+    resultDiv.innerHTML = '<div class="card" style="background:#e8f5e9;border:1px solid #81c784"><strong>' +
+      successCount + '/' + form.platforms.length + '</strong> 플랫폼 등록 완료</div>';
+    //   Execution consumes the ready state — user must preview again for the
+    //   next execution to protect against accidental double-fire.
+    invalidateExportExecuteState();
+  } catch (e) {
+    bar.style.width = '100%';
+    bar.style.background = '#e53935';
+    addExportLog(logDiv, '실행 오류: ' + e.message, 'error');
   }
 }
 

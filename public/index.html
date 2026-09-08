@@ -2554,7 +2554,12 @@
                 <!-- Dynamically loaded -->
               </div>
             </div>
-            <button class="refresh-btn" id="runExportBtn" style="background:#4caf50;height:36px;white-space:nowrap">내보내기 실행</button>
+            <!--   PMC-EXPORT-SAFETY-2B · two-step preview → 실제 등록.
+                 The execute button stays disabled until a successful preview
+                 returns, and re-disables on any input change. Backend still
+                 enforces execute:true — this is UX, not a safety boundary. -->
+            <button class="refresh-btn" id="runExportBtn" style="background:#4caf50;height:36px;white-space:nowrap">미리보기</button>
+            <button class="refresh-btn" id="executeExportBtn" disabled style="background:#c62828;height:36px;white-space:nowrap;opacity:0.5;cursor:not-allowed">실제 등록 (실행)</button>
           </div>
           <div id="exportProgress" style="display:none;margin-top:16px">
             <div class="progress-bar-container">

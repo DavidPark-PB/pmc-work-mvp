@@ -28,12 +28,29 @@ class ProductExporter {
   }
 
   /**
-   * Export a product to multiple platforms
-   * @param {string} sku - Product SKU
-   * @param {string[]} targetPlatformKeys - e.g. ['ebay', 'shopify', 'naver']
-   * @param {object} options - { skipTranslation, skipImages }
+   * Export a product to multiple platforms.
+   *
+   * PMC-EXPORT-SAFETY-2B (2026-09-08) · dry-run is the default.
+   *   The caller must explicitly pass `options.dryRun === false` to reach the
+   *   real marketplace `createProduct` path. Any other value — undefined,
+   *   `true`, `null`, `0`, `"false"` — resolves to dry-run. This is a
+   *   fail-closed default so future internal callers cannot accidentally
+   *   trigger a real marketplace write by forgetting the options argument.
+   *
+   *   Dry-run computes: product lookup, fees/rates/settings lookup, cached
+   *   translation lookup (auto-translate is skipped — it writes DB), price
+   *   calculation, optimizer output. It stops BEFORE:
+   *     - platRepo.upsertExportStatus(...)   (DB write)
+   *     - api.createProduct(...)              (marketplace write)
+   *     - translationService.translateProduct (DB write via upsertTranslation)
+   *
+   * @param {string}   sku                  Product SKU
+   * @param {string[]} targetPlatformKeys   e.g. ['ebay', 'shopify', 'naver']
+   * @param {object}   options              { dryRun?, skipTranslation?, skipImages? }
    */
   async exportProduct(sku, targetPlatformKeys, options = {}) {
+    //   Fail-closed: only strict boolean `false` enables execution.
+    const dryRun = options.dryRun !== false;
     const db = getClient();
     const platRepo = this._getPlatformRepo();
 
@@ -52,8 +69,10 @@ class ProductExporter {
     if (!options.skipTranslation) {
       try {
         translation = await this.translationService.getTranslation(product.id, 'en');
-        // If no translation exists and product has Korean data, auto-translate
-        if (!translation && (product.title_ko || product.title)) {
+        //   Auto-translation writes to DB via translationService.upsertTranslation,
+        //   so it is EXECUTE-only. Dry-run uses whatever cached translation
+        //   already exists and surfaces the absence as a warning downstream.
+        if (!dryRun && !translation && (product.title_ko || product.title)) {
           translation = await this.translationService.translateProduct(product.id, 'en');
         }
       } catch (err) {
@@ -72,15 +91,75 @@ class ProductExporter {
       shippingUSD: settings.default_shipping_usd || 3.9,
     }, fees, rates);
 
-    // 6. Export to each platform
+    // 6. Export (or preview) each platform
     const results = {};
     for (const key of targetPlatformKeys) {
-      results[key] = await this._exportToSinglePlatform(
-        enrichedProduct, key, prices, platRepo, options
-      );
+      if (dryRun) {
+        results[key] = await this._previewSinglePlatform(
+          enrichedProduct, key, prices, platRepo, { translationLoaded: !!translation }
+        );
+      } else {
+        results[key] = await this._exportToSinglePlatform(
+          enrichedProduct, key, prices, platRepo, options
+        );
+      }
     }
 
-    return { sku, results, prices };
+    return { sku, results, prices, dryRun };
+  }
+
+  //   Read-only per-platform preview. Must NOT invoke platform API and must
+  //   NOT write platform_export_status. See PMC-EXPORT-SAFETY-2B §6/§7.
+  async _previewSinglePlatform(product, platformKey, prices, platRepo, ctx = {}) {
+    const platform = await platformRegistry.getPlatform(platformKey);
+    if (!platform) {
+      return {
+        platform: platformKey,
+        supported: false,
+        would_execute: false,
+        warnings: [],
+        blockers: ['Platform not found or inactive'],
+      };
+    }
+
+    const warnings = [];
+    const blockers = [];
+
+    if (prices[platformKey]?.error) {
+      blockers.push(prices[platformKey].error);
+    }
+    if (!ctx.translationLoaded) {
+      warnings.push('영어 번역이 캐시에 없습니다. 실행 시 자동 번역이 발생합니다.');
+    }
+
+    //   Read-only lookup of any custom platform_mapping row (title/description/
+    //   price override). getMappingForProductPlatform is a SELECT.
+    const mapping = await platRepo.getMappingForProductPlatform(product.id, platform.id);
+    const productForPlatform = { ...product };
+    let effectivePrices = prices;
+    if (mapping) {
+      if (mapping.platform_title) productForPlatform.titleEn = mapping.platform_title;
+      if (mapping.platform_description) productForPlatform.descriptionEn = mapping.platform_description;
+      if (mapping.platform_price) {
+        effectivePrices = {
+          ...prices,
+          [platformKey]: { ...prices[platformKey], price: parseFloat(mapping.platform_price) },
+        };
+      }
+    }
+
+    return {
+      platform: platformKey,
+      supported: true,
+      would_execute: false,
+      computed_price: effectivePrices[platformKey]?.price ?? null,
+      currency: effectivePrices[platformKey]?.currency ?? null,
+      computed_quantity: product.quantity ?? null,
+      title: productForPlatform.titleEn || productForPlatform.title || '',
+      category_id: mapping?.platform_category_id ?? null,
+      warnings,
+      blockers,
+    };
   }
 
   async _exportToSinglePlatform(product, platformKey, prices, platRepo, options) {
@@ -203,7 +282,11 @@ class ProductExporter {
       });
 
       try {
-        const result = await this.exportProduct(sku, [platformKey]);
+        //   PMC-EXPORT-SAFETY-2B: retry historically executed writes. Preserve
+        //   that behavior by opting out of the new fail-closed dry-run default.
+        //   Full retry redesign (idempotency, ambiguous-timeout UNKNOWN state,
+        //   per-sku body-driven retry) is deferred to EXPORT-SAFETY-2D.
+        const result = await this.exportProduct(sku, [platformKey], { dryRun: false });
         results.push({ sku, platform: platformKey, ...result.results[platformKey] });
       } catch (err) {
         results.push({ sku, platform: platformKey, success: false, error: err.message });

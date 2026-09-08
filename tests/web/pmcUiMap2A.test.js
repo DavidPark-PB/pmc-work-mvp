@@ -255,9 +255,11 @@ test('NAV-7 · /api/export handler byte-identical (deferred to UI-MAP-2E)', () =
   //   §15 problem #3. Verify no accidental admin guard was added by this phase.
   //   Isolate the small block around the export route.
   const idx = src.search(exportRe);
-  const block = src.slice(idx, idx + 400);
-  //   In this phase, we neither gate nor un-gate. Just confirm the handler
-  //   signature line is present. Structural fence only.
+  //   Window widened from 400 → 800 in PMC-EXPORT-SAFETY-2B: added
+  //   comment+execute-parsing pushed exporter.exportProduct(...) past the
+  //   original slice. 800 chars stays bounded to the /export handler itself
+  //   (does not spill into /export/retry).
+  const block = src.slice(idx, idx + 800);
   assert.ok(/exportProduct\s*\(/.test(block),
     'export route must still call exporter.exportProduct(...)');
 });

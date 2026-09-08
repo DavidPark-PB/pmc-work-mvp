@@ -5820,18 +5820,24 @@ router.put('/platform-registry/settings/:key', async (req, res) => {
 //     sessions. Non-admin real staff → 403. Legacy shared-password admin
 //     is additionally blocked at the earlier blockLegacyWrites middleware
 //     via '/api/export' in WRITE_PATHS_FOR_REAL_USER (auth.js:268-283).
-//     Downstream ProductExporter safety (dryRun default, idempotency,
-//     existing-listing precheck, UNKNOWN state, SoT write-back, adapter
-//     contract fix, weight fail-closed) is deferred to phases
-//     EXPORT-SAFETY-2B..2H per PMC-EXPORT-SAFETY-1 §16.
+//   PMC-EXPORT-SAFETY-2B (2026-09-08) · dry-run is the default contract.
+//     Only strict boolean `execute === true` reaches the marketplace write
+//     path. Any other value ('true', 1, '1', 'yes', {}, undefined, false)
+//     resolves to a preview. Backend is authoritative — the UI's two-step
+//     preview→confirm→execute flow is a UX aid, not a safety boundary.
+//     Downstream ProductExporter safety (idempotency, existing-listing
+//     precheck, UNKNOWN state, SoT write-back, adapter contract fix,
+//     weight fail-closed) is deferred to phases EXPORT-SAFETY-2C..2H.
 router.post('/export', requireAdmin, async (req, res) => {
   try {
     const { sku, platforms: targetPlatforms } = req.body;
     if (!sku || !targetPlatforms || targetPlatforms.length === 0) {
       return res.status(400).json({ error: 'sku와 platforms 필수' });
     }
+    //   Strict boolean-true check — everything else is a preview.
+    const execute = req.body?.execute === true;
     const exporter = new ProductExporter();
-    const result = await exporter.exportProduct(sku, targetPlatforms);
+    const result = await exporter.exportProduct(sku, targetPlatforms, { dryRun: !execute });
     res.json({ success: true, ...result });
   } catch (error) {
     res.status(500).json({ error: error.message });
