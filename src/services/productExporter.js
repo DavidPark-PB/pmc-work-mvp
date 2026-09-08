@@ -15,7 +15,18 @@ const platformRegistry = require('./platformRegistry');
 const pricingEngine = require('./pricingEngine');
 const platformOptimizer = require('./platformOptimizer');
 const TranslationService = require('./translationService');
+const schedulerLock = require('./schedulerLock');
 const { getClient } = require('../db/supabaseClient');
+
+//   PMC-EXPORT-SAFETY-2C · per-(SKU, platform) distributed lease.
+//     TTL: 180s covers the worst observed adapter runtime — Shopify _request
+//     retries up to 4× (shopifyAPI.js:36) at 30s timeout with 1+2+4+8s backoff
+//     ≈ 135s. eBay Trading callTradingAPI is 30s + optional 30s token-refresh
+//     retry = 60s. Naver/Qoo10/Alibaba adapters are 10–15s. Heartbeat every
+//     30s renews the TTL during long adapter calls; if the process dies the
+//     lease frees within 180s so a legitimate retry can proceed.
+const LEASE_TTL_SEC       = 180;
+const LEASE_HEARTBEAT_SEC = 30;
 
 class ProductExporter {
   constructor() {
@@ -162,7 +173,18 @@ class ProductExporter {
     };
   }
 
+  //   Deterministic per-(SKU, platform) lease key. Same SKU + platform →
+  //   same key across processes and Railway instances. platformKey is
+  //   lower-cased for defensive normalization; SKU is trimmed. No random,
+  //   no request-specific component (§7).
+  _buildExportLeaseKey(sku, platformKey) {
+    const safeSku  = String(sku ?? '').trim();
+    const safePlat = String(platformKey ?? '').trim().toLowerCase();
+    return `export:${safePlat}:${safeSku}`;
+  }
+
   async _exportToSinglePlatform(product, platformKey, prices, platRepo, options) {
+    //   Pre-lease guards · avoid burning a lease on a doomed operation.
     const platform = await platformRegistry.getPlatform(platformKey);
     if (!platform) return { success: false, error: 'Platform not found or inactive' };
 
@@ -170,7 +192,50 @@ class ProductExporter {
       return { success: false, error: prices[platformKey].error };
     }
 
-    // Mark as exporting
+    //   PMC-EXPORT-SAFETY-2C · per-(SKU, platform) distributed lease.
+    //   ONE concurrent execution reaches api.createProduct across (a) the
+    //   same Node process (event-loop interleaving), (b) concurrent requests,
+    //   and (c) multiple Railway instances. Fail-closed: if lease infra
+    //   itself errors, the caller does not proceed.
+    //
+    //   NON-GOAL: This lease does NOT make export idempotent. A sequential
+    //   retry after the lease is released can still duplicate. Ambiguous
+    //   marketplace timeouts (marketplace committed but response lost) are
+    //   deferred to EXPORT-SAFETY-2D (UNKNOWN state + retry exclusion).
+    const leaseKey = this._buildExportLeaseKey(product.sku, platformKey);
+    const leaseResult = await schedulerLock.withLease(
+      leaseKey,
+      { ttlSec: LEASE_TTL_SEC, heartbeatSec: LEASE_HEARTBEAT_SEC, failPolicy: 'closed' },
+      async (ctx) => this._executeUnderLease(product, platform, platformKey, prices, platRepo, ctx),
+    );
+
+    if (!leaseResult.acquired) {
+      //   Two distinct fail-closed reasons collapse into caller-facing codes:
+      //     · SKIP_LOCKED (acquired:false, ran:false, no error): another
+      //       export owns the key right now → CONCURRENT_EXPORT_IN_PROGRESS.
+      //     · ACQUIRE_ERROR under failPolicy:'closed' (acquired:false,
+      //       ran:false, error present): lease infrastructure itself failed
+      //       → LEASE_INFRA_FAILURE. Neither wrote platform_export_status;
+      //       neither called createProduct.
+      if (leaseResult.error) {
+        return {
+          success: false,
+          code:  'LEASE_INFRA_FAILURE',
+          error: 'LEASE_INFRA_FAILURE',
+        };
+      }
+      return {
+        success: false,
+        code:  'CONCURRENT_EXPORT_IN_PROGRESS',
+        error: 'CONCURRENT_EXPORT_IN_PROGRESS',
+      };
+    }
+    return leaseResult.value;
+  }
+
+  async _executeUnderLease(product, platform, platformKey, prices, platRepo, ctx) {
+    //   Mark as exporting — inside the lease, so a losing concurrent caller
+    //   cannot see or overwrite this transitional state.
     await platRepo.upsertExportStatus(product.id, platform.id, {
       export_status: 'exporting',
     });
@@ -199,10 +264,36 @@ class ProductExporter {
         throw new Error('Platform optimizer returned null');
       }
 
-      // Call platform API
+      // Load API + refresh token if needed
       const api = platformRegistry.getApiInstance(platformKey);
       if (platformKey === 'naver' && typeof api.getToken === 'function') {
         await api.getToken();
+      }
+
+      //   Ownership fence: fresh DB round-trip immediately before the
+      //   marketplace write. verifyOwnership() returns true only if this
+      //   run still holds the lease; throws on RPC infra failure — treat
+      //   any non-true outcome as ownership-lost (fail-closed §10).
+      let stillOwned = false;
+      try {
+        stillOwned = await ctx.verifyOwnership();
+      } catch (_verifyErr) {
+        stillOwned = false;
+      }
+      if (!stillOwned) {
+        //   Do NOT call createProduct. Do NOT classify as marketplace failure.
+        //   Revert the transitional 'exporting' state to 'pending' with a
+        //   distinct last_error tag so retry/introspection can tell this
+        //   apart from marketplace failures.
+        await platRepo.upsertExportStatus(product.id, platform.id, {
+          export_status: 'pending',
+          last_error:    'LEASE_LOST_BEFORE_MARKETPLACE_WRITE',
+        });
+        return {
+          success: false,
+          code:  'LEASE_LOST_BEFORE_MARKETPLACE_WRITE',
+          error: 'LEASE_LOST_BEFORE_MARKETPLACE_WRITE',
+        };
       }
 
       const apiResult = await api.createProduct(optimizedData);

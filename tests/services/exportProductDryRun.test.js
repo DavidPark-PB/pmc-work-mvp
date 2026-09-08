@@ -123,6 +123,20 @@ class FakeTranslationService {
 }
 stub(require.resolve(path.join(REPO, 'src/services/translationService')), FakeTranslationService);
 
+//   PMC-EXPORT-SAFETY-2C added `require('./schedulerLock')` to productExporter.
+//   Stub it so this suite never touches the real scheduler_leases DB. The
+//   dry-run tests never reach the lease path anyway (2C only leases on
+//   execute:true), but the execute-mode PREVIEW-10 test does. Behavior:
+//   always-succeeds pass-through so the underlying test contracts remain
+//   about dry-run semantics, not lease semantics (that's 2C's own suite).
+stub(require.resolve(path.join(REPO, 'src/services/schedulerLock')), {
+  withLease: async (_key, _opts, fn) => {
+    const value = await fn({ runId: 'test-run', isLeaseLost: () => false, verifyOwnership: async () => true });
+    return { acquired: true, ran: true, leaseLost: false, value };
+  },
+  OWNER_ID: 'test', MAX_TTL_SECONDS: 86400, DEFAULT_TTL_SECONDS: 600, DEFAULT_HEARTBEAT_SEC: 60,
+});
+
 //   Now load ProductExporter — its `require(...)` calls will hit our stubs.
 delete require.cache[require.resolve(path.join(REPO, 'src/services/productExporter'))];
 const ProductExporter = require(path.join(REPO, 'src/services/productExporter'));
