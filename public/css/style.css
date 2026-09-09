@@ -673,3 +673,88 @@ table td { color: var(--text); }
 
 /* ── Reduce decorative shadows across the app ───────────────────────── */
 .card, .stat-card { box-shadow: none; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * PMC-UI-VISUAL-1B · Owner hierarchy fix layer (2026-09-09).
+ *   Extends 1V restraint layer. Addresses rendered-pixel failures:
+ *   loud header sync buttons, calendar-hero above-the-fold, emoji
+ *   noise on page bodies, rainbow inventory action cluster.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Header sync buttons ──────────────────────────────────────────────
+ *   Fix: 상품 동기화 / 마스터 동기화 lost their inline background colors
+ *   (removed at source). They now inherit the base .refresh-btn overlay
+ *   which is neutral-outline. No !important needed. */
+
+/* ── notifBtn — was 🔔 emoji, now "알림" text ──
+ *   Text-based restrained button. Numeric badge stays as the visual
+ *   signal when there are unread notifications. */
+#notifBtn {
+  background: transparent;
+  color: var(--header-fg);
+  border: 1px solid rgba(255,255,255,0.25);
+  font-weight: 500;
+}
+#notifBtn:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.4); }
+
+/* ── userMenuBtn — subtle outline (was solid dark #2a2a4a inline) ── */
+#userMenuBtn {
+  background: transparent !important;
+  border: 1px solid rgba(255,255,255,0.25) !important;
+}
+#userMenuBtn:hover { background: rgba(255,255,255,0.08) !important; }
+#userMenuRole { background: rgba(255,255,255,0.15) !important; }
+
+/* ── Danger-outline button variant ─────────────────────────────────────
+ *   For genuinely destructive actions that MUST remain identifiable as
+ *   danger but must NOT dominate the header. Subtle red outline on
+ *   transparent bg; solid red only on hover. Used by:
+ *     · #clearAllSkuBtn (SKU 일괄 초기화 — bulk destructive reset)
+ *   Do NOT use for utility actions. */
+.refresh-btn.danger-outline {
+  background: transparent;
+  color: #ffb3b3;
+  border: 1px solid rgba(198, 40, 40, 0.55);
+  font-weight: 500;
+}
+.refresh-btn.danger-outline:hover {
+  background: rgba(198, 40, 40, 0.15);
+  color: #ffdcdc;
+  border-color: rgba(198, 40, 40, 0.9);
+}
+
+/* ── Inventory action-button variants (page body, not header) ────────── */
+.btn-accent {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: 1px solid var(--accent);
+}
+.btn-accent:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn-neutral {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  font-weight: 500;
+}
+.btn-neutral:hover { background: var(--surface-muted); border-color: var(--text-muted); }
+
+/* ── Dashboard Action Required strip ─────────────────────────────────── */
+#dashboardActionRequired table { border: 0; }
+#dashboardActionRequired thead th {
+  background: transparent;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+#dashboardActionRequired tbody td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+}
+#dashboardActionRequired tbody tr:last-child td { border-bottom: 0; }
+#dashboardActionRequired tbody td[data-metric] { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+#dashboardActionRequired tbody td[data-metric]:not([data-value-loaded]) { color: var(--text-subtle); font-weight: 500; }

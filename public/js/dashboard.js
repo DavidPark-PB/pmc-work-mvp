@@ -691,7 +691,7 @@ function renderTeamCalendar() {
   let html = `
     <div class="card" style="padding:16px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <h3 style="margin:0;color:#fff;font-size:16px;">📅 팀 일정 · ${_teamCalMonth}</h3>
+        <h3 style="margin:0;color:#fff;font-size:16px;">팀 일정 · ${_teamCalMonth}</h3>
         <div style="display:flex;gap:6px;align-items:center;">
           <button type="button" onclick="_teamCalChangeMonth(-1)" style="padding:5px 10px;background:#2a2a4a;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;">◀</button>
           <button type="button" onclick="_teamCalToday()" style="padding:5px 10px;background:#7c4dff;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:12px;font-weight:600;">오늘</button>
@@ -736,7 +736,7 @@ function renderTeamCalendar() {
   html += `
       </div>
       <div style="margin-top:10px;font-size:10px;color:#888;">
-        일정: 🌴 연차 · 🌤 반차 · 🚗 외근 · 👥 회의 · 📋 업무 · 📌 기타 · 색깔은 직원별
+        일정 · 연차 · 반차 · 외근 · 회의 · 업무 · 기타 · 색깔은 직원별
       </div>
     </div>
   `;

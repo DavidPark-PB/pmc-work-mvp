@@ -12,14 +12,14 @@
     <div class="header-right">
       <span class="last-updated" id="lastUpdated">로딩 중...</span>
       <button class="refresh-btn" id="refreshBtn">새로고침</button>
-      <button class="refresh-btn" id="syncProductsBtn" style="background:#0288d1;margin-left:8px" onclick="syncAllProducts()">상품 동기화</button>
-      <button class="refresh-btn" style="background:#d84315;margin-left:8px" onclick="clearAllSKU(this)">SKU 일괄 초기화</button>
-      <button class="refresh-btn" id="syncMasterBtn" data-admin-only title="마스터 DB에 eBay/Shopify 상품 일괄 동기화 (관리자 전용)" style="background:#6a1b9a;margin-left:8px" onclick="syncToMaster()">마스터 동기화</button>
-      <!-- 알림 벨 (Phase 5) -->
+      <button class="refresh-btn" id="syncProductsBtn" style="margin-left:8px" onclick="syncAllProducts()">상품 동기화</button>
+      <button class="refresh-btn danger-outline" id="clearAllSkuBtn" style="margin-left:8px" onclick="clearAllSKU(this)">SKU 일괄 초기화</button>
+      <button class="refresh-btn" id="syncMasterBtn" data-admin-only title="마스터 DB에 eBay/Shopify 상품 일괄 동기화 (관리자 전용)" style="margin-left:8px" onclick="syncToMaster()">마스터 동기화</button>
+      <!-- 알림 (Phase 5) — PMC-UI-VISUAL-1B: 🔔 emoji removed, restrained "알림" text with numeric badge only. -->
       <div id="notifWrap" style="position:relative;margin-left:8px;display:inline-block;">
-        <button id="notifBtn" onclick="toggleNotif(event)" style="background:#2a2a4a;color:#fff;border:0;padding:8px 12px;border-radius:6px;cursor:pointer;position:relative;font-size:14px;">
-          🔔
-          <span id="notifCount" style="display:none;position:absolute;top:-4px;right:-4px;background:#e94560;color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;min-width:18px;"></span>
+        <button id="notifBtn" class="refresh-btn" onclick="toggleNotif(event)" style="padding:6px 12px;position:relative;font-size:13px;">
+          알림
+          <span id="notifCount" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--danger);color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;min-width:18px;"></span>
         </button>
         <div id="notifDropdown" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:#1a1a2e;border:1px solid #333;border-radius:8px;width:360px;max-height:480px;overflow:auto;z-index:1000;box-shadow:0 4px 12px rgba(0,0,0,0.3);">
           <div style="padding:10px 14px;border-bottom:1px solid #2a2a4a;display:flex;justify-content:space-between;align-items:center;">
@@ -761,11 +761,65 @@
 
     <!-- ===== 대시보드 페이지 ===== -->
     <div id="page-dashboard" class="page active">
+      <!--
+        PMC-UI-VISUAL-1B (2026-09-09) · Owner information hierarchy.
+          ORDER (top → bottom):
+            1. 재무 요약 (권한자만; 숨김 기본)
+            2. 지금 처리해야 할 것  ← NEW · action-required strip
+            3. 플랫폼 카드 / 매출 요약 KPI
+            4. 플랫폼별 매출 비교 · 마진 현황
+            5. 최근 상품 · 동기화
+            6. 팀 일정 캘린더  ← moved from position 2 to secondary/bottom
+          The calendar keeps its full functionality but no longer occupies
+          the above-the-fold hero (spec §7-D).
+      -->
+
       <!-- 💹 재무 요약 (재무 권한자만) -->
       <div id="financeSummaryCard" style="display:none;margin-bottom:16px;"></div>
 
-      <!-- 📅 팀 일정 캘린더 (Owner Directive 2026-09-04) -->
-      <div id="teamCalendarCard" style="margin-bottom:16px;"></div>
+      <!-- 🚨 지금 처리해야 할 것 (Action Required)  ·  PMC-UI-VISUAL-1B ·
+           Renders links to existing operational-exception routes with
+           counts populated by the existing OPS-BRIEF loader if available;
+           otherwise "-" (never invented 0). Preserves the OPS-BRIEF SKU
+           drill deep-link exactly: ?page=exception-tasks&exceptionType=
+           SKU_MATCH_FAILED&status=open. -->
+      <div id="dashboardActionRequired" class="card" style="margin-bottom:16px;">
+        <div class="card-header" style="border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:8px;">
+          <h3 style="margin:0;font-size:15px;">지금 처리해야 할 것</h3>
+          <span style="color:var(--text-muted);font-size:11px;">Action Required</span>
+        </div>
+        <table style="width:100%;border:0;">
+          <thead>
+            <tr>
+              <th style="width:auto;">문제</th>
+              <th style="width:80px;text-align:right;">수량</th>
+              <th style="width:70px;text-align:right;">처리</th>
+            </tr>
+          </thead>
+          <tbody id="dashboardActionRequiredBody">
+            <tr>
+              <td>SKU 매칭 실패</td>
+              <td style="text-align:right;" data-metric="sku_match_failed">-</td>
+              <td style="text-align:right;"><a href="?page=exception-tasks&amp;exceptionType=SKU_MATCH_FAILED&amp;status=open" style="color:var(--accent);text-decoration:none;font-weight:500;">보기 →</a></td>
+            </tr>
+            <tr>
+              <td>자동 예외 (전체)</td>
+              <td style="text-align:right;" data-metric="auto_exception_total">-</td>
+              <td style="text-align:right;"><a href="?page=exception-tasks" style="color:var(--accent);text-decoration:none;font-weight:500;">보기 →</a></td>
+            </tr>
+            <tr>
+              <td>배송 대기</td>
+              <td style="text-align:right;" data-metric="shipping_pending">-</td>
+              <td style="text-align:right;"><a href="?page=shipping" style="color:var(--accent);text-decoration:none;font-weight:500;">보기 →</a></td>
+            </tr>
+            <tr>
+              <td>업무 지시</td>
+              <td style="text-align:right;" data-metric="tasks_open">-</td>
+              <td style="text-align:right;"><a href="?page=tasks" style="color:var(--accent);text-decoration:none;font-weight:500;">보기 →</a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       <!-- 플랫폼 카드 -->
       <div class="stats" id="platformCards"></div>
@@ -828,6 +882,12 @@
           </div>
         </div>
       </div>
+
+      <!-- 팀 일정 캘린더 (Owner Directive 2026-09-04) ·
+           PMC-UI-VISUAL-1B: moved from above-the-fold hero to bottom
+           of dashboard. Functionality unchanged — just visual priority
+           lowered (spec §7-D). -->
+      <div id="teamCalendarCard" style="margin-top:16px;"></div>
     </div>
 
     <!-- ===== 전체 상품 페이지 ===== -->
@@ -3360,16 +3420,18 @@
           <button class="refresh-btn" onclick="opsInventory.search()">검색</button>
         </div>
       </div>
-      <!-- 바코드 스캔 입출고 -->
-      <div style="padding:12px 16px;background:#1a1a2e;border-bottom:1px solid #333;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <span style="font-weight:600;color:#81d4fa">📦 입출고</span>
+      <!-- 바코드 스캔 입출고 · PMC-UI-VISUAL-1B: neutralized dark panel +
+           normalized action-button hierarchy (was green/red/blue rainbow;
+           entry is primary accent, exit + scan are neutral). -->
+      <div class="ops-inventory-scan-strip" style="padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface-muted);display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span style="font-weight:600;color:var(--text);">입출고</span>
         <input id="scanSkuInput" type="text" placeholder="SKU 스캔 또는 입력"
-          style="padding:6px 10px;border:1px solid #444;background:#0f0f1a;color:#e0e0e0;border-radius:4px;width:200px;font-size:14px">
+          style="padding:6px 10px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:4px;width:200px;font-size:14px">
         <input id="scanQtyInput" type="number" value="1" min="1"
-          style="padding:6px 10px;border:1px solid #444;background:#0f0f1a;color:#e0e0e0;border-radius:4px;width:60px;font-size:14px">
-        <button onclick="scanInventory('in')" style="padding:6px 16px;background:#2e7d32;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">+ 입고</button>
-        <button onclick="scanInventory('out')" style="padding:6px 16px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">- 출고</button>
-        <button onclick="startBarcodeCamera()" style="padding:6px 12px;background:#1565c0;color:#fff;border:none;border-radius:4px;cursor:pointer">📷 스캔</button>
+          style="padding:6px 10px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);border-radius:4px;width:60px;font-size:14px">
+        <button onclick="scanInventory('in')" class="btn-accent" style="padding:6px 16px;border:none;border-radius:4px;cursor:pointer;font-weight:600">+ 입고</button>
+        <button onclick="scanInventory('out')" class="btn-neutral" style="padding:6px 16px;border-radius:4px;cursor:pointer;font-weight:500">- 출고</button>
+        <button onclick="startBarcodeCamera()" class="btn-neutral" style="padding:6px 12px;border-radius:4px;cursor:pointer">스캔</button>
         <div id="barcodeCameraContainer" style="display:none;margin-top:8px;width:100%">
           <video id="barcodeVideo" style="width:300px;border:2px solid #444;border-radius:4px" autoplay></video>
           <button onclick="stopBarcodeCamera()" style="margin-left:8px;padding:4px 12px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer">닫기</button>
@@ -3433,7 +3495,7 @@
     <!-- 2026-08-30 Owner: 실제 판매 실적 (OMS) 기반 수익. 기존 카탈로그 표는 유지 (원가/판매가 검증용). -->
     <div class="card" id="opsProfitOmsCard">
       <div class="card-header" style="flex-wrap:wrap;gap:8px">
-        <h3>📊 실제 판매 수익 <span style="color:#888;font-size:12px;font-weight:400">— OMS 기반 · 지금 eBay·Shopify 만 (기타 채널 주문 미연동)</span></h3>
+        <h3>실제 판매 수익 <span style="color:#888;font-size:12px;font-weight:400">— OMS 기반 · 지금 eBay·Shopify 만 (기타 채널 주문 미연동)</span></h3>
         <div style="display:flex;gap:8px;align-items:center">
           <select id="opsProfitOmsPeriod" style="padding:6px 8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;border-radius:4px">
             <option value="7">지난 7일</option>
