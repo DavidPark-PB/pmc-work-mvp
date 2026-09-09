@@ -327,37 +327,18 @@ test('NAV-9 · default landing preserved (dashboard remains default · no regres
 });
 
 // ═════════════════════════════════════════════════════════════════════
-// NAV-10 · Phase 7A-4 remains unstaged
+// NAV-10 · retired 2026-09-09 by PMC-EBAY-7A4-DISPOSITION-2.
+//   Phase 7A-4 was discarded (owner decision `7A4-DISCARD`): the
+//   `getHistoricalCompletedOrders` working-tree hunk in src/api/ebayAPI.js
+//   was removed and the parked untracked stack
+//   (ebayHistoricalIngestor / historicalIngestionService / oms-history-ebay
+//   / ebayHistoricalIngestor.test) was deleted. The fence has no remaining
+//   referent — src/api/ebayAPI.js is now clean and can be edited freely by
+//   future phases (e.g. PMC-EXPORT-SAFETY-2F retry-policy fix).
+//   Historical comments in tracked production files still mention
+//   "Phase 7A-4 collision" — those are stale after this disposition and
+//   are left in place per DISPOSITION-2 §7 (no broad comment cleanup).
 // ═════════════════════════════════════════════════════════════════════
-
-test('NAV-10 · Phase 7A-4 (src/api/ebayAPI.js) remains unstaged', () => {
-  try {
-    //   Authoritative check: `git diff --cached --name-only` returns exactly
-    //   the set of staged files (regardless of column-position formatting).
-    const staged = execFileSync('git', ['diff', '--cached', '--name-only'],
-      { cwd: REPO, encoding: 'utf8' }).trim().split('\n').filter(Boolean);
-    assert.equal(staged.includes('src/api/ebayAPI.js'), false,
-      'Phase 7A-4 (src/api/ebayAPI.js) must not be staged by PMC-UI-MAP-2A');
-    //   Secondary check: the file MUST still appear in `git status --short`
-    //   with a space in column 1 (unstaged) and M in column 2 (modified),
-    //   i.e. raw output begins with " M" (leading space preserved).
-    const status = execFileSync('git', ['status', '--short', 'src/api/ebayAPI.js'],
-      { cwd: REPO, encoding: 'utf8' });
-    //   Only check if the file appears in status output. Empty output means
-    //   the file has no changes at all — also acceptable (nothing to worry).
-    if (status.trim().length > 0) {
-      //   Owner rule: unstaged Phase 7A-4 work must remain. Column 1 (index)
-      //   MUST be space; column 2 (working tree) MAY be M. Use raw first
-      //   char (no trim).
-      const rawFirstChar = status.charAt(0);
-      assert.equal(rawFirstChar, ' ',
-        `Phase 7A-4 first column (index/staged) must be space (unstaged); got ${JSON.stringify(rawFirstChar)}`);
-    }
-  } catch (e) {
-    //   In a CI environment without git history, skip gracefully.
-    if (!/not a git repo/i.test(String(e.message))) throw e;
-  }
-});
 
 // ═════════════════════════════════════════════════════════════════════
 // Extra structural / composition sanity checks
