@@ -3,6 +3,35 @@ const axios = require('axios');
 const fs = require('fs');
 const tokenStore = require('../services/tokenStore');
 
+//   PMC-EXPORT-SAFETY-2F (2026-09-09) · READ_ONLY Trading verb allow-list.
+//     Only these verbs are safe for the automatic token-refresh retry inside
+//     `callTradingAPI`. Any verb NOT in this set is treated as mutation-unsafe
+//     — callTradingAPI throws `EBAY_MUTATION_TOKEN_INVALID_UNCERTAIN` without
+//     resending. This is the fail-closed default: a newly-introduced Trading
+//     verb does NOT inherit retry permission by accident.
+//
+//     Verified via full-repo grep of `callTradingAPI(...)` (2026-09-09).
+//     Every hit of this method against the `EbayAPI` class in src/ and
+//     scripts/ is either in this READ_ONLY set OR is one of the intentional
+//     MUTATING verbs listed below (which must NOT auto-retry).
+//
+//     MUTATING (fail-closed via fall-through):
+//       AddFixedPriceItem, ReviseFixedPriceItem, ReviseInventoryStatus,
+//       UploadSiteHostedPictures, AddMemberMessageRTQ
+//       (plus any future verb — safe by default until explicitly added here).
+const EBAY_READ_ONLY_TRADING_VERBS = new Set([
+  'GetUser',
+  'GetUserPreferences',
+  'GetMyeBaySelling',
+  'GetSuggestedCategories',
+  'VerifyAddFixedPriceItem',
+  'GetOrders',
+  'GetSellerTransactions',
+  'GetMyMessages',
+  'GetItem',
+  'GetApiAccessRules',
+]);
+
 // ── Browse API in-memory 응답 캐시 (2026-08-30, Approach 1 · Item #3) ───────
 //   동일 legacy itemId 를 여러 크론이 각기 호출하는 낭비 방지.
 //   module-level Map 이라 모든 EbayAPI 인스턴스가 공유 (Node single-process 안전).
@@ -258,14 +287,37 @@ class EbayAPI {
         (response.status >= 400 && response.status < 500 &&
           /token|auth|expired|unauthorized/i.test(dataStr));
 
-      if (isTokenInvalid && this.refreshToken && _retryCount === 0) {
-        console.log(`[eBay] 토큰 만료/무효 감지 (status=${response.status}) — 자동 갱신 시도`);
-        try {
-          await this.refreshAccessToken();   // single-flight + DB 저장 자동
-          return this.callTradingAPI(callName, requestBody, 1);  // 1회만 재시도
-        } catch (refreshErr) {
-          console.error('[eBay] 토큰 자동 갱신 실패:', refreshErr.message);
-          throw new Error('eBay 토큰 만료 + 자동 갱신 실패 — Railway 환경변수 EBAY_REFRESH_TOKEN 수동 교체 필요 (Developer Portal 에서 새 refresh token 발급)');
+      if (isTokenInvalid && _retryCount === 0) {
+        //   PMC-EXPORT-SAFETY-2F · read/write-aware retry policy.
+        //     READ_ONLY Trading verbs (allow-list at module top): refresh
+        //     the token and retry the SAME request once (existing behavior).
+        //     Everything else — including newly-introduced verbs the
+        //     allow-list has not yet been updated for — is treated as a
+        //     MUTATION with an uncertain outcome. Do NOT refresh (avoids
+        //     an unrelated tokenStore side effect on an already-uncertain
+        //     write outcome). Do NOT resend. Throw a deterministic
+        //     `EBAY_MUTATION_TOKEN_INVALID_UNCERTAIN` error carrying
+        //     `.code` and `.callName` for the caller to classify. The
+        //     caller (ProductExporter) will see this via its outer catch
+        //     with `marketplaceCallStarted === true` and record
+        //     `outcome_class = 'unknown_may_have_created'` (2D) — which
+        //     the fail-closed retry filter excludes.
+        if (!EBAY_READ_ONLY_TRADING_VERBS.has(callName)) {
+          console.warn(`[eBay 2F] mutation token-invalid uncertainty · callName=${callName} · status=${response.status} — no refresh, no resend`);
+          const err = new Error(`EBAY_MUTATION_TOKEN_INVALID_UNCERTAIN: ${callName}`);
+          err.code = 'EBAY_MUTATION_TOKEN_INVALID_UNCERTAIN';
+          err.callName = callName;
+          throw err;
+        }
+        if (this.refreshToken) {
+          console.log(`[eBay] 토큰 만료/무효 감지 (status=${response.status}, callName=${callName}) — 자동 갱신 시도`);
+          try {
+            await this.refreshAccessToken();   // single-flight + DB 저장 자동
+            return this.callTradingAPI(callName, requestBody, 1);  // 1회만 재시도
+          } catch (refreshErr) {
+            console.error('[eBay] 토큰 자동 갱신 실패:', refreshErr.message);
+            throw new Error('eBay 토큰 만료 + 자동 갱신 실패 — Railway 환경변수 EBAY_REFRESH_TOKEN 수동 교체 필요 (Developer Portal 에서 새 refresh token 발급)');
+          }
         }
       }
 
@@ -278,6 +330,10 @@ class EbayAPI {
 
       return data;
     } catch (error) {
+      //   PMC-EXPORT-SAFETY-2F · preserve the mutation-uncertainty error's
+      //   structured metadata (.code, .callName) so the caller (ProductExporter
+      //   2D) can classify it. Wrap only generic network/DNS/timeout errors.
+      if (error && error.code === 'EBAY_MUTATION_TOKEN_INVALID_UNCERTAIN') throw error;
       // 네트워크 / DNS / timeout 등 — 본문 검증 못한 경우
       throw new Error(`eBay API Error: ${error.message}`);
     }
