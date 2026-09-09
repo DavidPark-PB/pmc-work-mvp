@@ -477,3 +477,199 @@ td { padding: 8px 6px; border-bottom: 1px solid #f5f5f5; max-width: 300px; overf
 .export-badge.success { background: #e8f5e9; color: #2e7d32; }
 .export-badge.failed { background: #ffebee; color: #c62828; }
 .export-badge.exporting { background: #e3f2fd; color: #1565c0; }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * PMC-UI-VISUAL-1 · Executive Commerce OS visual restraint layer (2026-09-09)
+ *   Overrides the pre-existing colorful admin-panel palette with a calm
+ *   neutral surface + one accent + semantic-only status colors.
+ *   Rationale: owner should scan operational information in 10s without
+ *   competing decorative colors. Everything below is presentation-only —
+ *   no business logic / API / DB semantic change.
+ *   Placed at end-of-file so specificity wins over earlier rules without
+ *   requiring rewrites of the base cascade.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Surfaces */
+  --bg:            #f5f6f8;
+  --surface:       #ffffff;
+  --surface-muted: #f9fafb;
+  --surface-sunk:  #eef0f3;
+  --border:        #e4e7eb;
+  --border-strong: #d0d5dc;
+  /* Text */
+  --text:          #1a1f2e;
+  --text-muted:    #6b7280;
+  --text-subtle:   #9ba1ab;
+  /* Sidebar */
+  --sidebar-bg:    #1e2230;
+  --sidebar-fg:    #c9ccd4;
+  --sidebar-fg-mute:#7c8290;
+  --sidebar-hover: #262b3a;
+  --sidebar-active-bg: #2b3245;
+  --sidebar-active-fg: #ffffff;
+  /* Header */
+  --header-bg:     #1e2230;
+  --header-fg:     #ffffff;
+  /* Accent — deep restrained indigo */
+  --accent:        #3b5bdb;
+  --accent-hover:  #364fc7;
+  --accent-fg:     #ffffff;
+  --accent-tint:   #eef1fb;
+  /* Semantic — used ONLY for real state, never decorative */
+  --danger:        #c62828;
+  --danger-tint:   #fdecec;
+  --warning:       #d97706;
+  --warning-tint:  #fef4e6;
+  --success:       #2e7d32;
+  --success-tint:  #eaf5eb;
+  /* Radius + spacing */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+}
+
+/* Body */
+body { background: var(--bg); color: var(--text); }
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+.header { background: var(--header-bg); color: var(--header-fg); }
+.header h1 { font-weight: 600; letter-spacing: 0; }
+.last-updated { color: #b0b5bf; }
+
+/* ── Refresh / primary action button ────────────────────────────────── */
+/*   Was bright red (#e94560) — a decorative use. Restrained neutral now.
+ *   Genuinely destructive/danger surfaces still use var(--danger) via
+ *   their own explicit class. */
+.refresh-btn {
+  background: transparent;
+  color: var(--header-fg);
+  border: 1px solid rgba(255,255,255,0.25);
+  padding: 6px 14px;
+  border-radius: var(--r-md);
+  font-weight: 500;
+}
+.refresh-btn:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.4); }
+.refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Sidebar ────────────────────────────────────────────────────────── */
+.sidebar { background: var(--sidebar-bg); color: var(--sidebar-fg); }
+.sidebar .menu-title {
+  color: var(--sidebar-fg-mute);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin-top: 14px;
+  padding: 6px 20px 4px;
+}
+.sidebar .menu-item {
+  color: var(--sidebar-fg);
+  font-weight: 500;
+  font-size: 13px;
+  padding: 8px 20px;
+  border-left: 3px solid transparent;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.sidebar .menu-item:hover {
+  background: var(--sidebar-hover);
+  color: #ffffff;
+}
+.sidebar .menu-item.active {
+  background: var(--sidebar-active-bg);
+  color: var(--sidebar-active-fg);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+/* External-link menu-item marker (↗) — subtle */
+.sidebar a.menu-item { color: var(--sidebar-fg); }
+.sidebar a.menu-item:hover { color: #ffffff; }
+
+/* ── KPI / stat cards ──────────────────────────────────────────────── */
+/*   No more glow-hover-lift. Flat surface, 1px border, small radius. */
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: none;
+  padding: 16px 18px;
+  transition: border-color 0.12s;
+}
+.stat-card:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border-strong);
+}
+.stat-card .platform { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.stat-card .number   { color: var(--text); font-weight: 700; font-size: 28px; line-height: 1.1; }
+.stat-card .label    { color: var(--text-muted); }
+
+/* ── Cards (generic) ────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: none;
+}
+
+/* ── Section titles ─────────────────────────────────────────────────── */
+h2, h3 { color: var(--text); letter-spacing: 0; }
+h3 { font-weight: 600; }
+
+/* ── Status badge — semantic use only ─────────────────────────────── */
+.status.connected    { background: var(--success-tint); color: var(--success); }
+.status.disconnected { background: var(--surface-sunk);  color: var(--text-muted); }
+.status.pending      { background: var(--warning-tint); color: var(--warning); }
+.status.error        { background: var(--danger-tint);  color: var(--danger); }
+
+/* Export status badges — semantic parity */
+.export-badge.pending   { background: var(--warning-tint); color: var(--warning); }
+.export-badge.success   { background: var(--success-tint); color: var(--success); }
+.export-badge.failed    { background: var(--danger-tint);  color: var(--danger); }
+.export-badge.exporting { background: var(--accent-tint);  color: var(--accent); }
+
+/* ── Buttons (generic secondary) ────────────────────────────────────── */
+/*   Buttons that don't opt into a semantic class default to neutral outline. */
+button:not(.refresh-btn):not([class*="danger"]):not([class*="primary"]):not([class*="warning"]):not([class*="success"]) {
+  /* deliberately no aggressive override — preserve existing button rules that
+   * carry inline styles for their specific business role (2B execute button
+   * for example) */
+}
+
+/* Product Registration Center buttons keep their explicit intent:
+ *   #runExportBtn      → neutral secondary (green in inline style — override)
+ *   #executeExportBtn  → primary destructive-ish (red in inline style — keep)
+ *   The `disabled` attribute is what tests protect; visual can change. */
+#runExportBtn {
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border-strong) !important;
+  font-weight: 500;
+}
+#runExportBtn:hover { background: var(--surface-muted) !important; border-color: var(--text-muted) !important; }
+#executeExportBtn {
+  background: var(--danger) !important;
+  color: #ffffff !important;
+  border: 1px solid var(--danger) !important;
+  font-weight: 600;
+}
+#executeExportBtn:disabled { opacity: 0.4 !important; cursor: not-allowed !important; }
+
+/* ── Table hygiene ──────────────────────────────────────────────────── */
+table thead th {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--border);
+}
+table tbody tr { border-bottom: 1px solid var(--border); }
+table tbody tr:hover { background: var(--surface-muted); }
+table td { color: var(--text); }
+
+/* ── Progress bar (used in export panel) ────────────────────────────── */
+.progress-bar { background: var(--accent) !important; }
+
+/* ── Reduce decorative shadows across the app ───────────────────────── */
+.card, .stat-card { box-shadow: none; }

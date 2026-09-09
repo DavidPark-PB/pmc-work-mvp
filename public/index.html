@@ -620,24 +620,23 @@
          ═══════════════════════════════════════════════════════════════════ -->
 
     <!-- ─── 📅 오늘 ─── -->
-    <div class="menu-title" style="color:#ffd54f">📅 오늘</div>
-    <div class="menu-item ops-menu" data-page="ops-briefing" style="color:#ffd54f;font-weight:600">📅 오늘 브리핑</div>
+    <div class="menu-title">오늘</div>
+    <div class="menu-item ops-menu" data-page="ops-briefing">오늘 브리핑</div>
 
     <!-- ─── 💼 내 업무 ─── -->
-    <div class="menu-title" style="color:#69f0ae">💼 내 업무</div>
-    <div class="menu-item ops-menu" data-page="b2c-my-tasks" style="color:#69f0ae;font-weight:600">🎯 내 업무 (B2C)</div>
-    <div class="menu-item" data-page="tasks" style="color:#81c784;font-weight:600">
-      📋 업무 지시
+    <div class="menu-title">내 업무</div>
+    <div class="menu-item ops-menu" data-page="b2c-my-tasks">내 업무 (B2C)</div>
+    <div class="menu-item" data-page="tasks">업무 지시
       <span id="nav-notif-badge" style="display:none;float:right;background:#e94560;color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:10px;"></span>
     </div>
-    <div class="menu-item ops-menu" data-page="b2c-qc" data-admin-only style="color:#81d4fa;font-weight:600">🔍 QC</div>
-    <div class="menu-item ops-menu" data-page="exception-tasks" data-admin-only style="color:#81d4fa;font-weight:600">⚠️ 자동 예외</div>
+    <div class="menu-item ops-menu" data-page="b2c-qc" data-admin-only>QC</div>
+    <div class="menu-item ops-menu" data-page="exception-tasks" data-admin-only>자동 예외</div>
 
     <!-- ─── 📦 주문·배송 ───
          "주문" primary listing UI does not exist today (deferred to OMS-CONSOLE-1).
          Owner briefing card + shipping page cover the operational flow. -->
-    <div class="menu-title" style="color:#0288d1">📦 주문·배송</div>
-    <div class="menu-item" data-page="shipping" style="color:#0288d1;font-weight:600">📦 배송 관리</div>
+    <div class="menu-title">주문·배송</div>
+    <div class="menu-item" data-page="shipping">배송 관리</div>
 
     <!-- ─── 🛍 상품 ───
          상품 후보 → opportunity-inbox as primary safe destination.
@@ -649,47 +648,47 @@
          상품 등록센터 (export) carries data-admin-only + red warning color
          as UI-only cue that /api/export still lacks admin gate / dry-run /
          audit wrapper (UI-MAP-1 §15 problem #3 · deferred to UI-MAP-2E). -->
-    <div class="menu-title" style="color:#81d4fa">🛍 상품</div>
-    <div class="menu-item ops-menu" data-page="opportunity-inbox" style="color:#ce93d8;font-weight:600">💡 상품 후보</div>
-    <div class="menu-item ops-menu" data-page="sku-master" data-admin-only style="color:#81d4fa;font-weight:600">📦 SKU 마스터</div>
-    <div class="menu-item" data-page="products" style="color:#81d4fa;font-weight:600">🛍 채널 리스팅</div>
-    <div class="menu-item" data-page="ai-workflow" style="color:#ffd54f;font-weight:700">🪄 AI 상품 제작</div>
-    <div class="menu-item" data-page="export" data-admin-only style="color:#e94560;font-weight:700">🚀 상품 등록센터 (실행 주의)</div>
+    <div class="menu-title">상품</div>
+    <div class="menu-item ops-menu" data-page="opportunity-inbox">상품 후보</div>
+    <div class="menu-item ops-menu" data-page="sku-master" data-admin-only>SKU 마스터</div>
+    <div class="menu-item" data-page="products">채널 리스팅</div>
+    <div class="menu-item" data-page="ai-workflow">AI 상품 제작</div>
+    <div class="menu-item" data-page="export" data-admin-only>상품 등록센터</div>
 
     <!-- ─── 📦 재고·발주 ─── -->
-    <div class="menu-title" style="color:#ffb74d">📦 재고·발주</div>
-    <div class="menu-item ops-menu" data-page="ops-inventory" style="color:#81d4fa;font-weight:600">📦 재고 관리</div>
-    <div class="menu-item" data-page="expenses" style="color:#81c784;font-weight:600">💰 구매·지출 (발주)</div>
-    <div class="menu-item ops-menu" data-page="owner-inventory" data-admin-only style="color:#ffb74d;font-weight:600">📋 인벤토리 결정</div>
+    <div class="menu-title">재고·발주</div>
+    <div class="menu-item ops-menu" data-page="ops-inventory">재고 관리</div>
+    <div class="menu-item" data-page="expenses">구매·지출 (발주)</div>
+    <div class="menu-item ops-menu" data-page="owner-inventory" data-admin-only>인벤토리 결정</div>
 
     <!-- ─── 💰 수익·전략 ───
          가격/리프라이싱: no primary owner-facing page today (ops-pricing
          hidden; repricing pipeline scheduler-only). Deferred. -->
-    <div class="menu-title" style="color:#4db6ac">💰 수익·전략</div>
-    <div class="menu-item ops-menu" data-page="ops-profit" style="color:#81d4fa;font-weight:600">💰 수익 분석</div>
+    <div class="menu-title">수익·전략</div>
+    <div class="menu-item ops-menu" data-page="ops-profit">수익 분석</div>
 
     <!-- ─── ⚙️ 관리자 (모두 admin 전용) ───
          전체 그룹 data-admin-only 로 non-admin 세션에서는 자동 숨김. -->
-    <div class="menu-title" data-admin-only style="color:#ce93d8">⚙️ 관리자</div>
-    <div class="menu-item ops-menu" data-page="b2c-control" data-admin-only style="color:#ce93d8;font-weight:600">🎛 자동화 Control</div>
-    <div class="menu-item" data-page="sync" data-admin-only>🔄 동기화</div>
-    <div class="menu-item ops-menu" data-page="ops-logs" data-admin-only style="color:#81d4fa;font-weight:600">📋 자동화 로그</div>
-    <div class="menu-item" data-page="settings" data-admin-only style="color:#ff9800;font-weight:600">⚙️ 설정</div>
-    <div class="menu-item" data-page="staff-admin" data-admin-only style="color:#81c784;font-weight:600">👥 직원 관리</div>
-    <a href="https://ccorea-auto-production-1540.up.railway.app" target="_blank" data-admin-only class="menu-item" style="color:#ff5722;font-weight:600;text-decoration:none;display:block">🤖 리스팅 자동화 ↗</a>
+    <div class="menu-title" data-admin-only>관리자</div>
+    <div class="menu-item ops-menu" data-page="b2c-control" data-admin-only>자동화 Control</div>
+    <div class="menu-item" data-page="sync" data-admin-only>동기화</div>
+    <div class="menu-item ops-menu" data-page="ops-logs" data-admin-only>자동화 로그</div>
+    <div class="menu-item" data-page="settings" data-admin-only>설정</div>
+    <div class="menu-item" data-page="staff-admin" data-admin-only>직원 관리</div>
+    <a href="https://ccorea-auto-production-1540.up.railway.app" target="_blank" data-admin-only class="menu-item" style="text-decoration:none; display:block">리스팅 자동화 ↗</a>
 
     <!-- ─── ⏰ HR & 팀 (secondary group per UI-MAP-2A §3) ─── -->
-    <div class="menu-title" style="color:#81c784;margin-top:16px">── HR & 팀 ──</div>
+    <div class="menu-title" style="margin-top:16px">── HR & 팀 ──</div>
     <div class="menu-item active" data-page="dashboard">대시보드</div>
-    <div class="menu-item" data-page="attendance" style="color:#81c784;font-weight:600">⏰ 출퇴근</div>
-    <div class="menu-item" data-page="payroll" data-admin-only style="color:#81c784;font-weight:600">💰 급여 요약</div>
-    <div class="menu-item" data-page="workspace" style="color:#81c784;font-weight:600">📝 내 워크스페이스</div>
-    <div class="menu-item" data-page="feedback" style="color:#81c784;font-weight:600">💬 피드백</div>
-    <div class="menu-item" data-page="cs" style="color:#81c784;font-weight:600">💬 CS 지원</div>
-    <div class="menu-item" data-page="b2b" style="color:#81c784;font-weight:600">📄 B2B 인보이스</div>
-    <div class="menu-item" data-page="competitors" style="color:#81c784;font-weight:600">🎯 경쟁업체</div>
-    <div class="menu-item" data-page="prospects-list" style="color:#81c784;font-weight:600">📋 리드 리스트업</div>
-    <div class="menu-item" data-page="prospects-active" style="color:#81c784;font-weight:600">💬 활성 리드</div>
+    <div class="menu-item" data-page="attendance">출퇴근</div>
+    <div class="menu-item" data-page="payroll" data-admin-only>급여 요약</div>
+    <div class="menu-item" data-page="workspace">내 워크스페이스</div>
+    <div class="menu-item" data-page="feedback">피드백</div>
+    <div class="menu-item" data-page="cs">CS 지원</div>
+    <div class="menu-item" data-page="b2b">B2B 인보이스</div>
+    <div class="menu-item" data-page="competitors">경쟁업체</div>
+    <div class="menu-item" data-page="prospects-list">리드 리스트업</div>
+    <div class="menu-item" data-page="prospects-active">활성 리드</div>
 
     <!-- ═══════════════════════════════════════════════════════════════════
          Hidden legacy · display:none (DOM/JS/route/DB all preserved).
