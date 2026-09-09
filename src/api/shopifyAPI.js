@@ -1,6 +1,14 @@
 require('../config');
 const axios = require('axios');
 
+//   PMC-EXPORT-SAFETY-2E · finite timeout for the createProduct HTTP POST.
+//   Value matches the existing `_request` convention (shopifyAPI.js:43,
+//   `timeout: config.timeout || 30000`). Comfortably below the 2C lease
+//   ttlSec=180s (leaves ~150s for ProductExporter to catch, classify the
+//   thrown timeout as unknown_may_have_created, persist, and release the
+//   lease). NO retry — exactly ONE POST attempt per createProduct call.
+const SHOPIFY_CREATE_PRODUCT_TIMEOUT_MS = 30000;
+
 /**
  * Shopify Admin API 클래스
  * REST Admin API를 사용하여 Shopify 상품 데이터를 관리
@@ -270,7 +278,15 @@ class ShopifyAPI {
       } else if (imageUrl) {
         productData.product.images = [{ src: imageUrl }];
       }
-      const response = await axios.post(url, productData, { headers: this.getHeaders() });
+      //   PMC-EXPORT-SAFETY-2E · finite timeout. Exactly ONE POST attempt.
+      //   No retry loop. If the marketplace side is stuck, axios rejects
+      //   after SHOPIFY_CREATE_PRODUCT_TIMEOUT_MS and the timeout error
+      //   propagates upward (see catch below) so ProductExporter's outer
+      //   catch classifies it as unknown_may_have_created.
+      const response = await axios.post(url, productData, {
+        headers: this.getHeaders(),
+        timeout: SHOPIFY_CREATE_PRODUCT_TIMEOUT_MS,
+      });
       const p = response.data.product;
       return {
         success: true,
@@ -287,6 +303,17 @@ class ShopifyAPI {
           || `https://${process.env.SHOPIFY_PUBLIC_DOMAIN || this.storeUrl}/products/${p.handle}`,
       };
     } catch (error) {
+      //   PMC-EXPORT-SAFETY-2E · propagate timeout errors upward instead of
+      //   collapsing them into {success:false}. axios uses code='ECONNABORTED'
+      //   for its own timeout; Node/undici also surface 'ETIMEDOUT' in some
+      //   transports. Either signal means the marketplace MAY have committed
+      //   before the local socket gave up — ProductExporter must classify
+      //   this as unknown_may_have_created (2D) via the thrown-error path.
+      //   Non-timeout failures preserve the existing {success:false} contract
+      //   (2D already handles that fail-closed via UNKNOWN classification).
+      if (error && (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT')) {
+        throw error;
+      }
       return { success: false, error: error.response?.data?.errors || error.message };
     }
   }
