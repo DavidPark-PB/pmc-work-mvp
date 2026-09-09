@@ -126,10 +126,36 @@ class PlatformRepository {
   }
 
   async getFailedExports(maxRetries = 3) {
+    //   PMC-EXPORT-SAFETY-2D · fail-closed retry eligibility.
+    //     Auto-retry MUST require positive evidence that the marketplace did
+    //     not create the listing. Only rows tagged outcome_class='confirmed_failure'
+    //     qualify. This filter excludes:
+    //       · outcome_class='unknown_may_have_created' — marketplace may
+    //         have committed; retrying would duplicate.
+    //       · outcome_class IS NULL — pre-2D historical rows with no
+    //         evidence; treated as UNKNOWN by convention (do NOT invent
+    //         historical certainty).
+    //       · other outcome_class values (e.g. 'confirmed_success').
+    //     Stale 'exporting' rows are already excluded by the export_status
+    //     filter and are NOT auto-reset by 2D (reconciliation deferred).
     const { data, error } = await this.db
       .from('platform_export_status').select('*, platforms(key, name), products(sku, title)')
       .eq('export_status', 'failed')
+      .eq('outcome_class', 'confirmed_failure')
       .lt('retry_count', maxRetries);
+    if (error) throw error;
+    return data || [];
+  }
+
+  //   PMC-EXPORT-SAFETY-2D placeholder · surfaces UNKNOWN rows that require
+  //   manual marketplace-side reconciliation. Not used by automatic retry.
+  //   Returned rows are those where the marketplace call was attempted but
+  //   PMC could not prove the outcome — auto-retry is forbidden.
+  async getUnknownExports(limit = 100) {
+    const { data, error } = await this.db
+      .from('platform_export_status').select('*, platforms(key, name), products(sku, title)')
+      .eq('outcome_class', 'unknown_may_have_created')
+      .limit(limit);
     if (error) throw error;
     return data || [];
   }

@@ -114,7 +114,9 @@ stub(require.resolve(path.join(REPO, 'src/services/platformRegistry')), {
       //   that fn is in-flight when the second caller checks lease state.
       await new Promise(r => setTimeout(r, 10));
       createCalls.push({ key, payload });
-      return { itemId: `mock-${key}-${createCalls.length}` };
+      //   PMC-EXPORT-SAFETY-2D · strict success contract requires BOTH
+      //   `.success === true` AND a durable ID. Mock returns both.
+      return { success: true, itemId: `mock-${key}-${createCalls.length}` };
     },
     async getToken() { return 'tok'; },
   }),

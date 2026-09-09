@@ -91,7 +91,9 @@ stub(require.resolve(path.join(REPO, 'src/services/platformRegistry')), {
   getApiInstance:    (_key) => ({
     async createProduct(payload) {
       createCalls.push(payload);
-      return { itemId: 'mock-item-99' };
+      //   PMC-EXPORT-SAFETY-2D · strict success contract requires BOTH
+      //   `.success === true` AND a durable ID.
+      return { success: true, itemId: 'mock-item-99' };
     },
     async getToken() { return 'tok'; },
   }),

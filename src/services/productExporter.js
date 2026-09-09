@@ -240,6 +240,15 @@ class ProductExporter {
       export_status: 'exporting',
     });
 
+    //   PMC-EXPORT-SAFETY-2D · outcome classification fence.
+    //     Track whether we crossed the marketplace-call boundary. A throw
+    //     while `false` = pre-send local failure = confirmed_failure (safe
+    //     to auto-retry). A throw while `true` = we don't know whether the
+    //     marketplace committed = unknown_may_have_created (NEVER auto-retry).
+    //     Do NOT parse err.message strings to downgrade UNKNOWN — adapters
+    //     drop HTTP status / err.code, so message text is not truth.
+    let marketplaceCallStarted = false;
+
     try {
       // Load platform_mapping for custom overrides
       const mapping = await platRepo.getMappingForProductPlatform(product.id, platform.id);
@@ -283,8 +292,8 @@ class ProductExporter {
       if (!stillOwned) {
         //   Do NOT call createProduct. Do NOT classify as marketplace failure.
         //   Revert the transitional 'exporting' state to 'pending' with a
-        //   distinct last_error tag so retry/introspection can tell this
-        //   apart from marketplace failures.
+        //   distinct last_error tag. 2D: this outcome carries NO outcome_class
+        //   — it is a lease-state signal, not a marketplace evidence signal.
         await platRepo.upsertExportStatus(product.id, platform.id, {
           export_status: 'pending',
           last_error:    'LEASE_LOST_BEFORE_MARKETPLACE_WRITE',
@@ -296,32 +305,79 @@ class ProductExporter {
         };
       }
 
+      //   PMC-EXPORT-SAFETY-2D · Cross the boundary. Any throw from here on
+      //   means the marketplace call was attempted; PMC cannot know the
+      //   remote outcome from a thrown local error.
+      marketplaceCallStarted = true;
       const apiResult = await api.createProduct(optimizedData);
-      const itemId = apiResult.itemId || apiResult.productId || apiResult.originProductNo || '';
 
-      // Record success
-      await platRepo.upsertExportStatus(product.id, platform.id, {
-        export_status: 'success',
-        platform_item_id: String(itemId),
-        exported_price: prices[platformKey]?.price || 0,
-        exported_at: new Date().toISOString(),
-        last_error: '',
-      });
+      //   PMC-EXPORT-SAFETY-2D · Strict success contract.
+      //     CONFIRMED_SUCCESS requires BOTH:
+      //       (a) explicit positive signal: apiResult.success === true
+      //       (b) durable marketplace identifier — non-empty
+      //     eBay uses `.itemId`, Shopify `.productId`, Naver `.originProductNo`.
+      //     Qoo10 returns raw QSM JSON with neither `.success` nor a normalized
+      //     durable ID; that case naturally falls to UNKNOWN below.
+      //     Any missing signal ⇒ UNKNOWN (not success). No message-string
+      //     parsing. No inference from Promise resolution alone.
+      const durableId =
+        (apiResult && (apiResult.itemId ?? apiResult.productId ?? apiResult.originProductNo)) ?? null;
+      const isConfirmedSuccess =
+        apiResult
+        && apiResult.success === true
+        && durableId != null
+        && String(durableId).length > 0;
 
-      return {
-        success: true,
-        itemId,
-        price: prices[platformKey]?.price,
-        currency: prices[platformKey]?.currency,
-      };
-    } catch (err) {
-      // Record failure
+      if (isConfirmedSuccess) {
+        await platRepo.upsertExportStatus(product.id, platform.id, {
+          export_status:   'success',
+          outcome_class:   'confirmed_success',
+          platform_item_id: String(durableId),
+          exported_price:   prices[platformKey]?.price || 0,
+          exported_at:      new Date().toISOString(),
+          last_error:       '',
+        });
+        return {
+          success:  true,
+          itemId:   durableId,
+          price:    prices[platformKey]?.price,
+          currency: prices[platformKey]?.currency,
+        };
+      }
+
+      //   Adapter returned but the outcome is not confirmably success:
+      //   either apiResult.success !== true (adapter reported failure or
+      //   omitted the signal — Qoo10) OR the durable ID is missing (eBay
+      //   Ack=Success without <ItemID>, Shopify variant missing id, etc.).
+      //   The marketplace MAY have committed the listing. Under 2D fail-
+      //   closed principle we quarantine this row: never auto-retry.
+      //   platform_item_id is left blank (do NOT write literal "null").
       await platRepo.upsertExportStatus(product.id, platform.id, {
         export_status: 'failed',
-        last_error: err.message,
-        exported_at: new Date().toISOString(),
+        outcome_class: 'unknown_may_have_created',
+        last_error:    'MARKETPLACE_RESULT_UNCONFIRMED',
+        exported_at:   new Date().toISOString(),
       });
-
+      return {
+        success: false,
+        code:    'MARKETPLACE_RESULT_UNCONFIRMED',
+        error:   (apiResult && apiResult.error) || 'MARKETPLACE_RESULT_UNCONFIRMED',
+      };
+    } catch (err) {
+      //   PMC-EXPORT-SAFETY-2D · Thrown-error classification.
+      //     BEFORE createProduct was reached  → confirmed_failure (auto-retry OK)
+      //     AFTER createProduct was reached   → unknown_may_have_created (never
+      //     auto-retry — the marketplace may have committed and returned an
+      //     error we cannot verify)
+      const outcomeClass = marketplaceCallStarted
+        ? 'unknown_may_have_created'
+        : 'confirmed_failure';
+      await platRepo.upsertExportStatus(product.id, platform.id, {
+        export_status: 'failed',
+        outcome_class: outcomeClass,
+        last_error:    err.message,
+        exported_at:   new Date().toISOString(),
+      });
       return { success: false, error: err.message };
     }
   }
