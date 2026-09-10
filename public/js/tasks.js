@@ -8,6 +8,23 @@
   let staffList = [];
   let refreshTimer = null;
 
+  //   OPS-BRIEF-DRILL-2 · URL-param whitelist for the ops briefing drill-down.
+  //     Accepted values ONLY: 'open' (semantic marker: not-done, aligned with
+  //     briefing.tasks.open predicate = auto_generated=false AND status != 'done').
+  //     Anything else is IGNORED (never trust arbitrary URL input).
+  //     `_drillStatus` survives only until the owner manually changes the status
+  //     dropdown, at which point the drill context is cleared.
+  const URL_ALLOWED_TASK_STATUS = ['open'];
+  let _drillStatus = null;
+  function readTaskDrillUrl() {
+    _drillStatus = null;
+    try {
+      const p = new URLSearchParams(location.search);
+      const s = p.get('status');
+      if (s && URL_ALLOWED_TASK_STATUS.includes(s)) _drillStatus = s;
+    } catch (_) { /* older browsers · no URL API — silent no-op */ }
+  }
+
   function html(strings, ...vals) {
     return strings.reduce((acc, s, i) => acc + s + (vals[i] != null ? vals[i] : ''), '');
   }
@@ -38,6 +55,10 @@
     if (!user) user = window.__pmcUser;
     if (!user) { user = (await fetch('/api/auth/me').then(r=>r.json())).user; }
     if (!user) return;
+    //   OPS-BRIEF-DRILL-2 · re-read URL on every load() (owner may have arrived
+    //   via briefing drill, then bounced away, then returned with no params —
+    //   stale drill state must NOT persist across those visits).
+    readTaskDrillUrl();
 
     if (user.isAdmin) {
       try {
@@ -143,6 +164,9 @@
         <div id="staff-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;"></div>
       </div>
 
+      <!-- OPS-BRIEF-DRILL-2 · drill 컨텍스트 뱃지. URL ?status=open (whitelist) 진입 시만 표시. -->
+      <div id="task-drill-badge" style="display:none;margin-bottom:12px;padding:14px 16px;background:linear-gradient(90deg,#0d2818,#1a3a2a);border-left:4px solid #66bb6a;border-radius:6px;font-size:14px;color:#c5e1a5;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,0.25);"></div>
+
       <!-- 필터 + 목록 -->
       <div class="card" style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:0;">
         <div style="padding:16px;border-bottom:1px solid #2a2a4a;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -170,10 +194,67 @@
     if (user.isAdmin) {
       document.getElementById('task-form').addEventListener('submit', submitTask);
       document.getElementById('task-assignee').addEventListener('change', onAssigneeChange);
-      document.getElementById('filter-status').addEventListener('change', () => { refresh(); syncFilterClear(); });
+      //   OPS-BRIEF-DRILL-2 · owner-manual dropdown change drops the drill mode
+      //   (owner intent wins). Badge/URL also cleared so visible state stays honest.
+      document.getElementById('filter-status').addEventListener('change', () => {
+        if (_drillStatus) {
+          _drillStatus = null;
+          try {
+            const u = new URL(location.href);
+            u.searchParams.delete('status');
+            history.replaceState({}, '', u);
+          } catch (_) {}
+          renderTaskDrillBadge();
+        }
+        refresh();
+        syncFilterClear();
+      });
       document.getElementById('filter-assignee').addEventListener('change', () => { refresh(); syncFilterClear(); });
       document.getElementById('filter-clear').addEventListener('click', clearFilters);
       loadAiBriefing();
+    }
+    //   OPS-BRIEF-DRILL-2 · initial paint of drill badge (whether visible or hidden).
+    renderTaskDrillBadge();
+  }
+
+  //   OPS-BRIEF-DRILL-2 · visible drill-context banner. count comes from the
+  //   loaded task list (this render is called after refresh() populates it),
+  //   never from a fabricated dashboard number. UNKNOWN ≠ ZERO — count only
+  //   attached if a list exists.
+  let _lastListedCount = null;
+  function renderTaskDrillBadge() {
+    const el = document.getElementById('task-drill-badge');
+    if (!el) return;
+    if (!_drillStatus) {
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }
+    const countLine = typeof _lastListedCount === 'number'
+      ? `<span style="margin-left:8px;padding:2px 10px;background:rgba(255,255,255,0.08);border-radius:12px;font-weight:700;color:#fff;">${_lastListedCount}건</span>`
+      : '';
+    const title = _drillStatus === 'open' ? '진행 중 (미완료 · 사람 카드)' : escapeHtml(_drillStatus);
+    el.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:15px;">📌</span>
+          <span>운영 브리핑에서 선택한 <strong>${title}</strong> 항목만 표시합니다.${countLine}</span>
+        </div>
+        <button id="task-drill-clear" type="button" style="padding:4px 10px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:500;">× 필터 해제</button>
+      </div>`;
+    el.style.display = 'block';
+    const clear = document.getElementById('task-drill-clear');
+    if (clear) {
+      clear.addEventListener('click', () => {
+        _drillStatus = null;
+        try {
+          const u = new URL(location.href);
+          u.searchParams.delete('status');
+          history.replaceState({}, '', u);
+        } catch (_) {}
+        renderTaskDrillBadge();
+        refresh();
+      });
     }
   }
 
@@ -218,7 +299,12 @@
   async function refresh() {
     const params = new URLSearchParams();
     if (user.isAdmin) {
-      const status = document.getElementById('filter-status')?.value;
+      //   OPS-BRIEF-DRILL-2 · drill state overrides the dropdown when active.
+      //   Drill sends status=open (server-side maps to .neq('status','done'));
+      //   dropdown values (pending/in_progress/blocked/done) are LITERAL statuses.
+      //   `autoGenerated` defaults to 'false' server-side → 사람 카드만 (contract).
+      const dropdownStatus = document.getElementById('filter-status')?.value;
+      const status = _drillStatus || dropdownStatus;
       const assignee = document.getElementById('filter-assignee')?.value;
       if (status) params.set('status', status);
       if (assignee === 'mine') params.set('scope', 'mine');
@@ -226,7 +312,11 @@
     }
     const tasksRes = await fetch('/api/tasks?' + params);
     const { data } = await tasksRes.json();
-    renderList(data || []);
+    const items = data || [];
+    renderList(items);
+    //   OPS-BRIEF-DRILL-2 · record actual rendered count and refresh drill badge.
+    _lastListedCount = items.length;
+    renderTaskDrillBadge();
 
     if (user.isAdmin) {
       const statsRes = await fetch('/api/tasks/stats');

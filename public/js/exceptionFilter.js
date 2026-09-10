@@ -82,7 +82,7 @@
 
       <div style="display:grid;grid-template-columns:1fr 1.3fr;gap:16px;align-items:start;">
         <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;">
-          <div id="ef-drill-badge" style="display:none;margin-bottom:10px;padding:8px 10px;background:#0d2818;border-left:3px solid #2e7d32;border-radius:4px;font-size:12px;color:#c5e1a5;"></div>
+          <div id="ef-drill-badge" style="display:none;margin-bottom:14px;padding:14px 16px;background:linear-gradient(90deg,#1a3a2a,#0d2818);border-left:4px solid #66bb6a;border-radius:6px;font-size:14px;color:#c5e1a5;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,0.25);"></div>
           <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
             <select id="ef-status" style="padding:6px;background:#0f0f23;border:1px solid #333;color:#fff;border-radius:4px;font-size:12px;">
               <option value="">전체 상태</option>
@@ -217,6 +217,10 @@
       if (!res.ok) throw new Error(json.error || 'load failed');
       cards = json.data || [];
       renderList();
+      //   OPS-BRIEF-DRILL-2 · re-render the drill badge AFTER cards load so its
+      //   count line reflects the ACTUAL rendered result set (not a fabricated
+      //   dashboard number). Skipped if the badge is not visible.
+      renderDrillBadge();
       if (openTaskId) {
         const c = cards.find(x => x.id === openTaskId);
         if (c) renderDetail(c);
@@ -229,6 +233,9 @@
 
   //   OPS-BRIEF-1A · deep-link 상태 뱃지. 필터가 활성일 때만 표시.
   //   × 클릭 시 URL 파라미터 제거 + 필터 해제 + refresh.
+  //   OPS-BRIEF-DRILL-2 · owner-facing label + result count that comes from the
+  //   actually-rendered list (never from a fabricated dashboard number — briefing
+  //   count and this count are independent observations that must not be conflated).
   function renderDrillBadge() {
     const el = document.getElementById('ef-drill-badge');
     if (!el) return;
@@ -237,15 +244,34 @@
       el.innerHTML = '';
       return;
     }
-    const parts = [];
-    if (urlExceptionType) parts.push(`exception_type = <strong>${esc(urlExceptionType)}</strong>`);
-    if (urlStatusOpen) parts.push('status = <strong>not done</strong>');
+    // Human-readable cohort label instead of raw SQL-shaped predicates.
+    let title;
+    if (urlExceptionType === 'SKU_MATCH_FAILED' && urlStatusOpen) {
+      title = 'SKU 매칭 실패 · 미처리';
+    } else if (urlExceptionType && urlStatusOpen) {
+      title = `${esc(urlExceptionType)} · 미처리`;
+    } else if (urlStatusOpen) {
+      title = '자동 예외 · 미처리 (전체)';
+    } else if (urlExceptionType) {
+      title = `${esc(urlExceptionType)}`;
+    } else {
+      title = '자동 예외';
+    }
+    // Result count is measured — pulled from the loaded `cards` list, not from any
+    // dashboard-side aggregate. Absent (initial mount before first fetch) → omitted
+    // (UNKNOWN ≠ ZERO — no fabricated 0).
+    const countLine = Array.isArray(cards) && cards.length >= 0
+      ? `<span style="margin-left:8px;padding:2px 10px;background:rgba(255,255,255,0.08);border-radius:12px;font-weight:700;color:#fff;">${cards.length}건</span>`
+      : '';
     el.innerHTML =
-      `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-         <span>📌 브리핑 드릴다운 필터: ${parts.join(' · ')}</span>
+      `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+         <div style="display:flex;align-items:center;gap:6px;">
+           <span style="font-size:15px;">📌</span>
+           <span>운영 브리핑에서 선택한 <strong>${title}</strong> 항목만 표시합니다.${countLine}</span>
+         </div>
          <button id="ef-drill-clear" type="button"
-           style="padding:2px 8px;background:#37474f;border:none;border-radius:3px;color:#fff;cursor:pointer;font-size:11px;">
-           × 해제
+           style="padding:4px 10px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:500;">
+           × 필터 해제
          </button>
        </div>`;
     el.style.display = 'block';

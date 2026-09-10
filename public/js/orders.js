@@ -7,6 +7,66 @@
   let cachedOrders = [];
   const REJECT_LABELS = { out_of_stock: '품절', discontinued: '단종', budget: '예산 부족', price_review: '가격 검토 필요', other: '기타' };
 
+  //   OPS-BRIEF-DRILL-2 · URL-param whitelist for the ops briefing drill-down.
+  //     Accepted values ONLY: 'pending'. `statusGroup=active` is DELIBERATELY not
+  //     accepted here — `active` broadens to `IN ('pending','approved')` and would
+  //     silently show more rows than the briefing "승인 대기" count claimed. Truth
+  //     before convenience (see PMC-OPS-BRIEF-DRILL-1 audit §Count Mismatches).
+  const URL_ALLOWED_PURCHASE_STATUS = ['pending'];
+  let _drillStatus = null;
+  function readOrdersDrillUrl() {
+    _drillStatus = null;
+    try {
+      const p = new URLSearchParams(location.search);
+      const s = p.get('status');
+      if (s && URL_ALLOWED_PURCHASE_STATUS.includes(s)) _drillStatus = s;
+    } catch (_) { /* silent */ }
+  }
+  let _lastListedCount = null;
+
+  //   OPS-BRIEF-DRILL-2 · visible drill-context banner. count is pulled from the
+  //   loaded `items` list in refresh(), not from any dashboard-side aggregate
+  //   (UNKNOWN ≠ ZERO — count omitted until we have a real list).
+  function renderOrdersDrillBadge() {
+    const el = document.getElementById('po-drill-badge');
+    if (!el) return;
+    if (!_drillStatus) {
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }
+    const countLine = typeof _lastListedCount === 'number'
+      ? `<span style="margin-left:8px;padding:2px 10px;background:rgba(255,255,255,0.12);border-radius:12px;font-weight:700;color:#fff;">${_lastListedCount}건</span>`
+      : '';
+    const title = _drillStatus === 'pending' ? '승인 대기' : String(_drillStatus).replace(/[<>&"']/g, '');
+    el.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:15px;">📌</span>
+          <span>운영 브리핑에서 선택한 <strong>${title}</strong> 항목만 표시합니다.${countLine}</span>
+        </div>
+        <button id="po-drill-clear" type="button" style="padding:4px 10px;background:#37474f;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;font-weight:500;">× 필터 해제</button>
+      </div>`;
+    el.style.display = 'block';
+    const clear = document.getElementById('po-drill-clear');
+    if (clear) {
+      clear.addEventListener('click', () => {
+        _drillStatus = null;
+        try {
+          const u = new URL(location.href);
+          u.searchParams.delete('status');
+          history.replaceState({}, '', u);
+        } catch (_) {}
+        //  Return the widget to the default "active" group after drill clear so
+        //  the owner still sees a useful (non-empty) set instead of just pending.
+        const filterEl = document.getElementById('po-filter');
+        if (filterEl) filterEl.value = 'active';
+        renderOrdersDrillBadge();
+        refresh();
+      });
+    }
+  }
+
   function esc(s) { if (s == null) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function money(n) { if (n == null || n === '') return '-'; return Number(n).toLocaleString('ko-KR') + '원'; }
   function dt(iso) { if (!iso) return ''; const d = new Date(iso); const pad = n => String(n).padStart(2,'0'); return `${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
@@ -14,7 +74,17 @@
   async function load() {
     if (!user) user = window.__pmcUser || (await fetch('/api/auth/me').then(r=>r.json())).user;
     if (!user) return;
+    //   OPS-BRIEF-DRILL-2 · re-read URL on every load(). The 발주 destination
+    //   goes through navigateTo('orders') → expenses tab redirect → this load()
+    //   after switchTab('orders'), so the URL is stable by the time we read it.
+    readOrdersDrillUrl();
     renderShell();
+    //   Sync URL drill state to the widget so the visible dropdown matches the
+    //   applied filter. Widget accepts 'pending' as a literal value directly.
+    if (_drillStatus) {
+      const filterEl = document.getElementById('po-filter');
+      if (filterEl) filterEl.value = _drillStatus;
+    }
     await refresh();
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
@@ -59,6 +129,8 @@
         <h1 style="font-size:22px;color:#fff;">🛒 발주 관리</h1>
         <p style="color:#888;font-size:13px;">${user.isAdmin ? '발주 요청 승인/반려 관리' : '상품 발주 요청 및 처리 현황'}</p>
       </div>
+      <!-- OPS-BRIEF-DRILL-2 · drill 컨텍스트 뱃지. URL ?status=pending (whitelist) 진입 시만 표시. -->
+      <div id="po-drill-badge" style="display:none;margin-bottom:12px;padding:14px 16px;background:linear-gradient(90deg,#3a2a1a,#4a2a10);border-left:4px solid #ffb74d;border-radius:6px;font-size:14px;color:#ffcc80;font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,0.25);"></div>
       ${statsBar}
 
       <!-- 2026-08-08 사장님 지침: 사후 구매 원클릭 (승인 스킵, 바로 완료+지출 자동) -->
@@ -148,8 +220,24 @@
     `;
 
     document.getElementById('po-form').addEventListener('submit', submitOrder);
-    document.getElementById('po-filter').addEventListener('change', refresh);
+    //   OPS-BRIEF-DRILL-2 · owner-manual filter change clears drill mode +
+    //   drops the URL param so browser back/forward stays honest. Badge also
+    //   hides because _drillStatus becomes null.
+    document.getElementById('po-filter').addEventListener('change', () => {
+      if (_drillStatus) {
+        _drillStatus = null;
+        try {
+          const u = new URL(location.href);
+          u.searchParams.delete('status');
+          history.replaceState({}, '', u);
+        } catch (_) {}
+        renderOrdersDrillBadge();
+      }
+      refresh();
+    });
     document.getElementById('po-scope').addEventListener('change', refresh);
+    //   Initial badge paint (visible only when a whitelisted URL status is set).
+    renderOrdersDrillBadge();
 
     // PR P-1A-F: SKU autocomplete + 중복 발주 경고 (실시간)
     setupSkuAutocomplete('po-sku', 'po-product', 'po-sku-suggest');
@@ -302,7 +390,11 @@
     if (scope) params.set('scope', scope);
     const res = await fetch('/api/purchase-requests?' + params);
     const { data } = await res.json();
-    renderList(data || []);
+    const items = data || [];
+    renderList(items);
+    //   OPS-BRIEF-DRILL-2 · record actual rendered count and refresh drill badge.
+    _lastListedCount = items.length;
+    renderOrdersDrillBadge();
     if (user.isAdmin) {
       const s = await fetch('/api/purchase-requests/stats').then(r => r.json());
       const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
