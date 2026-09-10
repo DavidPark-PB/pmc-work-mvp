@@ -139,8 +139,16 @@ function navigateTo(page) {
     case 'ops-inventory': if (window.opsInventory) opsInventory.load(); break;
     case 'ops-pricing':   if (window.opsPricing)   opsPricing.load();   break;
     case 'ops-profit':
-      if (window.opsProfitOms) opsProfitOms.load();
-      if (window.opsProfit)    opsProfit.load();
+      //   PMC-PERF-2B · explicit parallel dispatch — proves independence.
+      //     opsProfitOms.load() → GET /api/ops/profit/oms (aggregate card grid)
+      //     opsProfit.load()    → GET /api/ops/profit     (SKU-level table)
+      //   Different endpoints, different DOM targets, independent error handlers.
+      //   One failure must not cause the other to render fabricated data
+      //   (Unknown ≠ Zero); Promise.allSettled preserves per-loader failure isolation.
+      Promise.allSettled([
+        window.opsProfitOms ? opsProfitOms.load() : Promise.resolve(),
+        window.opsProfit    ? opsProfit.load()    : Promise.resolve(),
+      ]);
       break;
     case 'ops-competitor':if (window.opsCompetitor) opsCompetitor.load();break;
     case 'ops-logs':      if (window.opsLogs)       opsLogs.load();      break;
@@ -7096,8 +7104,14 @@ async function shippingSyncOrders() {
 // _shippingOrdersAll = 검색용 (SHIPPED 포함 전체 — 사장님 요청 2026-07-03)
 var _shippingOrders = [];
 var _shippingOrdersAll = [];
+// PMC-PERF-2B · in-flight dedup only. No TTL cache — shipping state changes
+// through many mutation callsites (tracking, shipped, unshipped) and each of
+// those already re-invokes shippingLoadRecent(); adding a data cache would
+// require plumbing bypass through every callsite. Dedup alone gives us
+// duplicate-request suppression without any staleness risk.
+var _shippingLoadInflight = null;
 
-async function shippingLoadRecent() {
+async function _shippingLoadRecentImpl() {
   const tableEl = document.getElementById('shippingOrderTable');
   const countEl = document.getElementById('shippingOrderCount');
 
@@ -7138,6 +7152,12 @@ async function shippingLoadRecent() {
   } catch (err) {
     tableEl.innerHTML = `<p style="color:#c62828;text-align:center;padding:20px">로딩 실패: ${esc(err.message)}</p>`;
   }
+}
+
+async function shippingLoadRecent() {
+  if (_shippingLoadInflight) return _shippingLoadInflight;
+  _shippingLoadInflight = _shippingLoadRecentImpl().finally(() => { _shippingLoadInflight = null; });
+  return _shippingLoadInflight;
 }
 
 function shippingRenderTable(orders) {
