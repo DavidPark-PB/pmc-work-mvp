@@ -146,6 +146,18 @@
       params: 'status=pending',
       href:   '/?page=orders&status=pending',
     };
+    // PMC-OMS-CONSOLE-1B · 미처리 drill target — canonical OMS pending-action queue.
+    //   Predicate: oms_orders WHERE order_status IN PENDING_ACTION_STATUSES.
+    //   Destination consumes the SAME frozen array via /api/oms/orders/pending-action
+    //   so the briefing count and the destination list are the same cohort by
+    //   construction (SoT lives in src/services/oms/omsBriefingCounts.js).
+    //   NEVER points at wms-orders — the legacy sink returns ~1 row and would
+    //   misrepresent the briefing count.
+    const omsPendingDrill = {
+      page:   'oms-orders',
+      params: 'scope=pending-action',
+      href:   '/?page=oms-orders&scope=pending-action',
+    };
 
     // OPS-BRIEF-1B · 카드 분리 (2026-09-06).
     //   과거: 단일 "주문 (WMS)" 카드가 order 지표 + task 지표를 혼합 · 데이터 도메인 이질적.
@@ -161,7 +173,10 @@
       <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:12px;">
         ${sectionCard('📦 주문', '#64b5f6', [
           ['오늘 신규 주문', b.orders?.total_today ?? null, b.orders?.total_today > 0 ? '#64b5f6' : '#fff'],
-          ['미처리', b.orders?.pending ?? null, b.orders?.pending > 0 ? '#ffb74d' : '#fff'],
+          //   PMC-OMS-CONSOLE-1B · 미처리 becomes clickable now that a canonical
+          //   destination exists. sectionCard gates on `drill && isNumericPositive`
+          //   so 0 / null / undefined still render as plain (non-clickable) rows.
+          ['미처리', b.orders?.pending ?? null, b.orders?.pending > 0 ? '#ffb74d' : '#fff', omsPendingDrill],
         ])}
         ${sectionCard('⚠️ 자동 예외', '#ef9a9a', [
           ['자동 예외 (전체)', b.orders?.exception_count ?? null, b.orders?.exception_count > 0 ? '#ef9a9a' : '#fff', exceptionAllDrill],
@@ -231,8 +246,8 @@
         try {
           const u = new URL(location.href);
           u.searchParams.set('page', page);
-          // stale drill 파라미터 초기화
-          ['exceptionType', 'status'].forEach(k => u.searchParams.delete(k));
+          // stale drill 파라미터 초기화 (across all DRILL-2 + OMS-CONSOLE-1B drills)
+          ['exceptionType', 'status', 'scope'].forEach(k => u.searchParams.delete(k));
           if (params) {
             for (const [k, v] of new URLSearchParams(params)) u.searchParams.set(k, v);
           }

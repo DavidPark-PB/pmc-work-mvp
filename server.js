@@ -203,6 +203,10 @@ app.use('/api/oms-admin', require('./src/web/routes/omsAdmin'));
 app.use('/api/oms/ingestion-freshness', require('./src/web/routes/omsIngestionFreshness'));
 // Phase 8I — Owner Decision Dashboard (READ-ONLY except explicit gated evidence record)
 app.use('/api/oms/owner', require('./src/web/routes/omsOwnerConsole'));
+// PMC-OMS-CONSOLE-1B — canonical READ-ONLY pending-action orders queue
+//   (owner-only · consumes PENDING_ACTION_STATUSES from omsBriefingCounts so
+//    briefing count and this list share exactly one source-of-truth array)
+app.use('/api/oms/orders', require('./src/web/routes/omsOrders'));
 // PR O1 — Daily Operations Briefing (오늘 운영 요약 read-only)
 app.use('/api/ops-briefing', require('./src/web/routes/operationsBriefing'));
 // PR R0 — Opportunity Inbox (직원/admin 후보 등록 + 사장님 검토)

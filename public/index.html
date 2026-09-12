@@ -636,6 +636,9 @@
          "주문" primary listing UI does not exist today (deferred to OMS-CONSOLE-1).
          Owner briefing card + shipping page cover the operational flow. -->
     <div class="menu-title">주문·배송</div>
+    <!-- PMC-OMS-CONSOLE-1B · canonical pending-action queue (미처리 주문).
+         Reads oms_orders where order_status IN PENDING_ACTION_STATUSES. -->
+    <div class="menu-item" data-page="oms-orders">미처리 주문</div>
     <div class="menu-item" data-page="shipping">배송 관리</div>
 
     <!-- ─── 🛍 상품 ───
@@ -3624,6 +3627,11 @@
     <div id="wms-import-section"></div>
     <div id="wms-list-section"></div>
   </div>
+  <!-- PMC-OMS-CONSOLE-1B: canonical pending-action orders console.
+       READ-ONLY. omsOrders.js renders shell + list + pagination into #oms-orders-section. -->
+  <div id="page-oms-orders" class="page">
+    <div id="oms-orders-section"></div>
+  </div>
   <!-- Phase 3 PR M: Safety Foundation 실행 로그 -->
   <!-- PR O1: Daily Operations Briefing -->
   <div id="page-ops-briefing" class="page">
@@ -3701,6 +3709,8 @@
   <!-- ── WMS Phase 2 ── -->
   <script defer src="/js/orderImport.js?v=20260509a"></script>
   <script defer src="/js/orderList.js?v=20260509a"></script>
+  <!-- ── PMC-OMS-CONSOLE-1B — canonical pending-action orders (READ-ONLY) ── -->
+  <script defer src="/js/omsOrders.js?v=20260912a"></script>
   <!-- ── PR O1 — Daily Operations Briefing ── -->
   <script defer src="/js/opsBriefing.js?v=20260510a"></script>
   <!-- ── Phase 8I — Owner Inventory Decisions ── -->

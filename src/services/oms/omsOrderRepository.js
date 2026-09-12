@@ -174,6 +174,60 @@ async function updateItemPartial(itemId, patch) {
   return data;
 }
 
+// ─────────────────────────────────────────────────────────────
+// Read-only list projection (PMC-OMS-CONSOLE-1B).
+//   Caller passes the exact status array — this repository never redeclares
+//   the umbrella. `PENDING_ACTION_STATUSES` lives in one place
+//   (src/services/oms/omsBriefingCounts.js) and the route imports it there;
+//   both briefing count and this list consume the same frozen constant, so
+//   count ≡ list by construction.
+//   Returns { total, rows }. On DB error, propagates the throw upward so the
+//   route can distinguish "no orders" from "we could not check" — never
+//   silently coalesces UNKNOWN into ZERO.
+//   Rows are limited to V1-required fields (no buyer PII, no shipping address).
+// ─────────────────────────────────────────────────────────────
+const LIST_ORDER_FIELDS = [
+  'id',
+  'channel',
+  'external_order_id',
+  'external_order_number',
+  'order_status',
+  'hold_reason',
+  'ship_country_code',
+  'currency',
+  'total',
+  'ordered_at',
+].join(', ');
+
+async function listOrders({ statuses, limit = 50, offset = 0 } = {}) {
+  if (!Array.isArray(statuses) || statuses.length === 0) {
+    throw new Error('listOrders requires a non-empty statuses array');
+  }
+  const c = getClient();
+
+  //   Total count against the SAME predicate as the row query (idx_oms_orders_order_status).
+  //   Both queries share the exact `statuses` argument — impossible for the
+  //   total to describe a different cohort than the rows.
+  const countRes = await c
+    .from('oms_orders')
+    .select('id', { count: 'exact', head: true })
+    .in('order_status', statuses.slice());
+  if (countRes.error) throw countRes.error;
+
+  const rowsRes = await c
+    .from('oms_orders')
+    .select(LIST_ORDER_FIELDS)
+    .in('order_status', statuses.slice())
+    .order('ordered_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+  if (rowsRes.error) throw rowsRes.error;
+
+  return {
+    total: countRes.count == null ? 0 : countRes.count,
+    rows: rowsRes.data || [],
+  };
+}
+
 module.exports = {
   // mappers (exported for tests)
   orderToRow,
@@ -182,6 +236,10 @@ module.exports = {
   findByChannelExternalId,
   insertOrder,
   updateOrderPartial,
+  //   read-only list projection (never accepts a hardcoded predicate — caller
+  //   passes the SoT array so the OMS console cannot diverge from the briefing count).
+  listOrders,
+  LIST_ORDER_FIELDS,
   // items
   listItemsByOrderId,
   insertItems,

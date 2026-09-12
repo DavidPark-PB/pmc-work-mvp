@@ -127,6 +127,12 @@ function navigateTo(page) {
     case 'ai-workflow': if (window.pmcAIWorkflow) pmcAIWorkflow.load(); break;
     case 'remarker': setupRemarker(); break;
     case 'reconstruct': setupReconstructPage(); break;
+    case 'oms-orders':
+      //   PMC-OMS-CONSOLE-1B · canonical READ-ONLY pending-action queue.
+      //   Consumes /api/oms/orders/pending-action which shares PENDING_ACTION_STATUSES
+      //   with the briefing count → same cohort by construction.
+      if (window.pmcOmsOrders) pmcOmsOrders.init();
+      break;
     case 'shipping': setupShippingPage(); break;
     case 'shipping-recs': if (window.pmcShippingRecs) pmcShippingRecs.load(); break;
     case 'shipping-recs-wms': if (window.pmcShippingRecsWms) pmcShippingRecsWms.load(); break;

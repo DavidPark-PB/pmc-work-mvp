@@ -97,15 +97,23 @@ test('DRILL2-E · 승인 대기 drill uses status=pending, NEVER statusGroup=act
 // F/G/H. Non-clickable KPIs — no drill maps for these labels
 // ═════════════════════════════════════════════════════════════════════
 
-test('DRILL2-F · 미처리 has NO drill', () => {
+test('DRILL2-F · 미처리 drill MUST NOT reuse a DRILL-2 cohort (canonical oms drill only)', () => {
+  //   DRILL-1 audit §Non-Clickable KPIs: at DRILL-2 time, 미처리 had NO
+  //   truthful destination (briefing counts canonical oms_orders; only
+  //   order-list page read legacy wms_orders). PMC-OMS-CONSOLE-1B introduced
+  //   the canonical destination (window.pmcOmsOrders + /api/oms/orders), so
+  //   this assertion now guards the phase-2 invariant: 미처리 may link, but
+  //   only to the canonical oms-orders queue — NEVER to a DRILL-2 cohort or
+  //   to legacy wms-orders (whose 1-row mock sink would misrepresent N).
   const src = readSrc(BRIEF);
-  //   The 미처리 row line must NOT carry a fourth tuple element (drill).
-  //   Anchor on the exact label + surrounding array shape.
   const line = /\[\s*'미처리',[^\]]+\]/.exec(src);
   assert.ok(line, '미처리 row must exist');
-  //  Must not reference any of our drill map names.
-  assert.ok(!/미처리[^\]]*(?:skuDrill|exceptionAllDrill|tasksOpenDrill|purchasePendingDrill|Drill)/.test(line[0]),
-    '미처리 must not carry any drill argument');
+  //   Wrong DRILL-2 cohorts are forbidden.
+  assert.ok(!/(?:skuDrill|exceptionAllDrill|tasksOpenDrill|purchasePendingDrill)\b/.test(line[0]),
+    '미처리 must not carry any DRILL-2 drill argument (wrong cohort)');
+  //   Absolute fence — never wire 미처리 at legacy wms-orders.
+  assert.ok(!/wms-orders/.test(line[0]),
+    '미처리 must NEVER point at wms-orders (legacy sink violates count-vs-list truth)');
 });
 
 test('DRILL2-G · 긴급 has NO drill', () => {
@@ -261,13 +269,15 @@ test('DRILL2-P · safety-runs quick-link removed from briefing quicklinks', () =
 
 test('DRILL2-Q · KPI drill navigation surface adds ZERO write-verb fetches', () => {
   const src = readSrc(BRIEF);
-  //  The .ob-drill click handler must only pushState + showPage (navigation-only).
-  //  Grepping the drill handler region for method: POST|PATCH|DELETE etc.
-  const drillHandler = /ob-drill[\s\S]{0,1500}?\}\);/m.exec(src);
-  assert.ok(drillHandler, 'ob-drill click handler must exist');
-  assert.ok(!/method:\s*['"](?:POST|PATCH|DELETE|PUT)['"]/i.test(drillHandler[0]),
+  //  Anchor on the concrete click handler (querySelectorAll('.ob-drill')...),
+  //  not on the earlier `class="ob-drill"` string inside the innerHTML template.
+  //  Window widened to accommodate OMS-CONSOLE-1B's added fold-opener branch.
+  const anchor = src.indexOf("querySelectorAll('.ob-drill')");
+  assert.ok(anchor > 0, 'ob-drill click handler must exist (querySelectorAll(".ob-drill"))');
+  const drillHandler = src.slice(anchor, anchor + 2500);
+  assert.ok(!/method:\s*['"](?:POST|PATCH|DELETE|PUT)['"]/i.test(drillHandler),
     'ob-drill handler MUST NOT introduce any write verb');
-  assert.ok(!/\.approve|\.reject|\.rollback|\.ship|\.execute/.test(drillHandler[0]),
+  assert.ok(!/\.approve|\.reject|\.rollback|\.ship|\.execute/.test(drillHandler),
     'ob-drill handler MUST NOT call any mutation action');
 });
 
