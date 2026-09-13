@@ -197,15 +197,30 @@ test('BEHAVIOR-fmt · fmtKg trims trailing zeros and drops decimal on integers',
   assert.equal(helpers.fmtKg(null),  '—');
 });
 
-test('BEHAVIOR-validate · US default passes (no EUR/KRW required)', () => {
+test('BEHAVIOR-validate · US default passes (no EUR/KRW required) when brand picked', () => {
   const { helpers } = loadSpaHelpers();
   const r = helpers.validateQuoteInputs({
     destinationCountry: 'US', actualWeightKg: 0.5,
     lengthCm: 20, widthCm: 15, heightCm: 10,
     uniqueHsCodeCount: 1, declaredValueKrw: 0, eurKrwRate: null,
     saleType: 'B2C', quotePurpose: 'LISTING',
+    isBranded: false,   //   owner rule 3 (2026-09-13): brand must be picked
   });
   assert.equal(r.ok, true, `expected ok — got ${JSON.stringify(r)}`);
+});
+
+test('BEHAVIOR-validate · owner rule 3 · isBranded=null blocks calc with Korean sentence', () => {
+  const { helpers } = loadSpaHelpers();
+  const r = helpers.validateQuoteInputs({
+    destinationCountry: 'US', actualWeightKg: 0.5,
+    lengthCm: 20, widthCm: 15, heightCm: 10,
+    uniqueHsCodeCount: 1, declaredValueKrw: 0, eurKrwRate: null,
+    saleType: 'B2C', quotePurpose: 'LISTING',
+    isBranded: null,   //   the "unknown" state must NOT be allowed to compute
+  });
+  assert.equal(r.ok, false, `unknown brand status MUST block calc — got ${JSON.stringify(r)}`);
+  assert.ok(r.messages.some(m => /브랜드 상품 여부를 선택/.test(m)),
+    `Korean sentence must surface — got ${JSON.stringify(r.messages)}`);
 });
 
 test('BEHAVIOR-validate · EU without EUR/KRW → Korean error, blocks calc', () => {
@@ -268,6 +283,7 @@ test('BEHAVIOR-validate · country code lowercase 2-letter → accepted after up
     lengthCm: 20, widthCm: 15, heightCm: 10,
     uniqueHsCodeCount: 1, declaredValueKrw: 0, eurKrwRate: null,
     saleType: 'B2C', quotePurpose: 'LISTING',
+    isBranded: false,   //   owner rule 3 · brand must be picked
   });
   assert.equal(r.ok, true);
 });
@@ -453,10 +469,15 @@ test('COMPARE-UI-1 · tester form has 브랜드 상품 여부 · 브랜드명 ·
     assert.ok(new RegExp(`for="${id}"[^>]*>${label}`).test(form),
       `tester form must carry a <label for="${id}">${label}`);
   }
-  //   The isBranded select MUST have the three states unknown/true/false.
-  assert.ok(/<option\s+value="unknown"/.test(form), 'unknown state must exist');
-  assert.ok(/<option\s+value="true"/.test(form),    'true state must exist');
-  assert.ok(/<option\s+value="false"/.test(form),   'false state must exist');
+  //   Owner rule 3 (2026-09-13): the isBranded select MUST force a pick —
+  //   no unusable "unknown" default. Placeholder disabled option + two
+  //   real options (true/false). The old "unknown" enum value is gone.
+  assert.ok(/<option\s+value=""\s+selected\s+disabled/.test(form),
+    'a placeholder disabled option must be selected by default so the user must pick');
+  assert.ok(!/<option\s+value="unknown"/.test(form),
+    'the "unknown" option MUST be removed (owner rule 3: user must pick brand or non-brand)');
+  assert.ok(/<option\s+value="true"/.test(form),    '브랜드 상품 option must exist');
+  assert.ok(/<option\s+value="false"/.test(form),   '일반상품 option must exist');
   assert.ok(/LISTING/.test(form) && /FULFILLMENT/.test(form),
     '견적 목적 must offer LISTING and FULFILLMENT');
 });
@@ -570,10 +591,10 @@ test('COMPARE-UI-8 · readQuoteInputs surfaces isBranded (null when unknown) + b
   els.get('sra-t-eur').value     = '';
   els.get('sra-t-sale').value    = 'B2C';
   els.get('sra-t-purpose').value = 'LISTING';
-  els.get('sra-t-branded').value = 'unknown';
+  els.get('sra-t-branded').value = '';   //   placeholder / not picked yet
   els.get('sra-t-brand').value   = '';
   let body = helpers.readQuoteInputs();
-  assert.equal(body.isBranded, null,      'unknown → isBranded:null (BRAND_STATUS_UNKNOWN)');
+  assert.equal(body.isBranded, null,      'empty select → isBranded:null (validate blocks calc per owner rule 3)');
   assert.equal(body.brandName, null);
   assert.equal(body.quotePurpose, 'LISTING');
   els.get('sra-t-branded').value = 'true';

@@ -143,9 +143,9 @@
             </select>
           </div>
           <div>
-            <label for="sra-t-branded" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">브랜드 상품 여부</label>
-            <select id="sra-t-branded" name="isBranded" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-              <option value="unknown">미확인 (BRAND_STATUS_UNKNOWN)</option>
+            <label for="sra-t-branded" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">브랜드 상품 여부 <span style="color:#ef9a9a;font-weight:400;">*필수</span></label>
+            <select id="sra-t-branded" name="isBranded" required autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+              <option value="" selected disabled>— 브랜드/일반 선택 —</option>
               <option value="true">브랜드 상품</option>
               <option value="false">일반상품 (Non-Brand)</option>
             </select>
@@ -194,9 +194,12 @@
 
   function readQuoteInputs() {
     const country = String(document.getElementById('sra-t-country').value || '').trim().toUpperCase();
-    //   Brand flag: 'unknown' → null (BRAND_STATUS_UNKNOWN), 'true'/'false' → boolean.
+    //   Brand flag: '' (placeholder) → null → validateQuoteInputs blocks the
+    //   calc with a Korean sentence forcing the operator to pick brand or
+    //   non-brand (owner rule 3, PMC-CCOREA-SHIPPING-1C, 2026-09-13).
+    //   'true'/'false' → boolean.
     const brandedEl = document.getElementById('sra-t-branded');
-    const brandedVal = brandedEl ? brandedEl.value : 'unknown';
+    const brandedVal = brandedEl ? brandedEl.value : '';
     const isBranded = brandedVal === 'true' ? true : brandedVal === 'false' ? false : null;
     const brandName = (document.getElementById('sra-t-brand') || {}).value || '';
     const purposeEl = document.getElementById('sra-t-purpose');
@@ -240,6 +243,13 @@
     }
     if (!(input.declaredValueKrw >= 0)) msgs.push('신고가액은 0 이상의 숫자로 입력하세요.');
     if (!(input.saleType === 'B2C' || input.saleType === 'B2B')) msgs.push('판매방식은 B2C 또는 B2B 중 선택하세요.');
+
+    //   Owner rule 3 (PMC-CCOREA-SHIPPING-1C · 2026-09-13):
+    //   brand status must be explicitly picked before the operator can
+    //   compare — no silent "unknown" default that lets the calc proceed.
+    if (input.isBranded !== true && input.isBranded !== false) {
+      msgs.push('브랜드 상품 여부를 선택해 주세요 (브랜드 또는 일반상품 중 하나).');
+    }
 
     const isEu = _EU_ISO.has(input.destinationCountry);
     if (isEu) {
