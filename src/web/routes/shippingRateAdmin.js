@@ -63,6 +63,9 @@ router.get('/versions', async (_req, res) => {
 });
 
 //   POST /versions/:id/activate ─────────────────────────────────
+//   Owner directive §5 · activation guard codes surface from
+//   assertVersionActivatable() as e.code — surface them as 409 CONFLICT
+//   so the SPA can distinguish "version broken" from real server errors.
 router.post('/versions/:id/activate', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -72,6 +75,13 @@ router.post('/versions/:id/activate', async (req, res) => {
     res.json({ ok: true, ...out });
   } catch (e) {
     console.error('[shippingRateAdmin] activate failed:', e.message);
+    const guardCodes = new Set([
+      'NO_ACTIVE_SERVICE', 'NO_BRACKETS', 'SERVICE_WITHOUT_BRACKETS',
+      'BENCHMARK_SERVICE_MISSING', 'BENCHMARK_SERVICE_EMPTY',
+    ]);
+    if (e && guardCodes.has(e.code)) {
+      return res.status(409).json({ ok: false, code: e.code, error: e.message });
+    }
     res.status(500).json({ ok: false, error: e.message });
   }
 });

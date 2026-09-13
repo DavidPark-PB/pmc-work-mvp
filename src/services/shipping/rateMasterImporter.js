@@ -436,7 +436,18 @@ async function importWorkbook(supabase, buffer, opts = {}) {
         }
       }
       if (brks.length) {
-        const payload = brks.map(({ _rowNum, ...b }) => ({ ...b, rate_version_id: versionId }));
+        //   Schema contract: shipping_rate_brackets columns are
+        //   (rate_version_id, service_code, country_key, zone_key,
+        //    weight_to_kg, base_rate, currency, note, active).
+        //   `provider` is NOT a column on this table — it is derivable via
+        //   rate_version_id → shipping_rate_versions.provider, and no code
+        //   queries brackets by provider. Strip it explicitly so PostgREST
+        //   never sees an unknown key (that was the owner-reported
+        //   "Could not find the 'provider' column of 'shipping_rate_brackets'"
+        //   error on the V2 upload).
+        const payload = brks.map(({ _rowNum, provider: _p, ...b }) => ({
+          ...b, rate_version_id: versionId,
+        }));
         for (let i = 0; i < payload.length; i += 500) {
           const chunk = payload.slice(i, i + 500);
           const r = await supabase.from('shipping_rate_brackets').insert(chunk).select('id');
@@ -461,8 +472,107 @@ async function importWorkbook(supabase, buffer, opts = {}) {
 }
 
 /**
+ * assertVersionActivatable — pre-flight guards run before promoting a
+ * draft version to 'active'. Every rejection carries `.code` so the
+ * calling route can surface a machine-readable reason back to the SPA.
+ *
+ * Owner directive §5:
+ *   Activation MUST be refused when
+ *     · no active service is attached (empty version)
+ *     · no bracket rows exist
+ *     · a rate_loaded service has zero bracket rows
+ *     · a country's benchmark_service is not present in this version's services
+ *     · a benchmark_service has no bracket rows
+ *   Otherwise a version left incomplete by a mid-flight import failure
+ *   could be silently promoted and every quote against it would return
+ *   WEIGHT_OVER_MAX_BRACKET / no-service errors in production.
+ */
+async function assertVersionActivatable(supabase, versionId) {
+  const services = await supabase
+    .from('shipping_services')
+    .select('service_code, rate_loaded, active')
+    .eq('rate_version_id', versionId);
+  if (services.error) throw services.error;
+  const svcRows = services.data || [];
+  const activeLoaded = svcRows.filter(s => s.active && s.rate_loaded);
+  if (activeLoaded.length === 0) {
+    const err = new Error(`version ${versionId}: no active rate_loaded services attached — refuse to activate`);
+    err.code = 'NO_ACTIVE_SERVICE'; throw err;
+  }
+
+  const brackets = await supabase
+    .from('shipping_rate_brackets')
+    .select('service_code')
+    .eq('rate_version_id', versionId);
+  if (brackets.error) throw brackets.error;
+  const brkRows = brackets.data || [];
+  if (brkRows.length === 0) {
+    const err = new Error(`version ${versionId}: zero brackets attached — refuse to activate`);
+    err.code = 'NO_BRACKETS'; throw err;
+  }
+  const bracketsByService = new Set(brkRows.map(b => b.service_code));
+  const svcsWithoutBrackets = activeLoaded
+    .filter(s => !bracketsByService.has(s.service_code))
+    .map(s => s.service_code);
+  if (svcsWithoutBrackets.length) {
+    const err = new Error(`version ${versionId}: rate_loaded services without brackets — ${svcsWithoutBrackets.join(', ')}`);
+    err.code = 'SERVICE_WITHOUT_BRACKETS'; throw err;
+  }
+
+  //   Country benchmark integrity is only meaningful when this version owns
+  //   the countries sheet (i.e. it's the primary version). A per-provider
+  //   version like KPL carries services + brackets but no countries — that's
+  //   valid, so skip the benchmark check when countries.length === 0.
+  const countries = await supabase
+    .from('shipping_countries')
+    .select('country_code, benchmark_service_code')
+    .eq('rate_version_id', versionId);
+  if (countries.error) throw countries.error;
+  const ctyRows = countries.data || [];
+  if (ctyRows.length > 0) {
+    //   Benchmarks may reference services from ANY provider (per owner
+    //   directive: eGS countries can benchmark to KPL services). Load every
+    //   active version's services once and check across the union.
+    const activeVersions = await supabase
+      .from('shipping_rate_versions')
+      .select('id')
+      .eq('status', 'active');
+    if (activeVersions.error) throw activeVersions.error;
+    const svcVersionIds = [versionId, ...(activeVersions.data || []).map(v => v.id)];
+    const allSvcs = await supabase
+      .from('shipping_services')
+      .select('service_code, rate_version_id')
+      .in('rate_version_id', svcVersionIds);
+    if (allSvcs.error) throw allSvcs.error;
+    const allSvcCodes = new Set((allSvcs.data || []).map(s => s.service_code));
+    const missing = ctyRows
+      .filter(c => c.benchmark_service_code && !allSvcCodes.has(c.benchmark_service_code))
+      .map(c => `${c.country_code}→${c.benchmark_service_code}`);
+    if (missing.length) {
+      const err = new Error(`version ${versionId}: countries reference missing benchmark services — ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ` (+${missing.length - 5} more)` : ''}`);
+      err.code = 'BENCHMARK_SERVICE_MISSING'; throw err;
+    }
+    //   Benchmark service must ALSO have at least one bracket somewhere.
+    const allBrks = await supabase
+      .from('shipping_rate_brackets')
+      .select('service_code')
+      .in('rate_version_id', svcVersionIds);
+    if (allBrks.error) throw allBrks.error;
+    const svcCodesWithBrackets = new Set((allBrks.data || []).map(b => b.service_code));
+    const emptyBench = ctyRows
+      .filter(c => c.benchmark_service_code && !svcCodesWithBrackets.has(c.benchmark_service_code))
+      .map(c => `${c.country_code}→${c.benchmark_service_code}`);
+    if (emptyBench.length) {
+      const err = new Error(`version ${versionId}: countries whose benchmark service has zero brackets — ${emptyBench.slice(0, 5).join(', ')}${emptyBench.length > 5 ? ` (+${emptyBench.length - 5} more)` : ''}`);
+      err.code = 'BENCHMARK_SERVICE_EMPTY'; throw err;
+    }
+  }
+}
+
+/**
  * Promote a draft version to 'active' and supersede prior active versions
- * of the same provider. Owner-only surface.
+ * of the same provider. Owner-only surface. Applies §5 activation guards
+ * before any mutation so a broken version cannot slip through.
  */
 async function activateVersion(supabase, versionId) {
   const target = await supabase
@@ -473,6 +583,10 @@ async function activateVersion(supabase, versionId) {
   if (target.error) throw target.error;
   if (!target.data) throw new Error(`version ${versionId} not found`);
   if (target.data.status === 'active') return { versionId, alreadyActive: true };
+
+  //   Pre-flight guards. Any throw here is caught by the caller and
+  //   surfaced to the SPA — nothing is mutated in the meantime.
+  await assertVersionActivatable(supabase, versionId);
 
   //   Supersede prior active versions of the same provider.
   const supers = await supabase
@@ -498,6 +612,7 @@ module.exports = {
   parseAndValidate,
   importWorkbook,
   activateVersion,
+  assertVersionActivatable,
   //   internal helpers exported for tests
   REQUIRED_SHEETS,
   REQUIRED_HEADERS,
