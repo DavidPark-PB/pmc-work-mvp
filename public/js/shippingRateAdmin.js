@@ -135,8 +135,27 @@
               <option value="B2B">B2B (사업자 구매)</option>
             </select>
           </div>
+          <div>
+            <label for="sra-t-purpose" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">견적 목적</label>
+            <select id="sra-t-purpose" name="quotePurpose" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+              <option value="LISTING">LISTING (판매 등록용)</option>
+              <option value="FULFILLMENT">FULFILLMENT (실 배송용)</option>
+            </select>
+          </div>
+          <div>
+            <label for="sra-t-branded" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">브랜드 상품 여부</label>
+            <select id="sra-t-branded" name="isBranded" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+              <option value="unknown">미확인 (BRAND_STATUS_UNKNOWN)</option>
+              <option value="true">브랜드 상품</option>
+              <option value="false">일반상품 (Non-Brand)</option>
+            </select>
+          </div>
+          <div>
+            <label for="sra-t-brand" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">브랜드명 <span style="color:#888;font-weight:400;">(브랜드 상품일 때)</span></label>
+            <input id="sra-t-brand" name="brandName" placeholder="예: Pokemon" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          </div>
           <div style="display:flex;align-items:flex-end;">
-            <button id="sra-t-go" type="submit" style="width:100%;padding:10px 14px;background:#1565c0;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">견적 계산</button>
+            <button id="sra-t-go" type="submit" style="width:100%;padding:10px 14px;background:#1565c0;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">배송사 비교</button>
           </div>
         </form>
         <div id="sra-t-out" style="min-height:40px;color:#888;font-size:12px;">계산 결과가 여기에 표시됩니다.</div>
@@ -175,6 +194,12 @@
 
   function readQuoteInputs() {
     const country = String(document.getElementById('sra-t-country').value || '').trim().toUpperCase();
+    //   Brand flag: 'unknown' → null (BRAND_STATUS_UNKNOWN), 'true'/'false' → boolean.
+    const brandedEl = document.getElementById('sra-t-branded');
+    const brandedVal = brandedEl ? brandedEl.value : 'unknown';
+    const isBranded = brandedVal === 'true' ? true : brandedVal === 'false' ? false : null;
+    const brandName = (document.getElementById('sra-t-brand') || {}).value || '';
+    const purposeEl = document.getElementById('sra-t-purpose');
     return {
       destinationCountry: country,
       actualWeightKg:     Number(document.getElementById('sra-t-actual').value),
@@ -187,7 +212,9 @@
                             ? null
                             : Number(document.getElementById('sra-t-eur').value),
       saleType:           document.getElementById('sra-t-sale').value,
-      quotePurpose:       'LISTING',
+      quotePurpose:       purposeEl ? purposeEl.value : 'LISTING',
+      isBranded,
+      brandName:          brandName ? String(brandName).trim() : null,
     };
   }
 
@@ -665,11 +692,13 @@
       `;
       return;
     }
-    //   2. Fire request. Preserve exact API request shape.
-    out.innerHTML = '<div style="color:#888;font-size:12px;">계산 중…</div>';
+    //   2. Fire multi-carrier compare (PMC-CCOREA-SHIPPING-1C).
+    //   Single-service quote route (/quote) is still available and unchanged;
+    //   compare is the new default surface for the operator.
+    out.innerHTML = '<div style="color:#888;font-size:12px;">배송사별 견적 계산 중…</div>';
     let j = null; let httpStatus = 0;
     try {
-      const r = await fetch('/api/shipping/rate-admin/quote', {
+      const r = await fetch('/api/shipping/rate-admin/quotes/compare', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify(body),
       });
@@ -684,8 +713,144 @@
       `;
       return;
     }
-    //   3. Render (success or translated error).
-    out.innerHTML = renderQuoteResultHtml(j, body);
+    //   3. Render compare table (success or translated error).
+    if (!j || typeof j !== 'object' || j.ok === false || !Array.isArray(j.candidates)) {
+      out.innerHTML = renderQuoteResultHtml(j, body);   //   fallback to error card
+      return;
+    }
+    out.innerHTML = renderCompareTableHtml(j, body);
+    _wireCompareSelection(j, body);
+  }
+
+  //   ─── Multi-carrier compare table renderer ─────────────────────
+  //   Kept as a pure function so tests can lock in the display contract
+  //   (owner directive §6 · §7 · §14).
+
+  function _statusBadge(status) {
+    const map = {
+      ELIGIBLE:                { bg: '#1b5e20', fg: '#69f0ae', label: '선택 가능' },
+      RATE_NOT_LOADED:         { bg: '#37474f', fg: '#aaa',    label: '운임 미등록' },
+      COUNTRY_NOT_SUPPORTED:   { bg: '#37474f', fg: '#aaa',    label: '해당국가 미지원' },
+      WEIGHT_NOT_SUPPORTED:    { bg: '#5d3a00', fg: '#ffb74d', label: '중량구간 없음' },
+      SALE_TYPE_NOT_SUPPORTED: { bg: '#5d3a00', fg: '#ffb74d', label: '판매방식 미지원' },
+      BRAND_RESTRICTED:        { bg: '#5d1a1a', fg: '#ef9a9a', label: '브랜드 제한' },
+      INELIGIBLE:              { bg: '#5d1a1a', fg: '#ef9a9a', label: '이용 불가' },
+    };
+    const m = map[status] || map.INELIGIBLE;
+    return `<span style="padding:2px 8px;background:${m.bg};color:${m.fg};border-radius:10px;font-size:10px;font-weight:600;">${esc(m.label)}</span>`;
+  }
+
+  function _incotermBadge(incoterm) {
+    if (!incoterm) return '<span style="color:#666;">—</span>';
+    const isDdp = /DDP/i.test(incoterm);
+    const bg = isDdp ? '#0d3a5a' : '#3a2d0d';
+    const fg = isDdp ? '#81d4fa' : '#ffcc80';
+    const title = isDdp ? '판매자 관부가세 부담' : '구매자 관부가세 부담';
+    return `<span title="${esc(title)}" style="padding:2px 6px;background:${bg};color:${fg};border-radius:4px;font-size:10px;font-weight:600;">${esc(String(incoterm))}</span>`;
+  }
+
+  function renderCompareTableHtml(j, requestBody) {
+    const candidates = Array.isArray(j.candidates) ? [...j.candidates] : [];
+    //   Sort: ELIGIBLE first (ascending by total), then everything else grouped.
+    candidates.sort((a, b) => {
+      if (a.eligible && !b.eligible) return -1;
+      if (!a.eligible && b.eligible) return 1;
+      if (a.eligible && b.eligible) return (a.totalShippingCostKrw || 0) - (b.totalShippingCostKrw || 0);
+      return String(a.provider).localeCompare(String(b.provider));
+    });
+    const recommended = j.recommendedServiceCode || null;
+    const warnsHtml = (j.warnings || []).map(w => `<div style="color:#ffb74d;font-size:11px;">⚠ ${esc(String(w))}</div>`).join('');
+    const brandUnknownBanner = j.brandStatusUnknown ? `
+      <div style="background:#3a2d0d;border:1px solid #7a5a00;border-radius:8px;padding:10px 12px;color:#ffcc80;font-size:12px;margin-bottom:10px;">
+        ⚠ 이 상품의 브랜드 여부가 미확인 상태입니다. 자동 리스팅 전에 운영자가 확인해 주세요 (BRAND_STATUS_UNKNOWN).
+      </div>
+    ` : '';
+    const rowsHtml = candidates.map(c => {
+      const isRec = recommended && c.serviceCode === recommended;
+      const canPick = c.eligible;
+      const rowBg = canPick ? (isRec ? '#132a12' : 'transparent') : '#1a1319';
+      return `
+        <tr style="border-bottom:1px solid #23233a;background:${rowBg};">
+          <td style="padding:8px;text-align:center;">
+            <input type="radio" name="sra-c-pick" value="${esc(c.serviceCode)}" ${canPick ? '' : 'disabled'}
+                   ${isRec && canPick ? 'checked' : ''} style="cursor:${canPick ? 'pointer' : 'not-allowed'};">
+          </td>
+          <td style="padding:8px;color:#fff;font-weight:600;font-size:11px;">${esc(c.provider)}${isRec ? ' <span style="color:#69f0ae;font-size:10px;">🏆 최저가 추천</span>' : ''}</td>
+          <td style="padding:8px;color:#cfd8dc;font-size:11px;">${esc(c.serviceName || c.serviceCode)}</td>
+          <td style="padding:8px;text-align:center;">${_incotermBadge(c.incoterm)}</td>
+          <td style="padding:8px;text-align:right;font-family:monospace;font-size:11px;">${esc(c.chargeableWeightKg == null ? '—' : fmtKg(c.chargeableWeightKg))}</td>
+          <td style="padding:8px;text-align:right;font-family:monospace;font-size:11px;">${esc(c.baseRateKrw == null ? '—' : fmtWon(c.baseRateKrw))}</td>
+          <td style="padding:8px;text-align:right;font-family:monospace;font-size:11px;">${esc(c.surchargeKrw == null && c.dutyVatKrw == null && c.euHsFeeKrw == null ? '—' : fmtWon((c.surchargeKrw || 0) + (c.dutyVatKrw || 0) + (c.euHsFeeKrw || 0)))}</td>
+          <td style="padding:8px;text-align:right;font-family:monospace;font-size:12px;font-weight:${canPick ? '700' : '400'};color:${canPick ? '#69f0ae' : '#888'};">${esc(c.totalShippingCostKrw == null ? '—' : fmtWon(c.totalShippingCostKrw))}</td>
+          <td style="padding:8px;text-align:center;">${_statusBadge(c.status)}${c.unavailableReason ? `<div style="color:#888;font-size:10px;margin-top:2px;">${esc(c.unavailableReason)}</div>` : ''}</td>
+        </tr>
+      `;
+    }).join('');
+    return `
+      ${brandUnknownBanner}
+      ${warnsHtml ? `<div style="margin-bottom:10px;">${warnsHtml}</div>` : ''}
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:0;overflow-x:auto;margin-bottom:12px;">
+        <table style="width:100%;border-collapse:collapse;font-size:11px;color:#e0e0e0;min-width:780px;">
+          <thead>
+            <tr style="background:#132435;">
+              <th style="padding:8px;text-align:center;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">선택</th>
+              <th style="padding:8px;text-align:left;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">배송사</th>
+              <th style="padding:8px;text-align:left;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">서비스</th>
+              <th style="padding:8px;text-align:center;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">조건</th>
+              <th style="padding:8px;text-align:right;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">청구중량</th>
+              <th style="padding:8px;text-align:right;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">기본운임</th>
+              <th style="padding:8px;text-align:right;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">세금·할증</th>
+              <th style="padding:8px;text-align:right;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">총비용</th>
+              <th style="padding:8px;text-align:center;color:#888;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">상태</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <div id="sra-c-detail" style="min-height:20px;"></div>
+      ${_rawJsonBlock(j)}
+    `;
+  }
+
+  function _wireCompareSelection(j, requestBody) {
+    const detail = document.getElementById('sra-c-detail');
+    if (!detail) return;
+    const pick = (serviceCode) => {
+      const cand = (j.candidates || []).find(c => c.serviceCode === serviceCode && c.eligible);
+      if (!cand) { detail.innerHTML = ''; return; }
+      //   Rebuild a quote-shaped object so the existing single-quote renderer
+      //   can format the detailed breakdown card. Keeps one renderer for the
+      //   detail view, and the compare table for the top summary.
+      const asQuote = {
+        ok: true,
+        provider: cand.provider, serviceCode: cand.serviceCode,
+        destinationCountry: requestBody.destinationCountry,
+        volumetricDivisor: null,
+        actualWeightKg: cand.actualWeightKg,
+        volumetricWeightKg: cand.volumetricWeightKg,
+        chargeableWeightKg: cand.chargeableWeightKg,
+        appliedWeightBracketKg: cand.appliedWeightBracketKg,
+        baseRateKrw: cand.baseRateKrw,
+        fuelSurchargeKrw: 0,
+        demandSurchargeKrw: cand.surchargeKrw || 0,
+        euVatKrw: cand.dutyVatKrw || 0,
+        euHsFeeKrw: cand.euHsFeeKrw || 0,
+        otherMandatoryFeeKrw: 0,
+        totalShippingCostKrw: cand.totalShippingCostKrw,
+        rateVersionId: cand.rateVersionId,
+        rateEffectiveFrom: cand.rateEffectiveFrom,
+        calculationDetails: { isEuDestination: !!requestBody.declaredValueKrw && cand.dutyVatKrw > 0, uniqueHsCodeCount: requestBody.uniqueHsCodeCount, countryVatRate: 0 },
+        warnings: cand.warnings || [],
+      };
+      detail.innerHTML = `
+        <div style="color:#888;font-size:11px;margin:6px 0;">선택한 서비스 상세 (${esc(cand.provider)} · ${esc(cand.serviceCode)})</div>
+        ${renderQuoteResultHtml(asQuote, requestBody)}
+      `;
+    };
+    document.querySelectorAll('input[name="sra-c-pick"]').forEach(el => {
+      el.addEventListener('change', () => { if (el.checked) pick(el.value); });
+      if (el.checked) pick(el.value);
+    });
   }
 
   window.pmcShippingRateAdmin = {
@@ -696,6 +861,7 @@
       fmtWon, fmtKg, fmtInt,
       validateQuoteInputs, readQuoteInputs,
       renderQuoteResultHtml, _translateServerError,
+      renderCompareTableHtml, _statusBadge, _incotermBadge,
     },
   };
 })();

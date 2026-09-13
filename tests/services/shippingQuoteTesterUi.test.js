@@ -52,12 +52,14 @@ function loadSpaHelpers() {
     dataset: {},
   });
   //   Only IDs the SPA reads at runtime for the tester + init side effects.
+  //   PMC-CCOREA-SHIPPING-1C adds sra-t-purpose · sra-t-branded · sra-t-brand.
   for (const id of [
     'sra-t-country','sra-t-actual','sra-t-l','sra-t-w','sra-t-h',
     'sra-t-hs','sra-t-dv','sra-t-eur','sra-t-sale','sra-t-out',
+    'sra-t-purpose','sra-t-branded','sra-t-brand',
     'sra-t-form','sra-t-go','sra-upload','sra-shadow-reload',
     'sra-versions','sra-surcharges','sra-shadow-list','sra-shadow-summary',
-    'sra-import-result','page-shipping-rate-admin',
+    'sra-import-result','page-shipping-rate-admin','sra-c-detail',
   ]) _els.set(id, makeEl(id));
 
   const sandbox = {
@@ -396,13 +398,21 @@ test('API-SHAPE · readQuoteInputs() body still matches the server contract keys
   els.get('sra-t-dv').value      = '0';
   els.get('sra-t-eur').value     = '';
   els.get('sra-t-sale').value    = 'B2C';
+  els.get('sra-t-purpose').value = 'LISTING';
+  els.get('sra-t-branded').value = 'unknown';
+  els.get('sra-t-brand').value   = '';
   const body = helpers.readQuoteInputs();
-  //   Exact key set the server route expects (unchanged).
-  assert.deepEqual(
-    Object.keys(body).sort(),
-    ['actualWeightKg','declaredValueKrw','destinationCountry','eurKrwRate',
-     'heightCm','lengthCm','quotePurpose','saleType','uniqueHsCodeCount','widthCm'].sort(),
-  );
+  //   Server route accepts the same core keys PLUS optional brand context
+  //   (PMC-CCOREA-SHIPPING-1C compare surface). Every core key must still be
+  //   present; brand keys default safely when the operator hasn't picked.
+  const CORE_KEYS = ['actualWeightKg','declaredValueKrw','destinationCountry','eurKrwRate',
+     'heightCm','lengthCm','quotePurpose','saleType','uniqueHsCodeCount','widthCm'];
+  for (const k of CORE_KEYS) {
+    assert.ok(k in body, `readQuoteInputs must include core key ${k}`);
+  }
+  //   Extended keys for the compare surface.
+  assert.ok('isBranded' in body, 'readQuoteInputs must surface isBranded (null when unknown)');
+  assert.ok('brandName' in body, 'readQuoteInputs must surface brandName (null when blank)');
   assert.equal(body.destinationCountry, 'US');
   assert.equal(body.actualWeightKg,     0.5);
   assert.equal(body.uniqueHsCodeCount,  1);
@@ -426,4 +436,152 @@ test('RESPONSIVE · tester form uses auto-fit grid so 9 inputs wrap on narrow sc
   //   (Match anywhere in file — it's inside the render function template.)
   assert.ok(/repeat\(auto-fit,\s*minmax\(140px,\s*1fr\)\)/.test(s),
     'summary card row must use auto-fit grid');
+});
+
+//   ═════════════════════════════════════════════════════════════
+//   PMC-CCOREA-SHIPPING-1C · multi-carrier compare table UI
+//   ═════════════════════════════════════════════════════════════
+
+test('COMPARE-UI-1 · tester form has 브랜드 상품 여부 · 브랜드명 · 견적 목적 inputs with labels', () => {
+  const s = src();
+  const form = s.match(/id="sra-t-form"[\s\S]+?<\/form>/)[0];
+  for (const [id, label] of [
+    ['sra-t-branded', '브랜드 상품 여부'],
+    ['sra-t-brand',   '브랜드명'],
+    ['sra-t-purpose', '견적 목적'],
+  ]) {
+    assert.ok(new RegExp(`for="${id}"[^>]*>${label}`).test(form),
+      `tester form must carry a <label for="${id}">${label}`);
+  }
+  //   The isBranded select MUST have the three states unknown/true/false.
+  assert.ok(/<option\s+value="unknown"/.test(form), 'unknown state must exist');
+  assert.ok(/<option\s+value="true"/.test(form),    'true state must exist');
+  assert.ok(/<option\s+value="false"/.test(form),   'false state must exist');
+  assert.ok(/LISTING/.test(form) && /FULFILLMENT/.test(form),
+    '견적 목적 must offer LISTING and FULFILLMENT');
+});
+
+test('COMPARE-UI-2 · button label is "배송사 비교" (not the old 견적 계산)', () => {
+  const s = src();
+  const form = s.match(/id="sra-t-form"[\s\S]+?<\/form>/)[0];
+  assert.ok(/배송사 비교/.test(form),
+    'submit button label must be 배송사 비교 (compare) — was 견적 계산');
+});
+
+test('COMPARE-UI-3 · runSingleQuote hits /quotes/compare (not the single /quote route)', () => {
+  const s = src();
+  //   The compare endpoint is the new primary surface.
+  assert.ok(/\/api\/shipping\/rate-admin\/quotes\/compare/.test(s),
+    'SPA must POST to /api/shipping/rate-admin/quotes/compare');
+});
+
+test('COMPARE-UI-4 · renderCompareTableHtml renders eligible+ineligible rows, marks recommended, disables restricted', () => {
+  const { helpers } = loadSpaHelpers();
+  const j = {
+    ok: true,
+    recommendedServiceCode: 'KPL_STD_US',
+    brandStatusUnknown: false,
+    warnings: [],
+    candidates: [
+      { provider: 'eGS', serviceCode: 'EGS_STD_US', serviceName: 'eGS Standard US', incoterm: 'DDP',
+        status: 'BRAND_RESTRICTED', eligible: false, unavailableReason: '브랜드 제품 이용 불가 정책 (운영자 설정)',
+        chargeableWeightKg: null, baseRateKrw: null, surchargeKrw: null, dutyVatKrw: null, euHsFeeKrw: null,
+        totalShippingCostKrw: null, rateVersionId: 3, rateEffectiveFrom: '2026-09-01' },
+      { provider: 'KPL', serviceCode: 'KPL_STD_US', serviceName: 'KPL SF US', incoterm: 'DAP',
+        status: 'ELIGIBLE', eligible: true, unavailableReason: null,
+        chargeableWeightKg: 0.5, baseRateKrw: 13900, surchargeKrw: 0, dutyVatKrw: 0, euHsFeeKrw: 0,
+        totalShippingCostKrw: 13900, rateVersionId: 4, rateEffectiveFrom: '2026-09-13' },
+      { provider: 'FedEx', serviceCode: 'FedEx_NOT_LOADED', serviceName: 'FedEx (운임 미등록)', incoterm: null,
+        status: 'RATE_NOT_LOADED', eligible: false, unavailableReason: 'FedEx 운임이 아직 등록되지 않았습니다',
+        chargeableWeightKg: null, baseRateKrw: null, surchargeKrw: null, dutyVatKrw: null, euHsFeeKrw: null,
+        totalShippingCostKrw: null, rateVersionId: null, rateEffectiveFrom: null },
+    ],
+  };
+  const html = helpers.renderCompareTableHtml(j, {
+    destinationCountry: 'US', actualWeightKg: 0.5, saleType: 'B2C', isBranded: true, brandName: 'Pokemon',
+  });
+  //   Recommended chip on KPL row
+  assert.ok(/KPL[\s\S]*?최저가 추천/.test(html), 'KPL row must show 최저가 추천 badge');
+  //   eGS restricted row shows the reason and price columns as —
+  assert.ok(/브랜드 제한|BRAND/i.test(html), 'restricted status badge must appear');
+  assert.ok(/브랜드 제품 이용 불가/.test(html), 'restricted reason must appear');
+  //   Restricted rows must NOT show a fabricated price
+  const eGSrowMatch = html.match(/eGS[\s\S]*?<\/tr>/);
+  assert.ok(eGSrowMatch, 'eGS row must be rendered');
+  assert.ok(!/16,100원|17,100원/.test(eGSrowMatch[0]),
+    'restricted eGS row must NOT carry any KRW price');
+  //   FedEx row shows 운임 미등록
+  assert.ok(/FedEx[\s\S]*?운임 미등록/.test(html), 'FedEx row must show 운임 미등록');
+  //   Only ELIGIBLE row (KPL) has an enabled radio; restricted+missing rows are disabled
+  const radios = [...html.matchAll(/<input\s+type="radio"[^>]*name="sra-c-pick"[^>]*>/g)].map(m => m[0]);
+  assert.equal(radios.length, 3, `expected 3 radios (one per candidate) — got ${radios.length}`);
+  const eligibleRadio   = radios.find(r => /KPL_STD_US/.test(r));
+  const restrictedRadio = radios.find(r => /EGS_STD_US/.test(r));
+  const notLoadedRadio  = radios.find(r => /FedEx_NOT_LOADED/.test(r));
+  assert.ok(eligibleRadio && !/disabled/.test(eligibleRadio),   'eligible radio must be enabled');
+  assert.ok(restrictedRadio && /disabled/.test(restrictedRadio), 'restricted radio must be disabled');
+  assert.ok(notLoadedRadio  && /disabled/.test(notLoadedRadio),  'not-loaded radio must be disabled');
+});
+
+test('COMPARE-UI-5 · brand-status-unknown banner appears when j.brandStatusUnknown=true', () => {
+  const { helpers } = loadSpaHelpers();
+  const html = helpers.renderCompareTableHtml({
+    ok: true, brandStatusUnknown: true, warnings: [], candidates: [], recommendedServiceCode: null,
+  }, {});
+  assert.ok(/BRAND_STATUS_UNKNOWN|브랜드 여부가 미확인/.test(html),
+    'brand-status-unknown banner must appear');
+});
+
+test('COMPARE-UI-6 · DDP/DAP incoterm badges render with the correct label', () => {
+  const { helpers } = loadSpaHelpers();
+  assert.ok(/DDP/.test(helpers._incotermBadge('DDP')), 'DDP badge must render');
+  assert.ok(/DAP/.test(helpers._incotermBadge('DAP')), 'DAP badge must render');
+  //   Titles carry the Korean explanation
+  assert.ok(/판매자 관부가세 부담/.test(helpers._incotermBadge('DDP')));
+  assert.ok(/구매자 관부가세 부담/.test(helpers._incotermBadge('DAP')));
+});
+
+test('COMPARE-UI-7 · status badges cover every enum value with Korean labels', () => {
+  const { helpers } = loadSpaHelpers();
+  for (const [status, expectLabel] of [
+    ['ELIGIBLE',               '선택 가능'],
+    ['RATE_NOT_LOADED',        '운임 미등록'],
+    ['COUNTRY_NOT_SUPPORTED',  '해당국가 미지원'],
+    ['WEIGHT_NOT_SUPPORTED',   '중량구간 없음'],
+    ['SALE_TYPE_NOT_SUPPORTED','판매방식 미지원'],
+    ['BRAND_RESTRICTED',       '브랜드 제한'],
+    ['INELIGIBLE',             '이용 불가'],
+  ]) {
+    const html = helpers._statusBadge(status);
+    assert.ok(html.includes(expectLabel),
+      `status ${status} must map to Korean "${expectLabel}" — got ${html}`);
+  }
+});
+
+test('COMPARE-UI-8 · readQuoteInputs surfaces isBranded (null when unknown) + brandName + quotePurpose', () => {
+  const { helpers, els } = loadSpaHelpers();
+  els.get('sra-t-country').value = 'US';
+  els.get('sra-t-actual').value  = '0.5';
+  els.get('sra-t-l').value       = '20';
+  els.get('sra-t-w').value       = '15';
+  els.get('sra-t-h').value       = '10';
+  els.get('sra-t-hs').value      = '1';
+  els.get('sra-t-dv').value      = '0';
+  els.get('sra-t-eur').value     = '';
+  els.get('sra-t-sale').value    = 'B2C';
+  els.get('sra-t-purpose').value = 'LISTING';
+  els.get('sra-t-branded').value = 'unknown';
+  els.get('sra-t-brand').value   = '';
+  let body = helpers.readQuoteInputs();
+  assert.equal(body.isBranded, null,      'unknown → isBranded:null (BRAND_STATUS_UNKNOWN)');
+  assert.equal(body.brandName, null);
+  assert.equal(body.quotePurpose, 'LISTING');
+  els.get('sra-t-branded').value = 'true';
+  els.get('sra-t-brand').value   = 'Pokemon';
+  body = helpers.readQuoteInputs();
+  assert.equal(body.isBranded, true);
+  assert.equal(body.brandName, 'Pokemon');
+  els.get('sra-t-branded').value = 'false';
+  body = helpers.readQuoteInputs();
+  assert.equal(body.isBranded, false);
 });

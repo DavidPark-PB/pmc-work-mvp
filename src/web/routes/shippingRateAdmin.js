@@ -31,6 +31,7 @@ const { requireAdmin } = require('../../middleware/auth');
 const { getClient }    = require('../../db/supabaseClient');
 const importer         = require('../../services/shipping/rateMasterImporter');
 const quoteService     = require('../../services/shipping/shippingQuoteService');
+const compareService   = require('../../services/shipping/shippingQuoteCompareService');
 const repo             = require('../../services/shipping/rateMasterRepository');
 const bands            = require('../../services/shipping/shippingPolicyBands');
 const adapter          = require('../../services/shipping/autoListingPricingAdapter');
@@ -259,6 +260,20 @@ router.post('/quote', express.json({ limit: '4kb' }), async (req, res) => {
     res.json(out);
   } catch (e) {
     console.error('[shippingRateAdmin] quote failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+//   POST /quotes/compare — multi-carrier compare (SHADOW · PMC-CCOREA-SHIPPING-1C).
+//   No mutation. No eBay call. Returns per-service status + quote so the SPA
+//   can render the compare table (§3, §6). Kept adjacent to /quote for
+//   discoverability; the authoritative pricing surface is unchanged.
+router.post('/quotes/compare', express.json({ limit: '4kb' }), async (req, res) => {
+  try {
+    const out = await compareService.calculateMultiCarrierQuotes(req.body || {}, { supabase: getClient() });
+    res.json(out);
+  } catch (e) {
+    console.error('[shippingRateAdmin] quotes/compare failed:', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
