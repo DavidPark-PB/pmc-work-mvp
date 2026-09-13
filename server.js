@@ -139,6 +139,14 @@ app.post('/api/auth/logout', logoutHandler);
 // Telegram webhook — external call from Telegram servers, no auth
 app.use('/api/telegram/webhook', require('./src/web/routes/telegramWebhook'));
 
+// PMC-CCOREA-SHIPPING-1B correction (2026-09-13) — server-to-server internal
+//   shipping API mounted ABOVE the global authGuard so that automation
+//   subproject calls authenticate via SHIPPING_QUOTE_INTERNAL_TOKEN (bearer),
+//   NOT via a browser session cookie. The router itself applies
+//   requireInternalToken to every route, so removing session auth here does
+//   NOT expose these endpoints publicly.
+app.use('/api/internal/shipping', require('./src/web/routes/shippingInternal'));
+
 app.use(authGuard);
 
 // 레거시 관리자 계정은 업무관리 쓰기 차단 (users FK 제약)
@@ -210,9 +218,6 @@ app.use('/api/oms/orders', require('./src/web/routes/omsOrders'));
 // PMC-CCOREA-SHIPPING-1B — canonical shipping-rate master admin surface
 //   (owner-only · xlsx import + quote calc · never mutates marketplace or eBay)
 app.use('/api/shipping/rate-admin', require('./src/web/routes/shippingRateAdmin'));
-// PMC-CCOREA-SHIPPING-1B correction — server-to-server internal shipping API
-//   (bearer-token auth via SHIPPING_QUOTE_INTERNAL_TOKEN · no admin cookie).
-app.use('/api/internal/shipping', require('./src/web/routes/shippingInternal'));
 // PR O1 — Daily Operations Briefing (오늘 운영 요약 read-only)
 app.use('/api/ops-briefing', require('./src/web/routes/operationsBriefing'));
 // PR R0 — Opportunity Inbox (직원/admin 후보 등록 + 사장님 검토)
