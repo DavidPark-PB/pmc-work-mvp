@@ -87,28 +87,313 @@
       </div>
 
       <div style="margin-top:16px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;">
-        <h3 style="color:#fff;margin:0 0 12px;font-size:14px;">🧪 단건 배송비 테스트 계산기</h3>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:10px;">
-          <input id="sra-t-country" placeholder="국가 (US)" value="US" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-          <input id="sra-t-actual"  placeholder="실중량 kg" value="0.5" type="number" step="0.001" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-          <input id="sra-t-l" placeholder="길이 cm" value="20" type="number" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-          <input id="sra-t-w" placeholder="가로 cm" value="15" type="number" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-          <input id="sra-t-h" placeholder="높이 cm" value="10" type="number" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-          <input id="sra-t-hs" placeholder="HS 개수" value="0" type="number" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-          <input id="sra-t-dv" placeholder="신고가액 KRW" value="0" type="number" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-          <input id="sra-t-eur" placeholder="EUR/KRW" value="" type="number" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-          <select id="sra-t-sale" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
-            <option value="B2C">B2C</option>
-            <option value="B2B">B2B</option>
-          </select>
-          <button id="sra-t-go" type="button" style="padding:8px 14px;background:#1565c0;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:12px;">견적 계산</button>
-        </div>
-        <div id="sra-t-out" style="min-height:60px;background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:12px;font-family:monospace;font-size:11px;color:#e0e0e0;white-space:pre-wrap;">결과가 여기에 표시됩니다.</div>
+        <h3 style="color:#fff;margin:0 0 4px;font-size:14px;">🧪 단건 배송비 테스트 계산기</h3>
+        <p style="color:#888;font-size:11px;margin:0 0 12px;">도착 국가·중량·부피·판매방식을 넣으면 활성 운임 버전으로 견적을 계산합니다. 실제 리스팅에는 영향 없습니다.</p>
+        <!--
+          autocomplete="off" on the form + name attributes on inputs stop
+          the browser from filling numeric fields with stale cached values —
+          the previous SPA had a bare unlabeled input that Chrome silently
+          populated with "50" for EUR/KRW (owner-reported 2026-09-13).
+        -->
+        <form id="sra-t-form" autocomplete="off" onsubmit="return false;" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:12px;">
+          <div>
+            <label for="sra-t-country" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">도착 국가 <span style="color:#888;font-weight:400;">(ISO 2자리)</span></label>
+            <input id="sra-t-country" name="destinationCountry" value="US" maxlength="2" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;text-transform:uppercase;">
+          </div>
+          <div>
+            <label for="sra-t-actual" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">실중량 <span style="color:#888;font-weight:400;">(kg)</span></label>
+            <input id="sra-t-actual" name="actualWeightKg" value="0.5" type="number" step="0.001" min="0.001" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          </div>
+          <div>
+            <label for="sra-t-l" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">가로 <span style="color:#888;font-weight:400;">(cm)</span></label>
+            <input id="sra-t-l" name="lengthCm" value="20" type="number" step="0.1" min="0.1" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          </div>
+          <div>
+            <label for="sra-t-w" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">세로 <span style="color:#888;font-weight:400;">(cm)</span></label>
+            <input id="sra-t-w" name="widthCm" value="15" type="number" step="0.1" min="0.1" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          </div>
+          <div>
+            <label for="sra-t-h" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">높이 <span style="color:#888;font-weight:400;">(cm)</span></label>
+            <input id="sra-t-h" name="heightCm" value="10" type="number" step="0.1" min="0.1" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          </div>
+          <div>
+            <label for="sra-t-hs" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">고유 HS코드 수 <span style="color:#888;font-weight:400;">(같은 코드는 1개)</span></label>
+            <input id="sra-t-hs" name="uniqueHsCodeCount" value="1" type="number" step="1" min="0" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          </div>
+          <div>
+            <label for="sra-t-dv" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">신고가액 <span style="color:#888;font-weight:400;">(KRW · EU VAT 기준)</span></label>
+            <input id="sra-t-dv" name="declaredValueKrw" value="0" type="number" step="1" min="0" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          </div>
+          <div>
+            <label for="sra-t-eur" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">유로 환율 <span style="color:#888;font-weight:400;">(KRW/EUR · EU 필수)</span></label>
+            <input id="sra-t-eur" name="eurKrwRate" placeholder="예: 1600" type="number" step="1" min="800" max="3000" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+          </div>
+          <div>
+            <label for="sra-t-sale" style="display:block;color:#cfd8dc;font-size:11px;font-weight:600;margin-bottom:4px;">판매방식</label>
+            <select id="sra-t-sale" name="saleType" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
+              <option value="B2C">B2C (개인 구매)</option>
+              <option value="B2B">B2B (사업자 구매)</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:flex-end;">
+            <button id="sra-t-go" type="submit" style="width:100%;padding:10px 14px;background:#1565c0;border:0;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;font-size:13px;">견적 계산</button>
+          </div>
+        </form>
+        <div id="sra-t-out" style="min-height:40px;color:#888;font-size:12px;">계산 결과가 여기에 표시됩니다.</div>
       </div>
     `;
     document.getElementById('sra-upload').addEventListener('change', onUpload);
+    document.getElementById('sra-t-form').addEventListener('submit', function (ev) { ev.preventDefault(); runSingleQuote(); });
     document.getElementById('sra-t-go').addEventListener('click', runSingleQuote);
     document.getElementById('sra-shadow-reload').addEventListener('click', loadShadowResults);
+  }
+
+  //   ─── Quote result formatting helpers ──────────────────────────
+  //   Centralized so tests can lock in the display contract without
+  //   spinning up a real browser.
+
+  function fmtWon(n) {
+    if (n == null || Number.isNaN(Number(n))) return '—';
+    return Number(n).toLocaleString('ko-KR') + '원';
+  }
+  function fmtKg(n) {
+    if (n == null || Number.isNaN(Number(n))) return '—';
+    //   Trim trailing zeros — 0.5000 → 0.5, 1.0 → 1, 1.234 → 1.234.
+    const v = Number(n);
+    if (v === Math.round(v)) return v + 'kg';
+    return v.toFixed(3).replace(/\.?0+$/, '') + 'kg';
+  }
+  function fmtInt(n) {
+    if (n == null || Number.isNaN(Number(n))) return '—';
+    return Number(n).toLocaleString('ko-KR');
+  }
+
+  //   ─── Input validation (pre-flight for the quote tester) ───────
+  //   Returns { ok: true, body } or { ok: false, messages: [Korean sentences] }.
+  //   Never surfaces raw JS errors to the operator — every branch produces
+  //   an actionable Korean sentence.
+
+  function readQuoteInputs() {
+    const country = String(document.getElementById('sra-t-country').value || '').trim().toUpperCase();
+    return {
+      destinationCountry: country,
+      actualWeightKg:     Number(document.getElementById('sra-t-actual').value),
+      lengthCm:           Number(document.getElementById('sra-t-l').value),
+      widthCm:            Number(document.getElementById('sra-t-w').value),
+      heightCm:           Number(document.getElementById('sra-t-h').value),
+      uniqueHsCodeCount:  Math.floor(Number(document.getElementById('sra-t-hs').value) || 0),
+      declaredValueKrw:   Number(document.getElementById('sra-t-dv').value),
+      eurKrwRate:         document.getElementById('sra-t-eur').value === ''
+                            ? null
+                            : Number(document.getElementById('sra-t-eur').value),
+      saleType:           document.getElementById('sra-t-sale').value,
+      quotePurpose:       'LISTING',
+    };
+  }
+
+  //   EU country list — 2-letter ISO codes. Kept in the client only for
+  //   the "is EU required-field" check; the server owns the authoritative
+  //   flag (shipping_countries.is_eu). Client-side is defensive UX.
+  const _EU_ISO = new Set([
+    'AT','BE','BG','HR','CY','CZ','DK','EE','FI','FR','DE','GR','HU','IE',
+    'IT','LV','LT','LU','MT','NL','PL','PT','RO','SK','SI','ES','SE',
+  ]);
+
+  function validateQuoteInputs(input) {
+    const msgs = [];
+    if (!/^[A-Z]{2}$/.test(input.destinationCountry)) {
+      msgs.push('도착 국가는 영문 2자리(예: US, JP, DE)로 입력하세요.');
+    }
+    if (!(input.actualWeightKg > 0)) msgs.push('실중량은 0보다 커야 합니다.');
+    if (!(input.lengthCm > 0))       msgs.push('가로는 0보다 커야 합니다.');
+    if (!(input.widthCm > 0))        msgs.push('세로는 0보다 커야 합니다.');
+    if (!(input.heightCm > 0))       msgs.push('높이는 0보다 커야 합니다.');
+    if (!(Number.isInteger(input.uniqueHsCodeCount) && input.uniqueHsCodeCount >= 0)) {
+      msgs.push('고유 HS코드 수는 0 이상의 정수로 입력하세요.');
+    }
+    if (!(input.declaredValueKrw >= 0)) msgs.push('신고가액은 0 이상의 숫자로 입력하세요.');
+    if (!(input.saleType === 'B2C' || input.saleType === 'B2B')) msgs.push('판매방식은 B2C 또는 B2B 중 선택하세요.');
+
+    const isEu = _EU_ISO.has(input.destinationCountry);
+    if (isEu) {
+      if (!(input.eurKrwRate > 0)) {
+        msgs.push('유로 환율(KRW/EUR)을 입력해 주세요. EU 견적에 필수입니다.');
+      } else if (input.eurKrwRate < 800 || input.eurKrwRate > 3000) {
+        msgs.push(`유로 환율이 비정상 범위입니다 (${input.eurKrwRate}). 800~3000 사이의 값을 입력하세요.`);
+      }
+      if (!(input.declaredValueKrw > 0)) {
+        msgs.push('EU 견적에는 신고가액이 필요합니다 (VAT 계산 기준).');
+      }
+      if (!(input.uniqueHsCodeCount > 0)) {
+        msgs.push('EU 견적에는 고유 HS코드 수가 1개 이상이어야 합니다.');
+      }
+    } else if (input.eurKrwRate != null && input.eurKrwRate > 0
+               && (input.eurKrwRate < 800 || input.eurKrwRate > 3000)) {
+      //   Non-EU: eurKrwRate is unused by the server, but a wildly-off value
+      //   is almost certainly the browser-autofill "50" case — warn softly.
+      msgs.push(`유로 환율이 비정상 범위입니다 (${input.eurKrwRate}). 비어 있어도 미국 등 비EU 견적은 계산 가능합니다.`);
+    }
+    return msgs.length === 0 ? { ok: true } : { ok: false, messages: msgs };
+  }
+
+  //   Map server error codes/status to a Korean operator-facing sentence.
+  //   The raw JSON is still available in the collapsed panel for devs.
+  function _translateServerError(j, httpStatus) {
+    if (!j || typeof j !== 'object') return `서버 응답을 해석할 수 없습니다 (HTTP ${httpStatus}).`;
+    const code    = String(j.errorCode || j.code || '').toUpperCase();
+    const message = String(j.message || j.error || '').trim();
+    if (code === 'COUNTRY_NOT_SUPPORTED' || /country.*not.*supported/i.test(message)) {
+      return '해당 국가의 운임이 없습니다. 국가 코드를 확인하거나 운임 마스터에 국가를 추가해 주세요.';
+    }
+    if (code === 'RATE_NOT_LOADED' || /rate.*not.*loaded/i.test(message)) {
+      return '운임이 아직 등록되지 않은 배송사입니다. 워크북을 업로드하고 활성화한 뒤 다시 시도해 주세요.';
+    }
+    if (code === 'WEIGHT_OVER_MAX_BRACKET' || /no bracket|weight.*over/i.test(message)) {
+      return '적용 가능한 중량구간이 없습니다. 실중량 또는 부피가 너무 큽니다.';
+    }
+    if (code === 'NO_ACTIVE_VERSION' || /no active/i.test(message)) {
+      return '활성 운임 버전이 없습니다. 운임 버전을 먼저 활성화해 주세요.';
+    }
+    if (/eurKrwRate/i.test(message) || /HS fee/i.test(message)) {
+      return 'EU 견적에 유로 환율(KRW/EUR)이 필요합니다. 환율을 입력하고 다시 시도해 주세요.';
+    }
+    return message ? `계산에 실패했습니다: ${message}` : `계산에 실패했습니다 (HTTP ${httpStatus}).`;
+  }
+
+  //   ─── Result renderer ──────────────────────────────────────────
+  //   Produces the full result HTML: summary card + line-item table +
+  //   optional EU block + metadata + collapsed raw JSON. Pure function
+  //   of the server response object.
+
+  function renderQuoteResultHtml(j, requestBody) {
+    if (!j || typeof j !== 'object' || j.ok === false) {
+      const httpMsg = _translateServerError(j, 200);
+      return `
+        <div style="background:#3a1a1a;border:1px solid #7a3030;border-radius:8px;padding:14px;color:#ef9a9a;margin-bottom:10px;">
+          <div style="font-weight:600;margin-bottom:4px;">⚠ 견적 계산 실패</div>
+          <div style="font-size:12px;">${esc(httpMsg)}</div>
+        </div>
+        ${_rawJsonBlock(j)}
+      `;
+    }
+
+    const cd = j.calculationDetails || {};
+    const isEu = !!cd.isEuDestination;
+
+    //   Summary card — the "big number" the operator wants first.
+    const summary = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px;">
+        <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:12px;">
+          <div style="color:#888;font-size:11px;margin-bottom:2px;">총 배송비</div>
+          <div style="color:#69f0ae;font-size:20px;font-weight:700;">${esc(fmtWon(j.totalShippingCostKrw))}</div>
+        </div>
+        <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:12px;">
+          <div style="color:#888;font-size:11px;margin-bottom:2px;">청구중량</div>
+          <div style="color:#fff;font-size:16px;font-weight:600;">${esc(fmtKg(j.chargeableWeightKg))}</div>
+        </div>
+        <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:12px;">
+          <div style="color:#888;font-size:11px;margin-bottom:2px;">배송사</div>
+          <div style="color:#fff;font-size:16px;font-weight:600;">${esc(String(j.provider || '—'))}</div>
+        </div>
+        <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:12px;">
+          <div style="color:#888;font-size:11px;margin-bottom:2px;">서비스</div>
+          <div style="color:#fff;font-size:13px;font-weight:600;word-break:break-all;">${esc(String(j.serviceCode || '—'))}</div>
+        </div>
+      </div>
+    `;
+
+    //   Line-item table.
+    const rows = [
+      ['실중량',            fmtKg(j.actualWeightKg)],
+      ['부피계수',          fmtInt(j.volumetricDivisor)],
+      ['부피중량',          fmtKg(j.volumetricWeightKg)],
+      ['청구중량',          fmtKg(j.chargeableWeightKg)],
+      ['적용 중량구간',     fmtKg(j.appliedWeightBracketKg)],
+      ['기본운임',          fmtWon(j.baseRateKrw)],
+      ['유류할증',          fmtWon(j.fuelSurchargeKrw)],
+      ['수요·긴급할증',     fmtWon(j.demandSurchargeKrw)],
+      ['EU VAT',            fmtWon(j.euVatKrw)],
+      ['EU HS 수수료',      fmtWon(j.euHsFeeKrw)],
+      ['기타 필수비용',     fmtWon(j.otherMandatoryFeeKrw)],
+    ];
+    const table = `
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:0;overflow:hidden;margin-bottom:12px;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;color:#e0e0e0;">
+          <tbody>
+            ${rows.map(([k, v]) => `
+              <tr style="border-bottom:1px solid #1f1f38;">
+                <td style="padding:8px 12px;color:#aaa;width:45%;">${esc(k)}</td>
+                <td style="padding:8px 12px;text-align:right;font-family:monospace;">${esc(v)}</td>
+              </tr>`).join('')}
+            <tr style="background:#132435;">
+              <td style="padding:10px 12px;color:#69f0ae;font-weight:700;">총 배송비</td>
+              <td style="padding:10px 12px;text-align:right;font-family:monospace;color:#69f0ae;font-weight:700;font-size:14px;">${esc(fmtWon(j.totalShippingCostKrw))}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    //   EU-specific detail block.
+    let euBlock = '';
+    if (isEu) {
+      const vatPct = (Number(cd.countryVatRate) || 0) * 100;
+      const hsCount = Number(cd.uniqueHsCodeCount) || 0;
+      const eurRate = Number(requestBody && requestBody.eurKrwRate) || 0;
+      const hsFeeKrw = Number(j.euHsFeeKrw) || 0;
+      const hsFormula = eurRate > 0
+        ? `HS ${hsCount}개 × €3 × ${fmtInt(eurRate)}원 = ${fmtWon(hsCount * 3 * eurRate)}`
+        : '(유로 환율 미입력)';
+      euBlock = `
+        <div style="background:#12233a;border:1px solid #2a4a6a;border-radius:8px;padding:12px;margin-bottom:12px;">
+          <div style="color:#81d4fa;font-weight:600;font-size:12px;margin-bottom:8px;">🇪🇺 EU 견적 세부내역</div>
+          <table style="width:100%;border-collapse:collapse;font-size:11px;color:#cfd8dc;">
+            <tbody>
+              <tr><td style="padding:4px 0;width:45%;color:#aaa;">국가 VAT율</td><td style="text-align:right;font-family:monospace;">${vatPct.toFixed(2)}%</td></tr>
+              <tr><td style="padding:4px 0;color:#aaa;">신고가액</td><td style="text-align:right;font-family:monospace;">${esc(fmtWon(requestBody && requestBody.declaredValueKrw))}</td></tr>
+              <tr><td style="padding:4px 0;color:#aaa;">VAT 금액</td><td style="text-align:right;font-family:monospace;">${esc(fmtWon(j.euVatKrw))}</td></tr>
+              <tr><td style="padding:4px 0;color:#aaa;">고유 HS코드 수</td><td style="text-align:right;font-family:monospace;">${hsCount}개</td></tr>
+              <tr><td style="padding:4px 0;color:#aaa;">EUR/KRW</td><td style="text-align:right;font-family:monospace;">${eurRate > 0 ? fmtInt(eurRate) + '원' : '—'}</td></tr>
+              <tr><td style="padding:4px 0;color:#aaa;">HS 수수료 계산</td><td style="text-align:right;font-family:monospace;">${esc(hsFormula)}</td></tr>
+              <tr><td style="padding:4px 0;color:#aaa;">HS 수수료 (원화)</td><td style="text-align:right;font-family:monospace;">${esc(fmtWon(hsFeeKrw))}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    //   Metadata footer.
+    const meta = `
+      <div style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:10px 12px;font-size:11px;color:#aaa;margin-bottom:10px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px 16px;">
+          <div><span style="color:#888;">운임 버전:</span> #${esc(String(j.rateVersionId ?? '—'))}</div>
+          <div><span style="color:#888;">운임 적용일:</span> ${esc(String(j.rateEffectiveFrom || '—'))}</div>
+          <div><span style="color:#888;">도착국가:</span> ${esc(String(j.destinationCountry || (requestBody && requestBody.destinationCountry) || '—'))}</div>
+          <div><span style="color:#888;">판매방식:</span> ${esc(String((requestBody && requestBody.saleType) || '—'))}</div>
+          <div><span style="color:#888;">계산시각:</span> ${esc(new Date().toLocaleString('ko-KR'))}</div>
+        </div>
+      </div>
+    `;
+
+    //   Warnings block (server-provided).
+    const warns = Array.isArray(j.warnings) ? j.warnings : [];
+    const warnsHtml = warns.length ? `
+      <div style="background:#3a2e00;border:1px solid #7a5a00;border-radius:8px;padding:8px 12px;font-size:11px;color:#ffb74d;margin-bottom:10px;">
+        ${warns.map(w => `<div>⚠ ${esc(String(w))}</div>`).join('')}
+      </div>
+    ` : '';
+
+    return summary + table + euBlock + warnsHtml + meta + _rawJsonBlock(j);
+  }
+
+  function _rawJsonBlock(j) {
+    //   Collapsed by default; operators never see it unless they open it.
+    return `
+      <details style="background:#0f0f23;border:1px solid #2a2a4a;border-radius:8px;padding:8px 12px;">
+        <summary style="cursor:pointer;color:#888;font-size:11px;user-select:none;">개발자용 JSON 보기</summary>
+        <pre style="margin:8px 0 0;font-size:10px;color:#cfd8dc;white-space:pre-wrap;word-break:break-all;max-height:280px;overflow:auto;">${esc(JSON.stringify(j, null, 2))}</pre>
+      </details>
+    `;
   }
 
   async function loadShadowResults() {
@@ -368,30 +653,49 @@
 
   async function runSingleQuote() {
     const out = document.getElementById('sra-t-out');
-    out.textContent = '계산 중…';
-    const body = {
-      destinationCountry: document.getElementById('sra-t-country').value.trim().toUpperCase(),
-      actualWeightKg:     Number(document.getElementById('sra-t-actual').value),
-      lengthCm:           Number(document.getElementById('sra-t-l').value),
-      widthCm:            Number(document.getElementById('sra-t-w').value),
-      heightCm:           Number(document.getElementById('sra-t-h').value),
-      uniqueHsCodeCount:  Number(document.getElementById('sra-t-hs').value),
-      declaredValueKrw:   Number(document.getElementById('sra-t-dv').value),
-      eurKrwRate:         Number(document.getElementById('sra-t-eur').value) || null,
-      saleType:           document.getElementById('sra-t-sale').value,
-      quotePurpose:       'LISTING',
-    };
+    //   1. Read + validate. All errors surface as Korean sentences.
+    const body = readQuoteInputs();
+    const v = validateQuoteInputs(body);
+    if (!v.ok) {
+      out.innerHTML = `
+        <div style="background:#3a1a1a;border:1px solid #7a3030;border-radius:8px;padding:12px;color:#ef9a9a;font-size:12px;">
+          <div style="font-weight:600;margin-bottom:6px;">입력값을 확인해 주세요</div>
+          <ul style="margin:0 0 0 18px;padding:0;">${v.messages.map(m => `<li>${esc(m)}</li>`).join('')}</ul>
+        </div>
+      `;
+      return;
+    }
+    //   2. Fire request. Preserve exact API request shape.
+    out.innerHTML = '<div style="color:#888;font-size:12px;">계산 중…</div>';
+    let j = null; let httpStatus = 0;
     try {
       const r = await fetch('/api/shipping/rate-admin/quote', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
         body: JSON.stringify(body),
       });
-      const j = await r.json();
-      out.textContent = JSON.stringify(j, null, 2);
+      httpStatus = r.status;
+      try { j = await r.json(); } catch (_) { /* handled below */ }
     } catch (e) {
-      out.textContent = 'HTTP 오류: ' + e.message;
+      out.innerHTML = `
+        <div style="background:#3a1a1a;border:1px solid #7a3030;border-radius:8px;padding:12px;color:#ef9a9a;font-size:12px;">
+          <div style="font-weight:600;margin-bottom:6px;">⚠ 네트워크 오류</div>
+          <div>${esc(e && e.message ? e.message : String(e))}</div>
+        </div>
+      `;
+      return;
     }
+    //   3. Render (success or translated error).
+    out.innerHTML = renderQuoteResultHtml(j, body);
   }
 
-  window.pmcShippingRateAdmin = { init };
+  window.pmcShippingRateAdmin = {
+    init,
+    //   Test-only surface: pure helpers so the tester UI contract can be
+    //   locked in without a real browser. Never call these from product code.
+    _test: {
+      fmtWon, fmtKg, fmtInt,
+      validateQuoteInputs, readQuoteInputs,
+      renderQuoteResultHtml, _translateServerError,
+    },
+  };
 })();
