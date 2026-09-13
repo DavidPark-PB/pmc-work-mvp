@@ -36,6 +36,20 @@
 
   function renderShell(root) {
     root.innerHTML = `
+      <!--
+        Scoped dark-theme override — the global rule table td { color: var(--text) }
+        in css/style.css:669 was painting bare <td> cells near-black on this page's
+        dark background, so text like 국가 · Legacy · Shadow · Δ% was only visible
+        when the row-hover rule flipped the background to light gray. Scope everything
+        under #page-shipping-rate-admin so no other page is affected.
+      -->
+      <style>
+        #page-shipping-rate-admin table td { color: #e0e0e0; }
+        #page-shipping-rate-admin table th { color: #cfd8dc; }
+        #page-shipping-rate-admin table tbody tr { border-bottom-color: #23233a; }
+        #page-shipping-rate-admin table tbody tr:hover { background: #23233a; }
+        #page-shipping-rate-admin .menu-item, #page-shipping-rate-admin a { color: inherit; }
+      </style>
       <div style="margin-bottom:14px;">
         <h1 style="font-size:22px;color:#fff;margin:0 0 4px;">🚚 운임 마스터</h1>
         <p style="color:#888;font-size:13px;margin:0;">CCOREA 통합 배송비 운임표 관리 · 견적 테스터 · 주간 할증률 입력</p>

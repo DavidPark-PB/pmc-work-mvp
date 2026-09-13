@@ -364,3 +364,45 @@ test('UI-SCHEMA-B6 · malformed JSON body shows a user error (no stack trace lea
   assert.ok(/예상하지 못한 응답/.test(src),
     'SPA MUST surface a Korean "unexpected response" error to the user');
 });
+
+//   ─────────────────────────────────────────────────────────────
+//   Level C · dark-theme contrast (owner-reported "글씨가 hover 해야 보임")
+//   ─────────────────────────────────────────────────────────────
+//   Root cause: css/style.css:669 declares `table td { color: var(--text); }`
+//   which paints bare <td> cells near-black on this page's dark background.
+//   The fix is a page-scoped <style> block that overrides `table td` under
+//   `#page-shipping-rate-admin` only — no other page is affected.
+
+test('UI-SCHEMA-C1 · SPA injects a page-scoped <style> block into #page-shipping-rate-admin', () => {
+  const src = _spaSrc();
+  assert.ok(/#page-shipping-rate-admin\s+table\s+td\s*\{[^}]*color\s*:/i.test(src),
+    'SPA MUST scope a `table td { color: … }` override under #page-shipping-rate-admin');
+  assert.ok(/#page-shipping-rate-admin\s+table\s+tbody\s+tr:hover/i.test(src),
+    'SPA MUST scope a hover rule under #page-shipping-rate-admin so row hover keeps the dark theme');
+});
+
+test('UI-SCHEMA-C2 · scoped td color is a light shade readable on the dark background', () => {
+  const src = _spaSrc();
+  //   Grab the color value the scoped rule assigns to td.
+  const m = src.match(/#page-shipping-rate-admin\s+table\s+td\s*\{\s*color\s*:\s*(#[0-9a-fA-F]{3,6})/i);
+  assert.ok(m, 'scoped rule for td color must be a hex value');
+  //   Convert to RGB and require it's brighter than the darkest surface
+  //   the page uses (#0f0f23 → luminance ~14) — a safe threshold is a per-channel
+  //   average ≥ 140 so text is comfortably legible on #1a1a2e (avg 42).
+  const hex = m[1].replace('#', '').padEnd(6, m[1].length === 4 ? '0' : m[1].slice(-1));
+  const r = parseInt(hex.slice(0,2), 16);
+  const g = parseInt(hex.slice(2,4), 16);
+  const b = parseInt(hex.slice(4,6), 16);
+  const avg = (r + g + b) / 3;
+  assert.ok(avg >= 140, `scoped td color ${m[1]} averages ${avg.toFixed(0)}/255 — too dark for the #1a1a2e surface`);
+});
+
+test('UI-SCHEMA-C3 · scoped style block sits inside the renderShell output (never a raw <style> after </body>)', () => {
+  const src = _spaSrc();
+  //   The <style> must live inside root.innerHTML = `…` so it is inserted
+  //   into the page DOM only after admin auth passes and the shell renders.
+  const shellIdx = src.indexOf('function renderShell');
+  const styleIdx = src.indexOf('#page-shipping-rate-admin');
+  assert.ok(shellIdx > 0 && styleIdx > shellIdx,
+    'the scoped <style> MUST live inside renderShell() so it is only injected on the admin page render');
+});
