@@ -640,6 +640,8 @@
          Reads oms_orders where order_status IN PENDING_ACTION_STATUSES. -->
     <div class="menu-item" data-page="oms-orders">미처리 주문</div>
     <div class="menu-item" data-page="shipping">배송 관리</div>
+    <!-- PMC-CCOREA-SHIPPING-1B · admin-only rate master console. -->
+    <div class="menu-item" data-page="shipping-rate-admin" data-admin-only style="color:#ffcc80">🚚 운임 마스터</div>
 
     <!-- ─── 🛍 상품 ───
          상품 후보 → opportunity-inbox as primary safe destination.
@@ -3632,6 +3634,8 @@
   <div id="page-oms-orders" class="page">
     <div id="oms-orders-section"></div>
   </div>
+  <!-- PMC-CCOREA-SHIPPING-1B: shipping rate master admin console. -->
+  <div id="page-shipping-rate-admin" class="page"></div>
   <!-- Phase 3 PR M: Safety Foundation 실행 로그 -->
   <!-- PR O1: Daily Operations Briefing -->
   <div id="page-ops-briefing" class="page">
@@ -3711,6 +3715,8 @@
   <script defer src="/js/orderList.js?v=20260509a"></script>
   <!-- ── PMC-OMS-CONSOLE-1B — canonical pending-action orders (READ-ONLY) ── -->
   <script defer src="/js/omsOrders.js?v=20260912a"></script>
+  <!-- ── PMC-CCOREA-SHIPPING-1B — shipping rate master admin ── -->
+  <script defer src="/js/shippingRateAdmin.js?v=20260913a"></script>
   <!-- ── PR O1 — Daily Operations Briefing ── -->
   <script defer src="/js/opsBriefing.js?v=20260510a"></script>
   <!-- ── Phase 8I — Owner Inventory Decisions ── -->

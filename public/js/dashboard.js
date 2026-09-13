@@ -133,6 +133,10 @@ function navigateTo(page) {
       //   with the briefing count → same cohort by construction.
       if (window.pmcOmsOrders) pmcOmsOrders.init();
       break;
+    case 'shipping-rate-admin':
+      //   PMC-CCOREA-SHIPPING-1B · admin-only rate master + xlsx import + quote tester.
+      if (window.pmcShippingRateAdmin) pmcShippingRateAdmin.init();
+      break;
     case 'shipping': setupShippingPage(); break;
     case 'shipping-recs': if (window.pmcShippingRecs) pmcShippingRecs.load(); break;
     case 'shipping-recs-wms': if (window.pmcShippingRecsWms) pmcShippingRecsWms.load(); break;
