@@ -3,16 +3,21 @@
 /**
  * src/services/shipping/autoListingPricingAdapter.js — PMC-CCOREA-SHIPPING-1B (2026-09-13).
  *
- * Owner directive §6-§7: compose the canonical shipping quote and shipping
- * policy band into an auto-listing preview WITHOUT replacing the existing
- * listing-price formula. This is a preview surface — actual eBay payload
- * generation still lives in automation/src/services/pricing.ts. In
- * SHADOW mode (default) this returns the recomputed preview alongside
- * `shadowOnly:true` and callers publish nothing new. In ACTIVE mode the
- * returned `listingItemPrice*` is authoritative for the payload.
+ * Owner directive §5 (correction): this adapter is SHADOW-ONLY. It computes
+ * the canonical shipping-aware listing price for review; it never rewrites
+ * the eBay payload or replaces the legacy listing price.
  *
- * Feature flag (owner directive §9):
- *   process.env.AUTO_LISTING_USE_QUOTE_ENGINE === 'true' (default false).
+ * Feature flag (owner directive §5):
+ *   AUTO_LISTING_SHIPPING_SHADOW_ENABLED
+ *     · false (default): callers should NOT invoke the shadow path at all.
+ *     · true            : callers may invoke — result is recorded for owner
+ *                         review; the eBay payload still uses the legacy
+ *                         value. There is deliberately NO authoritative
+ *                         flag in this phase.
+ *
+ * The old AUTO_LISTING_USE_QUOTE_ENGINE flag is retired here. A separate
+ * future commit will introduce an authoritative flag AFTER the owner has
+ * validated shadow results.
  *
  * Never calls a marketplace. Never writes to any listings table. Never
  * fabricates a fallback rate — if either the quote or the band lookup
@@ -22,9 +27,9 @@
 const quoteService  = require('./shippingQuoteService');
 const policyBands   = require('./shippingPolicyBands');
 
-//   Owner directive §9 default: FALSE — nothing goes live until owner flips.
-function isActiveMode() {
-  return process.env.AUTO_LISTING_USE_QUOTE_ENGINE === 'true';
+//   Owner directive §5: single shadow flag. Default false (do not invoke).
+function isShadowEnabled() {
+  return process.env.AUTO_LISTING_SHIPPING_SHADOW_ENABLED === 'true';
 }
 
 /**
@@ -62,7 +67,7 @@ function isActiveMode() {
 async function buildAutoListingPreview(input, opts = {}) {
   const supabase = opts.supabase || null;
   const warnings = [];
-  const mode = isActiveMode() ? 'active' : 'shadow';
+  const mode = 'shadow';   //   authoritative mode is not exposed in this phase (owner directive §5)
 
   const {
     destinationCountry     = 'US',
@@ -193,5 +198,5 @@ async function buildAutoListingPreview(input, opts = {}) {
 
 module.exports = {
   buildAutoListingPreview,
-  isActiveMode,
+  isShadowEnabled,
 };

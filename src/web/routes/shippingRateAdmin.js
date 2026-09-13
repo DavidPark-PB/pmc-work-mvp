@@ -296,16 +296,71 @@ router.post('/policy-bands/:id', express.json({ limit: '4kb' }), async (req, res
   }
 });
 
-//   ─── Auto-listing preview (SHADOW-mode integration entry) ───────
-//   Owner directive §7-§9: automation subproject calls this in-VPC to see
-//   the recomputed shipping-aware listing price. Response includes `mode`
-//   so the caller can decide whether to publish (active) or just log (shadow).
-router.post('/auto-listing-preview', express.json({ limit: '16kb' }), async (req, res) => {
+//   ─── Shadow results (owner review of legacy-vs-new comparison) ──
+//   Correction (2026-09-13): the /auto-listing-preview endpoint moved to
+//   /api/internal/shipping/quote (server-to-server, token-authenticated).
+//   Automation never calls a rate-admin URL anymore. What remains here is
+//   the ADMIN owner-facing list/csv of past shadow results.
+router.get('/shadow-results', async (req, res) => {
   try {
-    const out = await adapter.buildAutoListingPreview(req.body || {}, { supabase: getClient() });
-    res.json(out);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 100, 500));
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    const status = req.query.status && ['ok','blocked'].includes(req.query.status) ? req.query.status : null;
+    const country = req.query.country ? String(req.query.country).slice(0, 2).toUpperCase() : null;
+    let q = getClient().from('shipping_quote_shadow_results')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (status)  q = q.eq('status', status);
+    if (country) q = q.eq('destination_country', country);
+    const r = await q;
+    if (r.error) throw r.error;
+    res.json({ ok: true, total: r.count || 0, results: r.data || [], limit, offset });
   } catch (e) {
-    console.error('[shippingRateAdmin] auto-listing-preview failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.get('/shadow-results/summary', async (_req, res) => {
+  try {
+    const db = getClient();
+    const total = await db.from('shipping_quote_shadow_results').select('id', { count: 'exact', head: true });
+    const blocked = await db.from('shipping_quote_shadow_results').select('id', { count: 'exact', head: true }).eq('status', 'blocked');
+    if (total.error)   throw total.error;
+    if (blocked.error) throw blocked.error;
+    res.json({
+      ok: true,
+      total:   total.count || 0,
+      blocked: blocked.count || 0,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+//   CSV download — owner review. Column order matches migration 115.
+router.get('/shadow-results.csv', async (_req, res) => {
+  try {
+    const r = await getClient().from('shipping_quote_shadow_results')
+      .select('*').order('created_at', { ascending: false }).limit(2000);
+    if (r.error) throw r.error;
+    const cols = [
+      'id','listing_job_id','product_ref','marketplace','destination_country',
+      'legacy_listing_price','new_listing_price','difference_amount','difference_pct',
+      'legacy_shipping_cost','new_shipping_cost','chargeable_weight_kg',
+      'service_code','rate_version_id','policy_band_id','status','blocked_reason','created_at',
+    ];
+    const rows = (r.data || []).map(row => cols.map(c => {
+      const v = row[c];
+      if (v == null) return '';
+      const s = String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    }).join(','));
+    const csv = [cols.join(','), ...rows].join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="shipping-shadow-results.csv"`);
+    res.send(csv);
+  } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });

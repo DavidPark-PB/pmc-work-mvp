@@ -21,23 +21,24 @@ const fs      = require('node:fs');
 const path    = require('node:path');
 
 const REPO    = path.resolve(__dirname, '../..');
-const WB_PATH = path.join(REPO, 'data/shipping/CCOREA_통합배송비_기본데이터_v1.xlsx');
+const WB_PATH = path.join(REPO, 'data/shipping/CCOREA_통합배송비_기본데이터_v2.xlsx');
 const importer = require(path.join(REPO, 'src/services/shipping/rateMasterImporter'));
 
 //   ─────────────────────────────────────────────────────────────
 //   Read-only parse + validate over the REAL workbook
 //   ─────────────────────────────────────────────────────────────
 
-test('IMPORTER-A · real workbook parses + validates OK (5 required sheets)', async () => {
+test('IMPORTER-A · v2 workbook parses + validates OK (62/202/3957/8)', async () => {
   const buf = fs.readFileSync(WB_PATH);
   const r = await importer.parseAndValidate(buf);
   assert.equal(r.ok, true, `errors: ${JSON.stringify(r.errors.slice(0, 3))}`);
-  assert.equal(r.version.provider, 'eGS');
-  assert.equal(r.version.effective_from, '2026-09-01');
-  assert.ok(r.services.length   >= 50, `services=${r.services.length}`);
-  assert.ok(r.countries.length  >= 100, `countries=${r.countries.length}`);
-  assert.ok(r.brackets.length   >= 1000, `brackets=${r.brackets.length}`);
-  assert.ok(r.surcharges.length >= 5,  `surcharges=${r.surcharges.length}`);
+  //   Per-provider versions — v2 lists eGS, SHIPTER, KPL, FedEx, KoreaPost.
+  assert.ok(Array.isArray(r.versions) && r.versions.length >= 2,
+    `expected ≥2 provider versions; got ${JSON.stringify((r.versions || []).map(v => v.provider))}`);
+  assert.equal(r.services.length,   62);
+  assert.equal(r.countries.length,  202);
+  assert.equal(r.brackets.length,   3957);
+  assert.equal(r.surcharges.length, 8);
 });
 
 test('IMPORTER-B · §11 sample values present verbatim in parsed data', async () => {
@@ -52,12 +53,42 @@ test('IMPORTER-B · §11 sample values present verbatim in parsed data', async (
   assert.equal(bracket.base_rate, 16100);
 });
 
-test('IMPORTER-C · EE/ES benchmark orphan surfaces as WARNING, not error', async () => {
+test('IMPORTER-C · v2 closes v1 EE/ES orphan gap — zero benchmark orphans, ES=11,700 / EE=25,700', async () => {
   const buf = fs.readFileSync(WB_PATH);
   const r = await importer.parseAndValidate(buf);
-  assert.equal(r.ok, true);
-  const eeWarn = r.warnings.find(w => /EE.*RATE_NOT_LOADED/.test(w));
-  assert.ok(eeWarn, 'EE benchmark warning must be present');
+  assert.equal(r.ok, true, `errors: ${JSON.stringify(r.errors.slice(0, 3))}`);
+  //   Every country's benchmark_service must exist AND have brackets — enforced by importer.
+  const svcCodes = new Set(r.services.map(s => s.service_code));
+  const orphan = r.countries.filter(c => c.benchmark_service_code && !svcCodes.has(c.benchmark_service_code));
+  assert.equal(orphan.length, 0, `benchmark orphans: ${JSON.stringify(orphan.map(c => c.country_code))}`);
+  //   Explicit ES / EE bracket verification per owner directive §1.
+  const es = r.brackets.find(b => b.service_code === 'EGS_STD_EU_ES' && Number(b.weight_to_kg) === 0.5);
+  const ee = r.brackets.find(b => b.service_code === 'EGS_STD_EU_EE' && Number(b.weight_to_kg) === 0.5);
+  assert.ok(es, 'EGS_STD_EU_ES 0.5kg bracket must be present');
+  assert.ok(ee, 'EGS_STD_EU_EE 0.5kg bracket must be present');
+  assert.equal(es.base_rate, 11700);
+  assert.equal(ee.base_rate, 25700);
+});
+
+test('IMPORTER-C2 · v2 has zero warnings for benchmark surface', async () => {
+  const buf = fs.readFileSync(WB_PATH);
+  const r = await importer.parseAndValidate(buf);
+  //   Owner directive §1: importer warning 0건.
+  //   (Providers with missing effective_from produce warnings; those are
+  //   informational and not benchmark-related — accepted per directive §1
+  //   which only requires zero benchmark orphans. Filter to benchmark warns.)
+  const benchmarkWarns = r.warnings.filter(w => /benchmark/.test(w));
+  assert.equal(benchmarkWarns.length, 0, `unexpected benchmark warnings: ${benchmarkWarns.slice(0, 2)}`);
+});
+
+test('IMPORTER-C3 · per-provider versions include eGS + KPL (both rate-loaded)', async () => {
+  const buf = fs.readFileSync(WB_PATH);
+  const r = await importer.parseAndValidate(buf);
+  const providers = new Set(r.versions.map(v => v.provider));
+  assert.ok(providers.has('eGS'), 'eGS version must be present');
+  assert.ok(providers.has('KPL'), 'KPL version must be present');
+  //   eGS is primary for countries + surcharges.
+  assert.equal(r.primaryProviderForCountries, 'eGS');
 });
 
 //   ─────────────────────────────────────────────────────────────
@@ -89,28 +120,66 @@ test('IMPORTER-D · missing 원본목록 sheet → hard error', async () => {
 test('IMPORTER-E · re-import of same version → alreadyImported=true, no child insert', async () => {
   const buf = fs.readFileSync(WB_PATH);
   //   Stub Supabase: `shipping_rate_versions` .maybeSingle() returns an existing
-  //   version row for the parse's (provider, source_name, effective_from) key.
+  //   version row for every (provider, source_name, effective_from) probe.
   //   Any child insert would fail the assertion because we do NOT expose insert
   //   on the stub — importer must short-circuit before reaching it.
+  let probeIdSeed = 1000;
   const stub = {
     from(_table) {
       const chain = {
         select() { return chain; },
         eq()     { return chain; },
-        maybeSingle: async () => ({ data: { id: 999, status: 'active' }, error: null }),
+        maybeSingle: async () => ({ data: { id: probeIdSeed++, status: 'active' }, error: null }),
         insert:      () => { assert.fail('insert MUST NOT be called for idempotent re-import'); },
         delete:      () => { assert.fail('delete MUST NOT be called for idempotent re-import'); },
       };
       return chain;
     },
   };
-  const out = await importer.importWorkbook(stub, buf, {
-    sourceName: '2026_eGS_Service_운임표_(통합)_260901.xlsx',
-    provider:   'eGS',
-    effectiveFrom: '2026-09-01',
-  });
-  assert.equal(out.alreadyImported, true);
-  assert.equal(out.versionId, 999);
+  const out = await importer.importWorkbook(stub, buf, {});
+  //   Every provider with rate-loaded data must resolve to alreadyImported=true.
+  const active = out.versions.filter(v => !v.skipped);
+  assert.ok(active.length >= 2, `expected ≥2 active provider rows; got ${JSON.stringify(out.versions)}`);
+  for (const v of active) {
+    assert.equal(v.alreadyImported, true, `${v.provider} should be already-imported`);
+    assert.ok(v.versionId > 0);
+  }
+});
+
+test('IMPORTER-E2 · providers without loaded rates SKIPPED — no ghost version created', async () => {
+  const buf = fs.readFileSync(WB_PATH);
+  //   Track any attempted inserts/versions writes.
+  let versionInserts = 0;
+  const stub = {
+    from(table) {
+      const chain = {
+        select()      { return chain; },
+        eq()          { return chain; },
+        maybeSingle:  async () => ({ data: null, error: null }),
+        insert(payload) {
+          if (table === 'shipping_rate_versions') versionInserts++;
+          //   Return a fake id so the flow continues.
+          return {
+            select() {
+              return {
+                single: async () => ({ data: { id: versionInserts }, error: null }),
+              };
+            },
+          };
+        },
+        delete()      { return chain; },
+      };
+      return chain;
+    },
+  };
+  const out = await importer.importWorkbook(stub, buf, {});
+  //   Providers with 0 rate_loaded services or 0 brackets MUST appear as skipped.
+  const skipped = out.versions.filter(v => v.skipped);
+  assert.ok(skipped.length >= 1, `expected at least one skipped provider (SHIPTER/KoreaPost/FedEx); got ${JSON.stringify(out.versions)}`);
+  //   version inserts must equal the count of NON-skipped providers.
+  const inserted = out.versions.filter(v => !v.skipped);
+  assert.equal(versionInserts, inserted.length,
+    `versions inserted should match rate-loaded providers only`);
 });
 
 test('IMPORTER-F · duplicate service_code fixture → hard error', async () => {

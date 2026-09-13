@@ -31,7 +31,7 @@
       return;
     }
     renderShell(root);
-    await Promise.all([loadVersions(), loadSurcharges()]);
+    await Promise.all([loadVersions(), loadSurcharges(), loadShadowResults()]);
   }
 
   function renderShell(root) {
@@ -61,6 +61,18 @@
       </div>
 
       <div style="margin-top:16px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+          <h3 style="color:#fff;margin:0;font-size:14px;">🔍 Shadow 결과 · 신·구 계산 비교</h3>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span id="sra-shadow-summary" style="color:#888;font-size:11px;"></span>
+            <button id="sra-shadow-reload" type="button" style="padding:5px 12px;background:#37474f;border:0;border-radius:4px;color:#fff;cursor:pointer;font-size:11px;">새로고침</button>
+            <a href="/api/shipping/rate-admin/shadow-results.csv" style="padding:5px 12px;background:#2a4a6a;border-radius:4px;color:#fff;text-decoration:none;font-size:11px;">CSV 다운로드</a>
+          </div>
+        </div>
+        <div id="sra-shadow-list" style="max-height:280px;overflow-y:auto;color:#888;font-size:11px;">불러오는 중…</div>
+      </div>
+
+      <div style="margin-top:16px;background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:16px;">
         <h3 style="color:#fff;margin:0 0 12px;font-size:14px;">🧪 단건 배송비 테스트 계산기</h3>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:10px;">
           <input id="sra-t-country" placeholder="국가 (US)" value="US" style="padding:8px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;font-size:12px;">
@@ -82,6 +94,58 @@
     `;
     document.getElementById('sra-upload').addEventListener('change', onUpload);
     document.getElementById('sra-t-go').addEventListener('click', runSingleQuote);
+    document.getElementById('sra-shadow-reload').addEventListener('click', loadShadowResults);
+  }
+
+  async function loadShadowResults() {
+    const list = document.getElementById('sra-shadow-list');
+    const summary = document.getElementById('sra-shadow-summary');
+    list.innerHTML = '<div style="color:#888;">불러오는 중…</div>';
+    try {
+      const [sumRes, listRes] = await Promise.all([
+        fetch('/api/shipping/rate-admin/shadow-results/summary', { credentials: 'include' }).then(r => r.json()),
+        fetch('/api/shipping/rate-admin/shadow-results?limit=100', { credentials: 'include' }).then(r => r.json()),
+      ]);
+      if (sumRes && sumRes.ok) {
+        summary.textContent = `총 ${sumRes.total.toLocaleString()}건 · 차단 ${sumRes.blocked.toLocaleString()}건`;
+      }
+      if (!listRes.ok) throw new Error(listRes.error || 'load failed');
+      const rows = listRes.results || [];
+      if (rows.length === 0) {
+        list.innerHTML = '<div style="color:#888;">아직 shadow 결과가 없습니다. automation 서버에서 AUTO_LISTING_SHIPPING_SHADOW_ENABLED=true + SHIPPING_QUOTE_INTERNAL_TOKEN 설정 후 리스팅을 실행하세요.</div>';
+        return;
+      }
+      list.innerHTML = `
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead style="color:#888;background:#0f0f23;">
+            <tr>
+              <th style="text-align:left;padding:6px;">시각</th>
+              <th style="text-align:left;padding:6px;">Job / Ref</th>
+              <th style="text-align:center;padding:6px;">국가</th>
+              <th style="text-align:right;padding:6px;">Legacy 판매가</th>
+              <th style="text-align:right;padding:6px;">Shadow 판매가</th>
+              <th style="text-align:right;padding:6px;">Δ (KRW)</th>
+              <th style="text-align:right;padding:6px;">Δ %</th>
+              <th style="text-align:left;padding:6px;">상태</th>
+            </tr>
+          </thead>
+          <tbody>${rows.map(r => `
+            <tr style="border-bottom:1px solid #23233a;">
+              <td style="padding:6px;color:#aaa;">${esc(new Date(r.created_at).toLocaleString('ko-KR'))}</td>
+              <td style="padding:6px;color:#fff;font-family:monospace;">${esc(r.listing_job_id)}<br><span style="color:#888;">${esc(r.product_ref)}</span></td>
+              <td style="padding:6px;text-align:center;">${esc(r.destination_country || '—')}</td>
+              <td style="padding:6px;text-align:right;font-family:monospace;">${r.legacy_listing_price == null ? '—' : Number(r.legacy_listing_price).toLocaleString('ko-KR')}</td>
+              <td style="padding:6px;text-align:right;font-family:monospace;">${r.new_listing_price == null ? '—' : Number(r.new_listing_price).toLocaleString('ko-KR')}</td>
+              <td style="padding:6px;text-align:right;font-family:monospace;color:${r.difference_amount == null ? '#888' : (Number(r.difference_amount) >= 0 ? '#69f0ae' : '#ef9a9a')};">${r.difference_amount == null ? '—' : (Number(r.difference_amount) >= 0 ? '+' : '') + Number(r.difference_amount).toLocaleString('ko-KR')}</td>
+              <td style="padding:6px;text-align:right;font-family:monospace;">${r.difference_pct == null ? '—' : (Number(r.difference_pct) * 100).toFixed(2) + '%'}</td>
+              <td style="padding:6px;">${r.status === 'blocked' ? `<span style="color:#ef9a9a;">🚫 ${esc(r.blocked_reason || 'blocked')}</span>` : '<span style="color:#69f0ae;">✓ ok</span>'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      `;
+    } catch (e) {
+      list.innerHTML = `<div style="color:#ef9a9a;">불러오기 실패: ${esc(e.message)}</div>`;
+    }
   }
 
   async function loadVersions() {

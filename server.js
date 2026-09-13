@@ -210,6 +210,9 @@ app.use('/api/oms/orders', require('./src/web/routes/omsOrders'));
 // PMC-CCOREA-SHIPPING-1B — canonical shipping-rate master admin surface
 //   (owner-only · xlsx import + quote calc · never mutates marketplace or eBay)
 app.use('/api/shipping/rate-admin', require('./src/web/routes/shippingRateAdmin'));
+// PMC-CCOREA-SHIPPING-1B correction — server-to-server internal shipping API
+//   (bearer-token auth via SHIPPING_QUOTE_INTERNAL_TOKEN · no admin cookie).
+app.use('/api/internal/shipping', require('./src/web/routes/shippingInternal'));
 // PR O1 — Daily Operations Briefing (오늘 운영 요약 read-only)
 app.use('/api/ops-briefing', require('./src/web/routes/operationsBriefing'));
 // PR R0 — Opportunity Inbox (직원/admin 후보 등록 + 사장님 검토)

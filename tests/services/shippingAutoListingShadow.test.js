@@ -14,6 +14,7 @@
 
 const test    = require('node:test');
 const assert  = require('node:assert/strict');
+const fs      = require('node:fs');
 const path    = require('node:path');
 
 const REPO       = path.resolve(__dirname, '../..');
@@ -157,17 +158,33 @@ test('SHADOW-D · no matching band → NO_SHIPPING_POLICY (never a default)', as
   assert.equal(out.listingBlockedReason, 'NO_SHIPPING_POLICY');
 });
 
-test('SHADOW-E · flag=true → mode="active"', async () => {
+test('SHADOW-E · mode is ALWAYS "shadow" — authoritative flag is not exposed in this phase', async () => {
+  //   Correction: AUTO_LISTING_USE_QUOTE_ENGINE was retired. The adapter
+  //   never returns mode='active' in this phase; a future commit will
+  //   introduce an authoritative flag. Setting the OLD flag must have
+  //   no effect on the mode value returned.
   process.env.AUTO_LISTING_USE_QUOTE_ENGINE = 'true';
   try {
     const adapter = loadStackWithFixture(FIXTURE, [BAND_US]);
     const out = await adapter.buildAutoListingPreview(OWNER_INPUT);
-    assert.equal(out.mode, 'active');
-    //   Same math, different label — value must match SHADOW-A.
+    assert.equal(out.mode, 'shadow');
+    //   Values still computed correctly.
     assert.equal(out.listingItemPriceKrw, 38433);
   } finally {
     delete process.env.AUTO_LISTING_USE_QUOTE_ENGINE;
   }
+});
+
+test('SHADOW-E2 · retired flag AUTO_LISTING_USE_QUOTE_ENGINE is no longer READ (comments OK)', async () => {
+  const src = fs.readFileSync(path.join(REPO, 'src/services/shipping/autoListingPricingAdapter.js'), 'utf8');
+  //   Comments may reference the retired flag for auditability. Executable
+  //   reads through `process.env.AUTO_LISTING_USE_QUOTE_ENGINE` MUST be gone.
+  assert.ok(!/process\.env\.AUTO_LISTING_USE_QUOTE_ENGINE/.test(src),
+    'adapter must not READ process.env.AUTO_LISTING_USE_QUOTE_ENGINE anymore');
+  //   New flag is documented (comment) but is a caller-side switch (checked in
+  //   the automation subproject), so the adapter itself does not read it.
+  assert.ok(/AUTO_LISTING_SHIPPING_SHADOW_ENABLED/.test(src),
+    'adapter must document the new caller-side flag');
 });
 
 test('SHADOW-F · productCostKrw=0 → PRODUCT_COST_MISSING', async () => {

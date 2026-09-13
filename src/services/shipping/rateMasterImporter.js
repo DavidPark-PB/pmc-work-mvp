@@ -97,22 +97,47 @@ async function parseAndValidate(buffer) {
   }
   if (errors.length) return { ok: false, errors, warnings };
 
-  //   원본목록 → version row.
-  //   Spec §3: idempotency needs (provider, source, effective) — every column required.
-  const versionRow = (sheets.get('원본목록') || [])[0];
-  if (!versionRow) {
-    errors.push(`sheet '원본목록' is empty — cannot derive rate version identity`);
+  //   원본목록 → per-provider version rows.
+  //   Correction (2026-09-13): the workbook is a UNIFIED multi-provider rate
+  //   book. eGS/KPL/FedEx/SHIPTER/KoreaPost rates update on independent
+  //   schedules — a single `shipping_rate_versions` row per provider is the
+  //   only way `getActiveVersion(provider)` stays truthful without
+  //   cross-provider supersede accidents.
+  //     Idempotency key remains (provider, source_name, effective_from) so
+  //     re-importing the same workbook is still a no-op.
+  //     `원본목록` rows enumerate each provider — pick each unique provider row.
+  const versionRows = (sheets.get('원본목록') || []).filter(r => String(r.provider || '').trim());
+  if (versionRows.length === 0) {
+    errors.push(`sheet '원본목록' has no provider rows — cannot derive rate version identity`);
     return { ok: false, errors, warnings };
   }
-  const version = {
-    provider:       String(versionRow.provider || '').trim(),
-    source_name:    String(versionRow.source || '').trim(),
-    effective_from: normalizeDate(versionRow.effective),
-    note:           versionRow.use ? String(versionRow.use).trim() : null,
-  };
-  if (!version.provider)       errors.push(`원본목록.provider is empty`);
-  if (!version.source_name)    errors.push(`원본목록.source is empty`);
-  if (!version.effective_from) errors.push(`원본목록.effective is empty or unparseable`);
+  //   Build provider → version metadata map (workbook lists eGS,
+  //   FEDEX_INTL / KOREA_POST etc.; we key on the exact provider strings).
+  const versionsByProvider = new Map();
+  const importDateIso = new Date().toISOString().slice(0, 10);
+  for (const row of versionRows) {
+    const provider = String(row.provider || '').trim();
+    if (!provider) continue;
+    const source_name = String(row.source || '').trim();
+    let effective_from = normalizeDate(row.effective);
+    if (!source_name) errors.push(`원본목록 provider=${provider}: source is empty`);
+    //   Some rows lack an explicit effective date (KPL / KoreaPost in v2).
+    //   Default to today (importDateIso) with a warning so the provider still
+    //   gets a rate_version row and can be activated. The idempotency key
+    //   still holds (provider, source_name, effective_from) — reimport of
+    //   the same workbook today stays a no-op; a different day creates a
+    //   new draft that owner can review.
+    if (!effective_from) {
+      effective_from = importDateIso;
+      warnings.push(`원본목록 provider=${provider}: effective_from missing — defaulted to ${importDateIso}`);
+    }
+    versionsByProvider.set(provider, {
+      provider,
+      source_name,
+      effective_from,
+      note: row.use ? String(row.use).trim() : null,
+    });
+  }
 
   //   서비스_Master → services[].
   const services = (sheets.get('서비스_Master') || []).map(r => ({
@@ -221,23 +246,42 @@ async function parseAndValidate(buffer) {
     _rowNum:        r._rowNum,
   }));
 
-  //   Cross-sheet integrity: every country's benchmark_service should exist in services.
-  //   Owner directive §4: workbook gaps for a specific country resolve to
-  //   RATE_NOT_LOADED at quote time (not a fabricated fallback). Import
-  //   continues so the rest of the rate book is usable — the affected country
-  //   is surfaced as a warning.
+  //   Cross-sheet integrity:
+  //     1. Every country's benchmark_service must exist in shipping_services.
+  //     2. Every benchmark service must have at least one bracket row
+  //        (owner directive §7 test: "모든 benchmark service에 최소 1개 이상의
+  //        운임구간 존재"). Otherwise the country resolves to
+  //        WEIGHT_OVER_MAX_BRACKET on every quote — that's a workbook error.
   {
     const svcCodes = new Set(services.map(s => s.service_code));
+    const svcCodesWithBrackets = new Set(
+      brackets.filter(b => b.base_rate > 0).map(b => b.service_code)
+    );
     for (const c of countries) {
-      if (c.benchmark_service_code && !svcCodes.has(c.benchmark_service_code)) {
-        warnings.push(`국가_Master ${c.country_code}: benchmark_service ${c.benchmark_service_code} not in 서비스_Master — quote will return RATE_NOT_LOADED for this country`);
+      if (!c.benchmark_service_code) continue;
+      if (!svcCodes.has(c.benchmark_service_code)) {
+        errors.push(`국가_Master ${c.country_code}: benchmark_service ${c.benchmark_service_code} not in 서비스_Master`);
+      } else if (!svcCodesWithBrackets.has(c.benchmark_service_code)) {
+        errors.push(`국가_Master ${c.country_code}: benchmark_service ${c.benchmark_service_code} has no brackets in 운임_Master`);
       }
     }
   }
 
+  //   Per-provider version index for the importer.
+  //   Countries + surcharges are eGS-scoped metadata (VAT / EU HS / benchmarks
+  //   only concern eGS-flavored quotes). Every provider's services + brackets
+  //   go under its own version. If eGS isn't in 원본목록 (unlikely) countries
+  //   attach to whichever version has EGS_STD_* services.
+  const versionsList = [...versionsByProvider.values()];
+  const primaryProviderForCountries =
+    versionsByProvider.has('eGS') ? 'eGS'
+    : (versionsList[0]?.provider || null);
+
   return {
     ok: errors.length === 0,
-    version, services, countries, brackets, surcharges,
+    versions:                    versionsList,
+    primaryProviderForCountries,
+    services, countries, brackets, surcharges,
     errors, warnings,
   };
 }
@@ -267,112 +311,152 @@ function normalizeDate(v) {
 }
 
 /**
- * Two-phase importer. Parses + validates, then writes to Supabase.
- * Idempotent on (provider, source_name, effective_from).
+ * Multi-provider two-phase importer. Parses + validates, then writes to
+ * Supabase creating ONE rate_version per provider found in 원본목록.
+ * Idempotent per (provider, source_name, effective_from).
+ *
+ * Response shape (correction 2026-09-13):
+ *   {
+ *     versions: [ { provider, versionId, alreadyImported, rowCounts } ],
+ *     errors:   [...],
+ *     warnings: [...],
+ *   }
  *
  * Never touches wms_orders or any table outside the 5 shipping_rate_master tables.
  */
 async function importWorkbook(supabase, buffer, opts = {}) {
-  const {
-    sourceName    = 'upload',
-    provider      = null,           //   override 원본목록.provider
-    effectiveFrom = null,           //   override 원본목록.effective
-    importedBy    = null,
-  } = opts;
+  const { importedBy = null } = opts;
 
   const parsed = await parseAndValidate(buffer);
-  if (!parsed.ok) return { versionId: null, alreadyImported: false, errors: parsed.errors, warnings: parsed.warnings };
-
-  const versionKey = {
-    provider:       provider      || parsed.version.provider,
-    source_name:    sourceName    || parsed.version.source_name,
-    effective_from: effectiveFrom || parsed.version.effective_from,
-  };
-
-  //   Idempotency check.
-  const existing = await supabase
-    .from('shipping_rate_versions')
-    .select('id, status')
-    .eq('provider',       versionKey.provider)
-    .eq('source_name',    versionKey.source_name)
-    .eq('effective_from', versionKey.effective_from)
-    .maybeSingle();
-  if (existing.error) return { versionId: null, alreadyImported: false, errors: [existing.error.message], warnings: parsed.warnings };
-  if (existing.data) {
-    return {
-      versionId:       existing.data.id,
-      alreadyImported: true,
-      rowCounts:       { services: 0, countries: 0, brackets: 0, surcharges: 0 },
-      warnings:        [...parsed.warnings, `version already imported (id=${existing.data.id}, status=${existing.data.status})`],
-    };
+  if (!parsed.ok) {
+    return { versions: [], errors: parsed.errors, warnings: parsed.warnings };
   }
 
-  //   Insert new version as 'draft'.
-  const versionIns = await supabase
-    .from('shipping_rate_versions')
-    .insert({
-      provider:       versionKey.provider,
-      source_name:    versionKey.source_name,
-      effective_from: versionKey.effective_from,
-      status:         'draft',
-      imported_by:    importedBy,
-      note:           parsed.version.note,
-    })
-    .select('id')
-    .single();
-  if (versionIns.error) return { versionId: null, alreadyImported: false, errors: [versionIns.error.message], warnings: parsed.warnings };
-  const versionId = versionIns.data.id;
+  //   Split rows by their `provider` column so we can attach each to the
+  //   matching version. Countries + surcharges attach to `primaryProviderForCountries`.
+  const servicesByProvider = new Map();
+  for (const s of parsed.services) {
+    const p = s.provider;
+    if (!p) continue;
+    if (!servicesByProvider.has(p)) servicesByProvider.set(p, []);
+    servicesByProvider.get(p).push(s);
+  }
+  const bracketsByProvider = new Map();
+  for (const b of parsed.brackets) {
+    const p = b.provider;
+    if (!p) continue;
+    if (!bracketsByProvider.has(p)) bracketsByProvider.set(p, []);
+    bracketsByProvider.get(p).push(b);
+  }
 
-  //   Child inserts. On error, delete the version and surface the error.
-  const rowCounts = { services: 0, countries: 0, brackets: 0, surcharges: 0 };
-  try {
-    if (parsed.services.length) {
-      const payload = parsed.services.map(({ _rowNum, ...s }) => ({ ...s, rate_version_id: versionId }));
-      const r = await supabase.from('shipping_services').insert(payload).select('id');
-      if (r.error) throw new Error(`services insert: ${r.error.message}`);
-      rowCounts.services = r.data?.length || 0;
+  const perProviderResults = [];
+  const errors = [];
+
+  for (const versionMeta of parsed.versions) {
+    const { provider, source_name, effective_from, note } = versionMeta;
+
+    //   Skip providers that have NO rate-loaded services (owner directive §2:
+    //   운임 미적재 서비스는 active rate version이 있는 것처럼 표시하지 않는다).
+    const svcs = servicesByProvider.get(provider) || [];
+    const brks = bracketsByProvider.get(provider) || [];
+    const hasLoadedRate = svcs.some(s => s.rate_loaded) && brks.length > 0;
+    if (!hasLoadedRate) {
+      perProviderResults.push({
+        provider,
+        versionId:       null,
+        alreadyImported: false,
+        skipped:         true,
+        reason:          'no rate_loaded service or brackets — provider not activated',
+        rowCounts:       { services: 0, countries: 0, brackets: 0, surcharges: 0 },
+      });
+      continue;
     }
-    if (parsed.countries.length) {
-      const payload = parsed.countries.map(({ _rowNum, ...c }) => ({ ...c, rate_version_id: versionId }));
-      const r = await supabase.from('shipping_countries').insert(payload).select('id');
-      if (r.error) throw new Error(`countries insert: ${r.error.message}`);
-      rowCounts.countries = r.data?.length || 0;
+
+    //   Idempotency check per provider.
+    const existing = await supabase
+      .from('shipping_rate_versions')
+      .select('id, status')
+      .eq('provider',       provider)
+      .eq('source_name',    source_name)
+      .eq('effective_from', effective_from)
+      .maybeSingle();
+    if (existing.error) {
+      errors.push(`${provider}: idempotency lookup failed: ${existing.error.message}`);
+      continue;
     }
-    if (parsed.brackets.length) {
-      //   Batch by 500 to avoid Supabase payload limits on very large rate books.
-      const payload = parsed.brackets.map(({ _rowNum, ...b }) => ({ ...b, rate_version_id: versionId }));
-      for (let i = 0; i < payload.length; i += 500) {
-        const chunk = payload.slice(i, i + 500);
-        const r = await supabase.from('shipping_rate_brackets').insert(chunk).select('id');
-        if (r.error) throw new Error(`brackets insert (chunk ${i}): ${r.error.message}`);
-        rowCounts.brackets += r.data?.length || 0;
+    if (existing.data) {
+      perProviderResults.push({
+        provider,
+        versionId:       existing.data.id,
+        alreadyImported: true,
+        rowCounts:       { services: 0, countries: 0, brackets: 0, surcharges: 0 },
+        note:            `already imported (id=${existing.data.id}, status=${existing.data.status})`,
+      });
+      continue;
+    }
+
+    //   Insert draft version + provider-scoped children.
+    const versionIns = await supabase
+      .from('shipping_rate_versions')
+      .insert({ provider, source_name, effective_from, status: 'draft', imported_by: importedBy, note })
+      .select('id')
+      .single();
+    if (versionIns.error) { errors.push(`${provider}: version insert failed: ${versionIns.error.message}`); continue; }
+    const versionId = versionIns.data.id;
+
+    const rowCounts = { services: 0, countries: 0, brackets: 0, surcharges: 0 };
+    try {
+      if (svcs.length) {
+        const payload = svcs.map(({ _rowNum, ...s }) => ({ ...s, rate_version_id: versionId }));
+        const r = await supabase.from('shipping_services').insert(payload).select('id');
+        if (r.error) throw new Error(`services insert: ${r.error.message}`);
+        rowCounts.services = r.data?.length || 0;
       }
+      //   Countries + surcharges attach to the PRIMARY provider only
+      //   (eGS unless workbook lacks eGS). Other providers (KPL, FedEx, ...)
+      //   get services + brackets and share the eGS country/surcharge
+      //   metadata via the primary version.
+      if (provider === parsed.primaryProviderForCountries) {
+        if (parsed.countries.length) {
+          const payload = parsed.countries.map(({ _rowNum, ...c }) => ({ ...c, rate_version_id: versionId }));
+          const r = await supabase.from('shipping_countries').insert(payload).select('id');
+          if (r.error) throw new Error(`countries insert: ${r.error.message}`);
+          rowCounts.countries = r.data?.length || 0;
+        }
+        if (parsed.surcharges.length) {
+          const payload = parsed.surcharges.map(({ _rowNum, value, ...s }) => ({
+            ...s,
+            value: Number.isFinite(value) ? value : 0,
+            note:  Number.isFinite(value) ? s.note : `${s.note || ''}${s.note ? ' · ' : ''}raw=${value}`,
+            rate_version_id: versionId,
+          }));
+          const r = await supabase.from('shipping_surcharges').insert(payload).select('id');
+          if (r.error) throw new Error(`surcharges insert: ${r.error.message}`);
+          rowCounts.surcharges = r.data?.length || 0;
+        }
+      }
+      if (brks.length) {
+        const payload = brks.map(({ _rowNum, ...b }) => ({ ...b, rate_version_id: versionId }));
+        for (let i = 0; i < payload.length; i += 500) {
+          const chunk = payload.slice(i, i + 500);
+          const r = await supabase.from('shipping_rate_brackets').insert(chunk).select('id');
+          if (r.error) throw new Error(`brackets insert (chunk ${i}): ${r.error.message}`);
+          rowCounts.brackets += r.data?.length || 0;
+        }
+      }
+    } catch (e) {
+      await supabase.from('shipping_rate_versions').delete().eq('id', versionId);
+      errors.push(`${provider}: ${e.message}`);
+      continue;
     }
-    if (parsed.surcharges.length) {
-      const payload = parsed.surcharges.map(({ _rowNum, value, ...s }) => ({
-        ...s,
-        //   Non-numeric 'value' cells (e.g. '국가별') are stored as 0 with the raw
-        //   token preserved in note. Consumers know 'unit' and can dispatch on it.
-        value: Number.isFinite(value) ? value : 0,
-        note:  Number.isFinite(value) ? s.note : `${s.note || ''}${s.note ? ' · ' : ''}raw=${value}`,
-        rate_version_id: versionId,
-      }));
-      const r = await supabase.from('shipping_surcharges').insert(payload).select('id');
-      if (r.error) throw new Error(`surcharges insert: ${r.error.message}`);
-      rowCounts.surcharges = r.data?.length || 0;
-    }
-  } catch (e) {
-    //   Rollback the version. Cascade takes care of any children already inserted.
-    await supabase.from('shipping_rate_versions').delete().eq('id', versionId);
-    return { versionId: null, alreadyImported: false, errors: [e.message], warnings: parsed.warnings };
+
+    perProviderResults.push({ provider, versionId, alreadyImported: false, rowCounts });
   }
 
   return {
-    versionId,
-    alreadyImported: false,
-    rowCounts,
+    versions: perProviderResults,
+    errors,
     warnings: parsed.warnings,
-    errors:   [],
   };
 }
 

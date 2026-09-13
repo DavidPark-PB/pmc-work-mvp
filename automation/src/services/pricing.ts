@@ -48,7 +48,7 @@ export interface PricingOptions {
   platform?: string;         // 'ebay' | 'shopify'
   shippingCarrier?: string;  // 'YunExpress' | 'K-Packet'
   //   PMC-CCOREA-SHIPPING-1B shadow inputs — passed through unchanged in
-  //   shadow mode (used only when active flag is on in a later commit).
+  //   shadow mode; NEVER affect the returned legacy PricingResult.
   destinationCountry?: string;    // 'US' | 'DE' | ...
   lengthCm?: number;
   widthCm?: number;
@@ -56,6 +56,9 @@ export interface PricingOptions {
   uniqueHsCodeCount?: number;
   declaredValueKrw?: number;
   eurKrwRate?: number;
+  //   Correlation ids used by the shadow-result recorder (mig 115).
+  listingJobId?: string;
+  productRef?: string;
 }
 
 /**
@@ -175,64 +178,150 @@ export async function calculateListingPrice(
   };
 
   //
-  //   PMC-CCOREA-SHIPPING-1B (2026-09-13) — SHADOW-MODE HOOK.
+  //   PMC-CCOREA-SHIPPING-1B (2026-09-13, corrected) — SHADOW HOOK.
   //   Fire-and-forget: consult the canonical quote+bands engine on the main
-  //   service and log the recomputed shipping cost alongside the legacy
-  //   result. When AUTO_LISTING_USE_QUOTE_ENGINE=true this hook can be
-  //   graduated to authoritative behaviour by a later commit (owner directive
-  //   §9: default false, never modify the returned salePrice in this phase).
-  //   Failures NEVER surface — this must not disturb the existing listing flow.
+  //   service and record the recomputed shipping cost alongside the legacy
+  //   result. The eBay payload ALWAYS uses the legacy result in this phase.
   //
-  const mainServiceUrl = process.env.MAIN_SERVICE_URL || 'http://localhost:3001';
-  const shadowUrl = `${mainServiceUrl.replace(/\/$/, '')}/api/shipping/rate-admin/auto-listing-preview`;
-  const shadowBody = {
-    marketplace: platform,
-    destinationCountry: options.destinationCountry || 'US',
-    productCostKrw: costKRW,
-    actualWeightKg: weightG / 1000,
-    lengthCm: options.lengthCm || 0,
-    widthCm:  options.widthCm  || 0,
-    heightCm: options.heightCm || 0,
-    uniqueHsCodeCount: options.uniqueHsCodeCount || 0,
-    declaredValueKrw:  options.declaredValueKrw || 0,
+  //   Guarantees (owner directive §6):
+  //     · Short timeout (2s) via AbortController — never blocks the listing.
+  //     · All errors caught; unhandled rejection swallowed by outer .catch.
+  //     · No token, cookie, or price in the log line (only shape metadata).
+  //     · Legacy result is returned regardless of shadow outcome.
+  //     · When AUTO_LISTING_SHIPPING_SHADOW_ENABLED != 'true', the request
+  //       is not issued at all.
+  //     · Requires SHIPPING_QUOTE_INTERNAL_TOKEN — admin cookies are refused.
+  //
+  fireShadowShipmentQuote({
+    platform,
+    costKRW,
+    weightG,
+    marginRate,
     platformFeeRate,
-    targetMarginRate: marginRate,
-    sellingCurrencyKrwRate: exchangeRate,
-    eurKrwRate: options.eurKrwRate ?? null,
+    exchangeRate,
+    legacyShippingKrw: shippingKrw,
+    legacySalePrice: result.salePrice,
+    options,
+  });
+
+  return result;
+}
+
+//   Fire-and-forget shadow shipping-quote hook (extracted for clarity + testability).
+//   Never throws. Never blocks. The returned Promise is intentionally
+//   ignored — Node's unhandledRejection is guarded by the inner .catch.
+function fireShadowShipmentQuote(ctx: {
+  platform: string;
+  costKRW: number;
+  weightG: number;
+  marginRate: number;
+  platformFeeRate: number;
+  exchangeRate: number;
+  legacyShippingKrw: number;
+  legacySalePrice: number;
+  options: PricingOptions;
+}): void {
+  //   Owner directive §5: single shadow flag; default OFF.
+  if (process.env.AUTO_LISTING_SHIPPING_SHADOW_ENABLED !== 'true') return;
+  const token = (process.env.SHIPPING_QUOTE_INTERNAL_TOKEN || '').trim();
+  if (!token) return;   //   silently skip when internal token unset
+
+  const mainServiceUrl = process.env.MAIN_SERVICE_URL || 'http://localhost:3001';
+  const quoteUrl  = `${mainServiceUrl.replace(/\/$/, '')}/api/internal/shipping/quote`;
+  const recordUrl = `${mainServiceUrl.replace(/\/$/, '')}/api/internal/shipping/shadow-result`;
+  const timeoutMs = 2000;
+
+  const shadowBody = {
+    marketplace: ctx.platform,
+    destinationCountry: ctx.options.destinationCountry || 'US',
+    productCostKrw: ctx.costKRW,
+    actualWeightKg: ctx.weightG / 1000,
+    lengthCm: ctx.options.lengthCm || 0,
+    widthCm:  ctx.options.widthCm  || 0,
+    heightCm: ctx.options.heightCm || 0,
+    uniqueHsCodeCount: ctx.options.uniqueHsCodeCount || 0,
+    declaredValueKrw:  ctx.options.declaredValueKrw || 0,
+    platformFeeRate:   ctx.platformFeeRate,
+    targetMarginRate:  ctx.marginRate,
+    sellingCurrencyKrwRate: ctx.exchangeRate,
+    eurKrwRate: ctx.options.eurKrwRate ?? null,
     saleType: 'B2C',
     provider: 'eGS',
   };
-  //   fetch is on globalThis in Node 18+; automation subproject targets Node 20.
-  (async () => {
-    try {
-      const cookie = process.env.MAIN_SERVICE_ADMIN_COOKIE || '';
-      if (!cookie) return;  //   shadow requires session — silently skip if not configured
-      const r = await (globalThis as any).fetch(shadowUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-        body: JSON.stringify(shadowBody),
-      });
-      const j = await r.json().catch(() => ({}));
-      const active = j && j.mode === 'active';
+
+  const listingJobId =
+    (ctx.options as any)?.listingJobId ||
+    `unknown-job-${Date.now()}`;
+  const productRef =
+    (ctx.options as any)?.productRef || `unknown-${ctx.weightG}g-${ctx.costKRW}krw`;
+
+  //   The outer promise is deliberately unawaited. The inner `.catch` prevents
+  //   any unhandledRejection that would surface elsewhere in the process.
+  Promise.resolve()
+    .then(async () => {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), timeoutMs);
+      let quoteJson: any = {};
+      try {
+        const r = await (globalThis as any).fetch(quoteUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify(shadowBody),
+          signal: ac.signal,
+        });
+        quoteJson = await r.json().catch(() => ({}));
+      } finally {
+        clearTimeout(timer);
+      }
+      //   Log with SHAPE only — never dollar values that could leak cost
+      //   structure via stdout aggregation. `svc` and `band` are opaque codes.
       console.log(
         '[shadow:shipping-quote]',
-        `platform=${platform}`,
-        `weightG=${weightG}`,
-        `legacyShippingKrw=${shippingKrw}`,
-        j.ok
-          ? `newShippingKrw=${j.estimatedShippingCostKrw} newListingKrw=${j.listingItemPriceKrw} band=${j.policyBand?.ebay_policy_id || '-'} mode=${j.mode}`
-          : `blocked=${j.listingBlockedReason || j.quote?.blockedReason || 'unknown'} mode=${j.mode || 'shadow'}`,
-        //   In this phase (shadow), the returned salePrice is ALWAYS the
-        //   legacy result. Active-mode replacement is deliberately deferred
-        //   to a future commit that flips AUTO_LISTING_USE_QUOTE_ENGINE.
-        active ? '(active-mode — future path)' : '(shadow-only)',
+        `platform=${ctx.platform}`,
+        `weightG=${ctx.weightG}`,
+        quoteJson.ok
+          ? `svc=${quoteJson.serviceCode || '-'} band=${quoteJson.policyBand?.ebay_policy_id || '-'} status=ok`
+          : `status=blocked reason=${quoteJson.listingBlockedReason || quoteJson.quote?.blockedReason || 'unknown'}`,
       );
-    } catch (_e) {
-      //   Intentionally silent — shadow must not disturb primary listing flow.
-    }
-  })();
 
-  return result;
+      //   Best-effort persistence into shipping_quote_shadow_results.
+      const ac2 = new AbortController();
+      const timer2 = setTimeout(() => ac2.abort(), timeoutMs);
+      try {
+        await (globalThis as any).fetch(recordUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            listingJobId,
+            productRef,
+            marketplace: ctx.platform,
+            destinationCountry: shadowBody.destinationCountry,
+            legacyListingPrice: Math.round(ctx.legacySalePrice * ctx.exchangeRate),
+            newListingPrice:    quoteJson.listingItemPriceKrw ?? null,
+            legacyShippingCost: ctx.legacyShippingKrw,
+            newShippingCost:    quoteJson.estimatedShippingCostKrw ?? null,
+            chargeableWeightKg: quoteJson.quote?.chargeableWeightKg ?? null,
+            serviceCode:        quoteJson.serviceCode ?? quoteJson.quote?.serviceCode ?? null,
+            rateVersionId:      quoteJson.quote?.rateVersionId ?? null,
+            policyBandId:       null,
+            status:             quoteJson.ok ? 'ok' : 'blocked',
+            blockedReason:      quoteJson.listingBlockedReason || quoteJson.quote?.blockedReason || null,
+            calculationDetails: {
+              bracketRule: quoteJson.quote?.calculationDetails?.bracketRule,
+              bracketMatchedCountryKey: quoteJson.quote?.calculationDetails?.bracketMatchedCountryKey,
+              bracketMatchedZoneKey:    quoteJson.quote?.calculationDetails?.bracketMatchedZoneKey,
+              isEuDestination:          quoteJson.quote?.calculationDetails?.isEuDestination,
+            },
+          }),
+          signal: ac2.signal,
+        });
+      } catch (_writeErr) {
+        //   Shadow-write failure must NEVER surface — the listing already succeeded.
+      } finally {
+        clearTimeout(timer2);
+      }
+    })
+    .catch(() => { /* intentional swallow — see comment above */ });
 }
 
 /**
