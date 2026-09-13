@@ -227,7 +227,9 @@ function fireShadowShipmentQuote(ctx: {
   if (!token) return;   //   silently skip when internal token unset
 
   const mainServiceUrl = process.env.MAIN_SERVICE_URL || 'http://localhost:3001';
-  const quoteUrl  = `${mainServiceUrl.replace(/\/$/, '')}/api/internal/shipping/quote`;
+  //   Shadow compares against the listing-price preview (quote + policy band +
+  //   margin formula). /api/internal/shipping/quote now returns the raw shipping cost only.
+  const quoteUrl  = `${mainServiceUrl.replace(/\/$/, '')}/api/internal/shipping/listing-preview`;
   const recordUrl = `${mainServiceUrl.replace(/\/$/, '')}/api/internal/shipping/shadow-result`;
   const timeoutMs = 2000;
 

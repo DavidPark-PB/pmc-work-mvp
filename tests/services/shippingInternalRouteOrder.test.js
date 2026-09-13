@@ -42,6 +42,7 @@ const SERVER_JS  = path.join(REPO, 'server.js');
 const ROUTE_JS   = path.join(REPO, 'src/web/routes/shippingInternal.js');
 const TOKEN_MW   = path.join(REPO, 'src/middleware/internalToken.js');
 const MOD_ADAPTER = require.resolve(path.join(REPO, 'src/services/shipping/autoListingPricingAdapter.js'));
+const MOD_QUOTE   = require.resolve(path.join(REPO, 'src/services/shipping/shippingQuoteService.js'));
 const MOD_RECORDER = require.resolve(path.join(REPO, 'src/services/shipping/shadowRecorder.js'));
 const MOD_SB_CLIENT = require.resolve(path.join(REPO, 'src/db/supabaseClient.js'));
 
@@ -110,7 +111,15 @@ function buildMiniApp() {
       }),
     },
   };
-  //   Stub adapter + recorder so the route body has something callable.
+  //   Stub quote engine (/quote), adapter (/listing-preview) + recorder so the
+  //   route bodies have something callable.
+  delete require.cache[MOD_QUOTE];
+  require.cache[MOD_QUOTE] = {
+    id: MOD_QUOTE, filename: MOD_QUOTE, loaded: true,
+    exports: {
+      calculateShippingQuote: async () => ({ ok: true, provider: 'eGS', serviceCode: 'EGS_STD_US', totalShippingCostKrw: 17100 }),
+    },
+  };
   delete require.cache[MOD_ADAPTER];
   require.cache[MOD_ADAPTER] = {
     id: MOD_ADAPTER, filename: MOD_ADAPTER, loaded: true,
@@ -225,12 +234,30 @@ test('ROUTE-ORDER-B5 · correct Bearer → passes authGuard sentinel and reaches
       headers: { 'Authorization': `Bearer ${OK_TOKEN}` },
       body: JSON.stringify({ destinationCountry: 'US' }),
     });
-    //   The stubbed adapter returns { ok:true, mode:'shadow' } → 200.
+    //   /quote is the raw contract: stubbed quote engine { ok:true } → 200 { ok:true, mode:'raw', quote }.
     assert.equal(r.statusCode, 200, `expected 200; got ${r.statusCode} · body=${r.raw.slice(0, 200)}`);
     assert.notEqual(r.json && r.json.error, 'Authentication required',
       'response body MUST NOT be the session-401 shape');
     assert.equal(r.json && r.json.ok, true);
+    assert.equal(r.json && r.json.mode, 'raw');
+    assert.equal(r.json && r.json.quote && r.json.quote.totalShippingCostKrw, 17100);
+  });
+});
+
+test('ROUTE-ORDER-B5b · correct Bearer on /listing-preview → reaches adapter preview (shadow shape)', async () => {
+  process.env.SHIPPING_QUOTE_INTERNAL_TOKEN = OK_TOKEN;
+  await withRunning(async (port) => {
+    const r = await requestJson({
+      port, path: '/api/internal/shipping/listing-preview',
+      headers: { 'Authorization': `Bearer ${OK_TOKEN}` },
+      body: JSON.stringify({ destinationCountry: 'US' }),
+    });
+    assert.equal(r.statusCode, 200, `expected 200; got ${r.statusCode} · body=${r.raw.slice(0, 200)}`);
     assert.equal(r.json && r.json.mode, 'shadow');
+
+    const noAuth = await requestJson({ port, path: '/api/internal/shipping/listing-preview' });
+    assert.equal(noAuth.statusCode, 401);
+    assert.equal(noAuth.json && noAuth.json.error, 'INVALID_INTERNAL_TOKEN');
   });
 });
 

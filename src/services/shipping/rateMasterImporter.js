@@ -268,22 +268,95 @@ async function parseAndValidate(buffer) {
   }
 
   //   Per-provider version index for the importer.
-  //   Countries + surcharges are eGS-scoped metadata (VAT / EU HS / benchmarks
-  //   only concern eGS-flavored quotes). Every provider's services + brackets
-  //   go under its own version. If eGS isn't in 원본목록 (unlikely) countries
-  //   attach to whichever version has EGS_STD_* services.
+  //   Surcharges are eGS-scoped metadata and attach to the primary version only.
+  //   Countries: the primary version gets the full 국가_Master; every other
+  //   provider version gets ONLY the countries its own brackets are keyed on
+  //   (selectCountriesForProvider) — shippingQuoteService resolves the country
+  //   inside the same rate_version_id, so a provider without its own country
+  //   rows can never quote (production KPL v4 COUNTRY_NOT_IN_MASTER, 2026-09-14).
   const versionsList = [...versionsByProvider.values()];
   const primaryProviderForCountries =
     versionsByProvider.has('eGS') ? 'eGS'
     : (versionsList[0]?.provider || null);
 
+  const draft = { primaryProviderForCountries, services, countries, brackets };
+  const countryScopeByProvider = {};
+  for (const { provider } of versionsList) {
+    const scope = selectCountriesForProvider(draft, provider);
+    countryScopeByProvider[provider] = {
+      count: scope.countries.length,
+      codes: provider === primaryProviderForCountries ? null : scope.countries.map(c => c.country_code),
+      missingCountryKeys: scope.missingCountryKeys,
+    };
+    for (const key of scope.missingCountryKeys) {
+      warnings.push(`운임_Master provider=${provider}: country_key ${key} not in 국가_Master — no country row created`);
+    }
+  }
+
   return {
     ok: errors.length === 0,
     versions:                    versionsList,
     primaryProviderForCountries,
+    countryScopeByProvider,
     services, countries, brackets, surcharges,
     errors, warnings,
   };
+}
+
+const NON_COUNTRY_BRACKET_KEYS = new Set(['__ALL__', '__ZONE__']);
+
+/**
+ * Countries to store under one provider's rate version.
+ *
+ *   · primary provider (eGS)  → the full 국가_Master, unchanged.
+ *   · any other provider      → only 국가_Master rows whose country_code is a
+ *     country_key on that provider's own brackets (KPL v2 → US, JP). Zone /
+ *     catch-all keys never create countries. Descriptive columns (name, zone,
+ *     is_eu, vat_rate) are copied from 국가_Master; benchmark_service_code is
+ *     re-pointed to the provider's own service that carries that country's
+ *     brackets, because shippingQuoteService/getService resolve the benchmark
+ *     inside the same rate_version_id (an eGS benchmark would never resolve in a
+ *     KPL version). If several services cover one country, the one whose
+ *     coverage equals the country wins, else the lexicographically first.
+ *
+ * Bracket keys with no 국가_Master row are returned in `missingCountryKeys`
+ * (caller warns) — a country row is never fabricated.
+ *
+ * Pure: depends only on the parsed workbook, so a re-import of the same workbook
+ * (or a future provider with country-keyed brackets) reproduces the same rows.
+ */
+function selectCountriesForProvider(parsed, provider) {
+  const allCountries = parsed.countries || [];
+  if (provider === parsed.primaryProviderForCountries) {
+    return { countries: allCountries, missingCountryKeys: [] };
+  }
+
+  const servicesByCountry = new Map();
+  for (const b of parsed.brackets || []) {
+    if (b.provider !== provider) continue;
+    const key = String(b.country_key || '').trim().toUpperCase();
+    if (!key || NON_COUNTRY_BRACKET_KEYS.has(key)) continue;
+    if (!servicesByCountry.has(key)) servicesByCountry.set(key, new Set());
+    servicesByCountry.get(key).add(b.service_code);
+  }
+
+  const providerServices = new Map((parsed.services || [])
+    .filter(s => s.provider === provider)
+    .map(s => [s.service_code, s]));
+  const masterByCode = new Map(allCountries.map(c => [c.country_code, c]));
+
+  const countries = [];
+  const missingCountryKeys = [];
+  for (const code of [...servicesByCountry.keys()].sort()) {
+    const master = masterByCode.get(code);
+    if (!master) { missingCountryKeys.push(code); continue; }
+    const candidates = [...servicesByCountry.get(code)].sort();
+    const benchmark =
+      candidates.find(sc => String(providerServices.get(sc)?.coverage || '').trim().toUpperCase() === code)
+      || candidates[0];
+    countries.push({ ...master, benchmark_service_code: benchmark });
+  }
+  return { countries, missingCountryKeys };
 }
 
 //   Loose date parser: accepts JS Date, ISO string, "YYYY-MM-DD", "YYYY.MM.DD",
@@ -412,17 +485,18 @@ async function importWorkbook(supabase, buffer, opts = {}) {
         if (r.error) throw new Error(`services insert: ${r.error.message}`);
         rowCounts.services = r.data?.length || 0;
       }
-      //   Countries + surcharges attach to the PRIMARY provider only
-      //   (eGS unless workbook lacks eGS). Other providers (KPL, FedEx, ...)
-      //   get services + brackets and share the eGS country/surcharge
-      //   metadata via the primary version.
+      //   Countries: primary provider → full 국가_Master; other providers →
+      //   only the countries their own brackets are keyed on (KPL → US, JP).
+      const providerCountries = selectCountriesForProvider(parsed, provider).countries;
+      if (providerCountries.length) {
+        const payload = providerCountries.map(({ _rowNum, ...c }) => ({ ...c, rate_version_id: versionId }));
+        const r = await supabase.from('shipping_countries').insert(payload).select('id');
+        if (r.error) throw new Error(`countries insert: ${r.error.message}`);
+        rowCounts.countries = r.data?.length || 0;
+      }
+      //   Surcharges attach to the PRIMARY provider only (eGS unless the
+      //   workbook lacks eGS).
       if (provider === parsed.primaryProviderForCountries) {
-        if (parsed.countries.length) {
-          const payload = parsed.countries.map(({ _rowNum, ...c }) => ({ ...c, rate_version_id: versionId }));
-          const r = await supabase.from('shipping_countries').insert(payload).select('id');
-          if (r.error) throw new Error(`countries insert: ${r.error.message}`);
-          rowCounts.countries = r.data?.length || 0;
-        }
         if (parsed.surcharges.length) {
           const payload = parsed.surcharges.map(({ _rowNum, value, ...s }) => ({
             ...s,
@@ -560,10 +634,10 @@ async function assertVersionActivatable(supabase, versionId) {
     err.code = 'SERVICE_WITHOUT_BRACKETS'; throw err;
   }
 
-  //   Country benchmark integrity is only meaningful when this version owns
-  //   the countries sheet (i.e. it's the primary version). A per-provider
-  //   version like KPL carries services + brackets but no countries — that's
-  //   valid, so skip the benchmark check when countries.length === 0.
+  //   Country benchmark integrity. The primary version owns the full countries
+  //   sheet; a per-provider version (KPL) carries only its bracket countries,
+  //   benchmarked to its own services. A version with zero countries (zone-only
+  //   or legacy import) is still valid, so skip when countries.length === 0.
   const ctyRows = await fetchAllPaginated(() => supabase
     .from('shipping_countries')
     .select('country_code, benchmark_service_code')
@@ -651,6 +725,7 @@ module.exports = {
   importWorkbook,
   activateVersion,
   assertVersionActivatable,
+  selectCountriesForProvider,
   //   internal helpers exported for tests
   REQUIRED_SHEETS,
   REQUIRED_HEADERS,
