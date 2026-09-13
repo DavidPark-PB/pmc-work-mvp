@@ -77,21 +77,30 @@ router.post('/versions/:id/activate', async (req, res) => {
 });
 
 //   POST /import/preview ─────────────────────────────────────────
+//   Response schema (fixed 2026-09-13 · PMC-CCOREA-SHIPPING-1B):
+//     {
+//       ok, versions: [{ provider, source_name, effective_from, note }],
+//       primaryProviderForCountries, counts, errors, warnings, previewRows
+//     }
+//   Note the array shape — parseAndValidate returns one version PER provider
+//   in the workbook (eGS, KPL, SHIPTER, FedEx, KoreaPost). Callers must NOT
+//   assume a singular `version` field.
 router.post('/import/preview', upload.single('workbook'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: 'workbook file missing' });
     const parsed = await importer.parseAndValidate(req.file.buffer);
     res.json({
-      ok:        parsed.ok,
-      version:   parsed.version,
-      counts:    {
+      ok:                          parsed.ok,
+      versions:                    parsed.versions || [],
+      primaryProviderForCountries: parsed.primaryProviderForCountries || null,
+      counts: {
         services:   parsed.services   ? parsed.services.length   : 0,
         countries:  parsed.countries  ? parsed.countries.length  : 0,
         brackets:   parsed.brackets   ? parsed.brackets.length   : 0,
         surcharges: parsed.surcharges ? parsed.surcharges.length : 0,
       },
-      errors:    parsed.errors,
-      warnings:  parsed.warnings,
+      errors:      parsed.errors    || [],
+      warnings:    parsed.warnings  || [],
       //   Owner-friendly first-5 sample of each sheet for spot-checking.
       previewRows: {
         services:   (parsed.services   || []).slice(0, 5),
@@ -107,17 +116,44 @@ router.post('/import/preview', upload.single('workbook'), async (req, res) => {
 });
 
 //   POST /import/commit ──────────────────────────────────────────
+//   Response schema (fixed 2026-09-13 · PMC-CCOREA-SHIPPING-1B):
+//     {
+//       ok,
+//       created: [{ provider, versionId, alreadyImported, rowCounts }],   // provider actually wrote something
+//       skipped: [{ provider, reason }],                                    // provider had no rate loaded
+//       errors, warnings
+//     }
+//   `created` / `skipped` are derived from importer's `versions[]` result
+//   (each element is either a saved version, an alreadyImported hit, or a
+//   skipped provider). This shape lets the SPA render cleanly without any
+//   `undefined.provider` risk.
 router.post('/import/commit', upload.single('workbook'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ ok: false, error: 'workbook file missing' });
     const db = getClient();
     const out = await importer.importWorkbook(db, req.file.buffer, {
-      sourceName:    req.body.sourceName    || req.file.originalname || 'upload',
-      provider:      req.body.provider      || null,
-      effectiveFrom: req.body.effectiveFrom || null,
-      importedBy:    req.user?.id || null,
+      importedBy: req.user?.id || null,
     });
-    res.json({ ok: (out.errors || []).length === 0, ...out });
+    const versions = Array.isArray(out.versions) ? out.versions : [];
+    const created = versions
+      .filter(v => v && !v.skipped)
+      .map(v => ({
+        provider:        v.provider,
+        versionId:       v.versionId,
+        alreadyImported: !!v.alreadyImported,
+        rowCounts:       v.rowCounts || { services: 0, countries: 0, brackets: 0, surcharges: 0 },
+        note:            v.note || null,
+      }));
+    const skipped = versions
+      .filter(v => v && v.skipped)
+      .map(v => ({ provider: v.provider, reason: v.reason || 'no rate loaded' }));
+    res.json({
+      ok:       (out.errors || []).length === 0,
+      created,
+      skipped,
+      errors:   out.errors   || [],
+      warnings: out.warnings || [],
+    });
   } catch (e) {
     console.error('[shippingRateAdmin] import/commit failed:', e.message);
     res.status(500).json({ ok: false, error: e.message });

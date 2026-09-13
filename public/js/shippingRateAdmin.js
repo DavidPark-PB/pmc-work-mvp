@@ -195,42 +195,110 @@
     } catch (e) { alert('활성화 실패: ' + e.message); }
   }
 
+  //   Module-scope in-flight guard so a double-click on the file input, or a
+  //   drag-and-drop while a request is running, never fires two concurrent
+  //   preview/commit rounds against production.
+  let _uploadInFlight = false;
+
   async function onUpload(ev) {
+    if (_uploadInFlight) {
+      //   Reset the input so the user can re-select the same file after
+      //   the current run finishes.
+      try { ev.target.value = ''; } catch (_) {}
+      return;
+    }
     const file = ev.target.files[0];
     if (!file) return;
     ev.target.value = '';   //   allow re-selecting the same file after edit
     const resultEl = document.getElementById('sra-import-result');
     resultEl.innerHTML = '<span style="color:#888;">미리보기 중…</span>';
+    _uploadInFlight = true;
 
-    //   Step 1: preview
-    const fd = new FormData(); fd.append('workbook', file);
+    //   The upload trigger is a <label> wrapping <input type=file>. Disable
+    //   the input (and gray the label) while a request is in flight.
+    const inputEl = document.getElementById('sra-upload');
+    if (inputEl) inputEl.disabled = true;
+    const labelEl = inputEl && inputEl.parentElement;
+    if (labelEl) labelEl.style.opacity = '0.5';
+
     try {
+      //   ─── Step 1: preview ─────────────────────────────────────
+      const fd = new FormData(); fd.append('workbook', file);
       const rP = await fetch('/api/shipping/rate-admin/import/preview', { method: 'POST', body: fd, credentials: 'include' });
-      const jP = await rP.json();
+      let jP = null;
+      try { jP = await rP.json(); } catch (_) { /* malformed body handled below */ }
+      if (!jP || typeof jP !== 'object') {
+        resultEl.innerHTML = `<div style="color:#ef9a9a;">서버가 예상하지 못한 응답을 반환했습니다 (HTTP ${rP.status}).</div>`;
+        return;
+      }
       if (!rP.ok || !jP.ok) {
-        resultEl.innerHTML = `<div style="color:#ef9a9a;">검증 실패:<ul>${(jP.errors || [jP.error]).map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>`;
+        const msgs = Array.isArray(jP.errors) && jP.errors.length ? jP.errors : [jP.error || `HTTP ${rP.status}`];
+        resultEl.innerHTML = `<div style="color:#ef9a9a;">검증 실패:<ul>${msgs.map(e => `<li>${esc(String(e))}</li>`).join('')}</ul></div>`;
         return;
       }
-      const msg = `검증 통과: services=${jP.counts.services} countries=${jP.counts.countries} brackets=${jP.counts.brackets} surcharges=${jP.counts.surcharges}`;
-      const warns = (jP.warnings || []).slice(0, 3).map(w => `⚠ ${esc(w)}`).join('<br>');
-      if (!confirm(`${msg}\n\n버전: ${jP.version.provider} / ${jP.version.source_name} / ${jP.version.effective_from}\n\nDB 에 저장할까요?`)) {
-        resultEl.innerHTML = `<div style="color:#888;">미리보기 완료 (저장 취소). ${msg}${warns ? '<br>' + warns : ''}</div>`;
+
+      //   Schema fixed 2026-09-13: preview returns `versions[]` (plural,
+      //   one entry per provider found in 원본목록). Skipped providers
+      //   are discovered at commit time, not preview time.
+      const previewVersions = Array.isArray(jP.versions) ? jP.versions : [];
+      const counts = jP.counts || {};
+      const countsMsg = `검증 통과: services=${counts.services ?? '?'} countries=${counts.countries ?? '?'} brackets=${counts.brackets ?? '?'} surcharges=${counts.surcharges ?? '?'}`;
+      const warns = (jP.warnings || []).slice(0, 4).map(w => `⚠ ${esc(String(w))}`).join('\n');
+      const versionsLine = previewVersions.length === 0
+        ? '(원본목록에 provider 없음)'
+        : previewVersions.map(v => `  · ${v && v.provider} — ${v && v.source_name || ''} (${v && v.effective_from || '?'})`).join('\n');
+      const confirmMsg = `${countsMsg}\n\n감지된 provider (${previewVersions.length}개):\n${versionsLine}\n\n※ 실제 활성화될 provider는 저장 후 결과로 확인합니다 (운임 미적재 provider는 자동 skip).\n\n${warns}\n\nDB 에 저장할까요?`;
+      if (!confirm(confirmMsg)) {
+        resultEl.innerHTML = `<div style="color:#888;">미리보기 완료 (저장 취소). ${esc(countsMsg)}</div>`;
         return;
       }
-      //   Step 2: commit
+
+      //   ─── Step 2: commit ──────────────────────────────────────
       resultEl.innerHTML = '<span style="color:#888;">저장 중…</span>';
       const fd2 = new FormData(); fd2.append('workbook', file);
       const rC = await fetch('/api/shipping/rate-admin/import/commit', { method: 'POST', body: fd2, credentials: 'include' });
-      const jC = await rC.json();
-      if (!rC.ok || !jC.ok) throw new Error(jC.errors ? jC.errors.join(', ') : jC.error || `HTTP ${rC.status}`);
-      if (jC.alreadyImported) {
-        resultEl.innerHTML = `<div style="color:#ffb74d;">이미 import 된 버전입니다 (versionId=${jC.versionId}).</div>`;
-      } else {
-        resultEl.innerHTML = `<div style="color:#69f0ae;">✓ 저장 완료 · versionId=${jC.versionId} · rows: ${JSON.stringify(jC.rowCounts)}</div>`;
+      let jC = null;
+      try { jC = await rC.json(); } catch (_) { /* handled below */ }
+      if (!jC || typeof jC !== 'object') {
+        resultEl.innerHTML = `<div style="color:#ef9a9a;">저장 실패: 서버가 예상하지 못한 응답을 반환했습니다 (HTTP ${rC.status}).</div>`;
+        return;
       }
-      loadVersions();
+      if (!rC.ok || !jC.ok) {
+        const msgs = Array.isArray(jC.errors) && jC.errors.length ? jC.errors : [jC.error || `HTTP ${rC.status}`];
+        resultEl.innerHTML = `<div style="color:#ef9a9a;">저장 실패:<ul>${msgs.map(e => `<li>${esc(String(e))}</li>`).join('')}</ul></div>`;
+        return;
+      }
+
+      //   Schema fixed 2026-09-13: commit returns { created[], skipped[] }
+      //   `created[]` = providers whose rows landed (or were already there).
+      //   `skipped[]` = providers whose rates aren't loaded — no version row.
+      const created = Array.isArray(jC.created) ? jC.created.filter(x => x && x.provider) : [];
+      const skipped = Array.isArray(jC.skipped) ? jC.skipped.filter(x => x && x.provider) : [];
+      const createdLines = created.map(c => {
+        const label = c.alreadyImported ? '이미 저장됨' : '신규 저장';
+        const rc = c.rowCounts || {};
+        return `<li><strong>${esc(c.provider)}</strong> — ${label} · versionId=${c.versionId != null ? c.versionId : '—'} · rows: services=${rc.services ?? 0}, countries=${rc.countries ?? 0}, brackets=${rc.brackets ?? 0}, surcharges=${rc.surcharges ?? 0}</li>`;
+      }).join('');
+      const skippedLines = skipped.map(s =>
+        `<li><strong>${esc(s.provider)}</strong> — 운임 미적재로 건너뜀 (${esc(s.reason || 'no rate loaded')})</li>`
+      ).join('');
+      const warnsHtml = (jC.warnings || []).slice(0, 6).map(w => `<div style="color:#ffb74d;font-size:11px;">⚠ ${esc(String(w))}</div>`).join('');
+      resultEl.innerHTML = `
+        <div style="color:#69f0ae;font-weight:600;margin-bottom:6px;">✓ Import 완료</div>
+        ${created.length ? `<div style="color:#c5e1a5;font-size:12px;margin-bottom:4px;">생성 · 갱신 (${created.length})</div><ul style="margin:0 0 8px 20px;color:#cfd8dc;font-size:11px;">${createdLines}</ul>` : ''}
+        ${skipped.length ? `<div style="color:#aaa;font-size:12px;margin-bottom:4px;">건너뜀 (${skipped.length})</div><ul style="margin:0 0 8px 20px;color:#888;font-size:11px;">${skippedLines}</ul>` : ''}
+        ${warnsHtml}
+      `;
+      //   Commit success → auto-refresh versions list.
+      await loadVersions();
     } catch (e) {
-      resultEl.innerHTML = `<div style="color:#ef9a9a;">실패: ${esc(e.message)}</div>`;
+      //   Network failure / thrown before response. Never let a leaked
+      //   stack become a partial-success illusion.
+      resultEl.innerHTML = `<div style="color:#ef9a9a;">실패: ${esc(e && e.message ? e.message : String(e))}</div>`;
+    } finally {
+      _uploadInFlight = false;
+      if (inputEl) inputEl.disabled = false;
+      if (labelEl) labelEl.style.opacity = '';
     }
   }
 
