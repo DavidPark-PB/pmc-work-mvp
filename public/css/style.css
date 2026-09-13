@@ -665,8 +665,22 @@ table thead th {
   border-bottom: 1px solid var(--border);
 }
 table tbody tr { border-bottom: 1px solid var(--border); }
-table tbody tr:hover { background: var(--surface-muted); }
-table td { color: var(--text); }
+/* Row hover uses a neutral gray overlay so it works in both light AND dark
+ * table themes. Previously this was `background: var(--surface-muted)` which
+ * flashed a light strip across dark admin tables (attendance, shipping rate
+ * admin, orders) — combined with the near-black `table td` color rule below
+ * that was the mechanism owner reported as "글씨가 hover 해야 보임." */
+table tbody tr:hover { background: rgba(127,127,127,0.15); }
+/* <td> color inherits from the nearest ancestor that sets it. Dark-themed
+ * admin pages wrap their tables in a container (or the <table> itself)
+ * with an explicit `color:#fff` / `color:#e0e0e0` — that value now
+ * propagates down. Light-themed pages (body color = var(--text)) still
+ * render dark text because the same inheritance chain resolves to
+ * var(--text). Previously this rule forced `var(--text)` on every <td>,
+ * which painted near-black text on dark backgrounds → invisible until the
+ * row-hover rule flipped the background to light gray (owner-reported bug,
+ * 2026-09-13, attendance + shipping rate admin pages). */
+table td { color: inherit; }
 
 /* ── Progress bar (used in export panel) ────────────────────────────── */
 .progress-bar { background: var(--accent) !important; }

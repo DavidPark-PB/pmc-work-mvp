@@ -406,3 +406,33 @@ test('UI-SCHEMA-C3 · scoped style block sits inside the renderShell output (nev
   assert.ok(shellIdx > 0 && styleIdx > shellIdx,
     'the scoped <style> MUST live inside renderShell() so it is only injected on the admin page render');
 });
+
+test('UI-SCHEMA-C4 · global css/style.css `table td` rule uses inherit — not var(--text) — so dark-theme tables stay readable', () => {
+  //   Root fix for the owner-reported "글씨가 hover 해야 보임" symptom.
+  //   Any regression of this rule (back to `color: var(--text)` or a hard-coded
+  //   near-black) reintroduces invisible-td text on every dark admin page
+  //   (attendance, shipping rate admin, orders, etc.).
+  const css = fs.readFileSync(path.join(REPO, 'public/css/style.css'), 'utf8');
+  //   Locate the `table td { ... }` rule at the tail of the file (near "Table hygiene").
+  //   The regex intentionally rejects the historical `var(--text)` form.
+  assert.ok(/\btable\s+td\s*\{\s*color\s*:\s*inherit\s*;?\s*\}/.test(css),
+    'css/style.css MUST declare `table td { color: inherit; }` — never `color: var(--text)` — so <td> inherits from the nearest colored ancestor');
+  //   The old bug pattern must be gone. `var(--text)` is fine anywhere else
+  //   (it's the entire theme's text token) EXCEPT in a `table td { color: … }` rule.
+  const tableTdRule = css.match(/table\s+td\s*\{[^}]*\}/g) || [];
+  for (const rule of tableTdRule) {
+    assert.ok(!/color\s*:\s*var\(\s*--text\s*\)/.test(rule),
+      `regression: table td rule "${rule.slice(0,80)}…" reintroduces var(--text) — will break dark tables`);
+  }
+});
+
+test('UI-SCHEMA-C5 · row-hover uses a theme-neutral overlay (works on both light AND dark tables)', () => {
+  const css = fs.readFileSync(path.join(REPO, 'public/css/style.css'), 'utf8');
+  //   `var(--surface-muted)` (light gray) as hover on a dark table paints
+  //   invisible-text (white on light gray). A neutral rgba overlay adapts
+  //   to whatever background is beneath it.
+  assert.ok(/table\s+tbody\s+tr:hover\s*\{\s*background\s*:\s*rgba\(/.test(css),
+    'row-hover MUST use an rgba() overlay so it works in both light and dark themes');
+  assert.ok(!/^\s*table\s+tbody\s+tr:hover\s*\{\s*background\s*:\s*var\(\s*--surface-muted\s*\)/m.test(css),
+    'row-hover MUST NOT use var(--surface-muted) — that was the collateral trigger for the hover-only-visible bug');
+});
