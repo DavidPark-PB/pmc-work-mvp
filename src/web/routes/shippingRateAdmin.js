@@ -32,6 +32,8 @@ const { getClient }    = require('../../db/supabaseClient');
 const importer         = require('../../services/shipping/rateMasterImporter');
 const quoteService     = require('../../services/shipping/shippingQuoteService');
 const repo             = require('../../services/shipping/rateMasterRepository');
+const bands            = require('../../services/shipping/shippingPolicyBands');
+const adapter          = require('../../services/shipping/autoListingPricingAdapter');
 
 router.use(requireAdmin);
 
@@ -224,6 +226,86 @@ router.post('/quote/batch', express.json({ limit: '512kb' }), async (req, res) =
     res.json({ ok: true, quotes: out });
   } catch (e) {
     console.error('[shippingRateAdmin] quote/batch failed:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+//   ─── Shipping policy bands (owner directive §8) ─────────────────
+router.get('/policy-bands', async (_req, res) => {
+  try {
+    const db = getClient();
+    const r = await db
+      .from('shipping_policy_bands')
+      .select('*')
+      .order('marketplace', { ascending: true })
+      .order('min_chargeable_weight_kg', { ascending: true })
+      .limit(500);
+    if (r.error) throw r.error;
+    res.json({ ok: true, bands: r.data || [] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/policy-bands', express.json({ limit: '8kb' }), async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.marketplace || !b.ebay_policy_id) {
+      return res.status(400).json({ ok: false, error: 'marketplace and ebay_policy_id required' });
+    }
+    if (!b.destination_country && !b.destination_region) {
+      return res.status(400).json({ ok: false, error: 'destination_country OR destination_region required' });
+    }
+    const payload = {
+      marketplace:              String(b.marketplace),
+      destination_country:      b.destination_country ? String(b.destination_country).toUpperCase() : null,
+      destination_region:       b.destination_region ? String(b.destination_region).toUpperCase() : null,
+      min_chargeable_weight_kg: Number(b.min_chargeable_weight_kg) || 0,
+      max_chargeable_weight_kg: Number(b.max_chargeable_weight_kg) || 999,
+      ebay_policy_id:           String(b.ebay_policy_id),
+      policy_name:              b.policy_name ? String(b.policy_name) : null,
+      buyer_shipping_fee_krw:   Number(b.buyer_shipping_fee_krw) || 0,
+      active:                   b.active !== false,
+      created_by:               req.user?.id || null,
+      note:                     b.note ? String(b.note).slice(0, 500) : null,
+    };
+    const r = await getClient().from('shipping_policy_bands').insert(payload).select('*').single();
+    if (r.error) throw r.error;
+    res.json({ ok: true, band: r.data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.post('/policy-bands/:id', express.json({ limit: '4kb' }), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'invalid id' });
+    const b = req.body || {};
+    const patch = { updated_at: new Date().toISOString() };
+    if (b.active !== undefined)              patch.active                   = !!b.active;
+    if (b.buyer_shipping_fee_krw !== undefined) patch.buyer_shipping_fee_krw = Number(b.buyer_shipping_fee_krw) || 0;
+    if (b.ebay_policy_id !== undefined)       patch.ebay_policy_id           = String(b.ebay_policy_id);
+    if (b.policy_name !== undefined)          patch.policy_name              = b.policy_name ? String(b.policy_name) : null;
+    if (b.note !== undefined)                 patch.note                     = b.note ? String(b.note).slice(0, 500) : null;
+    const r = await getClient().from('shipping_policy_bands').update(patch).eq('id', id).select('*').maybeSingle();
+    if (r.error) throw r.error;
+    res.json({ ok: true, band: r.data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+//   ─── Auto-listing preview (SHADOW-mode integration entry) ───────
+//   Owner directive §7-§9: automation subproject calls this in-VPC to see
+//   the recomputed shipping-aware listing price. Response includes `mode`
+//   so the caller can decide whether to publish (active) or just log (shadow).
+router.post('/auto-listing-preview', express.json({ limit: '16kb' }), async (req, res) => {
+  try {
+    const out = await adapter.buildAutoListingPreview(req.body || {}, { supabase: getClient() });
+    res.json(out);
+  } catch (e) {
+    console.error('[shippingRateAdmin] auto-listing-preview failed:', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
 });

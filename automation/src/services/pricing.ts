@@ -47,6 +47,15 @@ export interface PricingOptions {
   exchangeRate?: number;     // KRW→USD 환율 (기본 1400)
   platform?: string;         // 'ebay' | 'shopify'
   shippingCarrier?: string;  // 'YunExpress' | 'K-Packet'
+  //   PMC-CCOREA-SHIPPING-1B shadow inputs — passed through unchanged in
+  //   shadow mode (used only when active flag is on in a later commit).
+  destinationCountry?: string;    // 'US' | 'DE' | ...
+  lengthCm?: number;
+  widthCm?: number;
+  heightCm?: number;
+  uniqueHsCodeCount?: number;
+  declaredValueKrw?: number;
+  eurKrwRate?: number;
 }
 
 /**
@@ -156,7 +165,7 @@ export async function calculateListingPrice(
   const salePrice = Math.ceil((totalPrice - shippingUsd) * 100) / 100;
   const platformFee = (salePrice + shippingUsd) * platformFeeRate;
 
-  return {
+  const result: PricingResult = {
     salePrice: Math.max(salePrice, 0.99),
     shippingCost: Math.ceil(shippingUsd * 100) / 100,
     costUsd: Math.round(costUsd * 100) / 100,
@@ -164,6 +173,66 @@ export async function calculateListingPrice(
     platformFee: Math.round(platformFee * 100) / 100,
     shippingKrw,
   };
+
+  //
+  //   PMC-CCOREA-SHIPPING-1B (2026-09-13) — SHADOW-MODE HOOK.
+  //   Fire-and-forget: consult the canonical quote+bands engine on the main
+  //   service and log the recomputed shipping cost alongside the legacy
+  //   result. When AUTO_LISTING_USE_QUOTE_ENGINE=true this hook can be
+  //   graduated to authoritative behaviour by a later commit (owner directive
+  //   §9: default false, never modify the returned salePrice in this phase).
+  //   Failures NEVER surface — this must not disturb the existing listing flow.
+  //
+  const mainServiceUrl = process.env.MAIN_SERVICE_URL || 'http://localhost:3001';
+  const shadowUrl = `${mainServiceUrl.replace(/\/$/, '')}/api/shipping/rate-admin/auto-listing-preview`;
+  const shadowBody = {
+    marketplace: platform,
+    destinationCountry: options.destinationCountry || 'US',
+    productCostKrw: costKRW,
+    actualWeightKg: weightG / 1000,
+    lengthCm: options.lengthCm || 0,
+    widthCm:  options.widthCm  || 0,
+    heightCm: options.heightCm || 0,
+    uniqueHsCodeCount: options.uniqueHsCodeCount || 0,
+    declaredValueKrw:  options.declaredValueKrw || 0,
+    platformFeeRate,
+    targetMarginRate: marginRate,
+    sellingCurrencyKrwRate: exchangeRate,
+    eurKrwRate: options.eurKrwRate ?? null,
+    saleType: 'B2C',
+    provider: 'eGS',
+  };
+  //   fetch is on globalThis in Node 18+; automation subproject targets Node 20.
+  (async () => {
+    try {
+      const cookie = process.env.MAIN_SERVICE_ADMIN_COOKIE || '';
+      if (!cookie) return;  //   shadow requires session — silently skip if not configured
+      const r = await (globalThis as any).fetch(shadowUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
+        body: JSON.stringify(shadowBody),
+      });
+      const j = await r.json().catch(() => ({}));
+      const active = j && j.mode === 'active';
+      console.log(
+        '[shadow:shipping-quote]',
+        `platform=${platform}`,
+        `weightG=${weightG}`,
+        `legacyShippingKrw=${shippingKrw}`,
+        j.ok
+          ? `newShippingKrw=${j.estimatedShippingCostKrw} newListingKrw=${j.listingItemPriceKrw} band=${j.policyBand?.ebay_policy_id || '-'} mode=${j.mode}`
+          : `blocked=${j.listingBlockedReason || j.quote?.blockedReason || 'unknown'} mode=${j.mode || 'shadow'}`,
+        //   In this phase (shadow), the returned salePrice is ALWAYS the
+        //   legacy result. Active-mode replacement is deliberately deferred
+        //   to a future commit that flips AUTO_LISTING_USE_QUOTE_ENGINE.
+        active ? '(active-mode — future path)' : '(shadow-only)',
+      );
+    } catch (_e) {
+      //   Intentionally silent — shadow must not disturb primary listing flow.
+    }
+  })();
+
+  return result;
 }
 
 /**
