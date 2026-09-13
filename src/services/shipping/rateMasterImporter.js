@@ -472,6 +472,42 @@ async function importWorkbook(supabase, buffer, opts = {}) {
 }
 
 /**
+ * fetchAllPaginated — page through a Supabase query in 1000-row chunks
+ * until the last page returns fewer than `pageSize` rows. Necessary
+ * because PostgREST caps a single response at 1000 rows by default —
+ * a bare `.select().eq()` against a 3,876-row table silently returns
+ * only the first 1000, which is exactly how activateVersion() falsely
+ * reported half the eGS services as "no brackets" (owner-reported
+ * bug, 2026-09-13 · production eGS v3 activation).
+ *
+ * `buildQuery(range)` must return a NEW Supabase query builder each
+ * call (Supabase builders are single-shot after `await`), scoped with
+ * whatever `.eq/.in/.select` the caller needs.
+ */
+async function fetchAllPaginated(buildQuery, pageSize = 1000, hardStopPages = 500) {
+  const all = [];
+  let from = 0;
+  for (let page = 0; page < hardStopPages; page++) {
+    const q = buildQuery();
+    //   Some Supabase builder chains don't expose `.range` at every point
+    //   in the pipeline — guard so a caller mistake fails loudly.
+    if (typeof q.range !== 'function') {
+      throw new Error('fetchAllPaginated: buildQuery() must return a Supabase query builder with .range');
+    }
+    const r = await q.range(from, from + pageSize - 1);
+    if (r.error) throw r.error;
+    const rows = r.data || [];
+    all.push(...rows);
+    if (rows.length < pageSize) return all;
+    from += pageSize;
+  }
+  //   `hardStopPages * pageSize` = 500k rows. A table this big would be
+  //   an entirely different problem than the one this helper solves;
+  //   throw so we never silently truncate again.
+  throw new Error(`fetchAllPaginated: exceeded hard-stop of ${hardStopPages} pages (${hardStopPages * pageSize} rows)`);
+}
+
+/**
  * assertVersionActivatable — pre-flight guards run before promoting a
  * draft version to 'active'. Every rejection carries `.code` so the
  * calling route can surface a machine-readable reason back to the SPA.
@@ -486,26 +522,31 @@ async function importWorkbook(supabase, buffer, opts = {}) {
  *   Otherwise a version left incomplete by a mid-flight import failure
  *   could be silently promoted and every quote against it would return
  *   WEIGHT_OVER_MAX_BRACKET / no-service errors in production.
+ *
+ * Every child-table read below uses `fetchAllPaginated` — a bare
+ * `.select().eq()` silently caps at 1000 rows and previously produced
+ * a false SERVICE_WITHOUT_BRACKETS listing for 28 eGS services whose
+ * brackets sat past pk 1000.
  */
 async function assertVersionActivatable(supabase, versionId) {
-  const services = await supabase
+  //   Services and countries stay well under 1000 in practice, but we
+  //   paginate all three to future-proof and keep the mechanism uniform.
+  const svcRows = await fetchAllPaginated(() => supabase
     .from('shipping_services')
     .select('service_code, rate_loaded, active')
-    .eq('rate_version_id', versionId);
-  if (services.error) throw services.error;
-  const svcRows = services.data || [];
+    .eq('rate_version_id', versionId));
   const activeLoaded = svcRows.filter(s => s.active && s.rate_loaded);
   if (activeLoaded.length === 0) {
     const err = new Error(`version ${versionId}: no active rate_loaded services attached — refuse to activate`);
     err.code = 'NO_ACTIVE_SERVICE'; throw err;
   }
 
-  const brackets = await supabase
+  //   Brackets: the 3,876-row table that tripped the 1000-cap. Paginate
+  //   through all rows so the distinct-service-code set is complete.
+  const brkRows = await fetchAllPaginated(() => supabase
     .from('shipping_rate_brackets')
     .select('service_code')
-    .eq('rate_version_id', versionId);
-  if (brackets.error) throw brackets.error;
-  const brkRows = brackets.data || [];
+    .eq('rate_version_id', versionId));
   if (brkRows.length === 0) {
     const err = new Error(`version ${versionId}: zero brackets attached — refuse to activate`);
     err.code = 'NO_BRACKETS'; throw err;
@@ -523,12 +564,10 @@ async function assertVersionActivatable(supabase, versionId) {
   //   the countries sheet (i.e. it's the primary version). A per-provider
   //   version like KPL carries services + brackets but no countries — that's
   //   valid, so skip the benchmark check when countries.length === 0.
-  const countries = await supabase
+  const ctyRows = await fetchAllPaginated(() => supabase
     .from('shipping_countries')
     .select('country_code, benchmark_service_code')
-    .eq('rate_version_id', versionId);
-  if (countries.error) throw countries.error;
-  const ctyRows = countries.data || [];
+    .eq('rate_version_id', versionId));
   if (ctyRows.length > 0) {
     //   Benchmarks may reference services from ANY provider (per owner
     //   directive: eGS countries can benchmark to KPL services). Load every
@@ -539,12 +578,11 @@ async function assertVersionActivatable(supabase, versionId) {
       .eq('status', 'active');
     if (activeVersions.error) throw activeVersions.error;
     const svcVersionIds = [versionId, ...(activeVersions.data || []).map(v => v.id)];
-    const allSvcs = await supabase
+    const allSvcs = await fetchAllPaginated(() => supabase
       .from('shipping_services')
       .select('service_code, rate_version_id')
-      .in('rate_version_id', svcVersionIds);
-    if (allSvcs.error) throw allSvcs.error;
-    const allSvcCodes = new Set((allSvcs.data || []).map(s => s.service_code));
+      .in('rate_version_id', svcVersionIds));
+    const allSvcCodes = new Set(allSvcs.map(s => s.service_code));
     const missing = ctyRows
       .filter(c => c.benchmark_service_code && !allSvcCodes.has(c.benchmark_service_code))
       .map(c => `${c.country_code}→${c.benchmark_service_code}`);
@@ -552,13 +590,13 @@ async function assertVersionActivatable(supabase, versionId) {
       const err = new Error(`version ${versionId}: countries reference missing benchmark services — ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ` (+${missing.length - 5} more)` : ''}`);
       err.code = 'BENCHMARK_SERVICE_MISSING'; throw err;
     }
-    //   Benchmark service must ALSO have at least one bracket somewhere.
-    const allBrks = await supabase
+    //   Benchmark service must ALSO have at least one bracket somewhere —
+    //   another paginated read across all active-or-target versions.
+    const allBrks = await fetchAllPaginated(() => supabase
       .from('shipping_rate_brackets')
       .select('service_code')
-      .in('rate_version_id', svcVersionIds);
-    if (allBrks.error) throw allBrks.error;
-    const svcCodesWithBrackets = new Set((allBrks.data || []).map(b => b.service_code));
+      .in('rate_version_id', svcVersionIds));
+    const svcCodesWithBrackets = new Set(allBrks.map(b => b.service_code));
     const emptyBench = ctyRows
       .filter(c => c.benchmark_service_code && !svcCodesWithBrackets.has(c.benchmark_service_code))
       .map(c => `${c.country_code}→${c.benchmark_service_code}`);
@@ -619,4 +657,5 @@ module.exports = {
   yn,
   toNum,
   normalizeDate,
+  fetchAllPaginated,
 };
