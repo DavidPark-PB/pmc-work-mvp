@@ -323,22 +323,28 @@ describe('견적 client — 실제 main service 계약', () => {
       .toEqual({ ok: false, blockedReason: 'COUNTRY_NOT_IN_MASTER' });
   });
 
-  it('12. 실패 처리: 5xx 1회 재시도 후 차단, 4xx·invalid JSON 즉시 차단, timeout 2초, 미설정 시 호출 안 함', async () => {
+  it('12. 실패 처리: 일시적 오류(timeout/network/429·502·503·504)만 최대 3회 재시도, 500·401·invalid JSON 즉시 차단, timeout 8초, 미설정 시 호출 안 함', async () => {
     const input = { provider: 'eGS' as const, serviceCode: 'EGS_STD_US', chargeableWeightG: 307 };
-    const deps = { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any };
+    const deps = { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any, sleep: async () => {} };
 
+    //   Phase 2.2: 500 internal_quote_failed는 최대 1회만 재시도 (기존 코드: QUOTE_HTTP_500_internal_quote_failed), 그 밖의 500은 즉시 차단
     fetchOverride = () => ({ status: 500, body: { ok: false, error: 'internal_quote_failed' } });
-    expect(await requestShippingQuote(input, deps)).toEqual({ ok: false, blockedReason: 'QUOTE_HTTP_500_internal_quote_failed' });
+    expect(await requestShippingQuote(input, deps)).toEqual({ ok: false, blockedReason: 'QUOTE_HTTP_500', retries: 1, httpStatus: 500 });
     expect(fetchCalls).toHaveLength(2);
+    fetchCalls = [];
+    fetchOverride = () => ({ status: 500, body: { ok: false, error: 'validation_failed' } });
+    expect(await requestShippingQuote(input, deps)).toEqual({ ok: false, blockedReason: 'QUOTE_HTTP_500', httpStatus: 500 });
+    expect(fetchCalls).toHaveLength(1);
 
     fetchCalls = [];
     fetchOverride = (_b, attempt) => (attempt === 1 ? 'network' : { status: 200, body: mainBody({ provider: 'eGS', serviceCode: 'EGS_STD_US', kg: 0.307, bracketKg: 0.4, krw: 14114 }) });
-    expect(await requestShippingQuote(input, deps)).toMatchObject({ ok: true, shippingKrw: 14114 });
+    expect(await requestShippingQuote(input, deps)).toMatchObject({ ok: true, shippingKrw: 14114, retries: 1 });
     expect(fetchCalls).toHaveLength(2);
 
+    //   Phase 2.2: 401은 AUTH_ERROR (기존 코드: QUOTE_HTTP_401_INVALID_INTERNAL_TOKEN), 재시도 없음
     fetchCalls = [];
     fetchOverride = () => ({ status: 401, body: { ok: false, error: 'INVALID_INTERNAL_TOKEN' } });
-    expect(await requestShippingQuote(input, deps)).toEqual({ ok: false, blockedReason: 'QUOTE_HTTP_401_INVALID_INTERNAL_TOKEN' });
+    expect(await requestShippingQuote(input, deps)).toEqual({ ok: false, blockedReason: 'AUTH_ERROR', httpStatus: 401 });
     expect(fetchCalls).toHaveLength(1);
 
     fetchCalls = [];
@@ -346,13 +352,13 @@ describe('견적 client — 실제 main service 계약', () => {
     expect(await requestShippingQuote(input, deps)).toEqual({ ok: false, blockedReason: 'QUOTE_INVALID_JSON' });
 
     fetchCalls = [];
-    expect(QUOTE_TIMEOUT_MS).toBe(2000);
+    expect(QUOTE_TIMEOUT_MS).toBe(8000);
     vi.useFakeTimers();
     fetchOverride = () => 'timeout';
-    const pending = requestShippingQuote(input, deps);
-    await vi.advanceTimersByTimeAsync(QUOTE_TIMEOUT_MS * 2 + 10);
-    expect(await pending).toEqual({ ok: false, blockedReason: 'QUOTE_TIMEOUT' });
-    expect(fetchCalls).toHaveLength(2);
+    const pending = requestShippingQuote(input, { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any });
+    await vi.advanceTimersByTimeAsync(QUOTE_TIMEOUT_MS * 4 + 300 + 800 + 1500 + 10);
+    expect(await pending).toEqual({ ok: false, blockedReason: 'QUOTE_TIMEOUT', retries: 3 });
+    expect(fetchCalls).toHaveLength(4);
     vi.useRealTimers();
 
     fetchCalls = [];
@@ -380,19 +386,27 @@ describe('견적 캐시 · 차단', () => {
     expect(again.uniqueRequests).toBe(2); // eGS 307g 와 KPL 307g는 서로 다른 키
   });
 
-  it('11,14. 적용무게 누락/환율 누락/서비스코드 누락 행은 요청하지 않고 BLOCKED snapshot', async () => {
+  it('11,14. 무게 복구 불가/환율 누락은 요청하지 않고 BLOCKED, 서비스코드 누락은 대체 배송사만 견적', async () => {
     const rows = seedUpload();
-    const r1 = await quoteUploadRows(rows, [{ index: 3, provider: 'KPL' }, { index: 4, provider: 'KPL' }], { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any });
-    expect([r1.snapshots.get(3)?.blockedReason, r1.snapshots.get(4)?.blockedReason]).toEqual(['CHARGEABLE_WEIGHT_INVALID', 'CHARGEABLE_WEIGHT_INVALID']);
+    //   Phase 2.2: #REF!(실측 300·부피 307) → 307g 복구 견적, 빈칸(실측 200) → 200g 복구 / 복구 불가만 INVALID_WEIGHT
+    const r1 = await quoteUploadRows(rows, [{ index: 3, provider: 'KPL' }], { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any });
+    expect(r1.snapshots.get(3)).toMatchObject({ status: 'OK', chargeableWeightG: 307, originalChargeableWeightG: null, recoveredChargeableWeightG: 307, recoverySource: 'MAX_ACTUAL_VOLUMETRIC' });
+    const unrecoverable = rows.map((r, i) => (i === 4 ? { ...r, actualWeightG: null, volumetricWeightG: null } : r));
+    fetchCalls = [];
+    const r1b = await quoteUploadRows(unrecoverable, [{ index: 4, provider: 'KPL' }], { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any });
+    expect(r1b.snapshots.get(4)?.blockedReason).toBe('INVALID_WEIGHT');
+    expect(r1b.alternatives.get(4)).toBeNull();
 
     setEnv({ AUTO_LISTING_SHIPPING_EXCHANGE_RATE: '' });
     const r2 = await quoteUploadRows(rows, [{ index: 0, provider: 'KPL' }], { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any });
-    expect(r2.snapshots.get(0)?.blockedReason).toBe('EXCHANGE_RATE_INVALID');
+    expect(r2.snapshots.get(0)?.blockedReason).toBe('EXCHANGE_RATE_MISSING');
+    expect(fetchCalls).toHaveLength(0);
 
     setEnv({ AUTO_LISTING_KPL_US_SERVICE_CODE: undefined });
     const r3 = await quoteUploadRows(rows, [{ index: 0, provider: 'KPL' }], { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any });
-    expect(r3.snapshots.get(0)?.blockedReason).toBe('SERVICE_CODE_NOT_CONFIGURED');
-    expect(fetchCalls).toHaveLength(0);
+    expect(r3.snapshots.get(0)?.blockedReason).toBe('SERVICE_CODE_MISSING');
+    expect(r3.alternatives.get(0)).toMatchObject({ status: 'OK', provider: 'eGS', serviceCode: 'EGS_STD_US' });
+    expect(fetchCalls.map(c => c.body.provider)).toEqual(['eGS']);
   });
 
   it('shippingUsd 올림: 17,160원/1300 = $13.20 (13.21 아님), 14,114원/1300 = $10.86', () => {
@@ -473,7 +487,7 @@ describe('등록 차단 (fail-closed, fallback 없음)', () => {
     seedUpload();
     fetchOverride = () => ({ status: 500, body: { ok: false, error: 'internal_quote_failed' } });
     const { quote, productIds } = await quoteAndImport([{ index: 0, provider: 'KPL' }]);
-    expect(quote.rows[0]).toMatchObject({ quoteStatus: 'BLOCKED', listingPriceLabel: '차단' });
+    expect(quote.rows[0]).toMatchObject({ quoteStatus: 'BLOCKED', shippingLabel: '계산 실패', listingPriceLabel: '—', reasonLabel: '배송비 서버 오류 (HTTP 500)' });
     await expect(createListing(productIds[0], 'ebay')).rejects.toThrow('유효한 국제배송비 견적이 없어 등록하지 않았습니다.');
     expect(addItemBodies).toHaveLength(0);
   });
@@ -512,18 +526,24 @@ describe('등록 차단 (fail-closed, fallback 없음)', () => {
     await expect(createListing(productIds[0], 'ebay')).rejects.toMatchObject({ code: 'SHIPPING_QUOTE_MISMATCH' });
   });
 
-  it('23. 적용무게 오류 2행(#REF!, 빈칸)은 사용자가 선택해 import해도 등록 차단 (플래그 on/off 모두)', async () => {
+  it('23. 적용무게 #REF! 행은 복구 무게(307g)로 견적·등록가 계산, 복구 불가 행은 등록 차단 (플래그 on/off 모두)', async () => {
     seedUpload();
-    const { productIds } = await quoteAndImport([{ index: 3, provider: 'KPL' }, { index: 4, provider: 'KPL' }]);
+    const upload = store.rowsOf(schema.csvUploads)[0];
+    upload.parsedRows[4] = { ...upload.parsedRows[4], actualWeightG: null, volumetricWeightG: null };   // 복구 불가
+    const { quote, productIds } = await quoteAndImport([{ index: 3, provider: 'KPL' }, { index: 4, provider: 'KPL' }]);
     expect(productIds).toHaveLength(2);
+    expect(quote.rows[0]).toMatchObject({ quoteCategory: 'RECOVERED', weightRecoveryLabel: '적용무게 자동복구: 307g', listingPriceLabel: '$23.40' });
+    expect(quote.rows[1]).toMatchObject({ quoteStatus: 'WEIGHT_INVALID', quoteCategory: 'REVIEW', reasonLabel: '계산 가능한 무게가 없음' });
+
     //   Phase 2.1: 플래그 off는 release guard가 무게 검사보다 먼저 차단
-    for (const [enabled, code] of [['true', 'CHARGEABLE_WEIGHT_INVALID'], ['false', 'SHIPPING_PRICING_DISABLED']]) {
-      setEnv({ AUTO_LISTING_SHIPPING_PRICING_ENABLED: enabled });
-      for (const id of productIds) {
-        await expect(createListing(id, 'ebay')).rejects.toMatchObject({ code });
-      }
-    }
+    setEnv({ AUTO_LISTING_SHIPPING_PRICING_ENABLED: 'false' });
+    for (const id of productIds) await expect(createListing(id, 'ebay')).rejects.toMatchObject({ code: 'SHIPPING_PRICING_DISABLED' });
     expect(addItemBodies).toHaveLength(0);
+
+    setEnv({ AUTO_LISTING_SHIPPING_PRICING_ENABLED: 'true' });
+    await expect(createListing(productIds[1], 'ebay')).rejects.toMatchObject({ code: 'CHARGEABLE_WEIGHT_INVALID' });
+    await createListing(productIds[0], 'ebay');
+    expect(addItemBodies.map(startPriceOf)).toEqual(['23.40']);   // $10.20 + $13.20 (307g KPL)
   });
 
   it('24. 일괄등록: 견적 없는 상품만 실패, 나머지 등록 계속', async () => {
@@ -691,10 +711,11 @@ describe('22. 실제 제공 CSV 첫·세 번째 상품', () => {
     expect(addItemBodies.map(startPriceOf)).toEqual(['38.60', '79.26']);
     expect(addItemBodies[0]).toContain(`<PictureURL>${R2}/TOYBOX-43037/main-1.jpg</PictureURL>`);
     const preview = buildImportPreview(store.rowsOf(schema.csvUploads)[0].parsedRows);
-    expect(preview.rows.filter(r => r.defaultSelected).map(r => r.index)).toEqual([0, 1, 2, 5]);
+    //   Phase 2.2: 적용무게 #REF!/빈칸 행(3, 4)은 실측·부피무게로 복구 가능 → 기본 선택 (기존: [0, 1, 2, 5])
+    expect(preview.rows.filter(r => r.defaultSelected).map(r => r.index)).toEqual([0, 1, 2, 3, 4, 5]);
     expect(preview.rows[0]).toMatchObject({ priceLabel: '$25.40', weightLabel: '307g', shippingProvider: 'KPL' });
     expect(preview.rows[2]).toMatchObject({ priceLabel: '$60.10', weightLabel: '1,023g' });
-    expect(preview.rows[3]).toMatchObject({ quoteStatus: 'WEIGHT_INVALID' });
+    expect(preview.rows[3]).toMatchObject({ quoteStatus: 'NONE', weightLabel: '307g', weightRecoveryLabel: '적용무게 자동복구: 307g' });
     expect(rows[0].sourceColumns!['R2 이미지']).toBe(`${R2}/TOYBOX-43037/main-1.jpg`);
   });
 

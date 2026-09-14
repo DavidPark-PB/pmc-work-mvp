@@ -8,6 +8,7 @@
  * eBay Shipping Policy 구매자 배송비(buyerShippingUsd, 예 $7.90)는 차감도 가산도 하지 않는다.
  */
 import { SHIPPING_DESTINATION_COUNTRY, isShippingProvider, type ShippingPricingConfig, type ShippingProvider } from '../lib/shipping-config.js';
+import { resolveChargeableWeight, type WeightRecoverySource } from '../lib/shipping-quote-status.js';
 
 const MAX_PRICE_USD = 100_000;
 
@@ -53,11 +54,15 @@ export interface ShippingQuoteOk {
   shippingKrw: number;
   rateVersionId: number | string;
   rateEffectiveFrom: string | null;
+  /** 일시적 오류 후 자동 재시도 횟수 (0이면 생략) */
+  retries?: number;
 }
 
 export interface ShippingQuoteBlocked {
   ok: false;
   blockedReason: string;
+  retries?: number;
+  httpStatus?: number;
 }
 
 export type ShippingQuoteOutcome = ShippingQuoteOk | ShippingQuoteBlocked;
@@ -79,6 +84,12 @@ export interface ShippingQuoteSnapshot {
   rateVersionId: number | string | null;
   rateEffectiveFrom: string | null;
   blockedReason: string | null;
+  /** 자동 재시도 횟수 */
+  retries?: number;
+  /** 적용무게 자동 복구 (원본 CSV 적용무게는 그대로 두고 snapshot에만 기록) */
+  originalChargeableWeightG?: number | null;
+  recoveredChargeableWeightG?: number | null;
+  recoverySource?: WeightRecoverySource | null;
 }
 
 export function buildShippingQuoteSnapshot(input: {
@@ -90,6 +101,7 @@ export function buildShippingQuoteSnapshot(input: {
   buyerShippingUsd: number | null;
   outcome: ShippingQuoteOutcome;
   now?: Date;
+  recovery?: { originalChargeableWeightG: number | null; recoveredChargeableWeightG: number; recoverySource: WeightRecoverySource };
 }): ShippingQuoteSnapshot {
   const base = {
     provider: input.provider,
@@ -100,6 +112,8 @@ export function buildShippingQuoteSnapshot(input: {
     csvSalePriceUsd: input.csvSalePriceUsd,
     buyerShippingUsd: input.buyerShippingUsd,
     calculatedAt: (input.now ?? new Date()).toISOString(),
+    ...(input.outcome.retries ? { retries: input.outcome.retries } : {}),
+    ...(input.recovery ? input.recovery : {}),
   };
   const blocked = (reason: string, extra: Partial<ShippingQuoteSnapshot> = {}): ShippingQuoteSnapshot => ({
     ...base,
@@ -275,8 +289,9 @@ export function evaluateCsvListingPrice(
   //   Release guard: 배송비 반영 기능이 꺼져 있으면 CSV가만으로는 절대 등록하지 않는다.
   if (!config.enabled) return blockedResult('SHIPPING_PRICING_DISABLED', baseInfo);
 
-  const chargeableWeightG = csv.chargeableWeightG;
-  if (!(typeof chargeableWeightG === 'number' && Number.isFinite(chargeableWeightG) && chargeableWeightG > 0)) {
+  //   적용무게가 없거나 깨졌으면 실측/부피무게로 복구한 값 (견적 snapshot도 같은 규칙으로 계산됨)
+  const chargeableWeightG = resolveChargeableWeight(csv).weightG;
+  if (chargeableWeightG === null) {
     return blockedResult('CHARGEABLE_WEIGHT_INVALID', baseInfo);
   }
 

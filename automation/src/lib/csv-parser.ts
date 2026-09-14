@@ -6,6 +6,7 @@
  */
 import fs from 'fs';
 import type { ShippingQuoteSnapshot, SalePriceOverrideHistoryEntry } from '../services/shipping-pricing.js';
+import { describeQuoteReason, normalizeQuoteReason, resolveChargeableWeight } from './shipping-quote-status.js';
 
 export type PriceCurrency = 'USD' | 'KRW';
 
@@ -57,6 +58,8 @@ export interface CsvRow {
   // 검수 화면에서 지정 (Phase 2)
   selectedShippingProvider?: 'KPL' | 'eGS';
   shippingQuote?: ShippingQuoteSnapshot | null;
+  /** 선택 배송사 실패 시 다른 배송사 견적 (자동 적용하지 않음) */
+  shippingQuoteAlternative?: ShippingQuoteSnapshot | null;
   salePriceOverrideUsd?: number | null;
   salePriceOverrideHistory?: SalePriceOverrideHistoryEntry[];
 }
@@ -727,7 +730,13 @@ export function validateCsvRow(row: CsvRow, mapping: Record<string, number>): Ro
     issues.push({ code: 'sale_price_invalid', level: 'error', message: '판매가(USD) 없음 또는 잘못된 값' });
   }
   if (has('chargeableWeightG') && !positive(row.chargeableWeightG)) {
-    issues.push({ code: 'chargeable_weight_invalid', level: 'error', message: '적용무게(g) 없음 또는 잘못된 값' });
+    //   실측/부피무게가 있으면 복구 가능 → 경고만 (기본 선택 유지), 둘 다 없으면 오류
+    const recovered = resolveChargeableWeight(row);
+    if (recovered.weightG !== null) {
+      issues.push({ code: 'chargeable_weight_recovered', level: 'warning', message: `적용무게 자동복구: ${formatWeightG(recovered.weightG)}` });
+    } else {
+      issues.push({ code: 'chargeable_weight_invalid', level: 'error', message: '적용무게(g) 없음 또는 잘못된 값 · 실측/부피무게도 없음' });
+    }
   }
   if (has('image') && !isHttpUrl(primaryImage(row.image))) {
     issues.push({ code: 'image_missing', level: 'warning', message: '이미지 URL 없음' });
@@ -915,6 +924,19 @@ export function buildImportRawData(
   return rawData;
 }
 
+export type QuoteCategory = 'OK' | 'RECOVERED' | 'ALTERNATIVE' | 'REVIEW' | 'NONE';
+
+export interface RowAlternativeView {
+  provider: 'KPL' | 'eGS';
+  /** "eGS 20kg 구간 가능 · 배송비 418,600원" */
+  label: string;
+  shippingLabel: string;
+  listingPriceLabel: string;
+  buyerTotalLabel: string;
+  /** eGS 대체는 브랜드 상품 확인 필요 */
+  warning: string;
+}
+
 export interface ImportPreviewRow {
   index: number;
   code: string;
@@ -931,43 +953,136 @@ export interface ImportPreviewRow {
   shippingProvider: 'KPL' | 'eGS' | null;
   canQuote: boolean;
   quoteStatus: 'OK' | 'BLOCKED' | 'NONE' | 'WEIGHT_INVALID';
+  /** 상단 요약 분류: 정상 / 자동복구 / 대체 가능 / 확인 필요 / 미계산 */
+  quoteCategory: QuoteCategory;
   shippingLabel: string;
   listingPriceLabel: string;
   /** 표시 전용: eBay 등록가 + 배송정책 구매자 배송비 (예 $38.60 + $7.90 = $46.50) */
   buyerTotalLabel: string;
+  /** 한 줄 요약 (정상: 서비스·구간 / 실패: 원인) */
   quoteMessage: string;
+  reasonCode: string | null;
+  /** "원인: 배송비 서버 응답 지연 · 자동 재시도 실패" 의 원인 문구 */
+  reasonLabel: string;
+  /** "3회 자동 재시도 완료" */
+  retryNote: string;
+  /** "적용무게 자동복구: 1,023g" */
+  weightRecoveryLabel: string;
+  alternative: RowAlternativeView | null;
+  /** 대체 배송사도 실패한 경우 최종 사유 */
+  alternativeFailureLabel: string;
+  /** title tooltip (여러 줄) */
+  quoteTitle: string;
+}
+
+type RowShippingView = Pick<ImportPreviewRow,
+  'shippingProvider' | 'canQuote' | 'quoteStatus' | 'quoteCategory' | 'shippingLabel' | 'listingPriceLabel' | 'buyerTotalLabel'
+  | 'quoteMessage' | 'reasonCode' | 'reasonLabel' | 'retryNote' | 'weightRecoveryLabel' | 'alternative' | 'alternativeFailureLabel' | 'quoteTitle'>;
+
+function buyerTotal(snapshot: ShippingQuoteSnapshot): string {
+  return typeof snapshot.buyerShippingUsd === 'number' && typeof snapshot.listingPriceUsd === 'number'
+    ? formatUsd((Math.round(snapshot.listingPriceUsd * 100) + Math.round(snapshot.buyerShippingUsd * 100)) / 100)
+    : '';
 }
 
 /** 검수 화면 배송 칸 상태 (snapshot은 선택 배송사·적용무게와 일치할 때만 표시) */
-export function describeRowShipping(row: CsvRow): Pick<ImportPreviewRow, 'shippingProvider' | 'canQuote' | 'quoteStatus' | 'shippingLabel' | 'listingPriceLabel' | 'buyerTotalLabel' | 'quoteMessage'> {
-  if (row.priceCurrency !== 'USD') {
-    return { shippingProvider: null, canQuote: false, quoteStatus: 'NONE', shippingLabel: '—', listingPriceLabel: '—', buyerTotalLabel: '', quoteMessage: '' };
-  }
+export function describeRowShipping(row: CsvRow): RowShippingView {
+  const empty: RowShippingView = {
+    shippingProvider: null, canQuote: false, quoteStatus: 'NONE', quoteCategory: 'NONE', shippingLabel: '—', listingPriceLabel: '—', buyerTotalLabel: '',
+    quoteMessage: '', reasonCode: null, reasonLabel: '', retryNote: '', weightRecoveryLabel: '', alternative: null, alternativeFailureLabel: '', quoteTitle: '',
+  };
+  if (row.priceCurrency !== 'USD') return empty;
+
   const provider = row.selectedShippingProvider ?? 'KPL';
-  const weightOk = typeof row.chargeableWeightG === 'number' && row.chargeableWeightG > 0;
+  const weight = resolveChargeableWeight(row);
   const priceOk = typeof row.salePriceUsd === 'number' && row.salePriceUsd > 0;
-  if (!weightOk) {
-    return { shippingProvider: provider, canQuote: false, quoteStatus: 'WEIGHT_INVALID', shippingLabel: '차단', listingPriceLabel: '차단', buyerTotalLabel: '', quoteMessage: '적용무게(g) 없음 — 등록 불가' };
+  const weightRecoveryLabel = weight.recovered && weight.weightG !== null ? `적용무게 자동복구: ${formatWeightG(weight.weightG)}` : '';
+  const base = { ...empty, shippingProvider: provider, canQuote: priceOk && weight.weightG !== null, weightRecoveryLabel };
+
+  const failed = (reasonCode: string, extra: Partial<RowShippingView> = {}): RowShippingView => {
+    const reasonLabel = describeQuoteReason(reasonCode);
+    const view: RowShippingView = {
+      ...base, quoteStatus: 'BLOCKED', quoteCategory: 'REVIEW', shippingLabel: '계산 실패', listingPriceLabel: '—',
+      reasonCode: normalizeQuoteReason(reasonCode), reasonLabel, quoteMessage: `원인: ${reasonLabel}`, ...extra,
+    };
+    view.quoteTitle = [
+      '예상 국제배송비: 계산 실패',
+      `원인: ${view.reasonLabel}`,
+      view.retryNote ? `처리: ${view.retryNote}` : '',
+      view.alternative ? `대체: ${view.alternative.label}${view.alternative.warning ? ' (' + view.alternative.warning + ')' : ''}` : '',
+      view.alternativeFailureLabel ? `대체: ${view.alternativeFailureLabel}` : '',
+      view.weightRecoveryLabel,
+    ].filter(Boolean).join('\n');
+    return view;
+  };
+
+  if (weight.weightG === null) {
+    return failed('INVALID_WEIGHT', { quoteStatus: 'WEIGHT_INVALID', canQuote: false });
   }
   const snapshot = row.shippingQuote;
-  const current = snapshot && snapshot.provider === provider && snapshot.chargeableWeightG === row.chargeableWeightG ? snapshot : null;
+  const current = snapshot && snapshot.provider === provider && snapshot.chargeableWeightG === weight.weightG ? snapshot : null;
   if (!current) {
-    return { shippingProvider: provider, canQuote: priceOk, quoteStatus: 'NONE', shippingLabel: '미계산', listingPriceLabel: '—', buyerTotalLabel: '', quoteMessage: '배송비 계산 필요' };
+    return { ...base, shippingLabel: '미계산', quoteMessage: '배송비 계산 필요', quoteTitle: weightRecoveryLabel };
   }
+
+  const retryNote = current.retries ? `${current.retries}회 자동 재시도 완료` : '';
   if (current.status !== 'OK' || current.shippingUsd === null || current.listingPriceUsd === null) {
-    return { shippingProvider: provider, canQuote: priceOk, quoteStatus: 'BLOCKED', shippingLabel: '차단', listingPriceLabel: '차단', buyerTotalLabel: '', quoteMessage: current.blockedReason || '견적 실패' };
+    const alt = row.shippingQuoteAlternative;
+    const altCurrent = alt && alt.provider !== provider && alt.chargeableWeightG === weight.weightG ? alt : null;
+    if (altCurrent && altCurrent.status === 'OK' && altCurrent.shippingUsd !== null && altCurrent.listingPriceUsd !== null) {
+      return failed(current.blockedReason || 'QUOTE_REQUEST_FAILED', {
+        retryNote,
+        quoteCategory: 'ALTERNATIVE',
+        alternative: {
+          provider: altCurrent.provider,
+          label: `${altCurrent.provider} ${altCurrent.bracketWeightKg}kg 구간 가능 · 배송비 ${(altCurrent.shippingKrw ?? 0).toLocaleString('ko-KR')}원`,
+          shippingLabel: formatUsd(altCurrent.shippingUsd),
+          listingPriceLabel: formatUsd(altCurrent.listingPriceUsd),
+          buyerTotalLabel: buyerTotal(altCurrent),
+          warning: altCurrent.provider === 'eGS' ? 'eGS는 브랜드 상품에 사용하지 않습니다' : '',
+        },
+      });
+    }
+    const alternativeFailureLabel = altCurrent
+      ? `${altCurrent.provider}도 불가 · ${describeQuoteReason(altCurrent.blockedReason).replace(/^선택 배송사/, altCurrent.provider)}`
+      : '';
+    return failed(current.blockedReason || 'QUOTE_REQUEST_FAILED', { retryNote, alternativeFailureLabel });
   }
+
+  const okMessage = `${current.serviceCode} · ${current.bracketWeightKg}kg 구간`;
   return {
-    shippingProvider: provider,
-    canQuote: priceOk,
+    ...base,
     quoteStatus: 'OK',
+    quoteCategory: weight.recovered ? 'RECOVERED' : 'OK',
     shippingLabel: formatUsd(current.shippingUsd),
     listingPriceLabel: formatUsd(current.listingPriceUsd),
-    buyerTotalLabel: typeof current.buyerShippingUsd === 'number'
-      ? formatUsd((Math.round(current.listingPriceUsd * 100) + Math.round(current.buyerShippingUsd * 100)) / 100)
-      : '',
-    quoteMessage: `${current.serviceCode} · ${current.bracketWeightKg}kg 구간`,
+    buyerTotalLabel: buyerTotal(current),
+    quoteMessage: okMessage,
+    retryNote: current.retries ? `${current.retries}회 재시도 후 정상` : '',
+    quoteTitle: [okMessage, weightRecoveryLabel, current.retries ? `${current.retries}회 재시도 후 정상` : ''].filter(Boolean).join('\n'),
   };
+}
+
+export interface QuoteSummary {
+  ok: number;
+  recovered: number;
+  alternative: number;
+  review: number;
+  pending: number;
+}
+
+/** 상단 요약: 정상 / 자동복구 / 대체 가능 / 확인 필요 (미계산은 pending) */
+export function summarizeQuoteCategories(views: { quoteCategory: QuoteCategory; shippingProvider: string | null }[]): QuoteSummary {
+  const summary: QuoteSummary = { ok: 0, recovered: 0, alternative: 0, review: 0, pending: 0 };
+  for (const v of views) {
+    if (!v.shippingProvider) continue;
+    if (v.quoteCategory === 'OK') summary.ok++;
+    else if (v.quoteCategory === 'RECOVERED') summary.recovered++;
+    else if (v.quoteCategory === 'ALTERNATIVE') summary.alternative++;
+    else if (v.quoteCategory === 'REVIEW') summary.review++;
+    else summary.pending++;
+  }
+  return summary;
 }
 
 export function formatUsd(value: number): string {
@@ -995,7 +1110,7 @@ export function buildImportPreview(rows: CsvRow[]): {
     if (typeof priceValue === 'number' && priceValue > 0) {
       priceLabel = row.priceCurrency === 'USD' ? formatUsd(priceValue) : '₩' + priceValue.toLocaleString('ko-KR');
     }
-    const weightValue = row.chargeableWeightG ?? row.weight;
+    const weightValue = resolveChargeableWeight(row).weightG ?? row.weight;
     return {
       index,
       code: row.sourceProductCode || '',

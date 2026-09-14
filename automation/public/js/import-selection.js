@@ -89,3 +89,55 @@ export function buildQuoteRequest(uploadId, selection, providers) {
 export function formatSelectionSummary(selection) {
   return `선택 ${selection.count().toLocaleString('en-US')} / 전체 ${selection.total().toLocaleString('en-US')}개`;
 }
+
+// ── 배송비 계산 결과 요약 · 진행상태 (Phase 2.2) ─────────────
+
+/** 상단 요약 "정상 680개 · 자동복구 8개 · 대체 가능 3개 · 확인 필요 2개" */
+export function formatQuoteSummary(summary) {
+  const n = (v) => Number(v || 0).toLocaleString('en-US');
+  return `정상 ${n(summary.ok)}개 · 자동복구 ${n(summary.recovered)}개 · 대체 가능 ${n(summary.alternative)}개 · 확인 필요 ${n(summary.review)}개`;
+}
+
+/** 행 분류 목록 → 요약 (서버 summarizeQuoteCategories와 같은 규칙) */
+export function countQuoteCategories(categories) {
+  const summary = { ok: 0, recovered: 0, alternative: 0, review: 0, pending: 0 };
+  categories.forEach(c => {
+    if (c === 'OK') summary.ok++;
+    else if (c === 'RECOVERED') summary.recovered++;
+    else if (c === 'ALTERNATIVE') summary.alternative++;
+    else if (c === 'REVIEW') summary.review++;
+    else summary.pending++;
+  });
+  return summary;
+}
+
+/** 진행상태 { main: "배송비 계산 중 18 / 56", detail: "정상 15 · 재시도 2 · 실패 1" } */
+export function formatQuoteProgress(progress) {
+  const p = progress || {};
+  const n = (v) => Number(v || 0).toLocaleString('en-US');
+  const main = p.phase === 'alternative'
+    ? `대체 배송사 계산 중 ${n(p.done)} / ${n(p.total)}`
+    : `배송비 계산 중 ${n(p.done)} / ${n(p.total)}`;
+  const detail = `정상 ${n(p.ok)} · 재시도 ${n(p.retried)} · 실패 ${n(p.failed)}` + (p.reused ? ` · 기존 결과 재사용 ${n(p.reused)}` : '');
+  return { main, detail };
+}
+
+/** 계산 버튼 연타 방지 — 실행 중이면 새 실행을 무시(null 반환) */
+export function createSingleFlight() {
+  let running = null;
+  return {
+    isRunning: () => running !== null,
+    run(fn) {
+      if (running) return null;
+      running = Promise.resolve().then(fn).finally(() => { running = null; });
+      return running;
+    },
+  };
+}
+
+/** "실패 항목 자동 재계산" 대상 — 선택 배송사 견적이 실패한 행 (확인 필요 / 대체 가능) */
+export function failedQuoteSelections(rowStates, providers) {
+  return rowStates
+    .filter(r => (r.quoteCategory === 'REVIEW' || r.quoteCategory === 'ALTERNATIVE') && providers.has(r.index))
+    .map(r => ({ index: r.index, provider: providers.get(r.index) }));
+}

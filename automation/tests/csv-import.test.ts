@@ -163,11 +163,14 @@ describe('4-8. 숫자·통화·무게 파싱', () => {
     expect(rows[0].originalImageUrl).toBe('https://toybox.kr/shopimages/toybox119/0011220000822.jpg');
   });
 
-  it('데이터 오류 행(#REF! 적용무게)은 error로 표시한다', () => {
+  it('#REF! 적용무게는 실측/부피무게로 복구 가능하면 warning, 복구 불가면 error (원본 적용무게는 null 유지)', () => {
     const { rows } = parseFixed(FULL_CSV);
     expect(rows[0].issues).toEqual([]);
     expect(rows[2].chargeableWeightG).toBeNull();
-    expect(rows[2].issues!.map(i => i.code)).toContain('chargeable_weight_invalid');
+    //   Phase 2.2: 실측 300g · 부피 307g → 적용무게 자동복구 307g (기존: error)
+    expect(rows[2].issues).toEqual([{ code: 'chargeable_weight_recovered', level: 'warning', message: '적용무게 자동복구: 307g' }]);
+    const broken = parseFixed(FULL_CSV.replace(',300,16,12,8,307,#REF!,', ',,16,12,8,,#REF!,')).rows[2];
+    expect(broken.issues!.map(i => [i.code, i.level])).toContainEqual(['chargeable_weight_invalid', 'error']);
     expect(rows[3].issues!.map(i => i.code)).toEqual(expect.arrayContaining(['image_missing', 'dimensions_missing']));
     expect(rows[3].issues!.every(i => i.level === 'warning')).toBe(true);
   });
@@ -220,9 +223,11 @@ describe('10-12. 상품 선택', () => {
   it('정상 상품은 기본 선택, 오류 상품은 제외한다', () => {
     const { rows } = parseFixed(FULL_CSV);
     const preview = buildImportPreview(rows);
-    expect(defaultSelectedIndices(preview.rows)).toEqual([0, 1, 3]);
-    expect(preview.defaultSelectedCount).toBe(3);
-    expect(preview.errorRowCount).toBe(1);
+    //   Phase 2.2: #REF! 행(2)은 무게 복구 가능 → 기본 선택 (기존: [0, 1, 3])
+    expect(defaultSelectedIndices(preview.rows)).toEqual([0, 1, 2, 3]);
+    expect(preview.defaultSelectedCount).toBe(4);
+    expect(preview.errorRowCount).toBe(0);
+    expect(preview.rows[2]).toMatchObject({ weightLabel: '307g', weightRecoveryLabel: '적용무게 자동복구: 307g' });
   });
 
   it('개별 선택/해제', () => {
@@ -292,7 +297,7 @@ describe('13 + 화면. 검수 화면 렌더링', () => {
     expect(html).not.toContain('가격 (원)');
     expect(html).toContain('전체 선택');
     expect(html).toContain('전체 해제');
-    expect(html).toContain('선택 3 / 전체 4개');
+    expect(html).toContain('선택 4 / 전체 4개');
     expect(html.match(/class="import-row-check"/g)).toHaveLength(4);
     expect(html.match(/class="thumb import-thumb"/g)).toHaveLength(3);
     expect(html).toContain(`src="${R2}/TOYBOX-43037/main-1.jpg"`);
@@ -304,9 +309,11 @@ describe('13 + 화면. 검수 화면 렌더링', () => {
     expect(html).toContain('$25.40');
     expect(html).toContain('1,023g');
 
-    // 오류 행은 체크 해제 상태
-    const errorRowCheckbox = html.match(/<input type="checkbox" class="import-row-check" data-index="2"[^>]*>/)![0];
-    expect(errorRowCheckbox).not.toContain('checked');
+    // 무게 복구 행은 체크 상태 + 복구 표시 / 복구 불가 오류 행은 체크 해제
+    const recoveredRowCheckbox = html.match(/<input type="checkbox" class="import-row-check" data-index="2"[^>]*>/)![0];
+    expect(recoveredRowCheckbox).toContain('checked');
+    const broken = renderImport(FULL_CSV.replace(',300,16,12,8,307,#REF!,', ',,16,12,8,,#REF!,')).html;
+    expect(broken.match(/<input type="checkbox" class="import-row-check" data-index="2"[^>]*>/)![0]).not.toContain('checked');
     const okRowCheckbox = html.match(/<input type="checkbox" class="import-row-check" data-index="0"[^>]*>/)![0];
     expect(okRowCheckbox).toContain('checked');
   });
@@ -314,7 +321,7 @@ describe('13 + 화면. 검수 화면 렌더링', () => {
   it('이미지가 없으면 placeholder를 표시한다', () => {
     const { html, preview } = renderImport(FULL_CSV);
     expect(preview.rows[3].image).toBe('');
-    const row3 = html.match(/<tr class="import-row[^"]*" data-index="3">[\s\S]*?<\/tr>/)![0];
+    const row3 = html.match(/<tr class="import-row[^"]*" data-index="3"[^>]*>[\s\S]*?<\/tr>/)![0];
     expect(row3).toContain('thumb-placeholder');
     expect(row3).not.toContain('<img');
     // 깨진 이미지 대비 fallback

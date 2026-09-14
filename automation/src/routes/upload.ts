@@ -9,9 +9,20 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { pipeline } from 'stream/promises';
-import { parseCsvRawFields, detectMappingByKeyword, detectFixedHeaderMapping, validateColumnMapping, applyMapping, describeRowShipping } from '../lib/csv-parser.js';
+import { parseCsvRawFields, detectMappingByKeyword, detectFixedHeaderMapping, validateColumnMapping, applyMapping, describeRowShipping, summarizeQuoteCategories, type CsvRow } from '../lib/csv-parser.js';
 import { getShippingPricingConfig } from '../lib/shipping-config.js';
-import { parseQuoteSelections, quoteUploadRows } from '../services/shipping-quote-service.js';
+import {
+  alternativeReadyIndices,
+  applyShippingAlternatives,
+  findRunningQuoteJob,
+  getQuoteJob,
+  mergeRowsByIndex,
+  parseQuoteSelections,
+  quoteUploadRows,
+  startQuoteJob,
+  type QuoteRunProgress,
+  type ShippingQuoteSelection,
+} from '../services/shipping-quote-service.js';
 import { detectMappingWithAI } from '../lib/csv-mapping-ai.js';
 import { db } from '../db/index.js';
 import { csvUploads } from '../db/schema.js';
@@ -179,55 +190,140 @@ export async function uploadRoutes(app: FastifyInstance) {
     };
   });
 
-  // POST /api/upload/shipping-quotes — 선택 상품 배송사 저장 + 국제배송비 견적 (서버 → main service)
+  // POST /api/upload/shipping-quotes — 선택 상품 배송사 저장 + 국제배송비 견적 (서버 → main service), 완료까지 대기
   app.post('/upload/shipping-quotes', async (request, reply) => {
     const user = getUser(request);
     if (!user?.isAdmin) {
       return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
     }
-
-    const { uploadId, selections } = request.body as { uploadId?: string; selections?: unknown };
-    if (!uploadId) {
-      return reply.status(400).send({ error: 'uploadId가 필요합니다' });
+    const prepared = await prepareQuoteRun(request.body);
+    if ('error' in prepared) return reply.status(prepared.status).send({ error: prepared.error });
+    if (findRunningQuoteJob(prepared.uploadId)) {
+      return reply.status(409).send({ error: '이 업로드의 배송비 계산이 이미 진행 중입니다.' });
     }
+    return runUploadQuote(user, prepared.uploadId, prepared.rows, prepared.selections);
+  });
 
-    const upload = await db.query.csvUploads.findFirst({
-      where: eq(csvUploads.uploadId, uploadId),
-    });
+  // POST /api/upload/shipping-quotes/jobs — 배송비 계산 시작 (진행상태 폴링용). 같은 upload 실행 중이면 그 job 반환
+  app.post('/upload/shipping-quotes/jobs', async (request, reply) => {
+    const user = getUser(request);
+    if (!user?.isAdmin) {
+      return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
+    }
+    const prepared = await prepareQuoteRun(request.body);
+    if ('error' in prepared) return reply.status(prepared.status).send({ error: prepared.error });
+    const { job, alreadyRunning } = startQuoteJob(prepared.uploadId, onProgress =>
+      runUploadQuote(user, prepared.uploadId, prepared.rows, prepared.selections, onProgress));
+    return { jobId: job.id, alreadyRunning, status: job.status, progress: job.progress };
+  });
+
+  // GET /api/upload/shipping-quotes/jobs/:jobId — 진행상태 / 완료 결과
+  app.get('/upload/shipping-quotes/jobs/:jobId', async (request, reply) => {
+    const user = getUser(request);
+    if (!user?.isAdmin) {
+      return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
+    }
+    const job = getQuoteJob((request.params as { jobId: string }).jobId);
+    if (!job) return reply.status(404).send({ error: '배송비 계산 작업을 찾을 수 없습니다.' });
+    return { jobId: job.id, uploadId: job.uploadId, status: job.status, progress: job.progress, result: job.result ?? null, error: job.error ?? null };
+  });
+
+  // POST /api/upload/shipping-alternatives/apply — 대체 배송사 적용 (개별 indices 또는 all: 대체 가능 전체)
+  app.post('/upload/shipping-alternatives/apply', async (request, reply) => {
+    const user = getUser(request);
+    if (!user?.isAdmin) {
+      return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
+    }
+    const { uploadId, indices, all } = (request.body ?? {}) as { uploadId?: string; indices?: unknown; all?: boolean };
+    if (!uploadId) return reply.status(400).send({ error: 'uploadId가 필요합니다' });
+    if (findRunningQuoteJob(uploadId)) {
+      return reply.status(409).send({ error: '배송비 계산이 끝난 뒤 대체 배송사를 적용하세요.' });
+    }
+    const upload = await db.query.csvUploads.findFirst({ where: eq(csvUploads.uploadId, uploadId) });
     const rows = upload?.parsedRows;
-    if (!rows || rows.length === 0) {
-      return reply.status(404).send({ error: '업로드 데이터를 찾을 수 없습니다' });
+    if (!rows || rows.length === 0) return reply.status(404).send({ error: '업로드 데이터를 찾을 수 없습니다' });
+
+    let targets: number[];
+    if (all === true) {
+      targets = alternativeReadyIndices(rows);
+    } else if (Array.isArray(indices) && indices.length > 0 && indices.every(i => Number.isInteger(i) && i >= 0 && i < rows.length)) {
+      targets = indices as number[];
+    } else {
+      return reply.status(400).send({ error: '적용할 상품을 선택하세요.' });
     }
 
-    let parsedSelections;
-    try {
-      parsedSelections = parseQuoteSelections(selections, rows.length);
-    } catch (e) {
-      return reply.status(400).send({ error: (e as Error).message });
+    const result = applyShippingAlternatives(rows, targets);
+    if (result.applied.length > 0) {
+      await db.update(csvUploads).set({ parsedRows: result.rows }).where(eq(csvUploads.uploadId, uploadId));
     }
-
-    const result = await quoteUploadRows(rows, parsedSelections, { config: getShippingPricingConfig() });
-
-    await db.update(csvUploads)
-      .set({ parsedRows: result.rows })
-      .where(eq(csvUploads.uploadId, uploadId));
-
-    const quoted = [...result.snapshots.values()];
-    logAction(user, 'import.shipping-quotes', {
+    logAction(user, 'import.shipping-alternatives', {
       targetType: 'csv_upload',
       targetId: uploadId,
-      details: {
-        selected: parsedSelections.length,
-        uniqueRequests: result.uniqueRequests,
-        ok: quoted.filter(s => s.status === 'OK').length,
-        blocked: quoted.filter(s => s.status === 'BLOCKED').length,
-      },
+      details: { requested: targets.length, applied: result.applied.length, skipped: result.skipped.length },
     });
-
     return {
       uploadId,
-      uniqueRequests: result.uniqueRequests,
-      rows: parsedSelections.map(({ index }) => ({ index, ...describeRowShipping(result.rows[index]) })),
+      applied: result.applied,
+      skipped: result.skipped,
+      rows: result.applied.map(index => ({ index, ...describeRowShipping(result.rows[index]) })),
+      summary: summarizeQuoteCategories(result.rows.map(describeRowShipping)),
     };
   });
+}
+
+async function prepareQuoteRun(body: unknown): Promise<
+  { uploadId: string; rows: CsvRow[]; selections: ShippingQuoteSelection[] } | { status: number; error: string }
+> {
+  const { uploadId, selections } = (body ?? {}) as { uploadId?: string; selections?: unknown };
+  if (!uploadId) return { status: 400, error: 'uploadId가 필요합니다' };
+  const upload = await db.query.csvUploads.findFirst({ where: eq(csvUploads.uploadId, uploadId) });
+  const rows = upload?.parsedRows;
+  if (!rows || rows.length === 0) return { status: 404, error: '업로드 데이터를 찾을 수 없습니다' };
+  try {
+    return { uploadId, rows, selections: parseQuoteSelections(selections, rows.length) };
+  } catch (e) {
+    return { status: 400, error: (e as Error).message };
+  }
+}
+
+/** 견적 실행 → 최신 parsed_rows에 선택 행만 upsert (다른 행·이전 정상 결과 유지) */
+async function runUploadQuote(
+  user: Parameters<typeof logAction>[0],
+  uploadId: string,
+  rows: CsvRow[],
+  selections: ShippingQuoteSelection[],
+  onProgress?: (p: QuoteRunProgress) => void,
+) {
+  const result = await quoteUploadRows(rows, selections, { config: getShippingPricingConfig(), onProgress });
+  const indices = selections.map(s => s.index);
+
+  const latest = await db.query.csvUploads.findFirst({ where: eq(csvUploads.uploadId, uploadId) });
+  const merged = mergeRowsByIndex(latest?.parsedRows, result.rows, indices);
+  await db.update(csvUploads)
+    .set({ parsedRows: merged })
+    .where(eq(csvUploads.uploadId, uploadId));
+
+  const views = indices.map(index => ({ index, ...describeRowShipping(merged[index]) }));
+  const summary = summarizeQuoteCategories(merged.map(describeRowShipping));
+  logAction(user, 'import.shipping-quotes', {
+    targetType: 'csv_upload',
+    targetId: uploadId,
+    details: {
+      selected: selections.length,
+      uniqueRequests: result.uniqueRequests,
+      reused: result.progress.reused,
+      retried: result.progress.retried,
+      ok: views.filter(v => v.quoteStatus === 'OK').length,
+      blocked: views.filter(v => v.quoteStatus !== 'OK').length,
+      alternative: views.filter(v => v.quoteCategory === 'ALTERNATIVE').length,
+    },
+  });
+
+  return {
+    uploadId,
+    uniqueRequests: result.uniqueRequests,
+    progress: result.progress,
+    summary,
+    rows: views,
+  };
 }

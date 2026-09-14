@@ -9,6 +9,7 @@ import { getAllPricingSettings } from '../services/pricing.js';
 import { crawlDisplayCsv, resolveDisplayPrices } from '../services/listing-price.js';
 import { applySalePriceOverride } from '../services/shipping-pricing.js';
 import { getShippingPricingConfig, isShippingProvider } from '../lib/shipping-config.js';
+import { resolveChargeableWeight } from '../lib/shipping-quote-status.js';
 import { extractProductId, selectRowsForImport, buildImportRawData } from '../lib/csv-parser.js';
 import { getUser } from '../lib/user-session.js';
 import { translateProduct } from '../services/translate.js';
@@ -102,7 +103,8 @@ export async function crawlResultRoutes(app: FastifyInstance) {
           const requested = shippingProviders?.[String(index)];
           const provider = isShippingProvider(requested) ? requested : (parsedRow.selectedShippingProvider ?? 'KPL');
           const quote = parsedRow.shippingQuote;
-          const quoteMatches = !!quote && quote.provider === provider && quote.chargeableWeightG === parsedRow.chargeableWeightG;
+          //   적용무게가 복구된 행은 복구 무게로 견적되므로 같은 규칙으로 일치 판정
+          const quoteMatches = !!quote && quote.provider === provider && quote.chargeableWeightG === resolveChargeableWeight(parsedRow).weightG;
           row = { ...parsedRow, selectedShippingProvider: provider, shippingQuote: quoteMatches ? quote : null };
         }
         const externalId = extractProductId(row.url) || `name_${row.name.replace(/\s+/g, '_').slice(0, 50)}_${row.price}`;
