@@ -1,50 +1,138 @@
+<%
+  const shipping = it.shipping || { enabled: false, buyerShippingUsd: null, exchangeRateConfigured: false, quoteConfigured: false };
+  const showShipping = !!it.showShipping;
+  const buyerShippingLabel = shipping.buyerShippingUsd ? '$' + Number(shipping.buyerShippingUsd).toFixed(2) : '—';
+%>
 <div class="page-header">
-  <h1 class="page-title">데이터 미리보기</h1>
+  <h1 class="page-title">상품 검수 · 선택</h1>
   <span class="badge badge-unregistered"><i class="ti ti-database-off"></i> 미등록</span>
 </div>
 
 <div class="card">
-  <div class="section-header">
+  <div class="section-header import-toolbar">
     <h2><i class="ti ti-table"></i> 발견된 상품</h2>
-    <span class="text-muted">총 <strong><%= it.rowCount %></strong>개</span>
+    <div class="import-toolbar-actions">
+      <button type="button" class="btn btn-secondary btn-sm" id="select-all-btn"><i class="ti ti-checks"></i> 전체 선택</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="clear-all-btn"><i class="ti ti-square-off"></i> 전체 해제</button>
+      <span class="text-muted" id="selection-summary" data-testid="selection-count">선택 <%= it.defaultSelectedCount %> / 전체 <%= it.rowCount %>개</span>
+    </div>
   </div>
 
+  <% if (showShipping) { %>
+  <div class="import-shipping-bar" id="shipping-bar">
+    <label class="import-shipping-label" for="bulk-provider">선택 상품 배송사</label>
+    <select id="bulk-provider" class="import-select">
+      <option value="KPL" selected>KPL</option>
+      <option value="eGS">eGS</option>
+    </select>
+    <button type="button" class="btn btn-secondary btn-sm" id="bulk-provider-btn"><i class="ti ti-truck"></i> 적용</button>
+    <button type="button" class="btn btn-primary btn-sm" id="quote-btn"<%~ shipping.quoteConfigured ? '' : ' disabled' %>><i class="ti ti-calculator"></i> 선택 상품 국제배송비 계산</button>
+    <span class="text-muted import-shipping-meta">eBay US 기준 · KPL은 미국 서비스만 사용 · 배송정책 <strong><%= buyerShippingLabel %></strong>은 구매자 별도 청구 (등록가에서 빼거나 더하지 않음)</span>
+    <span class="import-egs-warning" id="egs-warning"><i class="ti ti-alert-triangle"></i> eGS는 브랜드 상품에 사용하지 않습니다.</span>
+  </div>
+  <% if (!shipping.enabled) { %>
+  <div class="import-notice import-notice-info" data-testid="release-guard-notice">
+    <i class="ti ti-lock"></i> <strong>배송비 계산 준비 중</strong> — 현재는 상품 검수와 가져오기만 가능합니다. 배송비 반영 전에는 eBay 등록이 차단됩니다. 아래 배송비·등록가는 미리보기입니다.
+  </div>
+  <% } %>
+  <% if (!shipping.quoteConfigured || !shipping.exchangeRateConfigured) { %>
+  <div class="import-notice import-notice-error">
+    <i class="ti ti-alert-circle"></i> 배송 견적 설정이 없습니다 (<%= !shipping.quoteConfigured ? 'main service 연결' : '' %><%= !shipping.quoteConfigured && !shipping.exchangeRateConfigured ? ', ' : '' %><%= !shipping.exchangeRateConfigured ? '배송비 환율' : '' %>). 견적이 차단되며 배송비 반영 등록도 차단됩니다.
+  </div>
+  <% } %>
+  <% } %>
+
+  <% if (it.errorRowCount > 0) { %>
+  <div class="import-notice import-notice-error">
+    <i class="ti ti-alert-circle"></i> 데이터 오류 <strong><%= it.errorRowCount %></strong>개 행은 기본 선택에서 제외되었습니다. 확인 후 필요하면 직접 선택하세요.
+  </div>
+  <% } %>
+
   <div style="overflow-x: auto;">
-    <table>
+    <table id="import-table">
       <thead>
         <tr>
-          <th>#</th>
+          <th style="width:36px">선택</th>
           <th>이미지</th>
+          <th>상품코드</th>
           <th>상품명</th>
-          <th class="text-right">가격 (원)</th>
-          <th>URL</th>
+          <th class="text-right"><%= showShipping ? 'CSV 판매가(USD)' : it.priceHeader %></th>
+          <th class="text-right">적용무게</th>
+          <% if (showShipping) { %>
+          <th>배송사</th>
+          <th class="text-right">예상 국제배송비</th>
+          <th class="text-right">eBay 등록 상품가격</th>
+          <th class="text-right">배송정책 별도 청구</th>
+          <% } %>
+          <th>원본 링크</th>
+          <th>상태</th>
         </tr>
       </thead>
       <tbody>
-        <% it.rows.forEach((row, i) => { %>
-        <tr>
-          <td class="text-muted"><%= i + 1 %></td>
+        <% it.rows.forEach((row) => { %>
+        <tr class="import-row<%= row.errorCount > 0 ? ' import-row-error' : '' %>" data-index="<%= row.index %>">
+          <td>
+            <input type="checkbox" class="import-row-check" data-index="<%= row.index %>" aria-label="상품 선택 <%= row.index + 1 %>"<%~ row.defaultSelected ? ' checked' : '' %>>
+          </td>
           <td>
             <% if (row.image) { %>
-              <img src="<%= row.image %>" class="thumb" alt="" onerror="this.style.display='none'">
+              <img src="<%= row.image %>" class="thumb import-thumb" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+              <div class="thumb thumb-placeholder" style="display:none"><i class="ti ti-photo-off"></i></div>
             <% } else { %>
-              <div class="thumb" style="display:flex;align-items:center;justify-content:center;"><i class="ti ti-photo-off" style="font-size:14px;color:var(--text-muted);"></i></div>
+              <div class="thumb thumb-placeholder" style="display:flex"><i class="ti ti-photo-off"></i></div>
             <% } %>
           </td>
-          <td class="truncate"><%= row.name %></td>
-          <td class="text-right tabular-nums"><%= row.price.toLocaleString() %></td>
-          <td><a href="<%= row.url %>" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> 링크</a></td>
+          <td class="tabular-nums nowrap"><%= row.code || '—' %></td>
+          <td class="import-name"><span class="truncate" title="<%= row.name %>"><%= row.name %></span></td>
+          <td class="text-right tabular-nums nowrap"><%= row.priceLabel %></td>
+          <td class="text-right tabular-nums nowrap"><%= row.weightLabel %></td>
+          <% if (showShipping) { %>
+          <td class="nowrap">
+            <% if (row.shippingProvider) { %>
+            <select class="import-select row-provider" data-index="<%= row.index %>" aria-label="배송사 <%= row.index + 1 %>">
+              <option value="KPL"<%~ row.shippingProvider === 'KPL' ? ' selected' : '' %>>KPL</option>
+              <option value="eGS"<%~ row.shippingProvider === 'eGS' ? ' selected' : '' %>>eGS</option>
+            </select>
+            <% } else { %>—<% } %>
+          </td>
+          <td class="text-right tabular-nums nowrap cell-shipping" data-quote-status="<%= row.quoteStatus %>"><%= row.shippingLabel %></td>
+          <td class="text-right tabular-nums nowrap cell-listing"><strong><%= row.listingPriceLabel %></strong></td>
+          <td class="text-right tabular-nums nowrap text-muted"><%= row.shippingProvider ? buyerShippingLabel : '—' %><div class="import-quote-msg cell-buyer-total"><%= row.buyerTotalLabel ? '구매자 총 ' + row.buyerTotalLabel : '' %></div></td>
+          <% } %>
+          <td class="nowrap">
+            <% if (row.url) { %>
+              <a href="<%= row.url %>" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> 링크</a>
+            <% } else { %>
+              <span class="text-muted">—</span>
+            <% } %>
+          </td>
+          <td class="nowrap">
+            <% if (row.errorCount > 0) { %>
+              <span class="badge badge-error" title="<%= row.issues.map(i => i.message).join(', ') %>"><i class="ti ti-alert-circle"></i> 오류 <%= row.errorCount %></span>
+            <% } else if (row.warningCount > 0) { %>
+              <span class="badge badge-pending" title="<%= row.issues.map(i => i.message).join(', ') %>"><i class="ti ti-alert-triangle"></i> 경고 <%= row.warningCount %></span>
+            <% } else { %>
+              <span class="badge badge-success"><i class="ti ti-check"></i> 정상</span>
+            <% } %>
+            <% if (showShipping) { %>
+              <div class="import-quote-msg cell-quote-msg<%= row.quoteStatus === 'BLOCKED' || row.quoteStatus === 'WEIGHT_INVALID' ? ' is-blocked' : '' %>"><%= row.quoteMessage %></div>
+            <% } %>
+          </td>
         </tr>
         <% }) %>
       </tbody>
     </table>
   </div>
 
-
+  <% if (showShipping && !shipping.enabled) { %>
+  <div class="import-notice import-notice-info mt-24 import-release-guard">
+    <i class="ti ti-lock"></i> <strong>배송비 계산 준비 중</strong><br>현재는 상품 검수와 가져오기만 가능합니다.<br>배송비 반영 전에는 eBay 등록이 차단됩니다.
+  </div>
+  <% } %>
   <div class="flex justify-between align-center mt-24">
     <a href="/upload-csv" class="btn btn-secondary"><i class="ti ti-arrow-left"></i> 뒤로</a>
-    <button id="import-btn" class="btn btn-primary btn-lg" onclick="importData()">
-      <i class="ti ti-database-plus"></i> DB에 등록하기 (<%= it.rowCount %>개)
+    <button id="import-btn" class="btn btn-primary btn-lg"<%~ it.defaultSelectedCount === 0 ? ' disabled' : '' %>>
+      <i class="ti ti-database-plus"></i> 선택 상품 DB에 등록하기 (<span id="import-count"><%= it.defaultSelectedCount %></span>개)
     </button>
   </div>
 </div>
@@ -61,11 +149,139 @@
   </div>
 </div>
 
-<script>
+<style>
+.import-toolbar { flex-wrap: wrap; gap: 8px; }
+.import-toolbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.import-notice { padding: 10px 16px; border-radius: var(--radius); font-size: var(--text-sm); margin-bottom: 12px; }
+.import-notice-error { color: var(--red); background: rgba(220,38,38,0.08); }
+.import-notice-info { color: var(--text); background: rgba(37,99,235,0.07); }
+.import-name { max-width: 360px; }
+.import-row-error { background: rgba(220,38,38,0.04); }
+.thumb-placeholder { align-items: center; justify-content: center; }
+.thumb-placeholder i { font-size: 14px; color: var(--text-muted); }
+.import-shipping-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+.import-shipping-label { font-size: var(--text-sm); font-weight: 600; }
+.import-select { padding: 4px 8px; border-radius: var(--radius); border: 1px solid var(--border); font-size: var(--text-sm); }
+.import-shipping-meta { font-size: var(--text-xs); }
+.import-egs-warning { font-size: var(--text-xs); color: var(--yellow-text, #a16207); }
+.import-quote-msg { font-size: var(--text-xs); color: var(--text-muted); margin-top: 2px; max-width: 220px; white-space: normal; }
+.import-quote-msg.is-blocked { color: var(--red); }
+</style>
+
+<script type="module">
+import { createSelection, createProviderState, buildImportPayload, buildQuoteRequest, formatSelectionSummary } from '/js/import-selection.js';
+
+const uploadId = <%~ JSON.stringify(it.uploadId).replace(/</g, '\\u003c') %>;
+const showShipping = <%~ showShipping ? 'true' : 'false' %>;
+const checkboxes = Array.from(document.querySelectorAll('.import-row-check'));
+const indexOf = (el) => Number(el.dataset.index);
+const selection = createSelection(
+  checkboxes.map(indexOf),
+  checkboxes.filter(cb => cb.checked).map(indexOf),
+);
+const providerSelects = Array.from(document.querySelectorAll('.row-provider'));
+const providers = createProviderState(providerSelects.map(sel => ({ index: indexOf(sel), provider: sel.value })));
+const rowOf = (index) => document.querySelector('tr.import-row[data-index="' + index + '"]');
+
+const importBtn = document.getElementById('import-btn');
+
+function render() {
+  checkboxes.forEach(cb => { cb.checked = selection.isSelected(indexOf(cb)); });
+  document.getElementById('selection-summary').textContent = formatSelectionSummary(selection);
+  document.getElementById('import-count').textContent = selection.count().toLocaleString('en-US');
+  importBtn.disabled = selection.count() === 0;
+}
+
+function markStale(index) {
+  const tr = rowOf(index);
+  if (!tr) return;
+  const shippingCell = tr.querySelector('.cell-shipping');
+  if (shippingCell && shippingCell.dataset.quoteStatus !== 'WEIGHT_INVALID') {
+    shippingCell.textContent = '미계산';
+    shippingCell.dataset.quoteStatus = 'NONE';
+    tr.querySelector('.cell-listing').innerHTML = '<strong>—</strong>';
+    tr.querySelector('.cell-buyer-total').textContent = '';
+    const msg = tr.querySelector('.cell-quote-msg');
+    msg.textContent = '배송사 변경 — 배송비 다시 계산 필요';
+    msg.classList.remove('is-blocked');
+  }
+}
+
+function applyQuoteRow(r) {
+  const tr = rowOf(r.index);
+  if (!tr) return;
+  const shippingCell = tr.querySelector('.cell-shipping');
+  shippingCell.textContent = r.shippingLabel;
+  shippingCell.dataset.quoteStatus = r.quoteStatus;
+  const listing = document.createElement('strong');
+  listing.textContent = r.listingPriceLabel;
+  tr.querySelector('.cell-listing').replaceChildren(listing);
+  tr.querySelector('.cell-buyer-total').textContent = r.buyerTotalLabel ? '구매자 총 ' + r.buyerTotalLabel : '';
+  const msg = tr.querySelector('.cell-quote-msg');
+  msg.textContent = r.quoteMessage;
+  msg.classList.toggle('is-blocked', r.quoteStatus === 'BLOCKED' || r.quoteStatus === 'WEIGHT_INVALID');
+}
+
+document.getElementById('import-table').addEventListener('change', (e) => {
+  const cb = e.target.closest('.import-row-check');
+  if (cb) {
+    selection.set(indexOf(cb), cb.checked);
+    render();
+    return;
+  }
+  const sel = e.target.closest('.row-provider');
+  if (sel && providers.set(indexOf(sel), sel.value)) markStale(indexOf(sel));
+});
+document.getElementById('select-all-btn').addEventListener('click', () => { selection.selectAll(); render(); });
+document.getElementById('clear-all-btn').addEventListener('click', () => { selection.clearAll(); render(); });
+
+if (showShipping) {
+  document.getElementById('bulk-provider-btn').addEventListener('click', () => {
+    const provider = document.getElementById('bulk-provider').value;
+    providers.setMany(selection.selectedIndices(), provider).forEach(index => {
+      const sel = rowOf(index)?.querySelector('.row-provider');
+      if (sel) sel.value = provider;
+      markStale(index);
+    });
+  });
+
+  const quoteBtn = document.getElementById('quote-btn');
+  quoteBtn.addEventListener('click', async () => {
+    const body = buildQuoteRequest(uploadId, selection, providers);
+    if (body.selections.length === 0) {
+      if (typeof showToast === 'function') showToast('배송비를 계산할 상품을 선택하세요.', 'error');
+      return;
+    }
+    const original = quoteBtn.innerHTML;
+    quoteBtn.disabled = true;
+    quoteBtn.innerHTML = '<span class="spinner"></span> 계산 중...';
+    try {
+      const res = await fetch('/api/upload/shipping-quotes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '서버 오류 (HTTP ' + res.status + ')');
+      data.rows.forEach(applyQuoteRow);
+      const ok = data.rows.filter(r => r.quoteStatus === 'OK').length;
+      if (typeof showToast === 'function') showToast('배송비 계산 완료: 정상 ' + ok + ' / ' + data.rows.length + '개 (견적 요청 ' + data.uniqueRequests + '건)', ok === data.rows.length ? 'success' : 'error');
+    } catch (e) {
+      if (typeof showToast === 'function') showToast('배송비 계산 실패: ' + e.message, 'error');
+    } finally {
+      quoteBtn.disabled = false;
+      quoteBtn.innerHTML = original;
+    }
+  });
+}
+
+importBtn.addEventListener('click', importData);
+render();
+
 async function importData() {
-  const btn = document.getElementById('import-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> 등록 중...';
+  if (selection.count() === 0) return;
+  importBtn.disabled = true;
+  importBtn.innerHTML = '<span class="spinner"></span> 등록 중...';
 
   try {
     // 3분 타임아웃 (대용량 CSV 대응)
@@ -75,7 +291,7 @@ async function importData() {
     const res = await fetch('/api/import/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uploadId: '<%= it.uploadId %>' }),
+      body: JSON.stringify(buildImportPayload(uploadId, selection, showShipping ? providers : undefined)),
       signal: controller.signal,
     });
     clearTimeout(timeout);
@@ -94,13 +310,15 @@ async function importData() {
       '</div>';
 
     document.getElementById('import-result').classList.remove('hidden');
-    btn.innerHTML = '<i class="ti ti-circle-check"></i> 등록 완료';
+    importBtn.innerHTML = '<i class="ti ti-circle-check"></i> 등록 완료';
+    checkboxes.forEach(cb => { cb.disabled = true; });
+    providerSelects.forEach(sel => { sel.disabled = true; });
 
     if (typeof showToast === 'function') showToast((data.imported || 0) + '개 상품이 등록되었습니다.', 'success');
   } catch (e) {
-    var msg = e.name === 'AbortError' ? '시간 초과 — CSV 파일이 너무 크거나 서버에 문제가 있습니다.' : e.message;
-    btn.disabled = false;
-    btn.innerHTML = '<i class="ti ti-database-plus"></i> 다시 시도';
+    const msg = e.name === 'AbortError' ? '시간 초과 — CSV 파일이 너무 크거나 서버에 문제가 있습니다.' : e.message;
+    importBtn.disabled = false;
+    importBtn.innerHTML = '<i class="ti ti-database-plus"></i> 다시 시도 (<span id="import-count">' + selection.count() + '</span>개)';
     if (typeof showToast === 'function') showToast('등록 실패: ' + msg, 'error');
   }
 }

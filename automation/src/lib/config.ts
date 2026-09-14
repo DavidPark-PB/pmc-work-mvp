@@ -63,6 +63,15 @@ const envSchema = z.object({
   // Gemini (for product translation)
   GEMINI_API_KEY: z.string().optional(),
 
+  // Shipping-aware listing price (main service internal quote API) — 서버 전용, 브라우저 노출 금지
+  MAIN_SERVICE_URL: z.string().optional(),
+  SHIPPING_QUOTE_INTERNAL_TOKEN: z.string().optional(),
+  AUTO_LISTING_SHIPPING_PRICING_ENABLED: z.string().default('false'),
+  AUTO_LISTING_SHIPPING_EXCHANGE_RATE: z.string().optional(),
+  EBAY_POLICY_BUYER_SHIPPING_USD: z.string().default('7.90'),
+  AUTO_LISTING_EGS_SERVICE_CODE: z.string().optional(),
+  AUTO_LISTING_KPL_US_SERVICE_CODE: z.string().optional(),
+
   // GitHub (backup management via Actions)
   GITHUB_TOKEN: z.string().optional(),
   GITHUB_REPO: z.string().default('CCOREA-AUTO/ccorea-auto'),

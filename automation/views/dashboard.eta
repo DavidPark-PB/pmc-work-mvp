@@ -88,6 +88,12 @@
           <label class="platform-check-label"><input type="checkbox" value="alibaba"> <span class="pf-dot" style="background:#ff6a00"></span>Alibaba</label>
           <label class="platform-check-label"><input type="checkbox" value="shopee"> <span class="pf-dot" style="background:#ee4d2d"></span>Shopee</label>
         </div>
+        <% if (it.releaseGuard && !it.releaseGuard.shippingPricingEnabled && it.releaseGuard.pricingDisabledCount > 0) { %>
+        <div class="release-guard-notice" data-testid="release-guard-notice">
+          <i class="ti ti-lock"></i>
+          <div><strong>배송비 계산 준비 중</strong><br>현재는 상품 검수와 가져오기만 가능합니다.<br>배송비 반영 전에는 eBay 등록이 차단됩니다.</div>
+        </div>
+        <% } %>
         <button class="btn btn-primary btn-sm" onclick="uploadSelected('pending')">
           <i class="ti ti-upload"></i> 업로드
         </button>
@@ -139,7 +145,7 @@
           </td>
           <td class="nowrap"><%= c.sourceLabel %></td>
           <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="price" data-edit-value="<%= c.costKrw || '' %>" onclick="startEdit(this)"><%= c.costKrw ? '₩' + Number(c.costKrw).toLocaleString() : '—' %></td>
-          <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="ebayPrice" data-edit-value="<%= c.ebayPrice ? c.ebayPrice.toFixed(2) : '' %>" onclick="startEdit(this)"><%= c.ebayPrice ? '$' + c.ebayPrice.toFixed(2) : '—' %></td>
+          <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="ebayPrice" data-edit-value="<%= c.ebayEditValue != null ? c.ebayEditValue.toFixed(2) : (c.ebayPrice ? c.ebayPrice.toFixed(2) : '') %>" onclick="startEdit(this)"><%= c.ebayPrice ? '$' + c.ebayPrice.toFixed(2) : '—' %><% if (c.priceNote) { %><div class="price-note"><%= c.priceNote %></div><% } %></td>
           <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="shopifyPrice" data-edit-value="<%= c.shopifyPrice ? c.shopifyPrice.toFixed(2) : '' %>" onclick="startEdit(this)"><%= c.shopifyPrice ? '$' + c.shopifyPrice.toFixed(2) : '—' %></td>
           <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="alibabaPrice" data-edit-value="<%= c.alibabaPrice ? c.alibabaPrice.toFixed(2) : '' %>" onclick="startEdit(this)"><%= c.alibabaPrice ? '$' + c.alibabaPrice.toFixed(2) : '—' %></td>
           <td class="tabular-nums nowrap td-editable" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="shopeePrice" data-edit-value="<%= c.shopeePrice ? c.shopeePrice.toFixed(2) : '' %>" onclick="startEdit(this)"><%= c.shopeePrice ? '$' + c.shopeePrice.toFixed(2) : '—' %></td>
@@ -149,17 +155,21 @@
             <div class="inline-upload">
               <div class="multi-select" id="ms-<%= c.id %>">
                 <div class="multi-select-trigger" onclick="toggleMultiSelect(<%= c.id %>)">
-                  <span class="ms-label">eBay</span>
+                  <span class="ms-label"><%= c.ebayListingBlocked ? '선택' : 'eBay' %></span>
                   <i class="ti ti-chevron-down"></i>
                 </div>
                 <div class="multi-select-dropdown">
+                  <% if (c.ebayListingBlocked) { %>
+                  <label class="ms-blocked" title="<%= c.ebayBlockMessage %>"><input type="checkbox" value="ebay" disabled onchange="updateMsLabel(<%= c.id %>)"> eBay (차단)</label>
+                  <% } else { %>
                   <label><input type="checkbox" value="ebay" checked onchange="updateMsLabel(<%= c.id %>)"> eBay</label>
+                  <% } %>
                   <label><input type="checkbox" value="shopify" onchange="updateMsLabel(<%= c.id %>)"> Shopify</label>
                   <label><input type="checkbox" value="alibaba" onchange="updateMsLabel(<%= c.id %>)"> Alibaba</label>
                   <label><input type="checkbox" value="shopee" onchange="updateMsLabel(<%= c.id %>)"> Shopee</label>
                 </div>
               </div>
-              <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= c.id %>, 'crawl', this)"<%= !canCheck ? ' disabled' : '' %>>
+              <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= c.id %>, 'crawl', this)"<%= !canCheck || c.ebayListingBlocked ? ' disabled' : '' %><% if (c.ebayListingBlocked) { %> title="<%= c.ebayBlockMessage %>" data-release-guard="blocked"<% } %>>
                 <i class="ti ti-upload"></i>
               </button>
             </div>
@@ -256,6 +266,12 @@
           <label class="platform-check-label"><input type="checkbox" value="alibaba"> <span class="pf-dot" style="background:#ff6a00"></span>Alibaba</label>
           <label class="platform-check-label"><input type="checkbox" value="shopee"> <span class="pf-dot" style="background:#ee4d2d"></span>Shopee</label>
         </div>
+        <% if (it.releaseGuard && !it.releaseGuard.shippingPricingEnabled && it.releaseGuard.pricingDisabledCount > 0) { %>
+        <div class="release-guard-notice" data-testid="release-guard-notice">
+          <i class="ti ti-lock"></i>
+          <div><strong>배송비 계산 준비 중</strong><br>현재는 상품 검수와 가져오기만 가능합니다.<br>배송비 반영 전에는 eBay 등록이 차단됩니다.</div>
+        </div>
+        <% } %>
         <button class="btn btn-primary btn-sm" onclick="uploadSelected('all')">
           <i class="ti ti-upload"></i> 업로드
         </button>
@@ -345,12 +361,14 @@
                 <% } %>
             </td>
             <% } else { %>
-            <td class="tabular-nums nowrap td-editable" data-edit-type="<%= item.type %>" data-edit-id="<%= item.id %>" data-edit-field="<%= pf %>Price" data-edit-value="<%= priceMap[pf] ? priceMap[pf].toFixed(2) : '' %>" onclick="startEdit(this)">
+            <% const editValue = pf === 'ebay' && item.ebayEditValue != null ? item.ebayEditValue : priceMap[pf]; %>
+            <td class="tabular-nums nowrap td-editable" data-edit-type="<%= item.type %>" data-edit-id="<%= item.id %>" data-edit-field="<%= pf %>Price" data-edit-value="<%= editValue ? editValue.toFixed(2) : '' %>" onclick="startEdit(this)">
               <% if (priceMap[pf]) { %>
                 $<%= priceMap[pf].toFixed(2) %>
               <% } else { %>
                 <span class="text-muted">—</span>
               <% } %>
+              <% if (pf === 'ebay' && item.priceNote) { %><div class="price-note"><%= item.priceNote %></div><% } %>
             </td>
             <% } %>
           <% }) %>
@@ -404,17 +422,21 @@
               <div class="inline-upload">
                 <div class="multi-select" id="ms-all-<%= item.type %>-<%= item.id %>">
                   <div class="multi-select-trigger" onclick="toggleMultiSelect('all-<%= item.type %>-<%= item.id %>')">
-                    <span class="ms-label">eBay</span>
+                    <span class="ms-label"><%= item.ebayListingBlocked ? '선택' : 'eBay' %></span>
                     <i class="ti ti-chevron-down"></i>
                   </div>
                   <div class="multi-select-dropdown">
+                    <% if (item.ebayListingBlocked) { %>
+                    <label class="ms-blocked" title="<%= item.ebayBlockMessage %>"><input type="checkbox" value="ebay" disabled onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> eBay (차단)</label>
+                    <% } else { %>
                     <label><input type="checkbox" value="ebay" checked onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> eBay</label>
+                    <% } %>
                     <label><input type="checkbox" value="shopify" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Shopify</label>
                     <label><input type="checkbox" value="alibaba" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Alibaba</label>
                     <label><input type="checkbox" value="shopee" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Shopee</label>
                   </div>
                 </div>
-                <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= item.id %>, '<%= item.type %>', this)">
+                <button class="btn btn-primary btn-xs" onclick="uploadSingle(<%= item.id %>, '<%= item.type %>', this)"<% if (item.ebayListingBlocked) { %> disabled title="<%= item.ebayBlockMessage %>" data-release-guard="blocked"<% } %>>
                   <i class="ti ti-upload"></i>
                 </button>
               </div>
@@ -469,6 +491,10 @@
 .tr-en { color: #1d4ed8; }
 .tr-err { font-size: 0.75rem; opacity: 0.7; }
 .translate-modal-footer { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+.release-guard-notice { display: flex; gap: 6px; align-items: flex-start; font-size: 11px; line-height: 1.35; color: #92400e; background: #fffbeb; border: 1px solid #fcd34d; border-radius: 6px; padding: 4px 8px; max-width: 260px; }
+.release-guard-notice i { margin-top: 2px; }
+.ms-blocked { color: var(--text-muted); cursor: not-allowed; }
+.price-note { font-size: 11px; color: var(--text-muted); white-space: normal; max-width: 200px; line-height: 1.3; }
 .btn-danger { background: #ef4444; color: #fff; border: none; padding: 8px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 0.875rem; transition: background 0.15s; }
 .btn-danger:hover:not(:disabled) { background: #dc2626; }
 .btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -1537,9 +1563,11 @@ async function saveEdit(td) {
         titleText.classList.remove('title-untranslated');
       }
     } else if (isPlatformPrice) {
-      // 플랫폼 달러 가격
-      const val = parseFloat(newValue) || 0;
-      td.innerHTML = val > 0 ? '$' + val.toFixed(2) : '—';
+      // 플랫폼 달러 가격 (USD CSV eBay 칸은 수동 판매가 저장 → 최종 등록가 + 구성 메모로 다시 표시)
+      if (!(editField === 'ebayPrice' && result.prices && renderUsdEbayCell(td, result.prices))) {
+        const val = parseFloat(newValue) || 0;
+        td.innerHTML = val > 0 ? '$' + val.toFixed(2) : '—';
+      }
     } else {
       // 원가: 포맷팅해서 표시
       const cost = parseFloat(newValue) || 0;
@@ -1568,6 +1596,18 @@ function cancelEdit(td) {
   _editingTd = null;
 }
 
+// USD CSV 행: eBay 칸 = 최종 등록가 + 가격 구성(CSV/수동/배송) 메모, 편집 기준값 = 판매가(배송비 제외)
+function renderUsdEbayCell(cell, prices) {
+  if (!cell || prices.priceNote === undefined) return false;
+  cell.textContent = prices.ebayPrice ? '$' + prices.ebayPrice.toFixed(2) : '—';
+  const note = document.createElement('div');
+  note.className = 'price-note';
+  note.textContent = prices.priceNote;
+  cell.appendChild(note);
+  cell.dataset.editValue = prices.ebayEditValue != null ? prices.ebayEditValue.toFixed(2) : '';
+  return true;
+}
+
 function updateRowPrices(row, prices, editType) {
   if (!row || !prices) return;
   const platformOrder = ['ebay', 'shopify', 'alibaba', 'shopee'];
@@ -1582,6 +1622,7 @@ function updateRowPrices(row, prices, editType) {
     let startIdx = Array.from(cells).indexOf(costTd) + 1;
     priceKeys.forEach((key, i) => {
       const cell = cells[startIdx + i];
+      if (key === 'ebayPrice' && renderUsdEbayCell(cell, prices)) return;
       if (cell && prices[key]) {
         cell.textContent = '$' + prices[key].toFixed(2);
       }
@@ -1597,6 +1638,7 @@ function updateRowPrices(row, prices, editType) {
       if (!cell) return;
       // 리스팅이 있는 셀(뱃지)은 건드리지 않음
       if (cell.querySelector('.badge')) return;
+      if (key === 'ebayPrice' && renderUsdEbayCell(cell, prices)) return;
       if (prices[key]) {
         cell.innerHTML = '$' + prices[key].toFixed(2);
       }

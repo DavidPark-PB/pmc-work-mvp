@@ -6,6 +6,9 @@ import { db } from '../db/index.js';
 import { auditLogs, crawlResults, crawlSources, csvUploads, platformListings, productImages, products, users } from '../db/schema.js';
 import { eq, ne, inArray, sql, desc, asc, ilike, and, isNotNull, gte, lte } from 'drizzle-orm';
 import { calculatePriceSync, getAllPricingSettings } from '../services/pricing.js';
+import { buildImportPreview, detectFixedHeaderMapping } from '../lib/csv-parser.js';
+import { crawlDisplayCsv, readProductCsvMetadata, resolveDisplayPrices } from '../services/listing-price.js';
+import { getShippingPricingConfig, publicShippingPricingConfig } from '../lib/shipping-config.js';
 import { jobStore } from '../lib/job-store.js';
 import { getUser } from '../lib/user-session.js';
 import fs from 'fs';
@@ -74,6 +77,7 @@ export async function pageRoutes(app: FastifyInstance) {
         title: crawlResults.title,
         titleEn: crawlResults.titleEn,
         price: crawlResults.price,
+        currency: crawlResults.currency,
         url: crawlResults.url,
         imageUrl: crawlResults.imageUrl,
         rawData: crawlResults.rawData,
@@ -110,31 +114,21 @@ export async function pageRoutes(app: FastifyInstance) {
       return m;
     };
 
-    // 예상 판매가 계산 헬퍼 (동기 — DB 호출 없음)
-    const calcPrices = (costKRW: number) => {
-      const ebay = calculatePriceSync(costKRW, allSettings['ebay']);
-      return {
-        ebayPrice: ebay.salePrice,
-        shopifyPrice: calculatePriceSync(costKRW, allSettings['shopify']).salePrice,
-        alibabaPrice: calculatePriceSync(costKRW, allSettings['alibaba']).salePrice,
-        shopeePrice: calculatePriceSync(costKRW, allSettings['shopee']).salePrice,
-        shippingCost: ebay.shippingCost,
-      };
-    };
+    // 배송비 반영 등록가 설정 (서버 전용 — 뷰에 토큰/URL 전달 금지)
+    const shippingConfig = getShippingPricingConfig();
 
     // 두 소스를 allItems로 통합
     const sourceLabels: Record<string, string> = { coupang: '쿠팡', lotte: '롯데온', emart: '이마트', naver: '네이버' };
 
     const productItemsWithPrice = recentProductsWithListings.map((p) => {
-      const costKRW = parseFloat(String(p.costPrice)) || 0;
-      const calculated = costKRW > 0 ? calcPrices(costKRW) : { ebayPrice: 0, shopifyPrice: 0, alibabaPrice: 0, shopeePrice: 0 };
-      const overrides = (p.metadata as any)?.priceOverrides || {};
-      const prices = {
-        ebayPrice: overrides.ebay || calculated.ebayPrice,
-        shopifyPrice: overrides.shopify || calculated.shopifyPrice,
-        alibabaPrice: overrides.alibaba || calculated.alibabaPrice,
-        shopeePrice: overrides.shopee || calculated.shopeePrice,
-      };
+      // USD CSV 상품: eBay = 환산가(USD), 원가 칸 = 매입원가 KRW / 그 외: 기존 계산
+      const { costKrw: costKRW, priceSource, ...prices } = resolveDisplayPrices({
+        costKrw: parseFloat(String(p.costPrice)) || 0,
+        csv: readProductCsvMetadata(p.metadata),
+        overrides: (p.metadata as any)?.priceOverrides,
+        allSettings,
+        shipping: shippingConfig,
+      });
       return {
         type: 'product' as const,
         id: p.id,
@@ -148,21 +142,21 @@ export async function pageRoutes(app: FastifyInstance) {
         listings: p.listings,
         status: p.status,
         costKrw: costKRW,
+        priceSource,
         createdAt: p.createdAt,
         ...prices,
       };
     });
 
     const crawlItemsWithPrice = recentCrawlResults.map((c) => {
-      const costKRW = parseFloat(String(c.price)) || 0;
-      const calculated = costKRW > 0 ? calcPrices(costKRW) : { ebayPrice: 0, shopifyPrice: 0, alibabaPrice: 0, shopeePrice: 0 };
-      const crawlOverrides = (c.rawData as any)?.priceOverrides || {};
-      const prices = {
-        ebayPrice: crawlOverrides.ebay || calculated.ebayPrice,
-        shopifyPrice: crawlOverrides.shopify || calculated.shopifyPrice,
-        alibabaPrice: crawlOverrides.alibaba || calculated.alibabaPrice,
-        shopeePrice: crawlOverrides.shopee || calculated.shopeePrice,
-      };
+      // USD CSV 원본: crawl price는 판매가(USD)이므로 원가(KRW)로 계산하지 않음
+      const { costKrw: costKRW, priceSource, ...prices } = resolveDisplayPrices({
+        costKrw: parseFloat(String(c.price)) || 0,
+        csv: crawlDisplayCsv(c),
+        overrides: (c.rawData as any)?.priceOverrides,
+        allSettings,
+        shipping: shippingConfig,
+      });
       return {
         type: 'crawl' as const,
         id: c.id,
@@ -174,6 +168,7 @@ export async function pageRoutes(app: FastifyInstance) {
         sourceUrl: c.url,
         sourceLabel: c.sourceName || '—',
         costKrw: costKRW,
+        priceSource,
         listings: '[]',
         status: c.status,
         createdAt: c.crawledAt,
@@ -186,6 +181,12 @@ export async function pageRoutes(app: FastifyInstance) {
     // 전체 탭 = products + crawl_results (업로드 대기 포함)
     const allItems = [...productItemsWithPrice, ...crawlItemsWithPrice]
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    // Release guard: USD CSV(toybox) 상품은 배송비 반영 기능이 꺼져 있으면 eBay 등록 차단 (서버 guard와 같은 평가)
+    const releaseGuard = {
+      shippingPricingEnabled: shippingConfig.enabled,
+      pricingDisabledCount: allItems.filter(i => i.ebayBlockCode === 'SHIPPING_PRICING_DISABLED').length,
+    };
 
     const user = getUser(request);
 
@@ -209,6 +210,7 @@ export async function pageRoutes(app: FastifyInstance) {
       // 하위 호환: 업로드 대기 탭에서 crawlItems 직접 사용
       recentCrawlResults: crawlItemsWithPrice,
       activeJobs,
+      releaseGuard,
     }, { layout: 'layout.eta' });
   });
 
@@ -248,6 +250,7 @@ export async function pageRoutes(app: FastifyInstance) {
       headerRow,
       sampleRows,
       autoMapping,
+      fixedHeaderMapping: !!detectFixedHeaderMapping(headerRow),
       totalRows: upload.rawFields.length - 1,
       filename: upload.filename,
     }, { layout: 'layout.eta' });
@@ -274,11 +277,17 @@ export async function pageRoutes(app: FastifyInstance) {
       return reply.redirect('/upload-csv');
     }
 
+    const preview = buildImportPreview(upload.parsedRows);
     return reply.viewAsync('step2-import.eta', {
       step: 2,
       uploadId,
-      rows: upload.parsedRows,
-      rowCount: upload.parsedRows.length,
+      rows: preview.rows,
+      rowCount: preview.rows.length,
+      priceHeader: preview.priceHeader,
+      defaultSelectedCount: preview.defaultSelectedCount,
+      errorRowCount: preview.errorRowCount,
+      showShipping: preview.showShipping,
+      shipping: publicShippingPricingConfig(getShippingPricingConfig()),
     }, { layout: 'layout.eta' });
   });
 
@@ -510,6 +519,11 @@ export async function pageRoutes(app: FastifyInstance) {
       alibabaPrice: calculatePriceSync(costKRW, allSettings['alibaba']).salePrice,
       shopeePrice: calculatePriceSync(costKRW, allSettings['shopee']).salePrice,
     });
+    const trashShippingConfig = getShippingPricingConfig();
+    const usdDisplayPrices = (csv: Record<string, any>) => {
+      const { ebayPrice, shopifyPrice, alibabaPrice, shopeePrice } = resolveDisplayPrices({ costKrw: 0, csv, allSettings, shipping: trashShippingConfig });
+      return { ebayPrice, shopifyPrice, alibabaPrice, shopeePrice };
+    };
 
     const sourceLabelsTrash: Record<string, string> = { coupang: '쿠팡', lotte: '롯데온', emart: '이마트', naver: '네이버' };
 
@@ -520,6 +534,7 @@ export async function pageRoutes(app: FastifyInstance) {
         titleKo: products.titleKo,
         title: products.title,
         costPrice: products.costPrice,
+        metadata: products.metadata,
         sourceUrl: products.sourceUrl,
         sourcePlatform: products.sourcePlatform,
         createdAt: products.createdAt,
@@ -536,6 +551,8 @@ export async function pageRoutes(app: FastifyInstance) {
         id: crawlResults.id,
         title: crawlResults.title,
         price: crawlResults.price,
+        currency: crawlResults.currency,
+        rawData: crawlResults.rawData,
         url: crawlResults.url,
         imageUrl: crawlResults.imageUrl,
         crawledAt: crawlResults.crawledAt,
@@ -551,7 +568,10 @@ export async function pageRoutes(app: FastifyInstance) {
     const trashItems = [
       ...trashedProducts.map(p => {
         const costKRW = parseFloat(String(p.costPrice)) || 0;
-        const prices = costKRW > 0 ? calcPricesTrash(costKRW) : { ebayPrice: 0, shopifyPrice: 0, alibabaPrice: 0, shopeePrice: 0 };
+        const productCsv = readProductCsvMetadata(p.metadata);
+        const prices = productCsv
+          ? usdDisplayPrices(productCsv)
+          : costKRW > 0 ? calcPricesTrash(costKRW) : { ebayPrice: 0, shopifyPrice: 0, alibabaPrice: 0, shopeePrice: 0 };
         return {
           type: 'product' as const,
           id: p.id,
@@ -566,7 +586,8 @@ export async function pageRoutes(app: FastifyInstance) {
       }),
       ...trashedCrawls.map(c => {
         const costKRW = parseFloat(String(c.price)) || 0;
-        const prices = calcPricesTrash(costKRW);
+        const trashCrawlCsv = crawlDisplayCsv(c);
+        const prices = trashCrawlCsv ? usdDisplayPrices(trashCrawlCsv) : calcPricesTrash(costKRW);
         return {
           type: 'crawl' as const,
           id: c.id,

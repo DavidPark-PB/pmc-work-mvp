@@ -1,7 +1,7 @@
 /**
  * CSV 파일 업로드 라우트
  *
- * 업로드 → rawFields(원본) DB 저장 → Gemini/키워드 자동 매핑 감지
+ * 업로드 → rawFields(원본) DB 저장 → 고정 헤더/Gemini/키워드 자동 매핑 감지
  * 매핑 확정(confirm-mapping) → applyMapping → parsedRows 저장
  */
 import type { FastifyInstance } from 'fastify';
@@ -9,7 +9,9 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { pipeline } from 'stream/promises';
-import { parseCsvRawFields, detectMappingByKeyword, applyMapping } from '../lib/csv-parser.js';
+import { parseCsvRawFields, detectMappingByKeyword, detectFixedHeaderMapping, validateColumnMapping, applyMapping, describeRowShipping } from '../lib/csv-parser.js';
+import { getShippingPricingConfig } from '../lib/shipping-config.js';
+import { parseQuoteSelections, quoteUploadRows } from '../services/shipping-quote-service.js';
 import { detectMappingWithAI } from '../lib/csv-mapping-ai.js';
 import { db } from '../db/index.js';
 import { csvUploads } from '../db/schema.js';
@@ -57,11 +59,12 @@ export async function uploadRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: 'CSV 파일에 데이터가 없습니다' });
     }
 
-    // 빠른 키워드 매핑부터 즉시 저장 → 클라이언트 응답을 1~2초 내로 끝낸다.
-    // 화면보호기 켜져도 업로드 단계는 이미 완료됨. AI 매핑은 백그라운드.
+    // 고정 헤더(toybox) → 결정적 매핑을 즉시 저장, 아니면 빠른 키워드 매핑 → 클라이언트 응답을 1~2초 내로 끝낸다.
+    // 화면보호기 켜져도 업로드 단계는 이미 완료됨. AI 매핑은 고정 헤더가 아닐 때만 백그라운드.
     const headers = rawFields[0];
     const sampleRows = rawFields.slice(1, 6);
-    const keywordMapping = detectMappingByKeyword(rawFields);
+    const fixedMapping = detectFixedHeaderMapping(headers);
+    const keywordMapping = fixedMapping ?? detectMappingByKeyword(rawFields);
 
     await db.insert(csvUploads).values({
       uploadId,
@@ -77,7 +80,8 @@ export async function uploadRoutes(app: FastifyInstance) {
 
     // 백그라운드 AI 매핑 — 실패해도 키워드 매핑이 이미 저장되어 있으므로 안전.
     // 클라이언트는 즉시 /mapping으로 이동하고, AI 결과가 도착하면 새로고침으로 반영됨.
-    void (async () => {
+    // 고정 헤더(toybox) CSV는 결정적 매핑을 AI 결과로 덮어쓰지 않도록 실행하지 않는다.
+    if (!fixedMapping) void (async () => {
       try {
         const aiMapping = await detectMappingWithAI(headers, sampleRows);
         if (aiMapping && Object.keys(aiMapping).length > 0) {
@@ -130,9 +134,10 @@ export async function uploadRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: 'uploadId와 mapping이 필요합니다' });
     }
 
-    // 필수 필드 검증
-    if (!('name' in mapping) || (!('url' in mapping) && !('price' in mapping))) {
-      return reply.status(400).send({ error: '상품명 + (상품URL 또는 가격) 매핑이 필요합니다' });
+    // 필수 필드 + 충돌 검증 (가격 KRW/USD, 무게/적용무게 동시 매핑 금지)
+    const mappingError = validateColumnMapping(mapping);
+    if (mappingError) {
+      return reply.status(400).send({ error: mappingError });
     }
 
     const upload = await db.query.csvUploads.findFirst({
@@ -149,6 +154,8 @@ export async function uploadRoutes(app: FastifyInstance) {
     const preview = parsedRows.slice(0, 5).map(r => ({
       name: r.name,
       price: r.price,
+      priceCurrency: r.priceCurrency,
+      chargeableWeightG: r.chargeableWeightG,
       image: r.image,
       url: r.url,
     }));
@@ -169,6 +176,58 @@ export async function uploadRoutes(app: FastifyInstance) {
       uploadId,
       rowCount: parsedRows.length,
       preview,
+    };
+  });
+
+  // POST /api/upload/shipping-quotes — 선택 상품 배송사 저장 + 국제배송비 견적 (서버 → main service)
+  app.post('/upload/shipping-quotes', async (request, reply) => {
+    const user = getUser(request);
+    if (!user?.isAdmin) {
+      return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
+    }
+
+    const { uploadId, selections } = request.body as { uploadId?: string; selections?: unknown };
+    if (!uploadId) {
+      return reply.status(400).send({ error: 'uploadId가 필요합니다' });
+    }
+
+    const upload = await db.query.csvUploads.findFirst({
+      where: eq(csvUploads.uploadId, uploadId),
+    });
+    const rows = upload?.parsedRows;
+    if (!rows || rows.length === 0) {
+      return reply.status(404).send({ error: '업로드 데이터를 찾을 수 없습니다' });
+    }
+
+    let parsedSelections;
+    try {
+      parsedSelections = parseQuoteSelections(selections, rows.length);
+    } catch (e) {
+      return reply.status(400).send({ error: (e as Error).message });
+    }
+
+    const result = await quoteUploadRows(rows, parsedSelections, { config: getShippingPricingConfig() });
+
+    await db.update(csvUploads)
+      .set({ parsedRows: result.rows })
+      .where(eq(csvUploads.uploadId, uploadId));
+
+    const quoted = [...result.snapshots.values()];
+    logAction(user, 'import.shipping-quotes', {
+      targetType: 'csv_upload',
+      targetId: uploadId,
+      details: {
+        selected: parsedSelections.length,
+        uniqueRequests: result.uniqueRequests,
+        ok: quoted.filter(s => s.status === 'OK').length,
+        blocked: quoted.filter(s => s.status === 'BLOCKED').length,
+      },
+    });
+
+    return {
+      uploadId,
+      uniqueRequests: result.uniqueRequests,
+      rows: parsedSelections.map(({ index }) => ({ index, ...describeRowShipping(result.rows[index]) })),
     };
   });
 }

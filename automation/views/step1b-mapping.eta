@@ -15,7 +15,7 @@
         <tr>
           <th style="width:40px">#</th>
           <th>CSV 헤더</th>
-          <th style="width:160px">매핑 대상</th>
+          <th style="width:200px">매핑 대상</th>
           <th>샘플 데이터</th>
         </tr>
       </thead>
@@ -28,18 +28,42 @@
             <select class="mapping-select" data-col="<%= colIdx %>"
                     style="width:100%;padding:6px 8px;border-radius:var(--radius);border:1px solid var(--border);font-size:var(--text-sm);">
               <option value="">(무시)</option>
-              <option value="name">상품명</option>
-              <option value="price">가격 (판매가)</option>
-              <option value="url">상품 URL</option>
-              <option value="image">이미지 URL</option>
-              <option value="originalPrice">정가</option>
-              <option value="discountRate">할인율</option>
-              <option value="category">카테고리</option>
-              <option value="brand">브랜드</option>
-              <option value="weight">무게</option>
-              <option value="description">설명</option>
-              <option value="rating">평점</option>
-              <option value="reviewCount">리뷰수</option>
+              <optgroup label="기본">
+                <option value="name">상품명</option>
+                <option value="nameKo">상품명 (한글, 참고)</option>
+                <option value="sourceProductCode">상품코드</option>
+                <option value="url">상품 URL (원본 링크)</option>
+                <option value="image">이미지 URL (메인)</option>
+                <option value="originalImageUrl">원본 이미지 URL</option>
+                <option value="category">카테고리</option>
+                <option value="brand">브랜드</option>
+                <option value="description">설명</option>
+              </optgroup>
+              <optgroup label="가격">
+                <option value="salePriceUsd">판매가 (USD)</option>
+                <option value="price">가격 (원)</option>
+                <option value="purchaseCostKrw">매입원가 (원)</option>
+                <option value="retailPriceKrw">정가 (원)</option>
+                <option value="originalPrice">정가</option>
+                <option value="discountRate">할인율</option>
+                <option value="marginKrw">마진 (원, 참고)</option>
+                <option value="marginRate">마진율 (참고)</option>
+              </optgroup>
+              <optgroup label="무게 · 치수">
+                <option value="chargeableWeightG">적용무게 (g)</option>
+                <option value="actualWeightG">실측무게 (g)</option>
+                <option value="volumetricWeightG">부피무게 (g)</option>
+                <option value="lengthCm">가로 (cm)</option>
+                <option value="widthCm">세로 (cm)</option>
+                <option value="heightCm">높이 (cm)</option>
+                <option value="weight">무게</option>
+              </optgroup>
+              <optgroup label="참고">
+                <option value="sourcePage">페이지</option>
+                <option value="unitsPerBox">입수량 (박스)</option>
+                <option value="rating">평점</option>
+                <option value="reviewCount">리뷰수</option>
+              </optgroup>
             </select>
           </td>
           <td style="max-width:340px;">
@@ -77,10 +101,16 @@
 
 <script>
 var fieldLabels = {
-  name: '상품명', price: '가격', url: '상품URL', image: '이미지',
+  name: '상품명', price: '가격(원)', url: '상품URL', image: '이미지',
   originalPrice: '정가', discountRate: '할인율', category: '카테고리',
   brand: '브랜드', weight: '무게', description: '설명',
-  rating: '평점', reviewCount: '리뷰수'
+  rating: '평점', reviewCount: '리뷰수',
+  nameKo: '상품명(한글)', sourceProductCode: '상품코드', originalImageUrl: '원본 이미지',
+  salePriceUsd: '판매가(USD)', purchaseCostKrw: '매입원가(원)', retailPriceKrw: '정가(원)',
+  marginKrw: '마진(원)', marginRate: '마진율', chargeableWeightG: '적용무게(g)',
+  actualWeightG: '실측무게(g)', volumetricWeightG: '부피무게(g)',
+  lengthCm: '가로(cm)', widthCm: '세로(cm)', heightCm: '높이(cm)',
+  sourcePage: '페이지', unitsPerBox: '입수량(박스)'
 };
 
 // autoMapping으로 드롭다운 초기값 설정 (서버는 키워드 매핑을 즉시 반환,
@@ -99,7 +129,16 @@ function applyMapping(mapping) {
 
 document.addEventListener('DOMContentLoaded', function() {
   applyMapping(autoMapping);
-  startAiMappingPoll();
+  // 고정 헤더(toybox) CSV: 서버가 결정적 매핑을 저장했고 AI 매핑은 실행되지 않음 → 폴링 불필요
+  if (<%~ it.fixedHeaderMapping ? 'true' : 'false' %>) {
+    var fixedEl = document.createElement('div');
+    fixedEl.style.cssText = 'margin-top:8px;font-size:var(--text-xs);color:var(--text-muted);';
+    fixedEl.innerHTML = '<i class="ti ti-lock"></i> 고정 헤더 CSV — 자동 매핑 적용됨 (필요하면 드롭다운에서 변경)';
+    var header = document.querySelector('.section-header');
+    if (header) header.appendChild(fixedEl);
+  } else {
+    startAiMappingPoll();
+  }
 });
 
 // AI 매핑이 백그라운드에서 도착하면 자동 반영. 사용자가 이미 매핑을 손댔으면 건드리지 않음.
@@ -175,11 +214,19 @@ function validateMapping() {
   // 필수 필드 체크
   var warnEl = document.getElementById('mapping-warning');
   var warnText = document.getElementById('warning-text');
+  var hasPriceOrUrl = usedFields.url || usedFields.price || usedFields.salePriceUsd;
+  var conflict = '';
+  if (usedFields.price && usedFields.salePriceUsd) conflict = '"가격(원)"과 "판매가(USD)"는 동시에 매핑할 수 없습니다.';
+  else if (usedFields.weight && usedFields.chargeableWeightG) conflict = '"무게"와 "적용무게(g)"는 동시에 매핑할 수 없습니다.';
+
   if (!usedFields.name) {
     warnText.textContent = '"상품명" 매핑이 필요합니다.';
     warnEl.classList.remove('hidden');
-  } else if (!usedFields.url && !usedFields.price) {
-    warnText.textContent = '"상품URL" 또는 "가격" 중 하나는 매핑이 필요합니다.';
+  } else if (!hasPriceOrUrl) {
+    warnText.textContent = '"상품URL", "가격(원)", "판매가(USD)" 중 하나는 매핑이 필요합니다.';
+    warnEl.classList.remove('hidden');
+  } else if (conflict) {
+    warnText.textContent = conflict;
     warnEl.classList.remove('hidden');
   } else {
     warnEl.classList.add('hidden');
@@ -187,7 +234,7 @@ function validateMapping() {
 
   // 버튼 활성화
   var btn = document.getElementById('confirm-btn');
-  btn.disabled = !usedFields.name || (!usedFields.url && !usedFields.price) || duplicates.length > 0;
+  btn.disabled = !usedFields.name || !hasPriceOrUrl || !!conflict || duplicates.length > 0;
 }
 
 async function confirmMapping() {

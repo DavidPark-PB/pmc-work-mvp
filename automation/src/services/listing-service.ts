@@ -6,7 +6,9 @@
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { crawlResults, products, platformListings, productImages } from '../db/schema.js';
-import { calculateListingPrice, calculatePriceSimple, getPricingSettings } from './pricing.js';
+import { getPricingSettings } from './pricing.js';
+import { buildProductCsvMetadata, resolveListingSalePrice, type ResolvedListingSalePrice } from './listing-price.js';
+import { getShippingPricingConfig } from '../lib/shipping-config.js';
 import { translateProduct } from './translate.js';
 import { EbayClient } from '../platforms/ebay/EbayClient.js';
 import { ShopifyClient } from '../platforms/shopify/ShopifyClient.js';
@@ -33,6 +35,40 @@ async function generateSku(): Promise<string> {
 }
 
 /**
+ * 판매가 결정 (create/retry/relist 공용 — release guard 단일 경로)
+ * USD CSV 상품은 원본 crawl_results와 대조 후 판매가 + 저장된 배송 견적 (배송비 플래그 off면 차단), 그 외는 기존 계산
+ */
+async function resolveProductSalePrice(
+  product: { costPrice: unknown; metadata: unknown; sku: string },
+  platform: string,
+  action: 'create' | 'retry',
+): Promise<ResolvedListingSalePrice> {
+  const settings = await getPricingSettings(platform);
+  const importedFrom = (product.metadata as Record<string, any> | null)?.importedFrom;
+  const sourceCrawl = typeof importedFrom === 'number'
+    ? await db.query.crawlResults.findFirst({ where: eq(crawlResults.id, importedFrom) })
+    : undefined;
+  const pricing = resolveListingSalePrice(product, settings, {
+    platform,
+    sourceCrawl: sourceCrawl ?? null,
+    shipping: getShippingPricingConfig(),
+  });
+  // 레거시(KRW 매입가) 상품: 매입가 0 이면 등록 차단 — 잘못된 $1 리스팅 발생 방지 (기존 동작 유지).
+  // CSV 업로드 시 가격 컬럼 매핑 안 하거나 크롤이 가격 추출 실패한 경우.
+  if (pricing.source === 'LEGACY_CALCULATED' && !((parseFloat(String(product.costPrice)) || 0) > 0)) {
+    throw new Error(action === 'create'
+      ? `매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재등록하세요. (SKU: ${product.sku})`
+      : `매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재시도하세요. (SKU: ${product.sku})`);
+  }
+  return pricing;
+}
+
+/** platform_listings.platform_data에 남기는 가격 결정 기록 */
+function pricingAudit(pricing: ResolvedListingSalePrice) {
+  return { pricing: { source: pricing.source, salePrice: pricing.salePrice, ...(pricing.breakdown ?? {}) } };
+}
+
+/**
  * crawl_results → products 임포트
  * crawl_results.status를 'imported'로 변경하고 products 행 생성
  */
@@ -47,26 +83,34 @@ export async function importFromCrawl(crawlResultId: number): Promise<number> {
   const sku = await generateSku();
   const rawData = (crawlResult.rawData || {}) as Record<string, any>;
 
-  // Gemini 영문 번역 (이미 번역된 titleEn이 있으면 활용)
-  const translated = crawlResult.titleEn
-    ? { ...(await translateProduct(crawlResult.title, rawData)), title: crawlResult.titleEn }
+  // USD CSV 원본: 환산가(USD)/매입원가/무게/치수를 metadata.csvImport에 보존
+  const csvMetadata = buildProductCsvMetadata(crawlResult);
+  const csvNameKo = rawData.csvImport?.fields?.nameKo;
+
+  // Gemini 영문 번역 (titleEn 또는 CSV 영문 상품명이 있으면 제목은 유지)
+  const fixedTitle = crawlResult.titleEn || (csvMetadata ? crawlResult.title : null);
+  const translated = fixedTitle
+    ? { ...(await translateProduct(crawlResult.title, rawData)), title: fixedTitle }
     : await translateProduct(crawlResult.title, rawData);
 
   // products 생성 (소유자 정보 계승)
   const [product] = await db.insert(products).values({
     sku,
     title: translated.title,             // 영문 번역
-    titleKo: crawlResult.title,          // 한글 원본 보존
+    titleKo: csvMetadata && typeof csvNameKo === 'string' && csvNameKo ? csvNameKo : crawlResult.title, // 한글 원본 보존
     description: translated.description,  // 영문 상품 설명
     productType: translated.productType,  // 영문 카테고리
     tags: translated.tags.length > 0 ? translated.tags : undefined,
-    costPrice: crawlResult.price || '0',
+    // USD CSV의 crawl price는 판매가(USD)이므로 KRW 매입가로 넣지 않음
+    costPrice: csvMetadata
+      ? (csvMetadata.purchaseCostKrw !== null ? String(csvMetadata.purchaseCostKrw) : null)
+      : (crawlResult.price || '0'),
     sourceUrl: crawlResult.url,
     sourcePlatform: 'coupang',           // TODO: source에서 가져오기
     brand: rawData.brand || rawData.vendor || rawData.mallName || '',
     condition: 'new',
     status: 'active',
-    metadata: { importedFrom: crawlResultId },
+    metadata: csvMetadata ? { importedFrom: crawlResultId, csvImport: csvMetadata } : { importedFrom: crawlResultId },
     ownerId: crawlResult.ownerId,
     ownerName: crawlResult.ownerName,
   }).returning();
@@ -107,14 +151,8 @@ export async function createListing(
 
   if (!product) throw new Error(`product #${productId} 없음`);
 
-  // 가격 계산 (DB 설정 기반)
-  const costKRW = parseFloat(String(product.costPrice)) || 0;
-  // 매입가 0 이면 등록 차단 — 잘못된 $1 리스팅 발생 방지.
-  // CSV 업로드 시 가격 컬럼 매핑 안 하거나 크롤이 가격 추출 실패한 경우.
-  if (costKRW <= 0) {
-    throw new Error(`매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재등록하세요. (SKU: ${product.sku})`);
-  }
-  const pricing = await calculatePriceSimple(costKRW, { platform });
+  // 판매가 결정 (USD CSV 고정가/배송비 반영 또는 기존 계산) — 검증 실패 시 여기서 차단
+  const pricing = await resolveProductSalePrice(product, platform, 'create');
 
   // 기존 리스팅 확인 (unique 제약: productId + platform)
   const existingListing = await db.query.platformListings.findFirst({
@@ -149,9 +187,10 @@ export async function createListing(
     currency: 'USD',
     shippingCost: String(pricing.shippingCost),
     quantity: defaultQty,
+    platformData: pricingAudit(pricing),
   }).returning();
 
-  console.log(`[리스팅] draft 생성: #${listing.id} (${platform}, $${pricing.salePrice})`);
+  console.log(`[리스팅] draft 생성: #${listing.id} (${platform}, $${pricing.salePrice}, ${pricing.source})`);
 
   if (dryRun) {
     console.log(`[리스팅] DRY RUN — API 호출 생략`);
@@ -216,7 +255,7 @@ export async function createListing(
     await db.update(platformListings)
       .set({
         status: 'error',
-        platformData: { error: (e as Error).message },
+        platformData: { ...pricingAudit(pricing), error: (e as Error).message },
       })
       .where(eq(platformListings.id, listing.id));
 
@@ -249,12 +288,8 @@ export async function retryListing(
   const product = listing.product as any;
   if (!product) throw new Error(`listing #${listingId}의 product 없음`);
 
-  // 가격 재계산 (DB 설정 기반)
-  const costKRW = parseFloat(String(product.costPrice)) || 0;
-  if (costKRW <= 0) {
-    throw new Error(`매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재시도하세요. (SKU: ${product.sku})`);
-  }
-  const pricing = await calculatePriceSimple(costKRW, { platform: listing.platform });
+  // 판매가 재결정 (createListing과 동일 규칙)
+  const pricing = await resolveProductSalePrice(product, listing.platform, 'retry');
 
   // 상태 리셋 + 가격 업데이트
   await db.update(platformListings)
@@ -262,7 +297,7 @@ export async function retryListing(
       status: 'pending',
       platformItemId: null,
       listingUrl: null,
-      platformData: null,
+      platformData: pricingAudit(pricing),
       price: String(pricing.salePrice),
       shippingCost: String(pricing.shippingCost),
     })
@@ -310,7 +345,7 @@ export async function retryListing(
     await db.update(platformListings)
       .set({
         status: 'error',
-        platformData: { error: (e as Error).message },
+        platformData: { ...pricingAudit(pricing), error: (e as Error).message },
       })
       .where(eq(platformListings.id, listingId));
 
@@ -402,12 +437,8 @@ export async function relistListing(
   const product = listing.product as any;
   if (!product) throw new Error(`listing #${listingId}의 product 없음`);
 
-  // 가격 재계산 (DB 설정 기반)
-  const costKRW = parseFloat(String(product.costPrice)) || 0;
-  if (costKRW <= 0) {
-    throw new Error(`매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재시도하세요. (SKU: ${product.sku})`);
-  }
-  const pricing = await calculatePriceSimple(costKRW, { platform: listing.platform });
+  // 판매가 재결정 (createListing과 동일 규칙)
+  const pricing = await resolveProductSalePrice(product, listing.platform, 'retry');
 
   // 상태 리셋
   await db.update(platformListings)
@@ -415,7 +446,7 @@ export async function relistListing(
       status: 'pending',
       platformItemId: null,
       listingUrl: null,
-      platformData: null,
+      platformData: pricingAudit(pricing),
       price: String(pricing.salePrice),
       shippingCost: String(pricing.shippingCost),
     })
@@ -463,7 +494,7 @@ export async function relistListing(
     await db.update(platformListings)
       .set({
         status: 'error',
-        platformData: { error: (e as Error).message },
+        platformData: { ...pricingAudit(pricing), error: (e as Error).message },
       })
       .where(eq(platformListings.id, listingId));
 

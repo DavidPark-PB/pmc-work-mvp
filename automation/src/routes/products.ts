@@ -5,7 +5,10 @@ import { eq, like, sql, inArray } from 'drizzle-orm';
 import { translateProduct } from '../services/translate.js';
 import { logAction } from '../lib/audit-log.js';
 import { getUser } from '../lib/user-session.js';
-import { calculatePriceSync, getAllPricingSettings } from '../services/pricing.js';
+import { getAllPricingSettings } from '../services/pricing.js';
+import { readProductCsvMetadata, resolveDisplayPrices } from '../services/listing-price.js';
+import { applySalePriceOverride } from '../services/shipping-pricing.js';
+import { getShippingPricingConfig } from '../lib/shipping-config.js';
 import { getDescriptionTemplate, buildPlatformDescription } from '../services/description.js';
 
 // 진행 중인 번역 세션 abort 플래그 맵 (sessionId → abort signal)
@@ -134,13 +137,28 @@ export async function productRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: 'Product not found' });
     }
 
+    const usdCsv = !!readProductCsvMetadata(existing.metadata);
+    // USD CSV 상품: eBay 외 플랫폼 가격 수정 불가 — eBay 가격은 수동 판매가로만 저장
+    if (usdCsv && (shopifyPrice !== undefined || alibabaPrice !== undefined || shopeePrice !== undefined)) {
+      return reply.status(400).send({ error: '판매가(USD) CSV 상품은 eBay 수동 판매가만 수정할 수 있습니다. 원본 CSV 판매가는 변경되지 않습니다.' });
+    }
+
     const updateData: Record<string, any> = { updatedAt: new Date() };
     if (title !== undefined) updateData.title = title;
     if (titleKo !== undefined) updateData.titleKo = titleKo;
     if (costPrice !== undefined) updateData.costPrice = costPrice;
 
-    // 플랫폼 가격 override → metadata.priceOverrides에 저장
-    if (isPriceOverride) {
+    if (usdCsv && ebayPrice !== undefined) {
+      // 원본 salePriceUsd는 유지, salePriceOverrideUsd + 수정 이력만 저장
+      const metadata = { ...((existing.metadata as Record<string, any>) || {}) };
+      try {
+        metadata.csvImport = applySalePriceOverride(metadata.csvImport || {}, ebayPrice, { changedBy: user?.name ?? null });
+      } catch (e) {
+        return reply.status(400).send({ error: (e as Error).message });
+      }
+      updateData.metadata = metadata;
+    } else if (isPriceOverride) {
+      // 플랫폼 가격 override → metadata.priceOverrides에 저장
       const metadata = (existing.metadata as Record<string, any>) || {};
       const overrides = metadata.priceOverrides || {};
       if (ebayPrice !== undefined) overrides.ebay = parseFloat(ebayPrice);
@@ -156,22 +174,22 @@ export async function productRoutes(app: FastifyInstance) {
       .where(eq(products.id, parseInt(id)))
       .returning();
 
-    // 가격 재계산 (override 우선)
-    const costKRW = parseFloat(String(updated.costPrice)) || 0;
+    // 가격 재계산 (override 우선, USD CSV는 환산가 고정)
     const allSettings = await getAllPricingSettings();
-    const calculated = costKRW > 0 ? {
-      ebayPrice: calculatePriceSync(costKRW, allSettings['ebay']).salePrice,
-      shopifyPrice: calculatePriceSync(costKRW, allSettings['shopify']).salePrice,
-      alibabaPrice: calculatePriceSync(costKRW, allSettings['alibaba']).salePrice,
-      shopeePrice: calculatePriceSync(costKRW, allSettings['shopee']).salePrice,
-    } : { ebayPrice: 0, shopifyPrice: 0, alibabaPrice: 0, shopeePrice: 0 };
-
-    const metaOverrides = ((updated.metadata as any)?.priceOverrides) || {};
+    const display = resolveDisplayPrices({
+      costKrw: parseFloat(String(updated.costPrice)) || 0,
+      csv: readProductCsvMetadata(updated.metadata),
+      overrides: (updated.metadata as any)?.priceOverrides,
+      allSettings,
+      shipping: getShippingPricingConfig(),
+    });
     const prices = {
-      ebayPrice: metaOverrides.ebay || calculated.ebayPrice,
-      shopifyPrice: metaOverrides.shopify || calculated.shopifyPrice,
-      alibabaPrice: metaOverrides.alibaba || calculated.alibabaPrice,
-      shopeePrice: metaOverrides.shopee || calculated.shopeePrice,
+      ebayPrice: display.ebayPrice,
+      shopifyPrice: display.shopifyPrice,
+      alibabaPrice: display.alibabaPrice,
+      shopeePrice: display.shopeePrice,
+      ebayEditValue: display.ebayEditValue,
+      priceNote: display.priceNote,
     };
 
     logAction(user, 'product.inline-edit', { targetType: 'product', targetId: id, details: { title, titleKo, costPrice, ...body } });

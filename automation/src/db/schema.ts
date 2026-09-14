@@ -12,6 +12,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
+import type { CsvRow } from '../lib/csv-parser.js';
 
 // ============================================================
 // Crawl Sources — 크롤링 대상 사이트
@@ -160,12 +161,7 @@ export const csvUploads = pgTable('csv_uploads', {
   status: varchar('status', { length: 50 }).default('uploaded').notNull(), // uploaded → mapped → imported
   rawFields: jsonb('raw_fields').$type<string[][]>(),                    // 원본 CSV 필드 (헤더+데이터), 매핑 확정 후 null
   columnMapping: jsonb('column_mapping').$type<Record<string, number>>(), // 확정 매핑 {name: 2, price: 5, ...}
-  parsedRows: jsonb('parsed_rows').$type<{
-    image: string; url: string; name: string; price: number;
-    rating: number; reviewCount: number; discountRate: string;
-    originalPrice: number; category?: string; brand?: string;
-    weight?: number; description?: string;
-  }[]>(),                                                              // 매핑 확정 후 생성
+  parsedRows: jsonb('parsed_rows').$type<CsvRow[]>(),                  // 매핑 확정 후 생성 (USD/무게/원본 컬럼 포함)
   ownerId: varchar('owner_id', { length: 100 }),             // 업로더 UUID
   ownerName: varchar('owner_name', { length: 100 }),         // 업로더 닉네임
   createdAt: timestamp('created_at').defaultNow().notNull(),

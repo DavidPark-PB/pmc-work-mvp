@@ -5,11 +5,21 @@
  * 헤더 매칭 실패 시 기존 쿠팡 인덱스 기반 폴백
  */
 import fs from 'fs';
+import type { ShippingQuoteSnapshot, SalePriceOverrideHistoryEntry } from '../services/shipping-pricing.js';
+
+export type PriceCurrency = 'USD' | 'KRW';
+
+export interface RowIssue {
+  code: string;
+  level: 'error' | 'warning';
+  message: string;
+}
 
 export interface CsvRow {
   image: string;
   url: string;
   name: string;
+  /** salePriceUsd when mapped (priceCurrency=USD), otherwise KRW price */
   price: number;
   rating: number;
   reviewCount: number;
@@ -17,8 +27,38 @@ export interface CsvRow {
   originalPrice: number;
   category?: string;
   brand?: string;
+  /** grams — chargeableWeightG when mapped */
   weight?: number;
   description?: string;
+
+  // 고정 헤더 CSV(toybox) 필드 — 매핑된 경우에만 존재, 파싱 실패 시 null
+  priceCurrency?: PriceCurrency;
+  sourceRowNumber?: number;       // CSV 데이터 행 번호 (1부터)
+  sourceProductCode?: string;
+  nameKo?: string;
+  salePriceUsd?: number | null;
+  purchaseCostKrw?: number | null;
+  retailPriceKrw?: number | null;
+  marginKrw?: number | null;
+  marginRate?: number | null;     // 35.0% → 0.35
+  actualWeightG?: number | null;
+  lengthCm?: number | null;
+  widthCm?: number | null;
+  heightCm?: number | null;
+  volumetricWeightG?: number | null;
+  chargeableWeightG?: number | null;
+  originalImageUrl?: string;
+  sourcePage?: number | null;
+  unitsPerBox?: number | null;
+  /** 원본 CSV 헤더 → 셀 값 (매핑 여부와 무관하게 전체 컬럼) */
+  sourceColumns?: Record<string, string>;
+  issues?: RowIssue[];
+
+  // 검수 화면에서 지정 (Phase 2)
+  selectedShippingProvider?: 'KPL' | 'eGS';
+  shippingQuote?: ShippingQuoteSnapshot | null;
+  salePriceOverrideUsd?: number | null;
+  salePriceOverrideHistory?: SalePriceOverrideHistoryEntry[];
 }
 
 /** 정규화 키 → 매칭 가능한 헤더명 목록 */
@@ -395,7 +435,11 @@ export function parseCsvFile(filePath: string): CsvRow[] {
  * 반환: string[][] — [0]은 헤더, [1:]은 데이터
  */
 export function parseCsvRawFields(filePath: string): string[][] {
-  const content = fs.readFileSync(filePath, 'utf-8');
+  return parseCsvRawText(fs.readFileSync(filePath, 'utf-8'));
+}
+
+/** CSV 텍스트를 raw 필드 배열로 파싱 */
+export function parseCsvRawText(content: string): string[][] {
   const lines = content.split('\n').filter(l => l.trim());
   return lines.map(line => parseCsvLine(line));
 }
@@ -515,11 +559,205 @@ function detectColumnsFromContentRaw(rawFields: string[][]): Map<string, number>
   return map;
 }
 
+// ============================================================
+// 고정 헤더 CSV (toybox 원본/축약 포맷)
+// ============================================================
+
+/** 고정 헤더 → 시스템 필드. '상품명'은 Product Name (EN)이 있으면 nameKo로 매핑 */
+const FIXED_HEADER_FIELDS: [header: string, field: string][] = [
+  ['페이지', 'sourcePage'],
+  ['상품코드', 'sourceProductCode'],
+  ['상품명', 'name'],
+  ['Product Name (EN)', 'name'],
+  ['입수량(박스)', 'unitsPerBox'],
+  ['원가(toybox 판매가)', 'purchaseCostKrw'],
+  ['판매가(toybox 정가)', 'retailPriceKrw'],
+  ['환산가(USD)', 'salePriceUsd'],
+  ['마진(원)', 'marginKrw'],
+  ['마진율', 'marginRate'],
+  ['실측무게(g)', 'actualWeightG'],
+  ['가로(cm)', 'lengthCm'],
+  ['세로(cm)', 'widthCm'],
+  ['높이(cm)', 'heightCm'],
+  ['부피무게(g)', 'volumetricWeightG'],
+  ['적용무게(g)', 'chargeableWeightG'],
+  ['R2 이미지', 'image'],
+  ['상품링크', 'url'],
+  ['원본 이미지', 'originalImageUrl'],
+];
+
+export const FIXED_HEADERS = FIXED_HEADER_FIELDS.map(([header]) => header);
+
+function normalizeFixedHeader(header: string): string {
+  return (header || '').normalize('NFC').replace(/^\uFEFF/, '').replace(/\s+/g, '').toLowerCase();
+}
+
+/**
+ * 고정 헤더 CSV 감지 → 결정적 매핑 (AI/키워드 매핑보다 우선)
+ * `환산가(USD)` 또는 `Product Name (EN)` 헤더가 있을 때만 적용, 아니면 null
+ */
+export function detectFixedHeaderMapping(headers: string[]): Record<string, number> | null {
+  const indexByHeader = new Map<string, number>();
+  headers.forEach((h, i) => {
+    const key = normalizeFixedHeader(h);
+    if (key && !indexByHeader.has(key)) indexByHeader.set(key, i);
+  });
+
+  const hasEnglishName = indexByHeader.has(normalizeFixedHeader('Product Name (EN)'));
+  const hasUsdPrice = indexByHeader.has(normalizeFixedHeader('환산가(USD)'));
+  if (!hasEnglishName && !hasUsdPrice) return null;
+
+  const mapping: Record<string, number> = {};
+  for (const [header, defaultField] of FIXED_HEADER_FIELDS) {
+    const col = indexByHeader.get(normalizeFixedHeader(header));
+    if (col === undefined) continue;
+    const field = header === '상품명' && hasEnglishName ? 'nameKo' : defaultField;
+    if (mapping[field] === undefined) mapping[field] = col;
+  }
+  return mapping;
+}
+
+/** 매핑 확정 전 검증 — 오류 메시지 또는 null */
+export function validateColumnMapping(mapping: Record<string, number>): string | null {
+  if (!mapping || typeof mapping !== 'object') return 'mapping이 필요합니다';
+  for (const [field, col] of Object.entries(mapping)) {
+    if (!Number.isInteger(col) || col < 0) return `잘못된 컬럼 인덱스: ${field}`;
+  }
+  const has = (key: string) => mapping[key] !== undefined;
+  if (!has('name')) return '상품명 매핑이 필요합니다';
+  if (!has('url') && !has('price') && !has('salePriceUsd')) {
+    return '상품명 + (상품URL 또는 가격) 매핑이 필요합니다';
+  }
+  if (has('price') && has('salePriceUsd')) {
+    return '가격(원)과 판매가(USD)를 동시에 매핑할 수 없습니다';
+  }
+  if (has('weight') && has('chargeableWeightG')) {
+    return '무게와 적용무게(g)를 동시에 매핑할 수 없습니다';
+  }
+  return null;
+}
+
+/**
+ * 숫자 셀 파싱: "25.4" → 25.4, "19,500" → 19500, "$60.10" → 60.1, "19,500원" → 19500
+ * 빈 값/"#REF!" 등 숫자가 아니면 null (소수점은 보존)
+ */
+export function parseDecimal(text: string | null | undefined): number | null {
+  if (text === null || text === undefined) return null;
+  const cleaned = String(text).trim().replace(/usd|krw/gi, '').replace(/[\s,$₩원]/g, '');
+  if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return null;
+  const value = Number(cleaned);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** 무게 셀 파싱 (그램): "1,023" → 1023, "300g" → 300, "1.2kg" → 1200 */
+export function parseWeightG(text: string | null | undefined): number | null {
+  if (text === null || text === undefined) return null;
+  const trimmed = String(text).trim();
+  if (/kg$/i.test(trimmed)) {
+    const kg = parseDecimal(trimmed.replace(/kg$/i, ''));
+    return kg === null ? null : Math.round(kg * 1000);
+  }
+  return parseDecimal(trimmed.replace(/g$/i, ''));
+}
+
+/** 길이 셀 파싱 (cm): "16" → 16, "16cm" → 16 */
+export function parseLengthCm(text: string | null | undefined): number | null {
+  if (text === null || text === undefined) return null;
+  return parseDecimal(String(text).trim().replace(/cm$/i, ''));
+}
+
+/** 퍼센트 셀 파싱 → 비율: "35.0%" → 0.35, "0.35" → 0.35, "35" → 0.35 */
+export function parsePercent(text: string | null | undefined): number | null {
+  if (text === null || text === undefined) return null;
+  const trimmed = String(text).trim();
+  const hasPercentSign = trimmed.endsWith('%');
+  const value = parseDecimal(trimmed.replace(/%$/, ''));
+  if (value === null) return null;
+  const ratio = hasPercentSign || Math.abs(value) > 1 ? value / 100 : value;
+  return Number(ratio.toFixed(6));
+}
+
+function isHttpUrl(value: string | undefined): boolean {
+  return !!value && /^https?:\/\//i.test(value);
+}
+
+/** 여러 이미지가 '|||'로 합쳐진 image 필드의 대표(첫) 이미지 */
+function primaryImage(value: string | undefined): string {
+  return (value || '').split('|||')[0].trim();
+}
+
+const NUMERIC_FIELD_PARSERS: Record<string, (text: string) => number | null> = {
+  purchaseCostKrw: parseDecimal,
+  retailPriceKrw: parseDecimal,
+  marginKrw: parseDecimal,
+  marginRate: parsePercent,
+  actualWeightG: parseWeightG,
+  lengthCm: parseLengthCm,
+  widthCm: parseLengthCm,
+  heightCm: parseLengthCm,
+  volumetricWeightG: parseWeightG,
+  sourcePage: parseDecimal,
+  unitsPerBox: parseDecimal,
+};
+
+const TEXT_FIELDS = ['sourceProductCode', 'nameKo', 'originalImageUrl'] as const;
+
+/** 원본 헤더 → 셀 값 (빈/중복 헤더는 컬럼 번호로 구분) */
+function buildSourceColumns(headers: string[], fields: string[]): Record<string, string> {
+  const columns: Record<string, string> = {};
+  const width = Math.max(headers.length, fields.length);
+  for (let i = 0; i < width; i++) {
+    let key = (headers[i] || '').replace(/^\uFEFF/, '').trim() || `column_${i + 1}`;
+    if (key in columns) key = `${key}#${i + 1}`;
+    columns[key] = fields[i] ?? '';
+  }
+  return columns;
+}
+
+/** 행 데이터 검증 — 매핑된 필드만 검사. error가 있으면 기본 선택에서 제외 */
+export function validateCsvRow(row: CsvRow, mapping: Record<string, number>): RowIssue[] {
+  const issues: RowIssue[] = [];
+  const has = (key: string) => mapping[key] !== undefined;
+  const positive = (v: number | null | undefined) => typeof v === 'number' && v > 0;
+
+  if (!row.name) {
+    issues.push({ code: 'name_missing', level: 'error', message: '상품명 없음' });
+  }
+  if (has('salePriceUsd') && !positive(row.salePriceUsd)) {
+    issues.push({ code: 'sale_price_invalid', level: 'error', message: '판매가(USD) 없음 또는 잘못된 값' });
+  }
+  if (has('chargeableWeightG') && !positive(row.chargeableWeightG)) {
+    issues.push({ code: 'chargeable_weight_invalid', level: 'error', message: '적용무게(g) 없음 또는 잘못된 값' });
+  }
+  if (has('image') && !isHttpUrl(primaryImage(row.image))) {
+    issues.push({ code: 'image_missing', level: 'warning', message: '이미지 URL 없음' });
+  }
+  if (has('url') && !isHttpUrl(row.url)) {
+    issues.push({ code: 'url_missing', level: 'warning', message: '상품 링크 없음' });
+  }
+  if (has('actualWeightG') && !positive(row.actualWeightG)) {
+    issues.push({ code: 'actual_weight_missing', level: 'warning', message: '실측무게(g) 없음 또는 잘못된 값' });
+  }
+  const dimensionFields = ['lengthCm', 'widthCm', 'heightCm'] as const;
+  if (dimensionFields.some(has) && dimensionFields.some(f => !positive(row[f]))) {
+    issues.push({ code: 'dimensions_missing', level: 'warning', message: '가로/세로/높이 누락' });
+  }
+  if (positive(row.chargeableWeightG)) {
+    const measured = Math.max(row.actualWeightG ?? 0, row.volumetricWeightG ?? 0);
+    if (measured > row.chargeableWeightG!) {
+      issues.push({ code: 'chargeable_weight_below_measured', level: 'warning', message: '적용무게가 실측/부피무게보다 작음' });
+    }
+  }
+  return issues;
+}
+
 /**
  * 확정된 매핑으로 rawFields → CsvRow[] 변환
  */
 export function applyMapping(rawFields: string[][], mapping: Record<string, number>): CsvRow[] {
   const rows: CsvRow[] = [];
+  const headers = rawFields[0] || [];
+  const has = (key: string) => mapping[key] !== undefined;
   const get = (fields: string[], key: string): string => {
     const idx = mapping[key];
     return idx !== undefined && idx < fields.length ? fields[idx] : '';
@@ -532,6 +770,8 @@ export function applyMapping(rawFields: string[][], mapping: Record<string, numb
     if (!name) continue;
 
     // Collect all image URLs from mapped + unmapped columns
+    // (고정 헤더 CSV의 원본 이미지 컬럼은 originalImageUrl로 따로 보존 — 리스팅 이미지에 섞지 않음)
+    const originalImageCol = mapping.originalImageUrl;
     const allImages: string[] = [];
     const mainImage = get(fields, 'image');
     if (mainImage) allImages.push(mainImage);
@@ -541,6 +781,7 @@ export function applyMapping(rawFields: string[][], mapping: Record<string, numb
     }
     if (allImages.length <= 1) {
       for (let c = 0; c < fields.length; c++) {
+        if (c === originalImageCol) continue;
         const v = fields[c]?.trim() || '';
         if (v && !allImages.includes(v) && /^https?:\/\/.+\.(jpg|jpeg|png|gif|webp|PNG|JPEG)/i.test(v)) {
           allImages.push(v);
@@ -549,28 +790,233 @@ export function applyMapping(rawFields: string[][], mapping: Record<string, numb
       }
     }
 
+    // 판매가(USD)가 매핑되면 price에 USD 값을 그대로 저장 (KRW parsePrice 사용 금지)
+    const salePriceUsd = has('salePriceUsd') ? parseDecimal(get(fields, 'salePriceUsd')) : undefined;
+
     const row: CsvRow = {
       image: allImages.join('|||'),
       url: get(fields, 'url'),
       name,
-      price: parsePrice(get(fields, 'price')),
+      price: salePriceUsd !== undefined ? (salePriceUsd ?? 0) : parsePrice(get(fields, 'price')),
       rating: parseFloat(get(fields, 'rating')) || 0,
       reviewCount: parseReviewCount(get(fields, 'reviewCount')),
       discountRate: get(fields, 'discountRate'),
       originalPrice: parsePrice(get(fields, 'originalPrice')),
     };
 
+    if (salePriceUsd !== undefined) {
+      row.priceCurrency = 'USD';
+      row.salePriceUsd = salePriceUsd;
+    } else if (has('price')) {
+      row.priceCurrency = 'KRW';
+    }
+
     const category = get(fields, 'category');
     if (category) row.category = category;
     const brand = get(fields, 'brand');
     if (brand) row.brand = brand;
-    const weight = get(fields, 'weight');
-    if (weight) row.weight = parseInt(weight, 10) || undefined;
     const desc = get(fields, 'description');
     if (desc) row.description = desc;
+
+    if (has('chargeableWeightG')) {
+      row.chargeableWeightG = parseWeightG(get(fields, 'chargeableWeightG'));
+      if (row.chargeableWeightG !== null && row.chargeableWeightG > 0) {
+        row.weight = Math.round(row.chargeableWeightG);
+      }
+    } else {
+      const weight = parseWeightG(get(fields, 'weight'));
+      if (weight !== null && weight > 0) row.weight = Math.round(weight);
+    }
+
+    for (const [field, parse] of Object.entries(NUMERIC_FIELD_PARSERS)) {
+      if (has(field)) (row as unknown as Record<string, unknown>)[field] = parse(get(fields, field));
+    }
+    for (const field of TEXT_FIELDS) {
+      if (has(field)) row[field] = get(fields, field);
+    }
+
+    row.sourceRowNumber = i;
+    row.sourceColumns = buildSourceColumns(headers, fields);
+    row.issues = validateCsvRow(row, mapping);
 
     rows.push(row);
   }
 
   return rows;
+}
+
+// ============================================================
+// 업로드 → 선택 → import batch
+// ============================================================
+
+/**
+ * 선택된 행만 추출. selectedIndices 미전달 시 전체 (하위 호환)
+ * 잘못된 인덱스/빈 선택은 Error
+ */
+export function selectRowsForImport<T>(rows: T[], selectedIndices?: unknown): { index: number; row: T }[] {
+  if (selectedIndices === undefined || selectedIndices === null) {
+    return rows.map((row, index) => ({ index, row }));
+  }
+  if (!Array.isArray(selectedIndices)) {
+    throw new Error('selectedIndices는 배열이어야 합니다');
+  }
+  const unique = new Set<number>();
+  for (const value of selectedIndices) {
+    if (!Number.isInteger(value) || value < 0 || value >= rows.length) {
+      throw new Error(`잘못된 선택 인덱스: ${value}`);
+    }
+    unique.add(value);
+  }
+  if (unique.size === 0) {
+    throw new Error('선택된 상품이 없습니다');
+  }
+  return [...unique].sort((a, b) => a - b).map(index => ({ index, row: rows[index] }));
+}
+
+const CSV_IMPORT_FIELDS = [
+  'sourceProductCode', 'name', 'nameKo', 'priceCurrency', 'salePriceUsd',
+  'purchaseCostKrw', 'retailPriceKrw', 'marginKrw', 'marginRate',
+  'actualWeightG', 'lengthCm', 'widthCm', 'heightCm', 'volumetricWeightG', 'chargeableWeightG',
+  'image', 'url', 'originalImageUrl', 'sourcePage', 'unitsPerBox',
+  'selectedShippingProvider', 'salePriceOverrideUsd', 'salePriceOverrideHistory',
+] as const;
+
+/** crawl_results.raw_data 생성 — 기존 키 유지 + CSV 원본/정규화 값 보존 */
+export function buildImportRawData(
+  row: CsvRow,
+  meta: { uploadId: string; rowIndex: number },
+): Record<string, any> {
+  const rawData: Record<string, any> = {
+    rating: row.rating,
+    reviewCount: row.reviewCount,
+    discountRate: row.discountRate,
+    originalPrice: row.originalPrice,
+    images: row.image ? row.image.split('|||').filter((u: string) => u.trim()) : [],
+  };
+  if (row.category) rawData.category = row.category;
+  if (row.brand) rawData.brand = row.brand;
+  if (row.weight !== undefined) rawData.weight = row.weight;
+  if (row.description) rawData.description = row.description;
+
+  const fields: Record<string, unknown> = {};
+  for (const key of CSV_IMPORT_FIELDS) {
+    if (row[key] !== undefined) fields[key] = row[key];
+  }
+
+  rawData.csvImport = {
+    uploadId: meta.uploadId,
+    rowIndex: meta.rowIndex,
+    sourceRowNumber: row.sourceRowNumber ?? null,
+    fields,
+    sourceColumns: row.sourceColumns ?? {},
+    issues: row.issues ?? [],
+    shippingQuote: row.shippingQuote ?? null,
+  };
+  return rawData;
+}
+
+export interface ImportPreviewRow {
+  index: number;
+  code: string;
+  name: string;
+  image: string;
+  url: string;
+  priceLabel: string;
+  weightLabel: string;
+  issues: RowIssue[];
+  errorCount: number;
+  warningCount: number;
+  defaultSelected: boolean;
+  // 배송 (USD CSV 업로드에서만 사용)
+  shippingProvider: 'KPL' | 'eGS' | null;
+  canQuote: boolean;
+  quoteStatus: 'OK' | 'BLOCKED' | 'NONE' | 'WEIGHT_INVALID';
+  shippingLabel: string;
+  listingPriceLabel: string;
+  /** 표시 전용: eBay 등록가 + 배송정책 구매자 배송비 (예 $38.60 + $7.90 = $46.50) */
+  buyerTotalLabel: string;
+  quoteMessage: string;
+}
+
+/** 검수 화면 배송 칸 상태 (snapshot은 선택 배송사·적용무게와 일치할 때만 표시) */
+export function describeRowShipping(row: CsvRow): Pick<ImportPreviewRow, 'shippingProvider' | 'canQuote' | 'quoteStatus' | 'shippingLabel' | 'listingPriceLabel' | 'buyerTotalLabel' | 'quoteMessage'> {
+  if (row.priceCurrency !== 'USD') {
+    return { shippingProvider: null, canQuote: false, quoteStatus: 'NONE', shippingLabel: '—', listingPriceLabel: '—', buyerTotalLabel: '', quoteMessage: '' };
+  }
+  const provider = row.selectedShippingProvider ?? 'KPL';
+  const weightOk = typeof row.chargeableWeightG === 'number' && row.chargeableWeightG > 0;
+  const priceOk = typeof row.salePriceUsd === 'number' && row.salePriceUsd > 0;
+  if (!weightOk) {
+    return { shippingProvider: provider, canQuote: false, quoteStatus: 'WEIGHT_INVALID', shippingLabel: '차단', listingPriceLabel: '차단', buyerTotalLabel: '', quoteMessage: '적용무게(g) 없음 — 등록 불가' };
+  }
+  const snapshot = row.shippingQuote;
+  const current = snapshot && snapshot.provider === provider && snapshot.chargeableWeightG === row.chargeableWeightG ? snapshot : null;
+  if (!current) {
+    return { shippingProvider: provider, canQuote: priceOk, quoteStatus: 'NONE', shippingLabel: '미계산', listingPriceLabel: '—', buyerTotalLabel: '', quoteMessage: '배송비 계산 필요' };
+  }
+  if (current.status !== 'OK' || current.shippingUsd === null || current.listingPriceUsd === null) {
+    return { shippingProvider: provider, canQuote: priceOk, quoteStatus: 'BLOCKED', shippingLabel: '차단', listingPriceLabel: '차단', buyerTotalLabel: '', quoteMessage: current.blockedReason || '견적 실패' };
+  }
+  return {
+    shippingProvider: provider,
+    canQuote: priceOk,
+    quoteStatus: 'OK',
+    shippingLabel: formatUsd(current.shippingUsd),
+    listingPriceLabel: formatUsd(current.listingPriceUsd),
+    buyerTotalLabel: typeof current.buyerShippingUsd === 'number'
+      ? formatUsd((Math.round(current.listingPriceUsd * 100) + Math.round(current.buyerShippingUsd * 100)) / 100)
+      : '',
+    quoteMessage: `${current.serviceCode} · ${current.bracketWeightKg}kg 구간`,
+  };
+}
+
+export function formatUsd(value: number): string {
+  return '$' + value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+export function formatWeightG(value: number): string {
+  return Math.round(value).toLocaleString('en-US') + 'g';
+}
+
+/** /import 검수 화면 view model */
+export function buildImportPreview(rows: CsvRow[]): {
+  rows: ImportPreviewRow[];
+  priceHeader: string;
+  defaultSelectedCount: number;
+  errorRowCount: number;
+  showShipping: boolean;
+} {
+  const hasUsd = rows.some(r => r.priceCurrency === 'USD');
+  const previewRows = rows.map((row, index): ImportPreviewRow => {
+    const issues = row.issues ?? [];
+    const errorCount = issues.filter(i => i.level === 'error').length;
+    const priceValue = row.priceCurrency === 'USD' ? row.salePriceUsd : row.price;
+    let priceLabel = '—';
+    if (typeof priceValue === 'number' && priceValue > 0) {
+      priceLabel = row.priceCurrency === 'USD' ? formatUsd(priceValue) : '₩' + priceValue.toLocaleString('ko-KR');
+    }
+    const weightValue = row.chargeableWeightG ?? row.weight;
+    return {
+      index,
+      code: row.sourceProductCode || '',
+      name: row.name,
+      image: isHttpUrl(primaryImage(row.image)) ? primaryImage(row.image) : '',
+      url: isHttpUrl(row.url) ? row.url : '',
+      priceLabel,
+      weightLabel: typeof weightValue === 'number' && weightValue > 0 ? formatWeightG(weightValue) : '—',
+      issues,
+      errorCount,
+      warningCount: issues.length - errorCount,
+      defaultSelected: errorCount === 0,
+      ...describeRowShipping(row),
+    };
+  });
+
+  return {
+    rows: previewRows,
+    priceHeader: hasUsd ? '판매가(USD)' : '가격(KRW)',
+    defaultSelectedCount: previewRows.filter(r => r.defaultSelected).length,
+    errorRowCount: previewRows.filter(r => r.errorCount > 0).length,
+    showShipping: hasUsd,
+  };
 }

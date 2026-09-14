@@ -5,8 +5,11 @@ import type { FastifyInstance } from 'fastify';
 import { eq, and, sql, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { crawlResults, crawlSources, csvUploads } from '../db/schema.js';
-import { calculatePriceSync, getAllPricingSettings } from '../services/pricing.js';
-import { extractProductId } from '../lib/csv-parser.js';
+import { getAllPricingSettings } from '../services/pricing.js';
+import { crawlDisplayCsv, resolveDisplayPrices } from '../services/listing-price.js';
+import { applySalePriceOverride } from '../services/shipping-pricing.js';
+import { getShippingPricingConfig, isShippingProvider } from '../lib/shipping-config.js';
+import { extractProductId, selectRowsForImport, buildImportRawData } from '../lib/csv-parser.js';
 import { getUser } from '../lib/user-session.js';
 import { translateProduct } from '../services/translate.js';
 import { getDescriptionTemplate, buildPlatformDescription } from '../services/description.js';
@@ -43,10 +46,20 @@ export async function crawlResultRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: 'CSV 등록은 관리자만 이용하실 수 있습니다.' });
     }
 
-    const { uploadId, sourceName = '쿠팡' } = request.body as {
+    const { uploadId, sourceName = '쿠팡', selectedIndices, shippingProviders } = request.body as {
       uploadId: string;
       sourceName?: string;
+      selectedIndices?: number[];  // parsedRows 인덱스 — 미전달 시 전체 (하위 호환)
+      shippingProviders?: Record<string, string>;  // parsedRows 인덱스 → 'KPL' | 'eGS'
     };
+
+    if (shippingProviders !== undefined) {
+      const invalid = typeof shippingProviders !== 'object' || shippingProviders === null
+        || Object.values(shippingProviders).some(v => !isShippingProvider(v));
+      if (invalid) {
+        return reply.status(400).send({ error: '배송사는 KPL 또는 eGS만 선택할 수 있습니다.' });
+      }
+    }
 
     // DB에서 파싱된 데이터 조회 (파일 시스템 의존 제거)
     const upload = await db.query.csvUploads.findFirst({
@@ -62,6 +75,14 @@ export async function crawlResultRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: 'CSV에 유효한 행이 없습니다.' });
     }
 
+    // 선택된 상품만 등록
+    let selected: { index: number; row: (typeof rows)[number] }[];
+    try {
+      selected = selectRowsForImport(rows, selectedIndices);
+    } catch (e) {
+      return reply.status(400).send({ error: (e as Error).message });
+    }
+
     const baseUrl = sourceName === '쿠팡' ? 'https://www.coupang.com' : 'https://unknown.com';
     const sourceId = await ensureSourceId(sourceName, baseUrl);
 
@@ -72,19 +93,23 @@ export async function crawlResultRoutes(app: FastifyInstance) {
 
     // 배치 처리: 10개씩 병렬 처리하여 대용량 CSV 속도 개선
     const BATCH_SIZE = 10;
-    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-      const batch = rows.slice(i, i + BATCH_SIZE);
-      const results = await Promise.allSettled(batch.map(async (row) => {
+    for (let i = 0; i < selected.length; i += BATCH_SIZE) {
+      const batch = selected.slice(i, i + BATCH_SIZE);
+      const results = await Promise.allSettled(batch.map(async ({ row: parsedRow, index }) => {
+        // USD CSV: 선택 배송사 보존 (기본 KPL), 견적은 같은 배송사·적용무게일 때만 유지
+        let row = parsedRow;
+        if (parsedRow.priceCurrency === 'USD') {
+          const requested = shippingProviders?.[String(index)];
+          const provider = isShippingProvider(requested) ? requested : (parsedRow.selectedShippingProvider ?? 'KPL');
+          const quote = parsedRow.shippingQuote;
+          const quoteMatches = !!quote && quote.provider === provider && quote.chargeableWeightG === parsedRow.chargeableWeightG;
+          row = { ...parsedRow, selectedShippingProvider: provider, shippingQuote: quoteMatches ? quote : null };
+        }
         const externalId = extractProductId(row.url) || `name_${row.name.replace(/\s+/g, '_').slice(0, 50)}_${row.price}`;
-        const rawData: Record<string, any> = {
-          rating: row.rating,
-          reviewCount: row.reviewCount,
-          discountRate: row.discountRate,
-          originalPrice: row.originalPrice,
-          images: row.image ? row.image.split('|||').filter((u: string) => u.trim()) : [],
-        };
-        if (row.category) rawData.category = row.category;
-        if (row.brand) rawData.brand = row.brand;
+        // 기존 키 + CSV 원본 전체 컬럼/정규화 값 보존 (rawData.csvImport)
+        const rawData = buildImportRawData(row, { uploadId, rowIndex: index });
+        // 판매가(USD) 매핑 시 price는 USD 값 그대로, currency로 통화 구분
+        const currency = row.priceCurrency === 'USD' ? 'USD' : 'KRW';
 
         const existing = await db.query.crawlResults.findFirst({
           where: and(
@@ -98,6 +123,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
             .set({
               title: row.name,
               price: String(row.price),
+              currency,
               url: row.url,
               imageUrl: row.image ? row.image.split('|||')[0] : '',
               rawData,
@@ -112,7 +138,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
             externalId,
             title: row.name,
             price: String(row.price),
-            currency: 'KRW',
+            currency,
             url: row.url,
             imageUrl: row.image ? row.image.split('|||')[0] : '',
             rawData,
@@ -144,8 +170,8 @@ export async function crawlResultRoutes(app: FastifyInstance) {
       // 이력 업데이트 실패해도 결과는 반환
     }
 
-    logBatchAction(user, 'import.batch', { targetType: 'crawl_result', count: imported + updated, details: { uploadId, importedCount: imported, totalCount: rows.length } });
-    return { imported, updated, errors, crawlResultIds };
+    logBatchAction(user, 'import.batch', { targetType: 'crawl_result', count: imported + updated, details: { uploadId, importedCount: imported, selectedCount: selected.length, totalCount: rows.length } });
+    return { imported, updated, errors, crawlResultIds, selected: selected.length, total: rows.length };
   });
 
   // GET /api/crawl-results — 크롤 결과 목록
@@ -197,13 +223,30 @@ export async function crawlResultRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: 'Crawl result not found' });
     }
 
+    const usdCsv = !!crawlDisplayCsv(existing);
+    // USD CSV 원본: 원본 판매가(price)와 eBay 외 플랫폼 가격은 수정 불가 — eBay 가격은 수동 판매가로만 저장
+    if (usdCsv && (price !== undefined || shopifyPrice !== undefined || alibabaPrice !== undefined || shopeePrice !== undefined)) {
+      return reply.status(400).send({ error: '판매가(USD) CSV 상품은 eBay 수동 판매가만 수정할 수 있습니다. 원본 CSV 판매가는 변경되지 않습니다.' });
+    }
+
     const updateData: Record<string, any> = {};
     if (title !== undefined) updateData.title = title;
     if (titleEn !== undefined) updateData.titleEn = titleEn;
     if (price !== undefined) updateData.price = price;
 
-    // 플랫폼 가격 override → rawData.priceOverrides에 저장
-    if (isPriceOverride) {
+    if (usdCsv && ebayPrice !== undefined) {
+      // 원본 salePriceUsd는 유지, salePriceOverrideUsd + 수정 이력만 저장
+      const rawData = { ...((existing.rawData as Record<string, any>) || {}) };
+      const csvImport = { ...(rawData.csvImport || {}) };
+      try {
+        csvImport.fields = applySalePriceOverride(csvImport.fields || {}, ebayPrice, { changedBy: getUser(request)?.name ?? null });
+      } catch (e) {
+        return reply.status(400).send({ error: (e as Error).message });
+      }
+      rawData.csvImport = csvImport;
+      updateData.rawData = rawData;
+    } else if (isPriceOverride) {
+      // 플랫폼 가격 override → rawData.priceOverrides에 저장
       const rawData = (existing.rawData as Record<string, any>) || {};
       const overrides = rawData.priceOverrides || {};
       if (ebayPrice !== undefined) overrides.ebay = parseFloat(ebayPrice);
@@ -219,22 +262,22 @@ export async function crawlResultRoutes(app: FastifyInstance) {
       .where(eq(crawlResults.id, parseInt(id)))
       .returning();
 
-    // 가격 재계산 (override 우선)
-    const costKRW = parseFloat(String(updated.price)) || 0;
+    // 가격 재계산 (override 우선, USD CSV는 환산가 고정)
     const allSettings = await getAllPricingSettings();
-    const calculated = costKRW > 0 ? {
-      ebayPrice: calculatePriceSync(costKRW, allSettings['ebay']).salePrice,
-      shopifyPrice: calculatePriceSync(costKRW, allSettings['shopify']).salePrice,
-      alibabaPrice: calculatePriceSync(costKRW, allSettings['alibaba']).salePrice,
-      shopeePrice: calculatePriceSync(costKRW, allSettings['shopee']).salePrice,
-    } : { ebayPrice: 0, shopifyPrice: 0, alibabaPrice: 0, shopeePrice: 0 };
-
-    const rawOverrides = ((updated.rawData as any)?.priceOverrides) || {};
+    const display = resolveDisplayPrices({
+      costKrw: parseFloat(String(updated.price)) || 0,
+      csv: crawlDisplayCsv(updated),
+      overrides: (updated.rawData as any)?.priceOverrides,
+      allSettings,
+      shipping: getShippingPricingConfig(),
+    });
     const prices = {
-      ebayPrice: rawOverrides.ebay || calculated.ebayPrice,
-      shopifyPrice: rawOverrides.shopify || calculated.shopifyPrice,
-      alibabaPrice: rawOverrides.alibaba || calculated.alibabaPrice,
-      shopeePrice: rawOverrides.shopee || calculated.shopeePrice,
+      ebayPrice: display.ebayPrice,
+      shopifyPrice: display.shopifyPrice,
+      alibabaPrice: display.alibabaPrice,
+      shopeePrice: display.shopeePrice,
+      ebayEditValue: display.ebayEditValue,
+      priceNote: display.priceNote,
     };
 
     return { data: updated, prices };
