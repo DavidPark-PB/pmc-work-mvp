@@ -8,7 +8,7 @@
  * 차단 사유가 있는 행은 요청하지 않고 BLOCKED snapshot을 남긴다 (fallback 배송비 없음).
  */
 import { randomUUID } from 'crypto';
-import type { CsvRow } from '../lib/csv-parser.js';
+import { isQuoteRowUnfinished, type CsvRow } from '../lib/csv-parser.js';
 import { isShippingProvider, SHIPPING_DESTINATION_COUNTRY, type ShippingPricingConfig, type ShippingProvider } from '../lib/shipping-config.js';
 import {
   quoteCacheKey,
@@ -18,7 +18,7 @@ import {
   type QuoteRequestDeps,
   type QuoteRequestInput,
 } from '../lib/shipping-quote-client.js';
-import { isAlternativeEligible, resolveChargeableWeight } from '../lib/shipping-quote-status.js';
+import { isAlternativeEligible, normalizeQuoteReason, PERMANENT_PROVIDER_REASONS, resolveChargeableWeight } from '../lib/shipping-quote-status.js';
 import { buildShippingQuoteSnapshot, isValidUsdAmount, type ShippingQuoteOutcome, type ShippingQuoteSnapshot } from './shipping-pricing.js';
 
 export interface ShippingQuoteSelection {
@@ -45,6 +45,10 @@ export const otherProvider = (provider: ShippingProvider): ShippingProvider => (
 export interface QuoteRunProgress extends QuoteQueueProgress {
   /** 재사용한 기존 정상 견적 행 수 */
   reused: number;
+  /** 이번 실행에서 적용무게를 복구해 계산하는 행 수 */
+  recoveredRows: number;
+  /** 대체 배송사 확인 완료 key 수 */
+  alternativeChecked: number;
   phase: 'primary' | 'alternative' | 'done';
 }
 
@@ -54,6 +58,29 @@ export interface QuoteUploadDeps extends Omit<QuoteRequestDeps, 'config' | 'onRe
   now?: Date;
   concurrency?: number;
   onProgress?: (progress: QuoteRunProgress) => void;
+  /** 미완료 계산: 선택 배송사의 영구 실패(최대중량 초과 등) snapshot은 재요청 없이 대체 배송사만 확인 */
+  reuseProviderFailures?: boolean;
+}
+
+/** 같은 upload의 정상 snapshot → 같은 key 견적 결과 (재요청 방지용 캐시) */
+function outcomeFromSnapshot(snapshot: ShippingQuoteSnapshot | null | undefined, config: ShippingPricingConfig): [string, ShippingQuoteOutcome] | null {
+  if (!snapshot || snapshot.status !== 'OK' || snapshot.destinationCountry !== SHIPPING_DESTINATION_COUNTRY) return null;
+  if (snapshot.exchangeRate !== config.exchangeRate || !snapshot.serviceCode || snapshot.serviceCode !== config.serviceCodes[snapshot.provider]) return null;
+  if (!(typeof snapshot.chargeableWeightG === 'number' && typeof snapshot.bracketWeightKg === 'number' && typeof snapshot.shippingKrw === 'number')) return null;
+  if (snapshot.rateVersionId === null || snapshot.rateVersionId === undefined) return null;
+  const input = { provider: snapshot.provider, serviceCode: snapshot.serviceCode, chargeableWeightG: snapshot.chargeableWeightG };
+  return [quoteCacheKey(input), {
+    ok: true,
+    provider: snapshot.provider,
+    serviceCode: snapshot.serviceCode,
+    destinationCountry: SHIPPING_DESTINATION_COUNTRY,
+    chargeableWeightG: snapshot.chargeableWeightG,
+    chargeableWeightKg: snapshot.chargeableWeightG / 1000,
+    bracketWeightKg: snapshot.bracketWeightKg,
+    shippingKrw: snapshot.shippingKrw,
+    rateVersionId: snapshot.rateVersionId,
+    rateEffectiveFrom: snapshot.rateEffectiveFrom,
+  }];
 }
 
 /** 저장된 정상 snapshot이 현재 선택·무게·설정 그대로 유효한지 */
@@ -91,7 +118,7 @@ export async function quoteUploadRows(
   const pending: { index: number; input: QuoteRequestInput }[] = [];
   const weights = new Map<number, ReturnType<typeof resolveChargeableWeight>>();
 
-  const progress: QuoteRunProgress = { total: 0, done: 0, ok: 0, failed: 0, retried: 0, reused: 0, phase: 'primary' };
+  const progress: QuoteRunProgress = { total: 0, done: 0, ok: 0, failed: 0, retried: 0, reused: 0, recoveredRows: 0, alternativeChecked: 0, phase: 'primary' };
   const emit = () => deps.onProgress?.({ ...progress });
 
   const snapshotFor = (index: number, provider: ShippingProvider, serviceCode: string | null, outcome: ShippingQuoteOutcome) => {
@@ -132,17 +159,33 @@ export async function quoteUploadRows(
       progress.reused++;
       continue;
     }
+    const previous = row.shippingQuote;
+    if (deps.reuseProviderFailures && previous && previous.status === 'BLOCKED' && PERMANENT_PROVIDER_REASONS.has(normalizeQuoteReason(previous.blockedReason))
+      && previous.provider === provider && previous.serviceCode === serviceCode && previous.chargeableWeightG === weight.weightG
+      && previous.exchangeRate === config.exchangeRate) {
+      snapshots.set(index, previous);
+      continue;
+    }
+    if (weight.recovered) progress.recoveredRows++;
     pending.push({ index, input: { provider, serviceCode, chargeableWeightG: weight.weightG } });
   }
 
+  //   같은 upload에 이미 정상 견적된 key는 다시 요청하지 않는다 (예: 복구 200g 행 ↔ 기존 200g 정상 행)
   const results = new Map<string, ShippingQuoteOutcome>();
+  for (const row of rows) {
+    for (const snap of [row?.shippingQuote, row?.shippingQuoteAlternative]) {
+      const entry = outcomeFromSnapshot(snap, config);
+      if (entry && !results.has(entry[0])) results.set(entry[0], entry[1]);
+    }
+  }
   let base = { total: 0, done: 0, ok: 0, failed: 0, retried: 0 };
-  const runQueue = async (inputs: QuoteRequestInput[]) => {
+  const runQueue = async (inputs: QuoteRequestInput[], phase: 'primary' | 'alternative') => {
     const fresh = inputs.filter(i => !results.has(quoteCacheKey(i)));
     const got = await requestShippingQuotesDeduped(fresh, {
       ...deps,
       onProgress: (p) => {
         Object.assign(progress, { total: base.total + p.total, done: base.done + p.done, ok: base.ok + p.ok, failed: base.failed + p.failed, retried: base.retried + p.retried });
+        if (phase === 'alternative') progress.alternativeChecked = p.done;
         emit();
       },
     });
@@ -151,7 +194,7 @@ export async function quoteUploadRows(
   };
 
   emit();
-  await runQueue(pending.map(p => p.input));
+  await runQueue(pending.map(p => p.input), 'primary');
 
   for (const { index, input } of pending) {
     const outcome = results.get(quoteCacheKey(input)) ?? { ok: false as const, blockedReason: 'QUOTE_REQUEST_FAILED' };
@@ -177,7 +220,7 @@ export async function quoteUploadRows(
     }
     altPending.push({ index, input: { provider: alt, serviceCode: altService, chargeableWeightG: weight.weightG! } });
   }
-  if (altPending.length > 0) await runQueue(altPending.map(p => p.input));
+  if (altPending.length > 0) await runQueue(altPending.map(p => p.input), 'alternative');
   for (const { index, input } of altPending) {
     const outcome = results.get(quoteCacheKey(input)) ?? { ok: false as const, blockedReason: 'QUOTE_REQUEST_FAILED' };
     alternatives.set(index, snapshotFor(index, input.provider, input.serviceCode, outcome));
@@ -214,6 +257,24 @@ export function applyShippingAlternatives(rows: CsvRow[], indices: number[]): {
     applied.push(index);
   }
   return { rows: nextRows, applied, skipped };
+}
+
+/**
+ * 미완료 배송비 자동 계산 대상 — 최신 parsed_rows 기준으로 서버가 판정
+ * providerOverrides: 화면에서 바꿨지만 아직 저장 전인 배송사 (바뀐 행은 기존 snapshot이 무효가 되어 미완료로 분류)
+ */
+export function unfinishedQuoteSelections(rows: CsvRow[], providerOverrides: Record<string, unknown> = {}): { rows: CsvRow[]; selections: ShippingQuoteSelection[] } {
+  const nextRows = [...rows];
+  const selections: ShippingQuoteSelection[] = [];
+  rows.forEach((row, index) => {
+    if (!row || row.priceCurrency !== 'USD') return;
+    const override = providerOverrides[String(index)];
+    const provider = isShippingProvider(override) ? override : (row.selectedShippingProvider ?? 'KPL');
+    const current = provider === row.selectedShippingProvider ? row : { ...row, selectedShippingProvider: provider };
+    nextRows[index] = current;
+    if (isQuoteRowUnfinished(current)) selections.push({ index, provider });
+  });
+  return { rows: nextRows, selections };
 }
 
 /** 대체 가능(선택 배송사 실패 + 대체 견적 정상) 행 인덱스 */
@@ -272,7 +333,7 @@ export function startQuoteJob<T>(
     id: randomUUID(),
     uploadId,
     status: 'running',
-    progress: { total: 0, done: 0, ok: 0, failed: 0, retried: 0, reused: 0, phase: 'primary' },
+    progress: { total: 0, done: 0, ok: 0, failed: 0, retried: 0, reused: 0, recoveredRows: 0, alternativeChecked: 0, phase: 'primary' },
     startedAt: Date.now(),
   };
   quoteJobs.set(job.id, job as QuoteJob);

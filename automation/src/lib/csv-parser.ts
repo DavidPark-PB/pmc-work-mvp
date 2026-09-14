@@ -6,7 +6,7 @@
  */
 import fs from 'fs';
 import type { ShippingQuoteSnapshot, SalePriceOverrideHistoryEntry } from '../services/shipping-pricing.js';
-import { describeQuoteReason, normalizeQuoteReason, resolveChargeableWeight } from './shipping-quote-status.js';
+import { describeQuoteReason, isAlternativeEligible, isRecoverableQuoteFailure, normalizeQuoteReason, resolveChargeableWeight } from './shipping-quote-status.js';
 
 export type PriceCurrency = 'USD' | 'KRW';
 
@@ -973,6 +973,8 @@ export interface ImportPreviewRow {
   alternativeFailureLabel: string;
   /** title tooltip (여러 줄) */
   quoteTitle: string;
+  /** 미완료 배송비 자동 계산 대상 */
+  quoteUnfinished: boolean;
 }
 
 type RowShippingView = Pick<ImportPreviewRow,
@@ -1063,24 +1065,56 @@ export function describeRowShipping(row: CsvRow): RowShippingView {
   };
 }
 
+/**
+ * 미완료 배송비 행 — "미완료 배송비 자동 계산" 한 번으로 처리할 대상 (서버가 최신 parsed_rows로 판정)
+ * - 견적 없음/무게·배송사 변경으로 무효/무게 복구 후 미계산/중단된 작업
+ * - 다시 계산하면 해결될 수 있는 실패 (timeout·network·5xx·설정 오류)
+ * - 대체 배송사를 아직 확인하지 않은 배송사 특정 실패
+ * 완료(제외): 정상 · 자동복구 · 대체 가능 · 복구 불가 무게 · 대체 배송사까지 확인한 영구 실패 · 입력/계약 오류
+ */
+export function isQuoteRowUnfinished(row: CsvRow): boolean {
+  if (row.priceCurrency !== 'USD') return false;
+  const view = describeRowShipping(row);
+  if (view.quoteCategory === 'OK' || view.quoteCategory === 'RECOVERED' || view.quoteCategory === 'ALTERNATIVE') return false;
+  if (view.quoteStatus === 'WEIGHT_INVALID') return false;
+  if (view.quoteCategory === 'NONE') return true;
+
+  const primaryReason = row.shippingQuote?.blockedReason ?? null;
+  if (isRecoverableQuoteFailure(primaryReason)) return true;
+  if (!isAlternativeEligible(primaryReason)) return false;
+  const weightG = resolveChargeableWeight(row).weightG;
+  const alt = row.shippingQuoteAlternative;
+  const altCurrent = alt && alt.provider !== view.shippingProvider && alt.chargeableWeightG === weightG ? alt : null;
+  if (!altCurrent) return true;                                  // 대체 배송사 미확인
+  return altCurrent.status !== 'OK' && isRecoverableQuoteFailure(altCurrent.blockedReason);
+}
+
 export interface QuoteSummary {
   ok: number;
   recovered: number;
   alternative: number;
   review: number;
+  /** 미계산 */
   pending: number;
+  /** 배송 견적 대상 전체 (= ok + recovered + alternative + review + pending) */
+  total: number;
+  /** 미완료 배송비 자동 계산 대상 */
+  unfinished: number;
 }
 
-/** 상단 요약: 정상 / 자동복구 / 대체 가능 / 확인 필요 (미계산은 pending) */
-export function summarizeQuoteCategories(views: { quoteCategory: QuoteCategory; shippingProvider: string | null }[]): QuoteSummary {
-  const summary: QuoteSummary = { ok: 0, recovered: 0, alternative: 0, review: 0, pending: 0 };
-  for (const v of views) {
-    if (!v.shippingProvider) continue;
-    if (v.quoteCategory === 'OK') summary.ok++;
-    else if (v.quoteCategory === 'RECOVERED') summary.recovered++;
-    else if (v.quoteCategory === 'ALTERNATIVE') summary.alternative++;
-    else if (v.quoteCategory === 'REVIEW') summary.review++;
+/** 상단 요약 — 분류는 서로 겹치지 않고 합계는 항상 전체 행수와 같다 */
+export function summarizeQuoteRows(rows: CsvRow[]): QuoteSummary {
+  const summary: QuoteSummary = { ok: 0, recovered: 0, alternative: 0, review: 0, pending: 0, total: 0, unfinished: 0 };
+  for (const row of rows) {
+    if (row.priceCurrency !== 'USD') continue;
+    const view = describeRowShipping(row);
+    summary.total++;
+    if (view.quoteCategory === 'OK') summary.ok++;
+    else if (view.quoteCategory === 'RECOVERED') summary.recovered++;
+    else if (view.quoteCategory === 'ALTERNATIVE') summary.alternative++;
+    else if (view.quoteCategory === 'REVIEW') summary.review++;
     else summary.pending++;
+    if (isQuoteRowUnfinished(row)) summary.unfinished++;
   }
   return summary;
 }
@@ -1124,6 +1158,7 @@ export function buildImportPreview(rows: CsvRow[]): {
       warningCount: issues.length - errorCount,
       defaultSelected: errorCount === 0,
       ...describeRowShipping(row),
+      quoteUnfinished: isQuoteRowUnfinished(row),
     };
   });
 

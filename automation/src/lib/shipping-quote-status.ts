@@ -96,3 +96,16 @@ const NOT_PROVIDER_SPECIFIC = new Set([
 export function isAlternativeEligible(code: string | null | undefined): boolean {
   return !NOT_PROVIDER_SPECIFIC.has(normalizeQuoteReason(code));
 }
+
+/** 선택 배송사로 다시 요청해도 결과가 같은 영구 실패 — 미완료 계산에서는 재요청 없이 대체 배송사만 확인 */
+export const PERMANENT_PROVIDER_REASONS = new Set(['WEIGHT_OVER_MAX_BRACKET', 'RATE_NOT_LOADED', 'COUNTRY_NOT_IN_MASTER']);
+
+/**
+ * 다시 계산하면 해결될 수 있는 실패 (미완료로 분류)
+ * 일시적 서버 오류 + 설정/연결 오류(설정 수정 후 재계산 대상). 입력·계약 오류는 제외.
+ */
+export function isRecoverableQuoteFailure(code: string | null | undefined): boolean {
+  const c = normalizeQuoteReason(code);
+  return TRANSIENT_QUOTE_REASONS.has(c)
+    || ['QUOTE_HTTP_500', 'QUOTE_REQUEST_FAILED', 'AUTH_ERROR', 'SHIPPING_QUOTE_NOT_CONFIGURED', 'EXCHANGE_RATE_MISSING'].includes(c);
+}

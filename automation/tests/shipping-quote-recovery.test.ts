@@ -101,7 +101,7 @@ const store = vi.hoisted(() => {
 import * as schema from '../src/db/schema.js';
 import Fastify from 'fastify';
 import { Eta } from 'eta';
-import { parseCsvRawText, detectFixedHeaderMapping, detectMappingByKeyword, applyMapping, buildImportPreview, describeRowShipping, summarizeQuoteCategories } from '../src/lib/csv-parser.js';
+import { parseCsvRawText, detectFixedHeaderMapping, detectMappingByKeyword, applyMapping, buildImportPreview, describeRowShipping, summarizeQuoteRows, isQuoteRowUnfinished } from '../src/lib/csv-parser.js';
 import { importFromCrawl, createListing } from '../src/services/listing-service.js';
 import { calculatePriceSimple } from '../src/services/pricing.js';
 import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
@@ -109,9 +109,10 @@ import { uploadRoutes } from '../src/routes/upload.js';
 import { crawlResultRoutes } from '../src/routes/crawl-results.js';
 import { getShippingPricingConfig, publicShippingPricingConfig } from '../src/lib/shipping-config.js';
 import { requestShippingQuote, requestShippingQuotesDeduped, QUOTE_CONCURRENCY, QUOTE_MAX_RETRIES, QUOTE_RETRY_DELAYS_MS, QUOTE_TIMEOUT_MS } from '../src/lib/shipping-quote-client.js';
-import { quoteUploadRows, applyShippingAlternatives } from '../src/services/shipping-quote-service.js';
+import { quoteUploadRows, applyShippingAlternatives, unfinishedQuoteSelections } from '../src/services/shipping-quote-service.js';
+import { buildShippingQuoteSnapshot } from '../src/services/shipping-pricing.js';
 import { describeQuoteReason, resolveChargeableWeight } from '../src/lib/shipping-quote-status.js';
-import { formatQuoteSummary, formatQuoteProgress, createSingleFlight, failedQuoteSelections, countQuoteCategories, createProviderState } from '../public/js/import-selection.js';
+import { formatQuoteSummary, formatQuoteProgress, formatQuoteCompletion, unfinishedButtonState, providerOverrides, createSingleFlight, countQuoteCategories, createProviderState } from '../public/js/import-selection.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -552,19 +553,18 @@ describe('17-20. 화면 사유 · 요약 · 진행상태 · 중복 실행', () =
     script = (body) => (body.provider === 'KPL' && body.actualWeightKg === 1.5 ? { status: 200, body: { ok: false, mode: 'raw', quote: { ok: false, blockedReason: 'RATE_NOT_LOADED' }, blockedReason: 'RATE_NOT_LOADED' } } : null);
     const result = await quoteUploadRows(parsedRows(), kpl(0, 1, 2, 3, 4, 5, 6, 7, 8, 9), quoteDeps());
     const views = result.rows.map(describeRowShipping);
-    const summary = summarizeQuoteCategories(views);
+    const summary = summarizeQuoteRows(result.rows);
     // 정상 0·1·2·9 / 복구 4·5 / 대체 3(1,500g→eGS)·7 / 확인 6·8
-    expect(summary).toEqual({ ok: 4, recovered: 2, alternative: 2, review: 2, pending: 0 });
-    expect(countQuoteCategories(views.map(v => v.quoteCategory))).toEqual(summary);
-    expect(formatQuoteSummary(summary)).toBe('정상 4개 · 자동복구 2개 · 대체 가능 2개 · 확인 필요 2개');
+    expect(summary).toEqual({ ok: 4, recovered: 2, alternative: 2, review: 2, pending: 0, total: 10, unfinished: 0 });
+    const { unfinished: _u, ...categories } = summary;
+    expect(countQuoteCategories(views.map(v => v.quoteCategory))).toEqual(categories);
+    expect(formatQuoteSummary(summary)).toBe('정상 4개 · 자동복구 2개 · 대체 가능 2개 · 확인 필요 2개 · 미계산 0개 · 전체 10개');
 
     const html = renderStep2(buildImportPreview(result.rows));
-    expect(html).toContain('정상 4개 · 자동복구 2개 · 대체 가능 2개 · 확인 필요 2개');
-    for (const label of ['실패 항목 자동 재계산', '대체 가능 전체 적용', '확인 필요만 보기', '전체 보기']) expect(html).toContain(label);
+    expect(html).toContain('정상 4개 · 자동복구 2개 · 대체 가능 2개 · 확인 필요 2개 · 미계산 0개 · 전체 10개');
+    for (const label of ['모든 배송비 계산 완료', '대체 가능 전체 적용', '확인 필요만 보기', '전체 보기']) expect(html).toContain(label);
+    expect(html).not.toContain('실패 항목 자동 재계산');
     expect(html).toMatch(/id="quote-summary" data-testid="quote-summary">/);   // 결과가 있으면 표시
-
-    const providers = createProviderState(views.map((v, index) => ({ index, provider: v.shippingProvider })));
-    expect(failedQuoteSelections(views.map((v, index) => ({ index, quoteCategory: v.quoteCategory })), providers).map((s: any) => s.index)).toEqual([3, 6, 7, 8]);
   });
 
   it('19. 진행상태: job 폴링으로 "배송비 계산 중 n / total · 정상 · 재시도 · 실패" 제공', async () => {
@@ -575,7 +575,8 @@ describe('17-20. 화면 사유 · 요약 · 진행상태 · 중복 실행', () =
     const last = events[events.length - 1];
     expect(last).toMatchObject({ total: 4, done: 4, ok: 4, failed: 0, retried: 1, phase: 'done' });
     expect(events.map(e => e.done)).toEqual([...events.map(e => e.done)].sort((a, b) => a - b));   // 단조 증가
-    expect(formatQuoteProgress({ total: 56, done: 18, ok: 15, retried: 2, failed: 1 })).toEqual({ main: '배송비 계산 중 18 / 56', detail: '정상 15 · 재시도 2 · 실패 1' });
+    expect(formatQuoteProgress({ total: 56, done: 18, ok: 15, recoveredRows: 1, retried: 2, alternativeChecked: 0, failed: 1 }))
+      .toEqual({ main: '배송비 계산 중 18 / 56', detail: '정상 15 · 자동복구 1 · 재시도 2 · 대체 확인 0 · 실패 1' });
 
     const app = await appWith(uploadRoutes);
     const { start, job, snapshots } = await runJob(app, kpl(0, 1, 2, 3, 7));
@@ -626,7 +627,9 @@ describe('17-20. 화면 사유 · 요약 · 진행상태 · 중복 실행', () =
     const again = await runJob(app, kpl(0, 7));
     await app.close();
     expect(again.job.progress).toMatchObject({ reused: 1 });
-    expect(fetchCalls.map(c => c.body.provider)).toEqual(['KPL', 'eGS']);   // 7번 KPL + 대체 eGS 만
+    //   7번 KPL만 재요청 — 대체 eGS 20kg key는 직전 계산의 정상 대체 견적을 재사용 (같은 upload 내 key 캐시)
+    expect(fetchCalls.map(c => c.body.provider)).toEqual(['KPL']);
+    expect(uploadRow().parsedRows[7].shippingQuoteAlternative).toMatchObject({ provider: 'eGS', status: 'OK', shippingKrw: 418600 });
     expect(uploadRow().parsedRows[0].shippingQuote).toMatchObject({ status: 'OK', shippingKrw: 13900 });
   });
 });
@@ -693,6 +696,220 @@ describe('21-24. 등록 차단 · 레거시 · eBay 0 · 토큰 비노출', () =
       expect(haystack).not.toContain(TOKEN);
       expect(haystack).not.toContain(MAIN);
     }
+  });
+});
+
+// ── 미완료 배송비 한 번 클릭 (production upload 138 재현) ───────────
+
+/** upload 138 구성: 정상 388 · timeout 300 · 최대중량 초과 3 · 적용무게 오류(복구 가능) 2 = 693 */
+function upload138Rows() {
+  const ok: [number, number][] = [[100, 40], [200, 40], [300, 60], [400, 38], [600, 70], [1000, 60], [3000, 40], [5000, 40]];
+  const timeout: [number, number][] = [[210, 57], [307, 194], [752, 5], [1023, 1], [1200, 26], [1500, 15], [12000, 2]];
+  const lines = [HEADER];
+  const plan: { kind: 'ok' | 'timeout' | 'over' | 'recovered'; g: number | null }[] = [];
+  let code = 1000;
+  const push = (kind: typeof plan[number]['kind'], g: number | null, actual: string, vol: string, charge: string) => {
+    lines.push(line(`P${code}`, '25.4', actual, vol, charge, String(code++)));
+    plan.push({ kind, g });
+  };
+  for (const [g, count] of ok) for (let i = 0; i < count; i++) push('ok', g, String(g), String(g), String(g));
+  for (const [g, count] of timeout) for (let i = 0; i < count; i++) push('timeout', g, String(g), String(g), String(g));
+  for (const g of [20000, 40000, 40000]) push('over', g, String(g), String(g), String(g));
+  push('recovered', null, '200', '', '');          // 적용무게 빈칸, 실측 200g
+  push('recovered', null, '300', '307', '#REF!');  // #REF!, 실측 300g · 부피 307g
+  const raw = parseCsvRawText(lines.join('\n'));
+  const rows = applyMapping(raw, detectFixedHeaderMapping(raw[0])!);
+  const cfg = getShippingPricingConfig();
+  const now = new Date('2026-09-14T12:45:10.576Z');
+  rows.forEach((row: any, i: number) => {
+    const { kind, g } = plan[i];
+    const bracket = g !== null ? BRACKETS.KPL.find(([kg]) => kg >= g / 1000 - 1e-9) : undefined;
+    const outcome = kind === 'ok'
+      ? { ok: true as const, provider: 'KPL' as const, serviceCode: 'KPL_SF_US', destinationCountry: 'US', chargeableWeightG: g!, chargeableWeightKg: g! / 1000, bracketWeightKg: bracket![0], shippingKrw: bracket![1], rateVersionId: 4, rateEffectiveFrom: '2026-09-13' }
+      : { ok: false as const, blockedReason: kind === 'timeout' ? 'QUOTE_TIMEOUT' : kind === 'over' ? 'WEIGHT_OVER_MAX_BRACKET' : 'CHARGEABLE_WEIGHT_INVALID' };
+    row.selectedShippingProvider = 'KPL';
+    row.shippingQuote = buildShippingQuoteSnapshot({ provider: 'KPL', serviceCode: 'KPL_SF_US', chargeableWeightG: g, csvSalePriceUsd: 25.4, exchangeRate: cfg.exchangeRate, buyerShippingUsd: cfg.buyerShippingUsd, outcome, now });
+  });
+  return { rows, plan };
+}
+
+function seedUpload138() {
+  const { rows, plan } = upload138Rows();
+  store.rowsOf(schema.csvUploads).push({ id: 138, uploadId: 'upload-r', filename: '138.csv', rowCount: rows.length, status: 'mapped', parsedRows: rows });
+  return plan;
+}
+
+async function waitJob(app: any, jobId: string) {
+  let job: any;
+  for (let i = 0; i < 500; i++) {
+    job = (await app.inject({ method: 'GET', url: `/api/upload/shipping-quotes/jobs/${jobId}` })).json();
+    if (job.status !== 'running') break;
+    await new Promise(r => setTimeout(r, 10));
+  }
+  return job;
+}
+
+describe('ONE-CLICK. 미완료 배송비 자동 계산', () => {
+  it('1,9,10. 초기 upload 138: 정상 388 · 확인 필요 303 · 미계산 2 = 전체 693, 미완료 305', () => {
+    seedUpload138();
+    const rows = uploadRow().parsedRows;
+    const summary = summarizeQuoteRows(rows);
+    expect(summary).toEqual({ ok: 388, recovered: 0, alternative: 0, review: 303, pending: 2, total: 693, unfinished: 305 });
+    expect(summary.ok + summary.recovered + summary.alternative + summary.review + summary.pending).toBe(summary.total);
+    expect(rows.length).toBe(693);
+
+    const html = renderStep2(buildImportPreview(rows));
+    expect(html).toContain('정상 388개 · 자동복구 0개 · 대체 가능 0개 · 확인 필요 303개 · 미계산 2개 · 전체 693개');
+    const unfinishedBtn = html.match(/<button[^>]*id="unfinished-btn"[^>]*>/)![0];
+    expect(unfinishedBtn).toContain('btn-primary');
+    expect(unfinishedBtn).not.toContain('disabled');
+    expect(html).toContain('미완료 배송비 자동 계산 (305개)');
+    expect(html.match(/<button[^>]*id="quote-btn"[^>]*>/)![0]).toContain('btn-secondary');   // 미완료가 있으면 미완료 버튼 우선 강조
+  });
+
+  it('2-8. 한 번 클릭 → timeout 300 재계산 + 20kg·40kg 대체 확인 + 복구 2 신규, 정상 388 재요청 없음 → 688/2/1/2/0 = 693', async () => {
+    const plan = seedUpload138();
+    const app = await appWith(uploadRoutes);
+    const start = await app.inject({ method: 'POST', url: '/api/upload/shipping-quotes/jobs', payload: { uploadId: 'upload-r', mode: 'unfinished' } });
+    expect(start.json()).toMatchObject({ alreadyRunning: false, status: 'running', unfinished: 305 });
+    const job = await waitJob(app, start.json().jobId);
+    await app.close();
+    expect(job.status).toBe('done');
+
+    // 3. 정상 행 무게(100/200/300/400/600/1000/3000/5000g)는 재요청 없음 — 복구 200g 행도 기존 200g 정상 결과 재사용
+    const requested = fetchCalls.map(c => `${c.body.provider}:${Math.round(c.body.actualWeightKg * 1000)}`).sort();
+    expect(requested).toEqual(['KPL:1023', 'KPL:12000', 'KPL:1200', 'KPL:1500', 'KPL:210', 'KPL:307', 'KPL:752', 'eGS:20000', 'eGS:40000'].sort());
+    expect(job.progress).toMatchObject({ total: 9, done: 9, ok: 8, failed: 1, recoveredRows: 2, alternativeChecked: 2, phase: 'done' });
+    expect(job.result.rows).toHaveLength(305);
+
+    const rows = uploadRow().parsedRows;
+    const idx = (kind: string) => plan.map((p, i) => (p.kind === kind ? i : -1)).filter(i => i >= 0);
+    // 4. 자동복구 2개 정상
+    expect(idx('recovered').map(i => describeRowShipping(rows[i]))).toMatchObject([
+      { quoteCategory: 'RECOVERED', weightRecoveryLabel: '적용무게 자동복구: 200g', shippingLabel: '$10.70' },
+      { quoteCategory: 'RECOVERED', weightRecoveryLabel: '적용무게 자동복구: 307g', shippingLabel: '$10.70' },
+    ]);
+    // 5. 20kg eGS 대체 가능 / 6. 40kg 2개 확인 필요
+    const over = idx('over').map(i => describeRowShipping(rows[i]));
+    expect(over[0]).toMatchObject({ quoteCategory: 'ALTERNATIVE', alternative: { provider: 'eGS', label: 'eGS 20kg 구간 가능 · 배송비 418,600원' } });
+    expect(over.slice(1)).toMatchObject([
+      { quoteCategory: 'REVIEW', alternativeFailureLabel: 'eGS도 불가 · eGS의 최대 허용중량 초과' },
+      { quoteCategory: 'REVIEW', alternativeFailureLabel: 'eGS도 불가 · eGS의 최대 허용중량 초과' },
+    ]);
+    expect(idx('timeout').every(i => rows[i].shippingQuote.status === 'OK')).toBe(true);
+    expect(idx('ok').every(i => rows[i].shippingQuote.calculatedAt === '2026-09-14T12:45:10.576Z')).toBe(true);   // 정상 388 snapshot 그대로
+
+    // 7·8. 최종 분류 합계 693, 미완료 0
+    const summary = summarizeQuoteRows(rows);
+    expect(summary).toEqual({ ok: 688, recovered: 2, alternative: 1, review: 2, pending: 0, total: 693, unfinished: 0 });
+    expect(job.result.summary).toEqual(summary);
+    expect(summary.ok + summary.recovered + summary.alternative + summary.review + summary.pending).toBe(693);
+    expect(formatQuoteCompletion(summary)).toEqual({ main: '배송비 계산 완료', detail: '정상 688 · 자동복구 2 · 대체 가능 1 · 확인 필요 2' });
+    expect(formatQuoteProgress({ total: 58, done: 18, ok: 15, recoveredRows: 1, retried: 2, alternativeChecked: 0, failed: 0 }, { mode: 'unfinished' }))
+      .toEqual({ main: '미완료 배송비 계산 중 18 / 58', detail: '정상 15 · 자동복구 1 · 재시도 2 · 대체 확인 0 · 실패 0' });
+  });
+
+  it('11. 실행 중 중복 클릭 → 같은 job 반환 (요청 중복 없음)', async () => {
+    seedUpload138();
+    const app = await appWith(uploadRoutes);
+    let unblock!: () => void;
+    const gate = new Promise<void>(r => { unblock = r; });
+    script = () => null;
+    fakeFetch.mockImplementationOnce(async (url: string, init: any) => {
+      fetchCalls.push({ url, body: JSON.parse(init.body), headers: init.headers });
+      await gate;
+      return { ok: true, status: 200, text: async () => JSON.stringify((mainResponse(JSON.parse(init.body)) as any).body) };
+    });
+    const a = await app.inject({ method: 'POST', url: '/api/upload/shipping-quotes/jobs', payload: { uploadId: 'upload-r', mode: 'unfinished' } });
+    const b = await app.inject({ method: 'POST', url: '/api/upload/shipping-quotes/jobs', payload: { uploadId: 'upload-r', mode: 'unfinished' } });
+    const c = await app.inject({ method: 'POST', url: '/api/upload/shipping-quotes/jobs', payload: { uploadId: 'upload-r', selections: kpl(0) } });
+    expect(b.json()).toMatchObject({ jobId: a.json().jobId, alreadyRunning: true });
+    expect(c.json()).toMatchObject({ jobId: a.json().jobId, alreadyRunning: true });
+    unblock();
+    const job = await waitJob(app, a.json().jobId);
+    await app.close();
+    expect(job.status).toBe('done');
+    expect(fetchCalls).toHaveLength(9);
+  });
+
+  it('12. 완료 후 미완료 0 → 서버는 job 없이 완료 응답, 버튼 disabled "모든 배송비 계산 완료"', async () => {
+    seedUpload138();
+    const app = await appWith(uploadRoutes);
+    const first = await app.inject({ method: 'POST', url: '/api/upload/shipping-quotes/jobs', payload: { uploadId: 'upload-r', mode: 'unfinished' } });
+    await waitJob(app, first.json().jobId);
+    fetchCalls = [];
+    const again = await app.inject({ method: 'POST', url: '/api/upload/shipping-quotes/jobs', payload: { uploadId: 'upload-r', mode: 'unfinished' } });
+    await app.close();
+    expect(again.json()).toMatchObject({ jobId: null, status: 'done', unfinished: 0, summary: { ok: 688, total: 693, unfinished: 0 } });
+    expect(fetchCalls).toHaveLength(0);
+
+    expect(unfinishedButtonState(0)).toEqual({ disabled: true, label: '모든 배송비 계산 완료' });
+    expect(unfinishedButtonState(305)).toEqual({ disabled: false, label: '미완료 배송비 자동 계산 (305개)' });
+    const html = renderStep2(buildImportPreview(uploadRow().parsedRows));
+    const btn = html.match(/<button[^>]*id="unfinished-btn"[^>]*>[\s\S]*?<\/button>/)![0];
+    expect(btn).toContain('disabled');
+    expect(btn).toContain('모든 배송비 계산 완료');
+    expect(html).toContain('정상 688개 · 자동복구 2개 · 대체 가능 1개 · 확인 필요 2개 · 미계산 0개 · 전체 693개');
+  });
+
+  it('서버 판정: 견적 없음·중단·설정 오류는 미완료 / 대체까지 확인한 영구 실패·입력 오류는 완료, 저장 전 배송사 변경 반영', async () => {
+    const rows = parsedRows();
+    const cfg = getShippingPricingConfig();
+    const snap = (reason: string | null, provider: 'KPL' | 'eGS' = 'KPL', g = 307) => buildShippingQuoteSnapshot({
+      provider, serviceCode: provider === 'KPL' ? 'KPL_SF_US' : 'EGS_STD_US', chargeableWeightG: g, csvSalePriceUsd: 25.4, exchangeRate: cfg.exchangeRate, buyerShippingUsd: 7.9,
+      outcome: reason ? { ok: false, blockedReason: reason } : { ok: true, provider, serviceCode: 'x', destinationCountry: 'US', chargeableWeightG: g, chargeableWeightKg: g / 1000, bracketWeightKg: 0.5, shippingKrw: 13900, rateVersionId: 4, rateEffectiveFrom: null },
+    });
+    const r0 = rows[0];
+    expect(isQuoteRowUnfinished({ ...r0, shippingQuote: null })).toBe(true);                                        // 견적 없음 (중단된 작업)
+    expect(isQuoteRowUnfinished({ ...r0, shippingQuote: snap('AUTH_ERROR') })).toBe(true);                         // 설정 수정 후 재계산
+    expect(isQuoteRowUnfinished({ ...r0, shippingQuote: snap('QUOTE_HTTP_503') })).toBe(true);
+    expect(isQuoteRowUnfinished({ ...r0, shippingQuote: snap('RATE_NOT_LOADED') })).toBe(true);                    // 대체 미확인
+    expect(isQuoteRowUnfinished({ ...r0, shippingQuote: snap('RATE_NOT_LOADED'), shippingQuoteAlternative: snap('RATE_NOT_LOADED', 'eGS') })).toBe(false);   // 대체까지 확인
+    expect(isQuoteRowUnfinished({ ...r0, shippingQuote: snap('RATE_NOT_LOADED'), shippingQuoteAlternative: snap('QUOTE_TIMEOUT', 'eGS') })).toBe(true);
+    expect(isQuoteRowUnfinished({ ...r0, shippingQuote: snap('QUOTE_CONTRACT_MISMATCH') })).toBe(false);          // 계약 오류 — 재계산으로 해결 안 됨
+    expect(isQuoteRowUnfinished({ ...r0, shippingQuote: snap(null) })).toBe(false);                               // 정상
+    expect(isQuoteRowUnfinished(rows[6])).toBe(false);                                                             // 복구 불가 무게
+
+    const saved = rows.map((r: any) => ({ ...r, selectedShippingProvider: 'KPL', shippingQuote: snap(null, 'KPL', resolveChargeableWeight(r).weightG ?? 307) }));
+    expect(unfinishedQuoteSelections(saved).selections).toEqual([]);   // 전부 정상 + 복구 불가 행(6)은 완료로 제외
+  });
+
+  it('13. 한 번 계산 후에도 pricing=false면 toybox eBay 등록 차단', async () => {
+    seedUpload138();
+    const app = await appWith(uploadRoutes);
+    const start = await app.inject({ method: 'POST', url: '/api/upload/shipping-quotes/jobs', payload: { uploadId: 'upload-r', mode: 'unfinished' } });
+    await waitJob(app, start.json().jobId);
+    await app.close();
+    const ids = await importIndices([0, 600, 691], { 0: 'KPL', 600: 'KPL', 691: 'KPL' });
+    for (const id of ids) await expect(createListing(id, 'ebay')).rejects.toMatchObject({ code: 'SHIPPING_PRICING_DISABLED' });
+    expect(addItemBodies).toHaveLength(0);
+  });
+
+  it('14,15. 레거시 상품 회귀 없음 · 실제 eBay 호출 0', async () => {
+    const axios = (await import('axios')).default;
+    const post = vi.spyOn(axios, 'post').mockRejectedValue(new Error('REAL NETWORK CALL'));
+    const legacyCsv = ['이미지,상품URL,상품명,가격,무게', 'https://thumbnail.coupangcdn.com/a.jpg,https://www.coupang.com/vp/products/1,포켓몬 카드,"19,900원",500'].join('\n');
+    const raw = parseCsvRawText(legacyCsv);
+    const legacyRows = applyMapping(raw, detectMappingByKeyword(raw));
+    expect(summarizeQuoteRows(legacyRows)).toEqual({ ok: 0, recovered: 0, alternative: 0, review: 0, pending: 0, total: 0, unfinished: 0 });
+    expect(unfinishedQuoteSelections(legacyRows).selections).toEqual([]);
+
+    store.rowsOf(schema.products).push({ id: 5000, sku: 'PMC-05000', title: 'Old', costPrice: '30000.00', metadata: null, condition: 'new', brand: '', productType: '' });
+    const expected = await calculatePriceSimple(30000, { platform: 'ebay' });
+    await createListing(5000, 'ebay');
+    expect(addItemBodies.map(startPriceOf)).toEqual([expected.salePrice.toFixed(2)]);
+    expect(fetchCalls).toHaveLength(0);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('providerOverrides: 화면에서만 바꾼 배송사는 미완료로 계산 (정상 행이라도 배송사가 바뀌면 재계산)', async () => {
+    seedUpload138();
+    const providers = createProviderState([{ index: 0, provider: 'eGS' }, { index: 1, provider: 'KPL' }]);
+    const saved = new Map([[0, 'KPL'], [1, 'KPL']]);
+    expect(providerOverrides(providers, saved)).toEqual({ 0: 'eGS' });
+    const { selections } = unfinishedQuoteSelections(uploadRow().parsedRows, { 0: 'eGS' });
+    expect(selections).toHaveLength(306);
+    expect(selections[0]).toEqual({ index: 0, provider: 'eGS' });
   });
 });
 

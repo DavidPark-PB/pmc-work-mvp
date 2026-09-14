@@ -92,16 +92,18 @@ export function formatSelectionSummary(selection) {
 
 // ── 배송비 계산 결과 요약 · 진행상태 (Phase 2.2) ─────────────
 
-/** 상단 요약 "정상 680개 · 자동복구 8개 · 대체 가능 3개 · 확인 필요 2개" */
+const n = (v) => Number(v || 0).toLocaleString('en-US');
+
+/** 상단 요약 "정상 388개 · 자동복구 0개 · 대체 가능 0개 · 확인 필요 303개 · 미계산 2개 · 전체 693개" (합계 = 전체) */
 export function formatQuoteSummary(summary) {
-  const n = (v) => Number(v || 0).toLocaleString('en-US');
-  return `정상 ${n(summary.ok)}개 · 자동복구 ${n(summary.recovered)}개 · 대체 가능 ${n(summary.alternative)}개 · 확인 필요 ${n(summary.review)}개`;
+  return `정상 ${n(summary.ok)}개 · 자동복구 ${n(summary.recovered)}개 · 대체 가능 ${n(summary.alternative)}개 · 확인 필요 ${n(summary.review)}개 · 미계산 ${n(summary.pending)}개 · 전체 ${n(summary.total)}개`;
 }
 
-/** 행 분류 목록 → 요약 (서버 summarizeQuoteCategories와 같은 규칙) */
+/** 행 분류 목록 → 요약 (서버 summarizeQuoteRows와 같은 분류, 합계 = 목록 길이) */
 export function countQuoteCategories(categories) {
-  const summary = { ok: 0, recovered: 0, alternative: 0, review: 0, pending: 0 };
+  const summary = { ok: 0, recovered: 0, alternative: 0, review: 0, pending: 0, total: 0 };
   categories.forEach(c => {
+    summary.total++;
     if (c === 'OK') summary.ok++;
     else if (c === 'RECOVERED') summary.recovered++;
     else if (c === 'ALTERNATIVE') summary.alternative++;
@@ -111,15 +113,41 @@ export function countQuoteCategories(categories) {
   return summary;
 }
 
-/** 진행상태 { main: "배송비 계산 중 18 / 56", detail: "정상 15 · 재시도 2 · 실패 1" } */
-export function formatQuoteProgress(progress) {
+/** 진행상태 { main: "미완료 배송비 계산 중 18 / 58", detail: "정상 15 · 자동복구 1 · 재시도 2 · 대체 확인 0 · 실패 0" } */
+export function formatQuoteProgress(progress, options = {}) {
   const p = progress || {};
-  const n = (v) => Number(v || 0).toLocaleString('en-US');
-  const main = p.phase === 'alternative'
-    ? `대체 배송사 계산 중 ${n(p.done)} / ${n(p.total)}`
-    : `배송비 계산 중 ${n(p.done)} / ${n(p.total)}`;
-  const detail = `정상 ${n(p.ok)} · 재시도 ${n(p.retried)} · 실패 ${n(p.failed)}` + (p.reused ? ` · 기존 결과 재사용 ${n(p.reused)}` : '');
-  return { main, detail };
+  const title = options.mode === 'unfinished' ? '미완료 배송비 계산 중' : '배송비 계산 중';
+  return {
+    main: `${title} ${n(p.done)} / ${n(p.total)}`,
+    detail: `정상 ${n(p.ok)} · 자동복구 ${n(p.recoveredRows)} · 재시도 ${n(p.retried)} · 대체 확인 ${n(p.alternativeChecked)} · 실패 ${n(p.failed)}`,
+  };
+}
+
+/** 완료 { main: "배송비 계산 완료", detail: "정상 688 · 자동복구 2 · 대체 가능 1 · 확인 필요 2" } */
+export function formatQuoteCompletion(summary) {
+  const s = summary || {};
+  return {
+    main: '배송비 계산 완료',
+    detail: `정상 ${n(s.ok)} · 자동복구 ${n(s.recovered)} · 대체 가능 ${n(s.alternative)} · 확인 필요 ${n(s.review)}` + (s.pending ? ` · 미계산 ${n(s.pending)}` : ''),
+  };
+}
+
+/** "미완료 배송비 자동 계산" 버튼 — 미완료 0이면 비활성 + "모든 배송비 계산 완료" */
+export function unfinishedButtonState(unfinished) {
+  const count = Number(unfinished || 0);
+  return count > 0
+    ? { disabled: false, label: `미완료 배송비 자동 계산 (${n(count)}개)` }
+    : { disabled: true, label: '모든 배송비 계산 완료' };
+}
+
+/** 화면에서 바꿨지만 아직 서버에 저장되지 않은 배송사 { index: provider } */
+export function providerOverrides(providers, savedProviders) {
+  const out = {};
+  savedProviders.forEach((saved, index) => {
+    const current = providers.get(index);
+    if (current && current !== saved) out[index] = current;
+  });
+  return out;
 }
 
 /** 계산 버튼 연타 방지 — 실행 중이면 새 실행을 무시(null 반환) */
@@ -133,11 +161,4 @@ export function createSingleFlight() {
       return running;
     },
   };
-}
-
-/** "실패 항목 자동 재계산" 대상 — 선택 배송사 견적이 실패한 행 (확인 필요 / 대체 가능) */
-export function failedQuoteSelections(rowStates, providers) {
-  return rowStates
-    .filter(r => (r.quoteCategory === 'REVIEW' || r.quoteCategory === 'ALTERNATIVE') && providers.has(r.index))
-    .map(r => ({ index: r.index, provider: providers.get(r.index) }));
 }

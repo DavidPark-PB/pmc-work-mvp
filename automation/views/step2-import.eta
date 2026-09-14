@@ -2,15 +2,20 @@
   const shipping = it.shipping || { enabled: false, buyerShippingUsd: null, exchangeRateConfigured: false, quoteConfigured: false };
   const showShipping = !!it.showShipping;
   const buyerShippingLabel = shipping.buyerShippingUsd ? '$' + Number(shipping.buyerShippingUsd).toFixed(2) : '—';
-  const quoteSummary = { ok: 0, recovered: 0, alternative: 0, review: 0 };
+  //   분류는 겹치지 않음: 정상 + 자동복구 + 대체 가능 + 확인 필요 + 미계산 = 전체 (서버 summarizeQuoteRows와 동일)
+  const quoteSummary = { ok: 0, recovered: 0, alternative: 0, review: 0, pending: 0, total: 0, unfinished: 0 };
   it.rows.forEach(r => {
     if (!r.shippingProvider) return;
+    quoteSummary.total++;
     if (r.quoteCategory === 'OK') quoteSummary.ok++;
     else if (r.quoteCategory === 'RECOVERED') quoteSummary.recovered++;
     else if (r.quoteCategory === 'ALTERNATIVE') quoteSummary.alternative++;
     else if (r.quoteCategory === 'REVIEW') quoteSummary.review++;
+    else quoteSummary.pending++;
+    if (r.quoteUnfinished) quoteSummary.unfinished++;
   });
   const quotedCount = quoteSummary.ok + quoteSummary.recovered + quoteSummary.alternative + quoteSummary.review;
+  const emphasizeUnfinished = quotedCount > 0 && quoteSummary.unfinished > 0;
   const fmt = (v) => Number(v).toLocaleString('en-US');
 %>
 <div class="page-header">
@@ -36,7 +41,7 @@
       <option value="eGS">eGS</option>
     </select>
     <button type="button" class="btn btn-secondary btn-sm" id="bulk-provider-btn"><i class="ti ti-truck"></i> 적용</button>
-    <button type="button" class="btn btn-primary btn-sm" id="quote-btn"<%~ shipping.quoteConfigured ? '' : ' disabled' %>><i class="ti ti-calculator"></i> 선택 상품 국제배송비 계산</button>
+    <button type="button" class="btn <%= emphasizeUnfinished ? 'btn-secondary' : 'btn-primary' %> btn-sm" id="quote-btn"<%~ shipping.quoteConfigured ? '' : ' disabled' %>><i class="ti ti-calculator"></i> 선택 상품 국제배송비 계산</button>
     <span class="text-muted import-shipping-meta">eBay US 기준 · KPL은 미국 서비스만 사용 · 배송정책 <strong><%= buyerShippingLabel %></strong>은 구매자 별도 청구 (등록가에서 빼거나 더하지 않음)</span>
     <span class="import-egs-warning" id="egs-warning"><i class="ti ti-alert-triangle"></i> eGS는 브랜드 상품에 사용하지 않습니다.</span>
   </div>
@@ -46,12 +51,12 @@
   </div>
   <% } %>
   <div class="import-quote-progress" id="quote-progress" data-testid="quote-progress" hidden>
-    <span class="spinner"></span> <strong id="quote-progress-main">배송비 계산 중 0 / 0</strong>
-    <span class="text-muted" id="quote-progress-detail">정상 0 · 재시도 0 · 실패 0</span>
+    <span class="spinner" id="quote-progress-spinner"></span> <strong id="quote-progress-main">배송비 계산 중 0 / 0</strong>
+    <span class="text-muted" id="quote-progress-detail">정상 0 · 자동복구 0 · 재시도 0 · 대체 확인 0 · 실패 0</span>
   </div>
   <div class="import-quote-summary" id="quote-summary" data-testid="quote-summary"<%~ quotedCount > 0 ? '' : ' hidden' %>>
-    <span class="import-quote-summary-text" id="quote-summary-text">정상 <%= fmt(quoteSummary.ok) %>개 · 자동복구 <%= fmt(quoteSummary.recovered) %>개 · 대체 가능 <%= fmt(quoteSummary.alternative) %>개 · 확인 필요 <%= fmt(quoteSummary.review) %>개</span>
-    <button type="button" class="btn btn-secondary btn-xs" id="retry-failed-btn"><i class="ti ti-refresh"></i> 실패 항목 자동 재계산</button>
+    <span class="import-quote-summary-text" id="quote-summary-text">정상 <%= fmt(quoteSummary.ok) %>개 · 자동복구 <%= fmt(quoteSummary.recovered) %>개 · 대체 가능 <%= fmt(quoteSummary.alternative) %>개 · 확인 필요 <%= fmt(quoteSummary.review) %>개 · 미계산 <%= fmt(quoteSummary.pending) %>개 · 전체 <%= fmt(quoteSummary.total) %>개</span>
+    <button type="button" class="btn <%= quoteSummary.unfinished > 0 ? 'btn-primary' : 'btn-secondary' %> btn-sm" id="unfinished-btn" data-testid="unfinished-btn"<%~ quoteSummary.unfinished > 0 && shipping.quoteConfigured ? '' : ' disabled' %>><i class="ti ti-refresh"></i> <span id="unfinished-btn-label"><%= quoteSummary.unfinished > 0 ? '미완료 배송비 자동 계산 (' + fmt(quoteSummary.unfinished) + '개)' : '모든 배송비 계산 완료' %></span></button>
     <button type="button" class="btn btn-secondary btn-xs" id="apply-all-alt-btn"><i class="ti ti-arrows-exchange"></i> 대체 가능 전체 적용</button>
     <button type="button" class="btn btn-secondary btn-xs" id="filter-review-btn"><i class="ti ti-filter"></i> 확인 필요만 보기</button>
     <button type="button" class="btn btn-secondary btn-xs" id="filter-all-btn"><i class="ti ti-list"></i> 전체 보기</button>
@@ -91,7 +96,7 @@
       </thead>
       <tbody>
         <% it.rows.forEach((row) => { %>
-        <tr class="import-row<%= row.errorCount > 0 ? ' import-row-error' : '' %>" data-index="<%= row.index %>" data-quote-category="<%= row.quoteCategory %>">
+        <tr class="import-row<%= row.errorCount > 0 ? ' import-row-error' : '' %>" data-index="<%= row.index %>" data-quote-category="<%= row.quoteCategory %>" data-quote-unfinished="<%= row.quoteUnfinished ? 'true' : 'false' %>">
           <td>
             <input type="checkbox" class="import-row-check" data-index="<%= row.index %>" aria-label="상품 선택 <%= row.index + 1 %>"<%~ row.defaultSelected ? ' checked' : '' %>>
           </td>
@@ -212,7 +217,7 @@
 </style>
 
 <script type="module">
-import { createSelection, createProviderState, buildImportPayload, buildQuoteRequest, formatSelectionSummary, formatQuoteSummary, formatQuoteProgress, createSingleFlight, failedQuoteSelections } from '/js/import-selection.js';
+import { createSelection, createProviderState, buildImportPayload, buildQuoteRequest, formatSelectionSummary, formatQuoteSummary, formatQuoteProgress, formatQuoteCompletion, unfinishedButtonState, providerOverrides, createSingleFlight } from '/js/import-selection.js';
 
 const uploadId = <%~ JSON.stringify(it.uploadId).replace(/</g, '\\u003c') %>;
 const showShipping = <%~ showShipping ? 'true' : 'false' %>;
@@ -224,6 +229,8 @@ const selection = createSelection(
 );
 const providerSelects = Array.from(document.querySelectorAll('.row-provider'));
 const providers = createProviderState(providerSelects.map(sel => ({ index: indexOf(sel), provider: sel.value })));
+//   서버에 저장된 배송사 — 화면에서만 바꾼 행은 미완료 계산 시 providerOverrides로 전달
+const savedProviders = new Map(providerSelects.map(sel => [indexOf(sel), sel.value]));
 const rowOf = (index) => document.querySelector('tr.import-row[data-index="' + index + '"]');
 
 const importBtn = document.getElementById('import-btn');
@@ -244,6 +251,8 @@ function markStale(index) {
     shippingCell.dataset.quoteStatus = 'NONE';
     shippingCell.title = '';
     tr.dataset.quoteCategory = 'NONE';
+    if (tr.dataset.quoteUnfinished !== 'true' && typeof onRowBecameUnfinished === 'function') onRowBecameUnfinished();
+    tr.dataset.quoteUnfinished = 'true';
     tr.querySelector('.cell-listing').innerHTML = '<strong>—</strong>';
     tr.querySelector('.cell-buyer-total').textContent = '';
     const msg = tr.querySelector('.cell-quote-msg');
@@ -264,6 +273,7 @@ function applyQuoteRow(r) {
   const tr = rowOf(r.index);
   if (!tr) return;
   tr.dataset.quoteCategory = r.quoteCategory;
+  tr.dataset.quoteUnfinished = r.quoteUnfinished ? 'true' : 'false';
   const shippingCell = tr.querySelector('.cell-shipping');
   shippingCell.textContent = r.shippingLabel;
   shippingCell.dataset.quoteStatus = r.quoteStatus;
@@ -301,14 +311,18 @@ function applyQuoteRow(r) {
   msg.title = r.quoteTitle || '';
   msg.classList.toggle('is-blocked', r.quoteStatus === 'BLOCKED' || r.quoteStatus === 'WEIGHT_INVALID');
 
-  if (r.shippingProvider && providers.get(r.index) !== r.shippingProvider) {
-    providers.set(r.index, r.shippingProvider);
-    const sel = tr.querySelector('.row-provider');
-    if (sel) sel.value = r.shippingProvider;
+  if (r.shippingProvider) {
+    savedProviders.set(r.index, r.shippingProvider);
+    if (providers.get(r.index) !== r.shippingProvider) {
+      providers.set(r.index, r.shippingProvider);
+      const sel = tr.querySelector('.row-provider');
+      if (sel) sel.value = r.shippingProvider;
+    }
   }
 }
 
 const quoteRun = createSingleFlight();
+let onRowBecameUnfinished = null;
 
 document.getElementById('import-table').addEventListener('change', (e) => {
   const cb = e.target.closest('.import-row-check');
@@ -334,58 +348,94 @@ if (showShipping) {
   });
 
   const quoteBtn = document.getElementById('quote-btn');
+  const unfinishedBtn = document.getElementById('unfinished-btn');
   const summaryBox = document.getElementById('quote-summary');
   const progressBox = document.getElementById('quote-progress');
-  const busyButtons = () => [quoteBtn, importBtn, document.getElementById('bulk-provider-btn'), document.getElementById('retry-failed-btn'), document.getElementById('apply-all-alt-btn'), ...document.querySelectorAll('.apply-alt-btn')];
+  const quoteConfigured = <%~ shipping.quoteConfigured ? 'true' : 'false' %>;
+  let unfinishedCount = <%~ String(quoteSummary.unfinished) %>;
+  const busyButtons = () => [quoteBtn, unfinishedBtn, importBtn, document.getElementById('bulk-provider-btn'), document.getElementById('apply-all-alt-btn'), ...document.querySelectorAll('.apply-alt-btn')];
+  let busyNow = false;
+  const renderUnfinishedButton = () => {
+    const state = unfinishedButtonState(unfinishedCount);
+    document.getElementById('unfinished-btn-label').textContent = state.label;
+    unfinishedBtn.disabled = state.disabled || !quoteConfigured || busyNow;
+    //   미완료가 남아 있으면 "미완료 배송비 자동 계산"을 우선 강조
+    unfinishedBtn.classList.toggle('btn-primary', !state.disabled);
+    unfinishedBtn.classList.toggle('btn-secondary', state.disabled);
+    quoteBtn.classList.toggle('btn-primary', state.disabled);
+    quoteBtn.classList.toggle('btn-secondary', !state.disabled);
+  };
   const setBusy = (busy) => {
+    busyNow = busy;
     busyButtons().forEach(b => { if (b) b.disabled = busy; });
-    if (!busy) { importBtn.disabled = selection.count() === 0; quoteBtn.disabled = <%~ shipping.quoteConfigured ? 'false' : 'true' %>; }
+    if (!busy) {
+      importBtn.disabled = selection.count() === 0;
+      quoteBtn.disabled = !quoteConfigured;
+      document.querySelectorAll('.apply-alt-btn').forEach(b => { b.disabled = false; });
+      document.getElementById('bulk-provider-btn').disabled = false;
+      document.getElementById('apply-all-alt-btn').disabled = false;
+      renderUnfinishedButton();
+    }
   };
   const toast = (m, type) => { if (typeof showToast === 'function') showToast(m, type); };
   const updateSummary = (summary) => {
     if (!summary) return;
     document.getElementById('quote-summary-text').textContent = formatQuoteSummary(summary);
     summaryBox.hidden = (summary.ok + summary.recovered + summary.alternative + summary.review) === 0;
+    if (typeof summary.unfinished === 'number') unfinishedCount = summary.unfinished;
+    renderUnfinishedButton();
   };
-  const showProgress = (p) => {
-    const text = formatQuoteProgress(p);
+  const showProgress = (text, spinning) => {
     document.getElementById('quote-progress-main').textContent = text.main;
     document.getElementById('quote-progress-detail').textContent = text.detail;
+    document.getElementById('quote-progress-spinner').hidden = !spinning;
   };
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  onRowBecameUnfinished = () => { unfinishedCount++; renderUnfinishedButton(); };
 
-  async function runQuote(selections) {
-    if (selections.length === 0) { toast('배송비를 계산할 상품을 선택하세요.', 'error'); return; }
+  /** payload: { selections } (선택 상품) 또는 { mode: 'unfinished', providerOverrides } (미완료 전체, 서버 판정) */
+  async function runQuote(payload, mode) {
+    if (mode !== 'unfinished' && payload.selections.length === 0) { toast('배송비를 계산할 상품을 선택하세요.', 'error'); return; }
     const started = quoteRun.run(async () => {
       setBusy(true);
       progressBox.hidden = false;
-      showProgress({ total: 0, done: 0, ok: 0, retried: 0, failed: 0 });
+      showProgress(formatQuoteProgress({}, { mode }), true);
+      let finished = false;
       try {
         const res = await fetch('/api/upload/shipping-quotes/jobs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uploadId, selections }),
+          body: JSON.stringify({ uploadId, ...payload }),
         });
         const start = await res.json();
         if (!res.ok) throw new Error(start.error || '서버 오류 (HTTP ' + res.status + ')');
+        if (start.jobId === null) {
+          updateSummary(start.summary);
+          showProgress(formatQuoteCompletion(start.summary), false);
+          finished = true;
+          toast('모든 배송비 계산 완료', 'success');
+          return;
+        }
+        if (start.alreadyRunning) toast('이미 진행 중인 배송비 계산의 진행상태를 표시합니다.', 'info');
         let job = start;
         while (job.status === 'running') {
-          showProgress(job.progress);
+          showProgress(formatQuoteProgress(job.progress, { mode }), true);
           await sleep(700);
           const poll = await fetch('/api/upload/shipping-quotes/jobs/' + encodeURIComponent(start.jobId));
           job = await poll.json();
           if (!poll.ok) throw new Error(job.error || '서버 오류 (HTTP ' + poll.status + ')');
         }
         if (job.status === 'error' || !job.result) throw new Error(job.error || '배송비 계산 실패');
-        showProgress(job.progress);
         job.result.rows.forEach(applyQuoteRow);
         updateSummary(job.result.summary);
+        showProgress(formatQuoteCompletion(job.result.summary), false);
+        finished = true;
         const s = job.result.summary;
-        toast('배송비 계산 완료: ' + formatQuoteSummary(s), s.review === 0 ? 'success' : 'error');
+        toast('배송비 계산 완료: ' + formatQuoteSummary(s), s.unfinished === 0 ? 'success' : 'error');
       } catch (e) {
         toast('배송비 계산 실패: ' + e.message, 'error');
       } finally {
-        progressBox.hidden = true;
+        if (!finished) progressBox.hidden = true;
         setBusy(false);
       }
     });
@@ -415,11 +465,8 @@ if (showShipping) {
     if (started === null) toast('다른 작업이 진행 중입니다.', 'error');
   }
 
-  quoteBtn.addEventListener('click', () => runQuote(buildQuoteRequest(uploadId, selection, providers).selections));
-  document.getElementById('retry-failed-btn').addEventListener('click', () => {
-    const states = Array.from(document.querySelectorAll('tr.import-row')).map(tr => ({ index: indexOf(tr), quoteCategory: tr.dataset.quoteCategory }));
-    runQuote(failedQuoteSelections(states, providers));
-  });
+  quoteBtn.addEventListener('click', () => runQuote({ selections: buildQuoteRequest(uploadId, selection, providers).selections }, 'selected'));
+  unfinishedBtn.addEventListener('click', () => runQuote({ mode: 'unfinished', providerOverrides: providerOverrides(providers, savedProviders) }, 'unfinished'));
   document.getElementById('apply-all-alt-btn').addEventListener('click', () => applyAlternatives({ all: true }));
   document.getElementById('import-table').addEventListener('click', (e) => {
     const btn = e.target.closest('.apply-alt-btn');

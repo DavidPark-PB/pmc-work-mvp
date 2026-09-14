@@ -9,7 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { pipeline } from 'stream/promises';
-import { parseCsvRawFields, detectMappingByKeyword, detectFixedHeaderMapping, validateColumnMapping, applyMapping, describeRowShipping, summarizeQuoteCategories, type CsvRow } from '../lib/csv-parser.js';
+import { parseCsvRawFields, detectMappingByKeyword, detectFixedHeaderMapping, validateColumnMapping, applyMapping, describeRowShipping, isQuoteRowUnfinished, summarizeQuoteRows, type CsvRow } from '../lib/csv-parser.js';
 import { getShippingPricingConfig } from '../lib/shipping-config.js';
 import {
   alternativeReadyIndices,
@@ -20,6 +20,7 @@ import {
   parseQuoteSelections,
   quoteUploadRows,
   startQuoteJob,
+  unfinishedQuoteSelections,
   type QuoteRunProgress,
   type ShippingQuoteSelection,
 } from '../services/shipping-quote-service.js';
@@ -205,10 +206,29 @@ export async function uploadRoutes(app: FastifyInstance) {
   });
 
   // POST /api/upload/shipping-quotes/jobs — 배송비 계산 시작 (진행상태 폴링용). 같은 upload 실행 중이면 그 job 반환
+  //   mode 'unfinished': 서버가 최신 parsed_rows에서 미완료 행(실패·대체 미확인·복구 후 미계산·견적 없음)을 직접 판정
   app.post('/upload/shipping-quotes/jobs', async (request, reply) => {
     const user = getUser(request);
     if (!user?.isAdmin) {
       return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
+    }
+    const body = (request.body ?? {}) as { uploadId?: string; mode?: string; providerOverrides?: Record<string, unknown> };
+    if (body.mode === 'unfinished') {
+      if (!body.uploadId) return reply.status(400).send({ error: 'uploadId가 필요합니다' });
+      const running = findRunningQuoteJob(body.uploadId);
+      if (running) return { jobId: running.id, alreadyRunning: true, status: running.status, progress: running.progress };
+      const upload = await db.query.csvUploads.findFirst({ where: eq(csvUploads.uploadId, body.uploadId) });
+      const rows = upload?.parsedRows;
+      if (!rows || rows.length === 0) return reply.status(404).send({ error: '업로드 데이터를 찾을 수 없습니다' });
+      const overrides = body.providerOverrides && typeof body.providerOverrides === 'object' ? body.providerOverrides : {};
+      const unfinished = unfinishedQuoteSelections(rows, overrides);
+      if (unfinished.selections.length === 0) {
+        return { jobId: null, alreadyRunning: false, status: 'done', unfinished: 0, summary: summarizeQuoteRows(unfinished.rows) };
+      }
+      const uploadId = body.uploadId;
+      const { job, alreadyRunning } = startQuoteJob(uploadId, onProgress =>
+        runUploadQuote(user, uploadId, unfinished.rows, unfinished.selections, onProgress, { reuseProviderFailures: true }));
+      return { jobId: job.id, alreadyRunning, status: job.status, progress: job.progress, unfinished: unfinished.selections.length };
     }
     const prepared = await prepareQuoteRun(request.body);
     if ('error' in prepared) return reply.status(prepared.status).send({ error: prepared.error });
@@ -265,8 +285,8 @@ export async function uploadRoutes(app: FastifyInstance) {
       uploadId,
       applied: result.applied,
       skipped: result.skipped,
-      rows: result.applied.map(index => ({ index, ...describeRowShipping(result.rows[index]) })),
-      summary: summarizeQuoteCategories(result.rows.map(describeRowShipping)),
+      rows: result.applied.map(index => ({ index, ...describeRowShipping(result.rows[index]), quoteUnfinished: isQuoteRowUnfinished(result.rows[index]) })),
+      summary: summarizeQuoteRows(result.rows),
     };
   });
 }
@@ -293,8 +313,9 @@ async function runUploadQuote(
   rows: CsvRow[],
   selections: ShippingQuoteSelection[],
   onProgress?: (p: QuoteRunProgress) => void,
+  options: { reuseProviderFailures?: boolean } = {},
 ) {
-  const result = await quoteUploadRows(rows, selections, { config: getShippingPricingConfig(), onProgress });
+  const result = await quoteUploadRows(rows, selections, { config: getShippingPricingConfig(), onProgress, reuseProviderFailures: options.reuseProviderFailures });
   const indices = selections.map(s => s.index);
 
   const latest = await db.query.csvUploads.findFirst({ where: eq(csvUploads.uploadId, uploadId) });
@@ -303,8 +324,8 @@ async function runUploadQuote(
     .set({ parsedRows: merged })
     .where(eq(csvUploads.uploadId, uploadId));
 
-  const views = indices.map(index => ({ index, ...describeRowShipping(merged[index]) }));
-  const summary = summarizeQuoteCategories(merged.map(describeRowShipping));
+  const views = indices.map(index => ({ index, ...describeRowShipping(merged[index]), quoteUnfinished: isQuoteRowUnfinished(merged[index]) }));
+  const summary = summarizeQuoteRows(merged);
   logAction(user, 'import.shipping-quotes', {
     targetType: 'csv_upload',
     targetId: uploadId,
