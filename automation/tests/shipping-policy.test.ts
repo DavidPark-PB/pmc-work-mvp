@@ -21,6 +21,7 @@ vi.mock('drizzle-orm', async (importOriginal) => {
     ...actual,
     eq: (col: unknown, val: unknown) => (row: Record<string, unknown>) => row[keyOf(col)] === val,
     and: (...preds: ((row: any) => boolean)[]) => (row: any) => preds.every(p => p(row)),
+    inArray: (col: unknown, vals: unknown[]) => (row: Record<string, unknown>) => vals.includes(row[keyOf(col)]),
   };
 });
 vi.mock('../src/db/index.js', () => ({ db: (globalThis as any).__fakeDb }));
@@ -48,7 +49,7 @@ const store = vi.hoisted(() => {
   const tables = new Map<unknown, any[]>();
   const nextId = new Map<unknown, number>();
   const rowsOf = (t: unknown) => { if (!tables.has(t)) tables.set(t, []); return tables.get(t)!; };
-  const state = { tables, nextId, rowsOf, schema: null as any };
+  const state = { tables, nextId, rowsOf, schema: null as any, queries: [] as string[] };
   const attach = (tableName: string, row: any, withSpec: any) => {
     if (!row || !withSpec) return row;
     const s = state.schema;
@@ -63,10 +64,11 @@ const store = vi.hoisted(() => {
     query: new Proxy({}, {
       get: (_t, name: string) => ({
         findFirst: async ({ where, with: withSpec }: any = {}) => {
+          state.queries.push(`${name}.findFirst`);
           const row = rowsOf(state.schema[name]).find((r: any) => (where ? where(r) : true));
           return attach(name, row ? structuredClone(row) : undefined, withSpec);
         },
-        findMany: async ({ where }: any = {}) => rowsOf(state.schema[name]).filter((r: any) => (where ? where(r) : true)).map((r: any) => structuredClone(r)),
+        findMany: async ({ where }: any = {}) => { state.queries.push(`${name}.findMany`); return rowsOf(state.schema[name]).filter((r: any) => (where ? where(r) : true)).map((r: any) => structuredClone(r)); },
       }),
     }),
     insert: (table: unknown) => ({
@@ -116,7 +118,7 @@ import { getShippingPricingConfig, publicShippingPricingConfig } from '../src/li
 import {
   buildShippingPolicyViews, classifyFulfillmentPolicy, getShippingPolicies, resetShippingPolicyCache, resolveCsvShippingPolicy, SHIPPING_POLICY_CACHE_TTL_MS,
 } from '../src/services/ebay-shipping-policies.js';
-import { formatBuyerShipping, policyOptionLabel, buyerTotalLabel, groupShippingPolicies, importButtonState } from '../public/js/import-selection.js';
+import { formatBuyerShipping, policyOptionLabel, buyerTotalLabel, groupShippingPolicies, importButtonState, createPolicySelection, isPersistedPolicy, POLICY_PLACEHOLDER_LABEL, POLICY_SAVING_LABEL } from '../public/js/import-selection.js';
 import { FULFILLMENT_POLICIES, POLICY_IDS, policySnapshot } from './fixtures/ebay-policies.js';
 
 store.schema = schema;
@@ -349,7 +351,7 @@ describe('1-8. eBay 배송정책 목록 조회 · 지원 판정', () => {
     await app.close();
     expect(uploadRow().parsedRows.every((r: any) => !r.shippingPolicy)).toBe(true);   // 조회·견적만으로 선택되지 않음
     const html = renderStep2();
-    expect(html).toContain('<option value="" selected>정책을 선택하세요</option>');
+    expect(html).toContain('<option value="" selected>배송정책을 선택하세요</option>');
     expect(html).toContain('배송정책을 선택해주세요. 상품 검수와 배송비 계산은 가능하지만 eBay 등록은 할 수 없습니다.');
     const script = html.split('<script type="module">')[1];
     expect(script).not.toMatch(/policies\[0\][^;]*selected|autoSelect/);
@@ -779,7 +781,7 @@ describe('FINAL. 정책 필수 import · 기존 미등록 상품 반영 · 검�
     seedUpload();
     const html = renderStep2();
     expect(html).toContain('<input type="search" id="policy-search" class="import-select import-policy-search" placeholder="정책명 검색"');
-    expect(html).toContain('<option value="" selected>정책을 선택하세요</option>');
+    expect(html).toContain('<option value="" selected>배송정책을 선택하세요</option>');
     const script = html.split('<script type="module">')[1];
     expect(script).toContain("window.confirm('아직 eBay에 등록되지 않은 이 CSV 상품에도 새 정책을 적용합니다.')");
     expect(script).toContain("document.createElement('optgroup')");
@@ -789,5 +791,158 @@ describe('FINAL. 정책 필수 import · 기존 미등록 상품 반영 · 검�
     const files = ['src/lib/config.ts', 'src/lib/shipping-config.ts', 'src/services/shipping-pricing.ts', 'src/services/listing-price.ts', 'src/services/shipping-quote-service.ts', 'views/step2-import.eta', '.env.example'];
     for (const f of files) expect(fs.readFileSync(path.join(process.cwd(), f), 'utf-8')).not.toContain('EBAY_POLICY_BUYER_SHIPPING_USD');
     expect(Object.keys(getShippingPricingConfig())).not.toContain('buyerShippingUsd');
+  });
+});
+
+// ── 배송정책 선택 저장 버그 수정 (production upload 139: 저장 요청 148초 지연) ─────────────
+describe('SAVE FIX. 명시적 정책 선택 저장 · placeholder · 저장 중 잠금', () => {
+  const savedResponse = (policyId: string, extra: Record<string, unknown> = {}) => {
+    const snap = policyId === POLICY_IDS.free ? policySnapshot('free') : policySnapshot('fixed790');
+    return { ok: true, status: 200, json: async () => ({ ok: true, uploadId: 'u', policy: { ...snap, policyId }, applied: { crawlRowsUpdated: 0, productsUpdated: 0, skippedRegistered: 0, skippedOtherUpload: 0, skippedManual: 0 }, ...extra }) };
+  };
+
+  it('원인 회귀: 한 번도 가져오지 않은 693행 upload는 정책 저장 시 crawl/product/listing 조회 0회', async () => {
+    const lines = [HEADER];
+    for (let i = 0; i < 693; i++) lines.push(`Item ${i},25.4,300,16,12,8,307,307,${R2}/T-${i}/main-1.jpg,https://toybox.kr/shop/shopdetail.html?branduid=${100000 + i},`);
+    const raw = parseCsvRawText(lines.join('\n'));
+    const rows = applyMapping(raw, detectFixedHeaderMapping(raw[0])!);
+    store.rowsOf(schema.csvUploads).push({ id: 139, uploadId: 'upload-139', filename: '139.csv', rowCount: 693, importedCount: 0, status: 'mapped', parsedRows: rows });
+    const app = await appWith(uploadRoutes);
+    await app.inject({ method: 'GET', url: '/api/ebay/shipping-policies' });
+    store.queries.length = 0;
+    const started = Date.now();
+    const res = await selectPolicy(app, POLICY_IDS.fixed790, 'upload-139');
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().applied).toEqual({ crawlRowsUpdated: 0, productsUpdated: 0, skippedRegistered: 0, skippedOtherUpload: 0, skippedManual: 0 });
+    expect(store.queries.filter(q => /^(crawlResults|products|platformListings)\./.test(q))).toEqual([]);   // 기존: crawlResults.findMany × 693
+    expect(store.queries).toEqual(['csvUploads.findFirst']);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(uploadRow('upload-139').parsedRows.every((r: any) => r.shippingPolicy?.policyId === POLICY_IDS.fixed790)).toBe(true);
+  });
+
+  it('가져온 upload의 반영 조회는 행 단위가 아닌 묶음 조회 (inArray)', async () => {
+    const { crawlIds } = await (async () => {
+      seedUpload();
+      const app = await appWith(uploadRoutes);
+      await selectPolicy(app, POLICY_IDS.free);
+      await app.close();
+      const r = await importRows([0, 1]);
+      return { crawlIds: r };
+    })();
+    expect(crawlIds).toHaveLength(2);
+    store.queries.length = 0;
+    const app = await appWith(uploadRoutes);
+    await selectPolicy(app, POLICY_IDS.fixed790);
+    await app.close();
+    const lookups = store.queries.filter(q => /^(crawlResults|products|platformListings)\./.test(q));
+    expect(lookups).toEqual(['crawlResults.findMany', 'products.findMany', 'platformListings.findMany']);   // 행 수와 무관한 묶음 조회
+  });
+
+  it('정책 선택 API 오류는 한국어 메시지 + code', async () => {
+    seedUpload();
+    const app = await appWith(uploadRoutes);
+    const missing = await selectPolicy(app, '000000000000');
+    const unsupported = await selectPolicy(app, POLICY_IDS.rateTable);
+    const noUpload = await selectPolicy(app, POLICY_IDS.free, 'nope');
+    await app.close();
+    expect([missing.statusCode, missing.json()]).toEqual([404, { ok: false, code: 'SHIPPING_POLICY_NOT_FOUND', error: '선택한 eBay 배송정책을 찾을 수 없습니다. 목록을 다시 불러오세요.' }]);
+    expect([unsupported.statusCode, unsupported.json().code]).toEqual([400, 'SHIPPING_POLICY_UNSUPPORTED']);
+    expect([noUpload.statusCode, noUpload.json().code]).toEqual([404, 'UPLOAD_NOT_FOUND']);
+  });
+
+  it('정책 없는 upload: placeholder "배송정책을 선택하세요"만 selected, autocomplete off, 첫 실제 정책 자동 선택 없음', () => {
+    seedUpload();
+    const html = renderStep2();
+    const select = html.match(/<select id="policy-select"[^>]*>[\s\S]*?<\/select>/)![0];
+    expect(select).toContain('autocomplete="off"');
+    expect(select.match(/<option[^>]*>/g)).toEqual(['<option value="" selected>']);
+    expect(POLICY_PLACEHOLDER_LABEL).toBe('배송정책을 선택하세요');
+    const script = html.split('<script type="module">')[1];
+    expect(script).toContain("window.addEventListener('pageshow', syncPolicySelect)");
+    expect(script).toContain('placeholder.selected = !wantValue;');
+
+    const controller = createPolicySelection({ uploadId: 'u', initialPolicy: null, fetchImpl: vi.fn() });
+    expect([controller.selectValue, controller.policySelected]).toEqual(['', false]);
+    const groups = groupShippingPolicies(buildShippingPolicyViews(FULFILLMENT_POLICIES), '', controller.selectValue || null);   // 목록 비동기 로드 후
+    expect(groups.flatMap(g => g.policies).length).toBe(7);
+    expect(controller.selectValue).toBe('');
+    expect(importButtonState({ selectedCount: 693, policyRequired: true, hasPolicy: controller.policySelected })).toMatchObject({ disabled: true });
+    // 깨진 snapshot은 선택으로 보지 않음
+    expect(createPolicySelection({ uploadId: 'u', initialPolicy: { policyId: 'x' }, fetchImpl: vi.fn() }).selectValue).toBe('');
+  });
+
+  it('사용자 선택 → POST 정확히 1회, 저장 중 중복 선택 무시·가져오기 잠금, 성공 후에만 선택 완료', async () => {
+    let resolve!: (v: any) => void;
+    const fetchImpl = vi.fn(() => new Promise(r => { resolve = r; }));
+    const controller = createPolicySelection({ uploadId: 'upload-139', initialPolicy: null, fetchImpl });
+    const pending = controller.select(POLICY_IDS.fixed790);
+    expect([controller.saving, controller.selectValue, controller.policySelected]).toEqual([true, POLICY_IDS.fixed790, false]);
+    expect(importButtonState({ selectedCount: 693, policyRequired: true, hasPolicy: controller.policySelected, saving: controller.saving })).toEqual({ disabled: true, reason: POLICY_SAVING_LABEL });
+    expect(POLICY_SAVING_LABEL).toBe('배송정책 저장 중...');
+    expect(await controller.select(POLICY_IDS.free)).toEqual({ status: 'ignored', reason: 'SAVING' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as any;
+    expect([url, init.method, JSON.parse(init.body)]).toEqual(['/api/upload/shipping-policy', 'POST', { uploadId: 'upload-139', policyId: POLICY_IDS.fixed790 }]);
+
+    resolve(savedResponse(POLICY_IDS.fixed790));
+    const result = await pending;
+    expect(result).toMatchObject({ status: 'saved', policy: { policyId: POLICY_IDS.fixed790, buyerShippingUsd: 7.9 } });
+    expect([controller.saving, controller.policySelected, controller.selectValue]).toEqual([false, true, POLICY_IDS.fixed790]);
+    expect(importButtonState({ selectedCount: 693, policyRequired: true, hasPolicy: controller.policySelected, saving: controller.saving })).toEqual({ disabled: false, reason: '' });
+    expect(await controller.select(POLICY_IDS.fixed790)).toEqual({ status: 'ignored', reason: 'UNCHANGED' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('저장 실패 → 이전 저장값 복원 (없으면 미선택 유지), 한국어 오류 + HTTP status·code', async () => {
+    const fail = (status: number, body: unknown) => vi.fn(async () => ({ ok: false, status, json: async () => body }));
+    const none = createPolicySelection({ uploadId: 'u', initialPolicy: null, fetchImpl: fail(409, { ok: false, code: 'QUOTE_JOB_RUNNING', error: '배송비 계산이 끝난 뒤 배송정책을 선택하세요.' }) });
+    expect(await none.select(POLICY_IDS.free)).toEqual({ status: 'error', message: '배송비 계산이 끝난 뒤 배송정책을 선택하세요.', httpStatus: 409, code: 'QUOTE_JOB_RUNNING' });
+    expect([none.selectValue, none.policySelected, none.saving]).toEqual(['', false, false]);
+    expect(importButtonState({ selectedCount: 1, policyRequired: true, hasPolicy: none.policySelected })).toMatchObject({ disabled: true });
+
+    const prev = createPolicySelection({ uploadId: 'u', initialPolicy: policySnapshot('free'), fetchImpl: fail(502, { ok: false, code: 'SHIPPING_POLICIES_UNAVAILABLE', error: 'eBay 배송정책을 불러오지 못했습니다.' }) });
+    expect(await prev.select(POLICY_IDS.fixed790)).toMatchObject({ status: 'error', httpStatus: 502, code: 'SHIPPING_POLICIES_UNAVAILABLE' });
+    expect([prev.selectValue, prev.policy.policyId]).toEqual([POLICY_IDS.free, POLICY_IDS.free]);
+
+    const html502 = createPolicySelection({ uploadId: 'u', fetchImpl: vi.fn(async () => ({ ok: false, status: 504, json: async () => { throw new SyntaxError('html'); } })) });
+    expect(await html502.select(POLICY_IDS.free)).toEqual({ status: 'error', message: '배송정책을 저장하지 못했습니다.', httpStatus: 504, code: null });
+
+    const notPersisted = createPolicySelection({ uploadId: 'u', fetchImpl: vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })) });
+    expect(await notPersisted.select(POLICY_IDS.free)).toMatchObject({ status: 'error', code: 'POLICY_NOT_PERSISTED' });
+    expect(notPersisted.policySelected).toBe(false);
+    const mismatched = createPolicySelection({ uploadId: 'u', fetchImpl: vi.fn(async () => savedResponse(POLICY_IDS.free)) });
+    expect(await mismatched.select(POLICY_IDS.fixed790)).toMatchObject({ status: 'error', code: 'POLICY_NOT_PERSISTED' });
+
+    const network = createPolicySelection({ uploadId: 'u', fetchImpl: vi.fn(async () => { throw new TypeError('Failed to fetch'); }) });
+    expect(await network.select(POLICY_IDS.free)).toMatchObject({ status: 'error', code: 'NETWORK_ERROR', httpStatus: null });
+    const slow = createPolicySelection({ uploadId: 'u', timeoutMs: 5, fetchImpl: vi.fn((_u: string, init: any) => new Promise((_r, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))))) });
+    expect(await slow.select(POLICY_IDS.free)).toEqual({ status: 'error', message: '배송정책 저장 응답이 지연되고 있습니다. 새로고침해 저장 여부를 확인하세요.', httpStatus: null, code: 'TIMEOUT' });
+    expect([slow.saving, slow.policySelected]).toEqual([false, false]);
+  });
+
+  it('저장된 upload 새로고침: 실제 정책 복원 (select 값·선택 완료)', async () => {
+    seedUpload();
+    const app = await appWith(uploadRoutes);
+    const res = await selectPolicy(app, POLICY_IDS.free);
+    await app.close();
+    expect(isPersistedPolicy(res.json().policy, POLICY_IDS.free)).toBe(true);
+    const html = renderStep2();
+    expect(html).toContain(`<option value="${POLICY_IDS.free}" selected>추천 · Free Shipping US — 무료배송</option>`);
+    const restored = createPolicySelection({ uploadId: 'upload-p', initialPolicy: uploadRow().parsedRows[0].shippingPolicy, fetchImpl: vi.fn() });
+    expect([restored.selectValue, restored.policySelected]).toEqual([POLICY_IDS.free, true]);
+  });
+
+  it('무료배송 총 결제 $36.10 · $3.90 정책 총 결제 $40.00 (StartPrice $36.10 동일)', async () => {
+    seedUpload();
+    const app = await appWith(uploadRoutes);
+    await quoteRows(app);
+    await app.close();
+    const row = uploadRow().parsedRows[0];
+    const policy390 = { ...policySnapshot('fixed790'), policyId: '282283642014', policyName: '2026 shipping All Item 3.9 Copy', buyerShippingUsd: 3.9 };
+    expect(describeRowShipping({ ...row, shippingPolicy: policySnapshot('free') })).toMatchObject({ listingPriceLabel: '$36.10', policyShippingLabel: '무료', buyerTotalLabel: '$36.10' });
+    expect(describeRowShipping({ ...row, shippingPolicy: policy390 })).toMatchObject({ listingPriceLabel: '$36.10', policyShippingLabel: '$3.90', buyerTotalLabel: '$40.00' });
+    expect([buyerTotalLabel('36.1', policySnapshot('free')), buyerTotalLabel('36.1', policy390)]).toEqual(['$36.10', '$40.00']);
+    expect(addItemBodies).toHaveLength(0);
   });
 });

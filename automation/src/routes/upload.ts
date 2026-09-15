@@ -272,29 +272,30 @@ export async function uploadRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
     }
     const { uploadId, policyId } = (request.body ?? {}) as { uploadId?: string; policyId?: unknown };
-    if (!uploadId) return reply.status(400).send({ error: 'uploadId가 필요합니다' });
-    if (typeof policyId !== 'string' || !policyId) return reply.status(400).send({ error: '배송정책을 선택하세요.' });
+    const fail = (status: number, code: string, error: string) => reply.status(status).send({ ok: false, code, error });
+    if (!uploadId) return fail(400, 'UPLOAD_ID_REQUIRED', 'uploadId가 필요합니다');
+    if (typeof policyId !== 'string' || !policyId) return fail(400, 'POLICY_ID_REQUIRED', '배송정책을 선택하세요.');
     if (findRunningQuoteJob(uploadId)) {
-      return reply.status(409).send({ error: '배송비 계산이 끝난 뒤 배송정책을 선택하세요.' });
+      return fail(409, 'QUOTE_JOB_RUNNING', '배송비 계산이 끝난 뒤 배송정책을 선택하세요.');
     }
     const upload = await db.query.csvUploads.findFirst({ where: eq(csvUploads.uploadId, uploadId) });
     const rows = upload?.parsedRows;
-    if (!rows || rows.length === 0) return reply.status(404).send({ error: '업로드 데이터를 찾을 수 없습니다' });
+    if (!rows || rows.length === 0) return fail(404, 'UPLOAD_NOT_FOUND', '업로드 데이터를 찾을 수 없습니다');
 
     let list;
     try {
       list = await getShippingPolicies();
     } catch (e) {
-      return reply.status(502).send({ error: (e as Error).message });
+      return fail(502, 'SHIPPING_POLICIES_UNAVAILABLE', (e as Error).message);
     }
     const view = list.policies.find(p => p.policyId === policyId);
-    if (!view) return reply.status(404).send({ error: '선택한 eBay 배송정책을 찾을 수 없습니다. 목록을 다시 불러오세요.' });
-    if (!view.supported) return reply.status(400).send({ error: view.unsupportedMessage || '자동 리스팅에서 사용할 수 없는 배송정책입니다.' });
+    if (!view) return fail(404, 'SHIPPING_POLICY_NOT_FOUND', '선택한 eBay 배송정책을 찾을 수 없습니다. 목록을 다시 불러오세요.');
+    if (!view.supported) return fail(400, 'SHIPPING_POLICY_UNSUPPORTED', view.unsupportedMessage || '자동 리스팅에서 사용할 수 없는 배송정책입니다.');
 
     const snapshot = buildShippingPolicySnapshot(view, list.fetchedAt);
     const nextRows = rows.map(row => (row.priceCurrency === 'USD' ? { ...row, shippingPolicy: snapshot } : row));
     await db.update(csvUploads).set({ parsedRows: nextRows }).where(eq(csvUploads.uploadId, uploadId));
-    const applied = await applyShippingPolicyToImportedRows(uploadId, nextRows, snapshot);
+    const applied = await applyShippingPolicyToImportedRows(uploadId, nextRows, snapshot, { importedCount: upload?.importedCount ?? 0 });
     logAction(user, 'import.shipping-policy', {
       targetType: 'csv_upload',
       targetId: uploadId,

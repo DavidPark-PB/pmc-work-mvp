@@ -42,8 +42,8 @@
   <div class="import-policy-bar" id="policy-bar" data-testid="policy-bar">
     <label class="import-shipping-label" for="policy-select">eBay 배송정책</label>
     <input type="search" id="policy-search" class="import-select import-policy-search" placeholder="정책명 검색" aria-label="정책명 검색" autocomplete="off">
-    <select id="policy-select" class="import-select import-policy-select" aria-label="eBay 배송정책">
-      <option value=""<%~ policy ? '' : ' selected' %>>정책을 선택하세요</option>
+    <select id="policy-select" class="import-select import-policy-select" aria-label="eBay 배송정책" autocomplete="off">
+      <option value=""<%~ policy ? '' : ' selected' %>>배송정책을 선택하세요</option>
       <% if (policy) { %><option value="<%= policy.policyId %>" selected><%= policy.buyerShippingUsd === 0 ? '추천 · ' + policy.policyName + ' — 무료배송' : policy.policyName + ' — ' + policyBuyerLabel %></option><% } %>
     </select>
     <span class="import-policy-summary" id="policy-summary" data-testid="policy-summary">
@@ -51,6 +51,8 @@
       <% } else { %><span class="import-policy-missing">배송정책을 선택해주세요. 상품 검수와 배송비 계산은 가능하지만 eBay 등록은 할 수 없습니다.</span><% } %>
     </span>
     <span class="text-muted import-policy-status" id="policy-status">배송정책 목록 불러오는 중…</span>
+    <span class="import-policy-save-status" id="policy-save-status" data-testid="policy-save-status" hidden></span>
+    <span class="import-policy-error" id="policy-save-error" data-testid="policy-save-error" hidden><span id="policy-save-error-message"></span> <small class="text-muted" id="policy-save-error-detail"></small></span>
     <span class="import-policy-error" id="policy-error" data-testid="policy-error" hidden>eBay 배송정책을 불러오지 못했습니다. <button type="button" class="btn btn-secondary btn-xs" id="policy-reload-btn">다시 불러오기</button></span>
   </div>
   <div class="import-shipping-bar" id="shipping-bar">
@@ -242,12 +244,14 @@
 .import-policy-summary { font-size: var(--text-sm); }
 .import-policy-missing { color: var(--yellow-text, #a16207); }
 .import-policy-error { color: var(--red); font-size: var(--text-sm); }
+.import-policy-save-status { font-size: var(--text-sm); font-weight: 600; }
+.import-quote-progress .spinner[hidden] { display: none; }
 .import-quote-summary, .import-quote-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius); font-size: var(--text-sm); }
 .import-quote-summary-text { font-weight: 600; }
 </style>
 
 <script type="module">
-import { createSelection, createProviderState, buildImportPayload, buildQuoteRequest, formatSelectionSummary, formatQuoteSummary, formatQuoteProgress, formatQuoteCompletion, unfinishedButtonState, providerOverrides, createSingleFlight, formatBuyerShipping, policyOptionLabel, buyerTotalLabel, groupShippingPolicies, importButtonState } from '/js/import-selection.js';
+import { createSelection, createProviderState, buildImportPayload, buildQuoteRequest, formatSelectionSummary, formatQuoteSummary, formatQuoteProgress, formatQuoteCompletion, unfinishedButtonState, providerOverrides, createSingleFlight, formatBuyerShipping, policyOptionLabel, buyerTotalLabel, groupShippingPolicies, importButtonState, createPolicySelection, POLICY_PLACEHOLDER_LABEL, POLICY_SAVING_LABEL } from '/js/import-selection.js';
 
 const uploadId = <%~ JSON.stringify(it.uploadId).replace(/</g, '\\u003c') %>;
 const showShipping = <%~ showShipping ? 'true' : 'false' %>;
@@ -266,7 +270,13 @@ const rowOf = (index) => document.querySelector('tr.import-row[data-index="' + i
 const importBtn = document.getElementById('import-btn');
 
 function refreshImportButton() {
-  const state = importButtonState({ selectedCount: selection.count(), policyRequired, hasPolicy: !!currentPolicy });
+  //   선택 완료 여부는 화면 select 값이 아니라 서버가 반환한 persisted snapshot(policySelection.policy)으로만 판단
+  const state = importButtonState({
+    selectedCount: selection.count(),
+    policyRequired,
+    hasPolicy: !!(policySelection ? policySelection.policySelected : currentPolicy),
+    saving: !!(policySelection && policySelection.saving),
+  });
   importBtn.disabled = state.disabled;
   const notice = document.getElementById('policy-import-notice');
   if (notice) notice.hidden = !(policyRequired && !currentPolicy);
@@ -365,6 +375,7 @@ const quoteRun = createSingleFlight();
 let onRowBecameUnfinished = null;
 //   upload에 저장된 선택 배송정책 (새로고침 후에도 유지)
 let currentPolicy = <%~ JSON.stringify(policy).replace(/</g, '\\u003c') %>;
+let policySelection = null;
 const policyRequired = <%~ policyRequired ? 'true' : 'false' %>;
 let hasImportedRows = <%~ it.hasImportedRows ? 'true' : 'false' %>;
 
@@ -519,6 +530,18 @@ if (showShipping) {
   });
   // ── eBay 배송정책 선택 (upload 단위) ──
   const policySelect = document.getElementById('policy-select');
+  policySelection = createPolicySelection({ uploadId, initialPolicy: currentPolicy, fetchImpl: (url, init) => fetch(url, init) });
+  const policySaveStatus = document.getElementById('policy-save-status');
+  const policySaveError = document.getElementById('policy-save-error');
+  /** select 표시값을 저장 상태에 맞춤 — 저장된 정책이 없으면 반드시 '' (브라우저 복원·자동 선택 방지) */
+  const syncPolicySelect = () => {
+    const want = policySelection.selectValue;
+    policySelect.value = want;
+    if (policySelect.value !== want) policySelect.value = '';
+  };
+  syncPolicySelect();
+  window.addEventListener('pageshow', syncPolicySelect);
+  window.addEventListener('load', syncPolicySelect);
   const policyStatus = document.getElementById('policy-status');
   const policyError = document.getElementById('policy-error');
   let policies = [];
@@ -557,10 +580,11 @@ if (showShipping) {
   const renderPolicyOptions = () => {
     const placeholder = document.createElement('option');
     placeholder.value = '';
-    placeholder.textContent = '정책을 선택하세요';
+    placeholder.textContent = POLICY_PLACEHOLDER_LABEL;
     const options = [placeholder];
     let found = false;
-    const groups = groupShippingPolicies(policies, policySearch.value, currentPolicy ? currentPolicy.policyId : null);
+    const wantValue = policySelection.selectValue;
+    const groups = groupShippingPolicies(policies, policySearch.value, wantValue || null);
     groups.forEach(group => {
       if (group.policies.length === 0) return;
       const optgroup = document.createElement('optgroup');
@@ -570,22 +594,29 @@ if (showShipping) {
         opt.value = p.policyId;
         opt.textContent = policyOptionLabel(p);
         opt.disabled = !p.supported;
-        if (currentPolicy && p.policyId === currentPolicy.policyId) { opt.selected = true; found = true; }
+        if (wantValue && p.policyId === wantValue) { opt.selected = true; found = true; }
         optgroup.appendChild(opt);
       });
       options.push(optgroup);
     });
     const matched = groups.reduce((n, g) => n + g.policies.length, 0);
-    if (policySearch.value.trim() && matched === 0) placeholder.textContent = '검색 결과 없음';
-    if (currentPolicy && !found) {
+    if (policySearch.value.trim() && matched === 0) {
+      const none = document.createElement('option');
+      none.disabled = true;
+      none.textContent = '검색 결과 없음';
+      options.push(none);
+    }
+    if (currentPolicy && wantValue === currentPolicy.policyId && !found) {
       const missing = document.createElement('option');
       missing.value = currentPolicy.policyId;
       missing.textContent = currentPolicy.policyName + ' — eBay 목록에 없음 (등록 차단)';
       missing.selected = true;
       options.push(missing);
     }
-    if (!currentPolicy) placeholder.selected = true;
+    //   저장된(또는 저장 중인) 정책이 없으면 placeholder('')만 선택 — 첫 실제 정책 자동 선택 방지
+    placeholder.selected = !wantValue;
     policySelect.replaceChildren(...options);
+    syncPolicySelect();
   };
   policySearch.addEventListener('input', () => renderPolicyOptions());
 
@@ -606,35 +637,51 @@ if (showShipping) {
     }
   }
 
-  policySelect.addEventListener('change', async () => {
+  const showPolicySaveError = (result) => {
+    document.getElementById('policy-save-error-message').textContent = result.message;
+    document.getElementById('policy-save-error-detail').textContent = '(HTTP ' + (result.httpStatus ?? '-') + (result.code ? ' · ' + result.code : '') + ')';
+    policySaveError.hidden = false;
+  };
+
+  policySelect.addEventListener('change', () => {
     const policyId = policySelect.value;
-    if (!policyId || (currentPolicy && policyId === currentPolicy.policyId)) { renderPolicyOptions(); return; }
+    if (policySelection.saving) { syncPolicySelect(); return; }   // 저장 중 중복 선택 방지
+    if (!policyId || (currentPolicy && policyId === currentPolicy.policyId)) { syncPolicySelect(); return; }
     if ((currentPolicy || hasImportedRows) && !window.confirm('아직 eBay에 등록되지 않은 이 CSV 상품에도 새 정책을 적용합니다.')) {
-      renderPolicyOptions();
+      syncPolicySelect();
       return;
     }
-    policySelect.disabled = true;
-    try {
-      const res = await fetch('/api/upload/shipping-policy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uploadId, policyId }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || '서버 오류 (HTTP ' + res.status + ')');
-      currentPolicy = data.policy;
-      renderPolicySummary();
-      renderPolicyTotals();
+    const started = quoteRun.run(async () => {
+      setBusy(true);
+      policySaveError.hidden = true;
+      policySaveStatus.textContent = POLICY_SAVING_LABEL;
+      policySaveStatus.hidden = false;
+      const pending = policySelection.select(policyId);
+      syncPolicySelect();
       refreshImportButton();
-      const a = data.applied || {};
-      const appliedNote = a.productsUpdated || a.crawlRowsUpdated || a.skippedRegistered
-        ? ` · 가져온 미등록 상품 반영 ${a.crawlRowsUpdated || 0}개 (등록된 상품 보호 ${a.skippedRegistered || 0}개)` : '';
-      toast('배송정책 선택: ' + currentPolicy.policyName + ' · 구매자 배송비 ' + formatBuyerShipping(currentPolicy.buyerShippingUsd) + appliedNote, 'success');
-    } catch (e) {
-      toast('배송정책 선택 실패: ' + e.message, 'error');
+      const result = await pending;
+      if (result.status === 'saved') {
+        currentPolicy = result.policy;
+        renderPolicySummary();
+        renderPolicyTotals();
+        const a = result.applied || {};
+        policySaveStatus.textContent = '저장됨 · 가져온 미등록 상품 반영 ' + (a.crawlRowsUpdated || 0) + '개'
+          + (a.skippedRegistered ? ' · 등록된 상품 보호 ' + a.skippedRegistered + '개' : '')
+          + (a.skippedManual ? ' · 수동 정책 유지 ' + a.skippedManual + '개' : '');
+        toast('배송정책 저장: ' + currentPolicy.policyName + ' · 구매자 배송비 ' + formatBuyerShipping(currentPolicy.buyerShippingUsd), 'success');
+      } else {
+        policySaveStatus.hidden = true;
+        if (result.status === 'error') {
+          showPolicySaveError(result);
+          toast('배송정책 저장 실패: ' + result.message, 'error');
+        }
+      }
       renderPolicyOptions();
-    } finally {
-      policySelect.disabled = busyNow;
+      setBusy(false);
+    });
+    if (started === null) {
+      syncPolicySelect();
+      toast('다른 작업이 진행 중이라 배송정책을 저장하지 않았습니다. 잠시 후 다시 선택하세요.', 'error');
     }
   });
   document.getElementById('policy-reload-btn').addEventListener('click', () => loadPolicies(true));

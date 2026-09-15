@@ -197,7 +197,8 @@ export function groupShippingPolicies(policies, query = '', selectedPolicyId = n
 }
 
 /** 신규 USD CSV는 배송정책 선택 전 DB 가져오기 불가 (레거시 KRW CSV는 policyRequired=false) */
-export function importButtonState({ selectedCount, policyRequired, hasPolicy }) {
+export function importButtonState({ selectedCount, policyRequired, hasPolicy, saving = false }) {
+  if (policyRequired && saving) return { disabled: true, reason: '배송정책 저장 중...' };
   if (policyRequired && !hasPolicy) return { disabled: true, reason: 'eBay 배송정책을 선택하면 상품을 가져올 수 있습니다.' };
   if (!selectedCount) return { disabled: true, reason: '' };
   return { disabled: false, reason: '' };
@@ -208,4 +209,75 @@ export function buyerTotalLabel(listingPriceUsd, policy) {
   const price = Number(listingPriceUsd);
   if (!policy || typeof policy.buyerShippingUsd !== 'number' || listingPriceUsd === '' || listingPriceUsd === null || listingPriceUsd === undefined || !Number.isFinite(price)) return '';
   return usd((Math.round(price * 100) + Math.round(policy.buyerShippingUsd * 100)) / 100);
+}
+
+// ── 배송정책 저장 상태 (화면 select 값이 아니라 서버가 반환한 persisted snapshot 기준) ──
+
+export const POLICY_PLACEHOLDER_LABEL = '배송정책을 선택하세요';
+export const POLICY_SAVING_LABEL = '배송정책 저장 중...';
+export const POLICY_SAVE_TIMEOUT_MS = 60000;
+
+/** 서버가 저장 후 반환한 snapshot인지 (요청한 policyId와 일치 + 필수 필드) */
+export function isPersistedPolicy(policy, requestedPolicyId) {
+  return !!policy && typeof policy === 'object'
+    && typeof policy.policyId === 'string' && policy.policyId !== ''
+    && (requestedPolicyId === undefined || policy.policyId === requestedPolicyId)
+    && (policy.shippingType === 'FREE' || policy.shippingType === 'FIXED')
+    && typeof policy.buyerShippingUsd === 'number' && Number.isFinite(policy.buyerShippingUsd) && policy.buyerShippingUsd >= 0
+    && typeof policy.policyName === 'string';
+}
+
+/**
+ * upload 배송정책 선택 컨트롤러
+ * - saved: 서버에 저장된 정책 (없으면 null → select 값 '')
+ * - select(policyId): POST /api/upload/shipping-policy 1회. 저장 중에는 다른 선택을 무시
+ * - 실패 시 saved 유지 (이전 저장값 또는 미선택)
+ */
+export function createPolicySelection({ uploadId, initialPolicy = null, fetchImpl, timeoutMs = POLICY_SAVE_TIMEOUT_MS }) {
+  let saved = isPersistedPolicy(initialPolicy) ? initialPolicy : null;
+  let savingPolicyId = null;
+  return {
+    get policy() { return saved; },
+    get policySelected() { return saved !== null; },
+    get saving() { return savingPolicyId !== null; },
+    /** select에 보여야 할 값: 저장 중이면 저장 중인 값, 아니면 저장된 값 또는 '' */
+    get selectValue() { return savingPolicyId ?? (saved ? saved.policyId : ''); },
+    async select(policyId) {
+      if (savingPolicyId !== null) return { status: 'ignored', reason: 'SAVING' };
+      if (!policyId) return { status: 'ignored', reason: 'EMPTY' };
+      if (saved && saved.policyId === policyId) return { status: 'ignored', reason: 'UNCHANGED' };
+      savingPolicyId = policyId;
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+      try {
+        const res = await fetchImpl('/api/upload/shipping-policy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uploadId, policyId }),
+          signal: controller ? controller.signal : undefined,
+        });
+        let data = null;
+        try { data = await res.json(); } catch { data = null; }
+        if (!res.ok) {
+          return { status: 'error', message: (data && data.error) || '배송정책을 저장하지 못했습니다.', httpStatus: res.status, code: (data && data.code) || null };
+        }
+        if (!data || !isPersistedPolicy(data.policy, policyId)) {
+          return { status: 'error', message: '서버가 저장된 배송정책을 반환하지 않아 선택을 완료하지 못했습니다.', httpStatus: res.status, code: 'POLICY_NOT_PERSISTED' };
+        }
+        saved = data.policy;
+        return { status: 'saved', policy: saved, applied: data.applied || null };
+      } catch (e) {
+        const timeout = e && e.name === 'AbortError';
+        return {
+          status: 'error',
+          message: timeout ? '배송정책 저장 응답이 지연되고 있습니다. 새로고침해 저장 여부를 확인하세요.' : '배송정책 저장 요청에 실패했습니다.',
+          httpStatus: null,
+          code: timeout ? 'TIMEOUT' : 'NETWORK_ERROR',
+        };
+      } finally {
+        if (timer) clearTimeout(timer);
+        savingPolicyId = null;
+      }
+    },
+  };
 }

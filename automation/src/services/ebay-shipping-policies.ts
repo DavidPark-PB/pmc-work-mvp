@@ -13,7 +13,7 @@
  * 가격 원칙: StartPrice = CSV 판매가 + 국제배송비 (정책 배송비는 빼거나 더하지 않음)
  *           구매자 총 결제 = StartPrice + 선택 정책 구매자 배송비 (표시 전용)
  */
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { EbayClient } from '../platforms/ebay/EbayClient.js';
 import { db } from '../db/index.js';
 import { crawlResults, platformListings, products } from '../db/schema.js';
@@ -219,41 +219,80 @@ export interface ShippingPolicyApplyResult {
   skippedManual: number;
 }
 
+const LOOKUP_CHUNK = 200;
+const UPDATE_CONCURRENCY = 8;
+
+const chunked = <T>(items: T[], size: number): T[][] => {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+};
+
+async function runLimited<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) await fn(items[cursor++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
 /**
  * 같은 upload에서 이미 DB로 가져온 상품(crawl_results / products)에 선택 정책 snapshot 반영
  * 대상: parsed_rows[*].importedCrawlResultId (없으면 import batch와 같은 external_id 규칙) 중
  *       raw_data.csvImport.uploadId === uploadId 인 crawl 행과, 그 행에서 만든(importedFrom) 같은 upload 상품
  * 제외: eBay Item ID 있음 · active/ended/pending 리스팅 · 수동 정책 · 다른 upload
+ *
+ * 성능: 한 번도 가져온 적 없는 upload(importedCount 0, crawl id 기록 없음)는 DB 조회 0회.
+ *       가져온 경우에도 행 단위 조회 대신 inArray 묶음 조회 (production 693행 × 행별 조회 ≈ 148초 지연 방지)
  */
 export async function applyShippingPolicyToImportedRows(
   uploadId: string,
   rows: CsvRow[],
   snapshot: ShippingPolicySnapshot,
+  options: { importedCount?: number | null } = {},
 ): Promise<ShippingPolicyApplyResult> {
   const result: ShippingPolicyApplyResult = { crawlRowsUpdated: 0, productsUpdated: 0, skippedRegistered: 0, skippedOtherUpload: 0, skippedManual: 0 };
+  const usdRows = rows.filter(row => row && row.priceCurrency === 'USD');
   const crawlIds = new Set<number>();
-  for (const row of rows) {
-    if (!row || row.priceCurrency !== 'USD') continue;
-    if (typeof row.importedCrawlResultId === 'number') {
-      crawlIds.add(row.importedCrawlResultId);
-      continue;
+  for (const row of usdRows) if (typeof row.importedCrawlResultId === 'number') crawlIds.add(row.importedCrawlResultId);
+  if (crawlIds.size === 0 && !(options.importedCount && options.importedCount > 0)) return result;
+
+  //   crawl id 기록 이전에 가져온 행: 같은 external_id + 같은 uploadId 인 crawl 행 (묶음 조회)
+  const legacyExternalIds = [...new Set(usdRows.filter(row => typeof row.importedCrawlResultId !== 'number').map(row => importExternalId(row)))];
+  if (options.importedCount && options.importedCount > 0) {
+    for (const chunk of chunked(legacyExternalIds, LOOKUP_CHUNK)) {
+      const candidates = await db.query.crawlResults.findMany({ where: inArray(crawlResults.externalId, chunk) });
+      for (const c of candidates) {
+        if (asRecord(asRecord(c.rawData)?.csvImport)?.uploadId === uploadId) crawlIds.add(c.id);
+      }
     }
-    //   crawl id 기록 이전에 가져온 행: 같은 external_id + 같은 uploadId 인 crawl 행
-    const candidates = await db.query.crawlResults.findMany({ where: eq(crawlResults.externalId, importExternalId(row)) });
-    for (const c of candidates) {
-      if (asRecord(asRecord(c.rawData)?.csvImport)?.uploadId === uploadId) crawlIds.add(c.id);
+  }
+  if (crawlIds.size === 0) return result;
+
+  const crawls: (typeof crawlResults.$inferSelect)[] = [];
+  for (const chunk of chunked([...crawlIds].sort((a, b) => a - b), LOOKUP_CHUNK)) {
+    crawls.push(...await db.query.crawlResults.findMany({ where: inArray(crawlResults.id, chunk) }));
+  }
+  const productIds = [...new Set(crawls.map(c => c.productId).filter((id): id is number => typeof id === 'number'))];
+  const productById = new Map<number, typeof products.$inferSelect>();
+  const listingsByProduct = new Map<number, (typeof platformListings.$inferSelect)[]>();
+  for (const chunk of chunked(productIds, LOOKUP_CHUNK)) {
+    for (const p of await db.query.products.findMany({ where: inArray(products.id, chunk) })) productById.set(p.id, p);
+    for (const l of await db.query.platformListings.findMany({ where: inArray(platformListings.productId, chunk) })) {
+      listingsByProduct.set(l.productId, [...(listingsByProduct.get(l.productId) ?? []), l]);
     }
   }
 
-  for (const crawlId of [...crawlIds].sort((a, b) => a - b)) {
-    const crawl = await db.query.crawlResults.findFirst({ where: eq(crawlResults.id, crawlId) });
-    const rawData = asRecord(crawl?.rawData);
+  const productUpdates: { id: number; metadata: Record<string, unknown> }[] = [];
+  const crawlUpdates: { id: number; rawData: Record<string, unknown> }[] = [];
+  for (const crawl of crawls.sort((a, b) => a.id - b.id)) {
+    const rawData = asRecord(crawl.rawData);
     const crawlCsv = asRecord(rawData?.csvImport);
-    if (!crawl || !rawData || !crawlCsv) continue;
+    if (!rawData || !crawlCsv) continue;
     if (crawlCsv.uploadId !== uploadId) { result.skippedOtherUpload++; continue; }
 
     if (crawl.productId) {
-      const product = await db.query.products.findFirst({ where: eq(products.id, crawl.productId) });
+      const product = productById.get(crawl.productId);
       const metadata = asRecord(product?.metadata);
       const productCsv = asRecord(metadata?.csvImport);
       if (!product || !metadata || !productCsv || metadata.importedFrom !== crawl.id || productCsv.uploadId !== uploadId) {
@@ -261,23 +300,24 @@ export async function applyShippingPolicyToImportedRows(
         continue;
       }
       if (isManualShippingPolicy(productCsv.shippingPolicy)) { result.skippedManual++; continue; }
-      const listings = await db.query.platformListings.findMany({ where: eq(platformListings.productId, product.id) });
+      const listings = listingsByProduct.get(product.id) ?? [];
       if (listings.some(l => !!l.platformItemId || PROTECTED_LISTING_STATUSES.has(l.status))) { result.skippedRegistered++; continue; }
-
-      await db.update(products)
-        .set({ metadata: { ...metadata, csvImport: { ...productCsv, shippingPolicy: snapshot } } })
-        .where(eq(products.id, product.id));
-      result.productsUpdated++;
+      productUpdates.push({ id: product.id, metadata: { ...metadata, csvImport: { ...productCsv, shippingPolicy: snapshot } } });
     } else if (isManualShippingPolicy(crawlCsv.shippingPolicy)) {
       result.skippedManual++;
       continue;
     }
-
-    await db.update(crawlResults)
-      .set({ rawData: { ...rawData, csvImport: { ...crawlCsv, shippingPolicy: snapshot } } })
-      .where(eq(crawlResults.id, crawl.id));
-    result.crawlRowsUpdated++;
+    crawlUpdates.push({ id: crawl.id, rawData: { ...rawData, csvImport: { ...crawlCsv, shippingPolicy: snapshot } } });
   }
+
+  await runLimited(productUpdates, UPDATE_CONCURRENCY, async (u) => {
+    await db.update(products).set({ metadata: u.metadata }).where(eq(products.id, u.id));
+  });
+  await runLimited(crawlUpdates, UPDATE_CONCURRENCY, async (u) => {
+    await db.update(crawlResults).set({ rawData: u.rawData }).where(eq(crawlResults.id, u.id));
+  });
+  result.productsUpdated = productUpdates.length;
+  result.crawlRowsUpdated = crawlUpdates.length;
   return result;
 }
 
