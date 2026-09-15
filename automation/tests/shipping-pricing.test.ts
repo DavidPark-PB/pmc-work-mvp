@@ -115,6 +115,8 @@ const store = vi.hoisted(() => {
 });
 
 import * as schema from '../src/db/schema.js';
+import { resetShippingPolicyCache } from '../src/services/ebay-shipping-policies.js';
+import { FULFILLMENT_POLICIES, policySnapshot } from './fixtures/ebay-policies.js';
 import Fastify from 'fastify';
 import { Eta } from 'eta';
 import { parseCsvRawText, detectFixedHeaderMapping, applyMapping, buildImportPreview } from '../src/lib/csv-parser.js';
@@ -166,7 +168,6 @@ function setEnv(overrides: Record<string, string | undefined> = {}) {
     SHIPPING_QUOTE_INTERNAL_TOKEN: TOKEN,
     AUTO_LISTING_SHIPPING_PRICING_ENABLED: 'true',
     AUTO_LISTING_SHIPPING_EXCHANGE_RATE: '1300',
-    EBAY_POLICY_BUYER_SHIPPING_USD: '7.90',
     AUTO_LISTING_KPL_US_SERVICE_CODE: SERVICE.KPL,
     AUTO_LISTING_EGS_SERVICE_CODE: SERVICE.eGS,
     ...overrides,
@@ -242,6 +243,9 @@ beforeEach(() => {
     vi.spyOn(console, level).mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(' ')); });
   }
   vi.spyOn(EbayClient.prototype as any, 'suggestCategoryId').mockResolvedValue('261068');
+  //   eBay 배송정책 목록 (READ-ONLY 조회 mock) — 캐시 초기화
+  resetShippingPolicyCache();
+  vi.spyOn(EbayClient.prototype, 'getFulfillmentPolicies').mockResolvedValue(FULFILLMENT_POLICIES);
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
     if (callName !== 'AddItem') throw new Error(`unexpected eBay call ${callName}`);
@@ -260,7 +264,8 @@ async function appWith(...routes: any[]) {
 
 function seedUpload(csv = SHORT_CSV, uploadId = 'upload-1') {
   const raw = parseCsvRawText(csv);
-  const rows = applyMapping(raw, detectFixedHeaderMapping(raw[0])!);
+  //   Phase 2.3: upload에서 $7.90 eBay 배송정책을 선택한 상태 (신규 CSV 등록 필수)
+  const rows = applyMapping(raw, detectFixedHeaderMapping(raw[0])!).map(r => ({ ...r, shippingPolicy: policySnapshot('fixed790') }));
   store.rowsOf(schema.csvUploads).push({ id: 1, uploadId, filename: 't.csv', rowCount: rows.length, status: 'mapped', parsedRows: rows });
   return rows;
 }
@@ -639,7 +644,7 @@ describe('수동 판매가', () => {
     expect(next.salePriceOverrideHistory).toEqual([{ previousUsd: null, newUsd: 27, changedAt: '2026-09-14T00:00:00.000Z', changedBy: null }]);
     expect(() => applySalePriceOverride(fields, '19500')).toThrow(/매입원가/);
     //   Phase 2.1: 플래그 off면 수동가도 CSV가 단독 등록 없이 차단 (수동가 자체는 base로 인식)
-    expect(evaluateCsvListingPrice({ ...next, chargeableWeightG: 307 }, { enabled: false, exchangeRate: null, buyerShippingUsd: 7.9, serviceCodes: { KPL: null, eGS: null } }))
+    expect(evaluateCsvListingPrice({ ...next, chargeableWeightG: 307 }, { enabled: false, exchangeRate: null, serviceCodes: { KPL: null, eGS: null } }))
       .toMatchObject({ ok: false, code: 'SHIPPING_PRICING_DISABLED', basePriceUsd: 27, basePriceSource: 'MANUAL' });
   });
 });
@@ -726,10 +731,12 @@ describe('22. 실제 제공 CSV 첫·세 번째 상품', () => {
       uploadId: 'upload-1', rows: preview.rows, rowCount: preview.rows.length, priceHeader: preview.priceHeader,
       defaultSelectedCount: preview.defaultSelectedCount, errorRowCount: preview.errorRowCount,
       showShipping: preview.showShipping, shipping: publicShippingPricingConfig(getShippingPricingConfig()),
+      shippingPolicy: policySnapshot('fixed790'),
     });
     expect(html.match(/<option value="KPL" selected>KPL<\/option>/g)!.length).toBe(1 + 6);  // 일괄 + 행 6개
+    expect(html).toContain('선택 배송정책: <strong>Standard US $7.90</strong> · 구매자 배송비: <strong>$7.90</strong>');
     expect(html).toContain('eGS는 브랜드 상품에 사용하지 않습니다.');
-    expect(html).toContain('배송정책 별도 청구');
+    expect(html).toContain('정책 배송비 · 구매자 총 결제');   // Phase 2.3: 전역 env $7.90 대신 선택 정책 금액
     expect(html.match(/\$7\.90/g)!.length).toBeGreaterThanOrEqual(7);
     expect(html).toContain('예상 국제배송비');
     expect(html).toContain('eBay 등록 상품가격');

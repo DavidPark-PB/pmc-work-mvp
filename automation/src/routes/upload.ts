@@ -11,6 +11,7 @@ import { randomUUID } from 'crypto';
 import { pipeline } from 'stream/promises';
 import { parseCsvRawFields, detectMappingByKeyword, detectFixedHeaderMapping, validateColumnMapping, applyMapping, describeRowShipping, isQuoteRowUnfinished, summarizeQuoteRows, type CsvRow } from '../lib/csv-parser.js';
 import { getShippingPricingConfig } from '../lib/shipping-config.js';
+import { applyShippingPolicyToImportedRows, buildShippingPolicySnapshot, getShippingPolicies } from '../services/ebay-shipping-policies.js';
 import {
   alternativeReadyIndices,
   applyShippingAlternatives,
@@ -246,6 +247,60 @@ export async function uploadRoutes(app: FastifyInstance) {
     const job = getQuoteJob((request.params as { jobId: string }).jobId);
     if (!job) return reply.status(404).send({ error: '배송비 계산 작업을 찾을 수 없습니다.' });
     return { jobId: job.id, uploadId: job.uploadId, status: job.status, progress: job.progress, result: job.result ?? null, error: job.error ?? null };
+  });
+
+  // GET /api/ebay/shipping-policies — eBay 배송정책 목록 (READ-ONLY, 서버 10분 캐시). 토큰·원본 응답은 내보내지 않음
+  app.get('/ebay/shipping-policies', async (request, reply) => {
+    const user = getUser(request);
+    if (!user?.isAdmin) {
+      return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
+    }
+    const refresh = (request.query as { refresh?: string }).refresh === '1';
+    try {
+      const list = await getShippingPolicies({ refresh });
+      return { ok: true, policies: list.policies, fetchedAt: list.fetchedAt, stale: list.stale };
+    } catch (e) {
+      return reply.status(502).send({ ok: false, error: 'SHIPPING_POLICIES_UNAVAILABLE', message: (e as Error).message });
+    }
+  });
+
+  // POST /api/upload/shipping-policy — CSV upload 하나에 eBay 배송정책 하나 선택 (선택 당시 snapshot을 USD 행 전체에 저장)
+  //   같은 upload에서 이미 가져온 미등록 상품에도 반영 (eBay 등록/진행 중·수동 정책·다른 upload 상품은 변경하지 않음)
+  app.post('/upload/shipping-policy', async (request, reply) => {
+    const user = getUser(request);
+    if (!user?.isAdmin) {
+      return reply.status(403).send({ error: '관리자만 이용하실 수 있습니다.' });
+    }
+    const { uploadId, policyId } = (request.body ?? {}) as { uploadId?: string; policyId?: unknown };
+    if (!uploadId) return reply.status(400).send({ error: 'uploadId가 필요합니다' });
+    if (typeof policyId !== 'string' || !policyId) return reply.status(400).send({ error: '배송정책을 선택하세요.' });
+    if (findRunningQuoteJob(uploadId)) {
+      return reply.status(409).send({ error: '배송비 계산이 끝난 뒤 배송정책을 선택하세요.' });
+    }
+    const upload = await db.query.csvUploads.findFirst({ where: eq(csvUploads.uploadId, uploadId) });
+    const rows = upload?.parsedRows;
+    if (!rows || rows.length === 0) return reply.status(404).send({ error: '업로드 데이터를 찾을 수 없습니다' });
+
+    let list;
+    try {
+      list = await getShippingPolicies();
+    } catch (e) {
+      return reply.status(502).send({ error: (e as Error).message });
+    }
+    const view = list.policies.find(p => p.policyId === policyId);
+    if (!view) return reply.status(404).send({ error: '선택한 eBay 배송정책을 찾을 수 없습니다. 목록을 다시 불러오세요.' });
+    if (!view.supported) return reply.status(400).send({ error: view.unsupportedMessage || '자동 리스팅에서 사용할 수 없는 배송정책입니다.' });
+
+    const snapshot = buildShippingPolicySnapshot(view, list.fetchedAt);
+    const nextRows = rows.map(row => (row.priceCurrency === 'USD' ? { ...row, shippingPolicy: snapshot } : row));
+    await db.update(csvUploads).set({ parsedRows: nextRows }).where(eq(csvUploads.uploadId, uploadId));
+    const applied = await applyShippingPolicyToImportedRows(uploadId, nextRows, snapshot);
+    logAction(user, 'import.shipping-policy', {
+      targetType: 'csv_upload',
+      targetId: uploadId,
+      details: { policyId: snapshot.policyId, shippingType: snapshot.shippingType, buyerShippingUsd: snapshot.buyerShippingUsd, ...applied },
+    });
+    return { ok: true, uploadId, policy: snapshot, stale: list.stale, applied };
   });
 
   // POST /api/upload/shipping-alternatives/apply — 대체 배송사 적용 (개별 indices 또는 all: 대체 가능 전체)

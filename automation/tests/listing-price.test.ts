@@ -229,6 +229,7 @@ describe('importFromCrawl — metadata.csvImport 보존', () => {
         // Phase 2: 배송사/견적/수동 판매가 (import 시점 미지정)
         selectedShippingProvider: null,
         shippingQuote: null,
+        shippingPolicy: null,
         salePriceOverrideUsd: null,
         salePriceOverrideHistory: [],
       },
@@ -454,7 +455,7 @@ describe('resolveListingSalePrice 순수 검증', () => {
       selectedShippingProvider: 'KPL',
       shippingQuote: { status: 'OK', provider: 'KPL', serviceCode: 'KPL_SF_US', destinationCountry: 'US', chargeableWeightG: 307, bracketWeightKg: 0.5, shippingKrw: 13900, exchangeRate: 1300, shippingUsd: 10.7, rateVersionId: 4 },
     });
-    const shipping = { enabled: true, exchangeRate: 1300, buyerShippingUsd: 7.9, serviceCodes: { KPL: 'KPL_SF_US', eGS: 'EGS_STD_US' } };
+    const shipping = { enabled: true, exchangeRate: 1300, serviceCodes: { KPL: 'KPL_SF_US', eGS: 'EGS_STD_US' } };
     expect(resolveListingSalePrice(quoted, SETTINGS_DATA, { platform: 'ebay', sourceCrawl: source('25.40', 25.4), shipping }))
       .toMatchObject({ salePrice: 36.1, shippingCost: 9.24, currency: 'USD', source: 'CSV_USD_PLUS_SHIPPING', productClass: 'TOYBOX_USD' });
   });

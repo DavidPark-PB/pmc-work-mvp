@@ -261,7 +261,7 @@ export function validateShippingSnapshot(
  */
 export function evaluateCsvListingPrice(
   csv: Record<string, any>,
-  config: Pick<ShippingPricingConfig, 'enabled' | 'exchangeRate' | 'serviceCodes' | 'buyerShippingUsd'>,
+  config: Pick<ShippingPricingConfig, 'enabled' | 'exchangeRate' | 'serviceCodes'>,
 ): CsvListingPriceOk | CsvListingPriceBlocked {
   const csvSale = isValidUsdAmount(csv.salePriceUsd) ? centsToUsd(toCents(csv.salePriceUsd)) : null;
   if (csvSale === null) return blockedResult('SALE_PRICE_INVALID', { csv: null, base: null, source: null });
@@ -295,7 +295,9 @@ export function evaluateCsvListingPrice(
     return blockedResult('CHARGEABLE_WEIGHT_INVALID', baseInfo);
   }
 
-  const common = { csvSalePriceUsd: csvSale, basePriceUsd, basePriceSource, buyerShippingUsd: config.buyerShippingUsd };
+  //   구매자 배송비 = upload에서 선택한 eBay 배송정책 snapshot (표시/기록 전용 — 등록가에 더하거나 빼지 않음)
+  const policyBuyerShipping = csv.shippingPolicy && typeof csv.shippingPolicy.buyerShippingUsd === 'number' ? csv.shippingPolicy.buyerShippingUsd : null;
+  const common = { csvSalePriceUsd: csvSale, basePriceUsd, basePriceSource, buyerShippingUsd: policyBuyerShipping };
 
   const provider = csv.selectedShippingProvider;
   if (!isShippingProvider(provider)) return blockedResult('SHIPPING_PROVIDER_MISSING', baseInfo);

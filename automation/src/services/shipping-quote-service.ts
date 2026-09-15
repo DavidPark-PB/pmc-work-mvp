@@ -130,7 +130,7 @@ export async function quoteUploadRows(
       chargeableWeightG: weight.weightG,
       csvSalePriceUsd: typeof row.salePriceUsd === 'number' ? row.salePriceUsd : null,
       exchangeRate: config.exchangeRate,
-      buyerShippingUsd: config.buyerShippingUsd,
+      buyerShippingUsd: typeof row.shippingPolicy?.buyerShippingUsd === 'number' ? row.shippingPolicy.buyerShippingUsd : null,
       outcome,
       now,
       recovery: weight.recovered && weight.weightG !== null && weight.source !== null && weight.source !== 'CSV'
@@ -290,7 +290,8 @@ export function alternativeReadyIndices(rows: CsvRow[]): number[] {
 export function mergeRowsByIndex(latest: CsvRow[] | null | undefined, updated: CsvRow[], indices: number[]): CsvRow[] {
   if (!latest || latest.length !== updated.length) return updated;
   const merged = [...latest];
-  for (const index of indices) merged[index] = updated[index];
+  //   계산 중 배송정책이 바뀌었으면 최신 선택을 유지
+  for (const index of indices) merged[index] = { ...updated[index], shippingPolicy: latest[index]?.shippingPolicy ?? null };
   return merged;
 }
 

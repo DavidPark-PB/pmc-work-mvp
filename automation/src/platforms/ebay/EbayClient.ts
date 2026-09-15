@@ -60,6 +60,7 @@ export class EbayClient implements PlatformAdapter {
 
   private apiUrl: string;
   private authUrl: string;
+  private restBaseUrl: string;
   private appId: string;
   private certId: string;
   private devId: string;
@@ -91,6 +92,7 @@ export class EbayClient implements PlatformAdapter {
     this.authUrl = isProduction
       ? 'https://api.ebay.com/identity/v1/oauth2/token'
       : 'https://api.sandbox.ebay.com/identity/v1/oauth2/token';
+    this.restBaseUrl = isProduction ? 'https://api.ebay.com' : 'https://api.sandbox.ebay.com';
   }
 
   // ─── OAuth 토큰 자동 갱신 ────────────────────────────────
@@ -198,6 +200,32 @@ export class EbayClient implements PlatformAdapter {
 
     const response = await axios.post(this.apiUrl, xml, { headers, timeout: 30000 });
     return response.data as string;
+  }
+
+  /**
+   * Sell Account API — 배송(fulfillment) 정책 목록 조회 (READ-ONLY GET)
+   * fulfillmentPolicyId 는 Trading AddItem 의 SellerShippingProfile.ShippingProfileID 와 같은 ID 체계.
+   * 원본 응답은 서버 안에서만 사용한다 (토큰·원본을 브라우저로 내보내지 않음).
+   */
+  async getFulfillmentPolicies(marketplaceId = 'EBAY_US'): Promise<unknown> {
+    await this.ensureValidToken();
+    if (this.userToken.length <= 200) throw new Error('eBay: Sell Account API는 OAuth 사용자 토큰이 필요합니다');
+    const url = `${this.restBaseUrl}/sell/account/v1/fulfillment_policy?marketplace_id=${encodeURIComponent(marketplaceId)}`;
+    const get = () => axios.get(url, {
+      headers: { Authorization: `Bearer ${this.userToken}`, Accept: 'application/json' },
+      timeout: 20000,
+      validateStatus: () => true,
+    });
+    let res = await get();
+    if (res.status === 401) {
+      await this.refreshAccessToken();
+      res = await get();
+    }
+    if (res.status !== 200) {
+      const errorId = (res.data as any)?.errors?.[0]?.errorId;
+      throw new Error(`eBay fulfillment_policy 조회 실패 (HTTP ${res.status}${errorId ? `, errorId ${errorId}` : ''})`);
+    }
+    return res.data;
   }
 
   private extractXmlValue(xml: string, tag: string): string {
@@ -358,7 +386,7 @@ export class EbayClient implements PlatformAdapter {
     </PictureDetails>${itemSpecificsXml}
     <SellerProfiles>
       <SellerShippingProfile>
-        <ShippingProfileID>${this.shippingProfileId}</ShippingProfileID>
+        <ShippingProfileID>${input.shippingProfileId ?? this.shippingProfileId}</ShippingProfileID>
       </SellerShippingProfile>
       <SellerReturnProfile>
         <ReturnProfileID>${this.returnProfileId}</ReturnProfileID>

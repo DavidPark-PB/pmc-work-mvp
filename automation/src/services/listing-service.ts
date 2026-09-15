@@ -9,6 +9,7 @@ import { crawlResults, products, platformListings, productImages } from '../db/s
 import { getPricingSettings } from './pricing.js';
 import { buildProductCsvMetadata, resolveListingSalePrice, type ResolvedListingSalePrice } from './listing-price.js';
 import { getShippingPricingConfig } from '../lib/shipping-config.js';
+import { resolveCsvShippingPolicy, type ShippingPolicySnapshot } from './ebay-shipping-policies.js';
 import { translateProduct } from './translate.js';
 import { EbayClient } from '../platforms/ebay/EbayClient.js';
 import { ShopifyClient } from '../platforms/shopify/ShopifyClient.js';
@@ -38,11 +39,17 @@ async function generateSku(): Promise<string> {
  * 판매가 결정 (create/retry/relist 공용 — release guard 단일 경로)
  * USD CSV 상품은 원본 crawl_results와 대조 후 판매가 + 저장된 배송 견적 (배송비 플래그 off면 차단), 그 외는 기존 계산
  */
+type ResolvedListing = ResolvedListingSalePrice & {
+  /** CSV 상품: upload에서 선택한 eBay Shipping Policy (레거시: undefined → 전역 env 정책) */
+  shippingProfileId?: string;
+  shippingPolicy?: ShippingPolicySnapshot;
+};
+
 async function resolveProductSalePrice(
   product: { costPrice: unknown; metadata: unknown; sku: string },
   platform: string,
   action: 'create' | 'retry',
-): Promise<ResolvedListingSalePrice> {
+): Promise<ResolvedListing> {
   const settings = await getPricingSettings(platform);
   const importedFrom = (product.metadata as Record<string, any> | null)?.importedFrom;
   const sourceCrawl = typeof importedFrom === 'number'
@@ -60,12 +67,22 @@ async function resolveProductSalePrice(
       ? `매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재등록하세요. (SKU: ${product.sku})`
       : `매입가 (cost price) 가 설정되지 않았습니다. 상품 관리에서 가격을 입력 후 재시도하세요. (SKU: ${product.sku})`);
   }
+  if (pricing.source === 'CSV_USD_PLUS_SHIPPING') {
+    //   CSV 상품은 선택한 배송정책을 eBay 현재 목록으로 재검증 — 전역 EBAY_SHIPPING_PROFILE_ID fallback 없음
+    const policy = await resolveCsvShippingPolicy((product.metadata as Record<string, any>).csvImport);
+    return { ...pricing, shippingProfileId: policy.shippingProfileId, shippingPolicy: policy.snapshot };
+  }
   return pricing;
 }
 
 /** platform_listings.platform_data에 남기는 가격 결정 기록 */
-function pricingAudit(pricing: ResolvedListingSalePrice) {
-  return { pricing: { source: pricing.source, salePrice: pricing.salePrice, ...(pricing.breakdown ?? {}) } };
+function pricingAudit(pricing: ResolvedListing) {
+  const audit: Record<string, unknown> = { source: pricing.source, salePrice: pricing.salePrice, ...(pricing.breakdown ?? {}) };
+  if (pricing.shippingPolicy) {
+    audit.shippingPolicy = pricing.shippingPolicy;
+    audit.buyerTotalUsd = (Math.round(pricing.salePrice * 100) + Math.round(pricing.shippingPolicy.buyerShippingUsd * 100)) / 100;
+  }
+  return { pricing: audit };
 }
 
 /**
@@ -226,6 +243,7 @@ export async function createListing(
     brand: product.brand || '',
     weight: weightG,
     itemSpecifics,
+    shippingProfileId: pricing.shippingProfileId,
   };
 
   try {
@@ -324,6 +342,7 @@ export async function retryListing(
     productType: product.productType || '',
     brand: product.brand || '',
     weight: weightG,
+    shippingProfileId: pricing.shippingProfileId,
   };
 
   try {
@@ -473,6 +492,7 @@ export async function relistListing(
     productType: product.productType || '',
     brand: product.brand || '',
     weight: weightG,
+    shippingProfileId: pricing.shippingProfileId,
   };
 
   try {

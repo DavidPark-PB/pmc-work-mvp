@@ -17,6 +17,8 @@ export interface ListingInput {
   brand?: string;
   weight?: number;        // grams
   itemSpecifics?: Record<string, string>;  // eBay Item Specifics (카테고리별 템플릿)
+  /** eBay Shipping Policy ID — CSV 상품은 upload에서 선택한 정책 (없으면 레거시 전역 env 정책) */
+  shippingProfileId?: string;
 }
 
 export interface ListingResult {

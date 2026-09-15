@@ -6,6 +6,7 @@
  */
 import fs from 'fs';
 import type { ShippingQuoteSnapshot, SalePriceOverrideHistoryEntry } from '../services/shipping-pricing.js';
+import type { ShippingPolicySnapshot } from '../services/ebay-shipping-policies.js';
 import { describeQuoteReason, isAlternativeEligible, isRecoverableQuoteFailure, normalizeQuoteReason, resolveChargeableWeight } from './shipping-quote-status.js';
 
 export type PriceCurrency = 'USD' | 'KRW';
@@ -60,6 +61,10 @@ export interface CsvRow {
   shippingQuote?: ShippingQuoteSnapshot | null;
   /** 선택 배송사 실패 시 다른 배송사 견적 (자동 적용하지 않음) */
   shippingQuoteAlternative?: ShippingQuoteSnapshot | null;
+  /** upload 단위로 선택한 eBay Shipping Policy snapshot (USD 행 전체에 같은 값) */
+  shippingPolicy?: ShippingPolicySnapshot | null;
+  /** DB 가져오기(import batch)로 생성·갱신된 crawl_results.id — 정책 변경 시 이미 가져온 상품을 찾는 기준 */
+  importedCrawlResultId?: number | null;
   salePriceOverrideUsd?: number | null;
   salePriceOverrideHistory?: SalePriceOverrideHistoryEntry[];
 }
@@ -104,6 +109,11 @@ function parseReviewCount(text: string): number {
 export function extractProductId(url: string): string {
   const match = url.match(/products\/(\d+)/);
   return match ? match[1] : url;
+}
+
+/** CSV 행 → crawl_results.external_id (import batch와 같은 규칙) */
+export function importExternalId(row: Pick<CsvRow, 'url' | 'name' | 'price'>): string {
+  return extractProductId(row.url) || `name_${row.name.replace(/\s+/g, '_').slice(0, 50)}_${row.price}`;
 }
 
 function parseCsvLine(line: string): string[] {
@@ -920,6 +930,7 @@ export function buildImportRawData(
     sourceColumns: row.sourceColumns ?? {},
     issues: row.issues ?? [],
     shippingQuote: row.shippingQuote ?? null,
+    shippingPolicy: row.shippingPolicy ?? null,
   };
   return rawData;
 }
@@ -957,8 +968,12 @@ export interface ImportPreviewRow {
   quoteCategory: QuoteCategory;
   shippingLabel: string;
   listingPriceLabel: string;
-  /** 표시 전용: eBay 등록가 + 배송정책 구매자 배송비 (예 $38.60 + $7.90 = $46.50) */
+  /** 표시 전용: eBay 등록가 + 선택 배송정책 구매자 배송비 (정책 미선택이면 '') */
   buyerTotalLabel: string;
+  /** 선택 배송정책 구매자 배송비 "무료" / "$7.90" (미선택 '') */
+  policyShippingLabel: string;
+  /** 정상 견적 등록가 USD (브라우저에서 정책 변경 시 총 결제 재계산용) */
+  listingPriceUsd: number | null;
   /** 한 줄 요약 (정상: 서비스·구간 / 실패: 원인) */
   quoteMessage: string;
   reasonCode: string | null;
@@ -978,19 +993,25 @@ export interface ImportPreviewRow {
 }
 
 type RowShippingView = Pick<ImportPreviewRow,
-  'shippingProvider' | 'canQuote' | 'quoteStatus' | 'quoteCategory' | 'shippingLabel' | 'listingPriceLabel' | 'buyerTotalLabel'
+  'shippingProvider' | 'canQuote' | 'quoteStatus' | 'quoteCategory' | 'shippingLabel' | 'listingPriceLabel' | 'buyerTotalLabel' | 'policyShippingLabel' | 'listingPriceUsd'
   | 'quoteMessage' | 'reasonCode' | 'reasonLabel' | 'retryNote' | 'weightRecoveryLabel' | 'alternative' | 'alternativeFailureLabel' | 'quoteTitle'>;
 
-function buyerTotal(snapshot: ShippingQuoteSnapshot): string {
-  return typeof snapshot.buyerShippingUsd === 'number' && typeof snapshot.listingPriceUsd === 'number'
-    ? formatUsd((Math.round(snapshot.listingPriceUsd * 100) + Math.round(snapshot.buyerShippingUsd * 100)) / 100)
+/** 구매자 총 결제 = 등록가 + 선택 정책 구매자 배송비 (견적 snapshot의 과거 env 값은 사용하지 않음) */
+function buyerTotal(snapshot: ShippingQuoteSnapshot, policy: ShippingPolicySnapshot | null | undefined): string {
+  return policy && typeof policy.buyerShippingUsd === 'number' && typeof snapshot.listingPriceUsd === 'number'
+    ? formatUsd((Math.round(snapshot.listingPriceUsd * 100) + Math.round(policy.buyerShippingUsd * 100)) / 100)
     : '';
+}
+
+export function formatPolicyShipping(policy: ShippingPolicySnapshot | null | undefined): string {
+  if (!policy || typeof policy.buyerShippingUsd !== 'number') return '';
+  return policy.buyerShippingUsd === 0 ? '무료' : formatUsd(policy.buyerShippingUsd);
 }
 
 /** 검수 화면 배송 칸 상태 (snapshot은 선택 배송사·적용무게와 일치할 때만 표시) */
 export function describeRowShipping(row: CsvRow): RowShippingView {
   const empty: RowShippingView = {
-    shippingProvider: null, canQuote: false, quoteStatus: 'NONE', quoteCategory: 'NONE', shippingLabel: '—', listingPriceLabel: '—', buyerTotalLabel: '',
+    shippingProvider: null, canQuote: false, quoteStatus: 'NONE', quoteCategory: 'NONE', shippingLabel: '—', listingPriceLabel: '—', buyerTotalLabel: '', policyShippingLabel: '', listingPriceUsd: null,
     quoteMessage: '', reasonCode: null, reasonLabel: '', retryNote: '', weightRecoveryLabel: '', alternative: null, alternativeFailureLabel: '', quoteTitle: '',
   };
   if (row.priceCurrency !== 'USD') return empty;
@@ -999,7 +1020,7 @@ export function describeRowShipping(row: CsvRow): RowShippingView {
   const weight = resolveChargeableWeight(row);
   const priceOk = typeof row.salePriceUsd === 'number' && row.salePriceUsd > 0;
   const weightRecoveryLabel = weight.recovered && weight.weightG !== null ? `적용무게 자동복구: ${formatWeightG(weight.weightG)}` : '';
-  const base = { ...empty, shippingProvider: provider, canQuote: priceOk && weight.weightG !== null, weightRecoveryLabel };
+  const base = { ...empty, shippingProvider: provider, canQuote: priceOk && weight.weightG !== null, weightRecoveryLabel, policyShippingLabel: formatPolicyShipping(row.shippingPolicy) };
 
   const failed = (reasonCode: string, extra: Partial<RowShippingView> = {}): RowShippingView => {
     const reasonLabel = describeQuoteReason(reasonCode);
@@ -1040,7 +1061,7 @@ export function describeRowShipping(row: CsvRow): RowShippingView {
           label: `${altCurrent.provider} ${altCurrent.bracketWeightKg}kg 구간 가능 · 배송비 ${(altCurrent.shippingKrw ?? 0).toLocaleString('ko-KR')}원`,
           shippingLabel: formatUsd(altCurrent.shippingUsd),
           listingPriceLabel: formatUsd(altCurrent.listingPriceUsd),
-          buyerTotalLabel: buyerTotal(altCurrent),
+          buyerTotalLabel: buyerTotal(altCurrent, row.shippingPolicy),
           warning: altCurrent.provider === 'eGS' ? 'eGS는 브랜드 상품에 사용하지 않습니다' : '',
         },
       });
@@ -1058,7 +1079,8 @@ export function describeRowShipping(row: CsvRow): RowShippingView {
     quoteCategory: weight.recovered ? 'RECOVERED' : 'OK',
     shippingLabel: formatUsd(current.shippingUsd),
     listingPriceLabel: formatUsd(current.listingPriceUsd),
-    buyerTotalLabel: buyerTotal(current),
+    buyerTotalLabel: buyerTotal(current, row.shippingPolicy),
+    listingPriceUsd: current.listingPriceUsd,
     quoteMessage: okMessage,
     retryNote: current.retries ? `${current.retries}회 재시도 후 정상` : '',
     quoteTitle: [okMessage, weightRecoveryLabel, current.retries ? `${current.retries}회 재시도 후 정상` : ''].filter(Boolean).join('\n'),

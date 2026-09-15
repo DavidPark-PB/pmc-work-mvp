@@ -9,6 +9,7 @@ import { calculatePriceSync, getAllPricingSettings } from '../services/pricing.j
 import { buildImportPreview, detectFixedHeaderMapping } from '../lib/csv-parser.js';
 import { crawlDisplayCsv, readProductCsvMetadata, resolveDisplayPrices } from '../services/listing-price.js';
 import { getShippingPricingConfig, publicShippingPricingConfig } from '../lib/shipping-config.js';
+import { readShippingPolicySnapshot } from '../services/ebay-shipping-policies.js';
 import { jobStore } from '../lib/job-store.js';
 import { getUser } from '../lib/user-session.js';
 import fs from 'fs';
@@ -288,6 +289,10 @@ export async function pageRoutes(app: FastifyInstance) {
       errorRowCount: preview.errorRowCount,
       showShipping: preview.showShipping,
       shipping: publicShippingPricingConfig(getShippingPricingConfig()),
+      //   upload 단위 선택 배송정책 (USD 행 전체에 같은 snapshot 저장)
+      shippingPolicy: readShippingPolicySnapshot(upload.parsedRows.find(r => r.priceCurrency === 'USD')?.shippingPolicy),
+      //   이미 DB로 가져온 행이 있으면 정책 선택/변경 시 확인창 표시
+      hasImportedRows: (upload.importedCount ?? 0) > 0 || upload.parsedRows.some(r => typeof r.importedCrawlResultId === 'number'),
     }, { layout: 'layout.eta' });
   });
 

@@ -17,8 +17,6 @@ export interface ShippingPricingConfig {
   internalToken: string | null;
   /** KRW per USD — 없거나 0 이하이면 null (계산·등록 차단) */
   exchangeRate: number | null;
-  /** eBay Shipping Policy 구매자 별도 청구액 — 표시/snapshot 전용, 가격 계산에 사용하지 않음 */
-  buyerShippingUsd: number | null;
   serviceCodes: Record<ShippingProvider, string | null>;
 }
 
@@ -39,7 +37,6 @@ export function getShippingPricingConfig(source: Partial<Record<string, string |
     mainServiceUrl: nonEmpty(source.MAIN_SERVICE_URL),
     internalToken: nonEmpty(source.SHIPPING_QUOTE_INTERNAL_TOKEN),
     exchangeRate: positiveNumber(source.AUTO_LISTING_SHIPPING_EXCHANGE_RATE),
-    buyerShippingUsd: positiveNumber(source.EBAY_POLICY_BUYER_SHIPPING_USD ?? '7.90'),
     serviceCodes: {
       KPL: nonEmpty(source.AUTO_LISTING_KPL_US_SERVICE_CODE),
       eGS: nonEmpty(source.AUTO_LISTING_EGS_SERVICE_CODE),
@@ -55,7 +52,6 @@ export function isShippingProvider(value: unknown): value is ShippingProvider {
 export function publicShippingPricingConfig(config: ShippingPricingConfig) {
   return {
     enabled: config.enabled,
-    buyerShippingUsd: config.buyerShippingUsd,
     exchangeRateConfigured: config.exchangeRate !== null,
     quoteConfigured: !!(config.mainServiceUrl && config.internalToken),
   };

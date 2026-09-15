@@ -117,6 +117,8 @@ const store = vi.hoisted(() => {
 
 
 import * as schema from '../src/db/schema.js';
+import { resetShippingPolicyCache } from '../src/services/ebay-shipping-policies.js';
+import { FULFILLMENT_POLICIES, policySnapshot } from './fixtures/ebay-policies.js';
 import os from 'os';
 import Fastify from 'fastify';
 import fastifyMultipart from '@fastify/multipart';
@@ -167,7 +169,7 @@ function setEnv(overrides: Record<string, string | undefined> = {}) {
     DATABASE_URL: 'postgres://mock', EBAY_ENVIRONMENT: 'SANDBOX',
     MAIN_SERVICE_URL: MAIN, SHIPPING_QUOTE_INTERNAL_TOKEN: TOKEN,
     AUTO_LISTING_SHIPPING_PRICING_ENABLED: 'false', AUTO_LISTING_SHIPPING_EXCHANGE_RATE: '1300',
-    EBAY_POLICY_BUYER_SHIPPING_USD: '7.90', AUTO_LISTING_KPL_US_SERVICE_CODE: 'KPL_SF_US', AUTO_LISTING_EGS_SERVICE_CODE: 'EGS_STD_US',
+    AUTO_LISTING_KPL_US_SERVICE_CODE: 'KPL_SF_US', AUTO_LISTING_EGS_SERVICE_CODE: 'EGS_STD_US',
     ...overrides,
   });
 }
@@ -207,6 +209,9 @@ beforeEach(() => {
     vi.spyOn(console, level).mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(' ')); });
   }
   vi.spyOn(EbayClient.prototype as any, 'suggestCategoryId').mockResolvedValue('261068');
+  //   eBay 배송정책 목록 (READ-ONLY 조회 mock) — 캐시 초기화
+  resetShippingPolicyCache();
+  vi.spyOn(EbayClient.prototype, 'getFulfillmentPolicies').mockResolvedValue(FULFILLMENT_POLICIES);
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
     if (callName !== 'AddItem') throw new Error(`unexpected eBay call ${callName}`);
@@ -339,6 +344,7 @@ describe('9. 플래그 true + KPL 13,900원 + 환율 1,300', () => {
     const { buildShippingQuoteSnapshot } = await import('../src/services/shipping-pricing.js');
     const crawl = store.rowsOf(schema.crawlResults)[0];
     crawl.rawData.csvImport.fields.selectedShippingProvider = 'KPL';
+    crawl.rawData.csvImport.shippingPolicy = policySnapshot('fixed790');
     crawl.rawData.csvImport.shippingQuote = buildShippingQuoteSnapshot({ provider: 'KPL', serviceCode: 'KPL_SF_US', chargeableWeightG: 307, csvSalePriceUsd: 25.4, exchangeRate: 1300, buyerShippingUsd: 7.9, outcome: quote as any });
     expect(crawl.rawData.csvImport.shippingQuote).toMatchObject({ shippingUsd: 10.7, listingPriceUsd: 36.1 });
     const productId = await importFromCrawl(101);

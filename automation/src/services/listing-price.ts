@@ -11,6 +11,7 @@ import { calculatePriceSync, type PricingSettingsData } from './pricing.js';
 import { parseDecimal } from '../lib/csv-parser.js';
 import { evaluateCsvListingPrice, formatUsdAmount, type CsvListingPriceOk, type ShippingQuoteSnapshot, type SalePriceOverrideHistoryEntry } from './shipping-pricing.js';
 import { isShippingProvider, type ShippingPricingConfig, type ShippingProvider } from '../lib/shipping-config.js';
+import { readShippingPolicySnapshot, type ShippingPolicySnapshot } from './ebay-shipping-policies.js';
 
 export type SalePriceSource = 'CSV_USD_PLUS_SHIPPING' | 'LEGACY_CALCULATED';
 export type DisplayPriceSource = SalePriceSource | 'CSV_USD_BLOCKED';
@@ -33,12 +34,11 @@ export interface ResolvedListingSalePrice {
   breakdown?: Omit<CsvListingPriceOk, 'ok' | 'source' | 'salePrice'>;
 }
 
-export type ShippingResolveConfig = Pick<ShippingPricingConfig, 'enabled' | 'exchangeRate' | 'serviceCodes' | 'buyerShippingUsd'>;
+export type ShippingResolveConfig = Pick<ShippingPricingConfig, 'enabled' | 'exchangeRate' | 'serviceCodes'>;
 
 const SHIPPING_DISABLED: ShippingResolveConfig = {
   enabled: false,
   exchangeRate: null,
-  buyerShippingUsd: null,
   serviceCodes: { KPL: null, eGS: null },
 };
 
@@ -63,6 +63,8 @@ export interface ProductCsvImportMetadata {
   sourceRowNumber: number | null;
   selectedShippingProvider: ShippingProvider | null;
   shippingQuote: ShippingQuoteSnapshot | null;
+  /** upload에서 선택한 eBay Shipping Policy snapshot */
+  shippingPolicy: ShippingPolicySnapshot | null;
   salePriceOverrideUsd: number | null;
   salePriceOverrideHistory: SalePriceOverrideHistoryEntry[];
 }
@@ -141,6 +143,7 @@ export function buildProductCsvMetadata(crawl: SourceCrawlEvidence): ProductCsvI
     sourceRowNumber: numberOrNull(csvImport.sourceRowNumber),
     selectedShippingProvider: isShippingProvider(fields.selectedShippingProvider) ? fields.selectedShippingProvider : null,
     shippingQuote: asRecord(csvImport.shippingQuote) ? (csvImport.shippingQuote as ShippingQuoteSnapshot) : null,
+    shippingPolicy: readShippingPolicySnapshot(csvImport.shippingPolicy),
     salePriceOverrideUsd: numberOrNull(fields.salePriceOverrideUsd),
     salePriceOverrideHistory: Array.isArray(fields.salePriceOverrideHistory) ? fields.salePriceOverrideHistory : [],
   };

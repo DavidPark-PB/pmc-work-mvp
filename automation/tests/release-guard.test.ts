@@ -114,6 +114,8 @@ const store = vi.hoisted(() => {
 });
 
 import * as schema from '../src/db/schema.js';
+import { resetShippingPolicyCache } from '../src/services/ebay-shipping-policies.js';
+import { FULFILLMENT_POLICIES, policySnapshot } from './fixtures/ebay-policies.js';
 import Fastify from 'fastify';
 import { Eta } from 'eta';
 import { parseCsvRawText, detectFixedHeaderMapping, detectMappingByKeyword, applyMapping, buildImportRawData, buildImportPreview } from '../src/lib/csv-parser.js';
@@ -162,7 +164,7 @@ function setEnv(overrides: Record<string, string | undefined> = {}) {
     DATABASE_URL: 'postgres://mock', EBAY_ENVIRONMENT: 'SANDBOX',
     MAIN_SERVICE_URL: MAIN, SHIPPING_QUOTE_INTERNAL_TOKEN: TOKEN,
     AUTO_LISTING_SHIPPING_PRICING_ENABLED: 'false', AUTO_LISTING_SHIPPING_EXCHANGE_RATE: '1300',
-    EBAY_POLICY_BUYER_SHIPPING_USD: '7.90', AUTO_LISTING_KPL_US_SERVICE_CODE: 'KPL_SF_US', AUTO_LISTING_EGS_SERVICE_CODE: 'EGS_STD_US',
+    AUTO_LISTING_KPL_US_SERVICE_CODE: 'KPL_SF_US', AUTO_LISTING_EGS_SERVICE_CODE: 'EGS_STD_US',
     ...overrides,
   });
 }
@@ -195,6 +197,9 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fakeFetch);
   for (const level of ['log', 'warn', 'info'] as const) vi.spyOn(console, level).mockImplementation(() => {});
   vi.spyOn(EbayClient.prototype as any, 'suggestCategoryId').mockResolvedValue('261068');
+  //   eBay 배송정책 목록 (READ-ONLY 조회 mock) — 캐시 초기화
+  resetShippingPolicyCache();
+  vi.spyOn(EbayClient.prototype, 'getFulfillmentPolicies').mockResolvedValue(FULFILLMENT_POLICIES);
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
     tradingCalls.push(callName);
@@ -223,6 +228,7 @@ function seedCrawl(csv: string, rowIndex: number, id: number, fixed = true) {
 /** toybox 행 + (선택) raw /quote 견적 snapshot → product */
 async function toyboxProduct(rowIndex: number, id: number, opts: { provider?: 'KPL' | 'eGS'; quote?: boolean } = {}) {
   const crawl = seedCrawl(FULL_CSV, rowIndex, id);
+  crawl.rawData.csvImport.shippingPolicy = policySnapshot('fixed790');   // Phase 2.3: upload에서 선택한 배송정책
   const fields = crawl.rawData.csvImport.fields;
   if (opts.provider) {
     fields.selectedShippingProvider = opts.provider;
@@ -232,7 +238,7 @@ async function toyboxProduct(rowIndex: number, id: number, opts: { provider?: 'K
       const outcome = await requestShippingQuote({ provider: opts.provider, serviceCode, chargeableWeightG: fields.chargeableWeightG }, { config, fetchImpl: fakeFetch as any });
       crawl.rawData.csvImport.shippingQuote = buildShippingQuoteSnapshot({
         provider: opts.provider, serviceCode, chargeableWeightG: fields.chargeableWeightG, csvSalePriceUsd: fields.salePriceUsd,
-        exchangeRate: config.exchangeRate, buyerShippingUsd: config.buyerShippingUsd, outcome,
+        exchangeRate: config.exchangeRate, buyerShippingUsd: 7.9, outcome,
       });
     }
   }
@@ -458,13 +464,14 @@ describe('8. UI 안내', () => {
   const eta = new Eta({ views: path.join(process.cwd(), 'views') });
   const NOTICE_LINES = ['배송비 계산 준비 중', '현재는 상품 검수와 가져오기만 가능합니다.', '배송비 반영 전에는 eBay 등록이 차단됩니다.'];
 
-  function renderStep2() {
+  function renderStep2(shippingPolicy: unknown = policySnapshot('fixed790')) {
     const raw = parseCsvRawText(FULL_CSV);
     const preview = buildImportPreview(applyMapping(raw, detectFixedHeaderMapping(raw[0])!));
     return eta.render('./step2-import', {
       uploadId: 'u', rows: preview.rows, rowCount: preview.rows.length, priceHeader: preview.priceHeader,
       defaultSelectedCount: preview.defaultSelectedCount, errorRowCount: preview.errorRowCount,
       showShipping: preview.showShipping, shipping: publicShippingPricingConfig(getShippingPricingConfig()),
+      shippingPolicy,
     });
   }
 
@@ -492,7 +499,11 @@ describe('8. UI 안내', () => {
     const off = renderStep2();
     for (const line of NOTICE_LINES) expect(off).toContain(line);
     expect(off).toContain('data-testid="release-guard-notice"');
-    expect(off).toMatch(/<button id="import-btn" class="btn btn-primary btn-lg">/);   // import 허용
+    expect(off).toMatch(/<button id="import-btn" class="btn btn-primary btn-lg">/);   // import 허용 (배송정책 선택 상태)
+    //   Phase 2.3: 배송정책 미선택이면 import 버튼 비활성 + 안내
+    const noPolicy = renderStep2(null);
+    expect(noPolicy).toMatch(/<button id="import-btn" class="btn btn-primary btn-lg" disabled>/);
+    expect(noPolicy).toContain('eBay 배송정책을 선택하면 상품을 가져올 수 있습니다.');
 
     setEnv({ AUTO_LISTING_SHIPPING_PRICING_ENABLED: 'true' });
     const on = renderStep2();

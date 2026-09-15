@@ -162,3 +162,50 @@ export function createSingleFlight() {
     },
   };
 }
+
+// ── eBay 배송정책 (CSV upload별 선택) ─────────────────────────
+
+const usd = (v) => '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** 구매자 배송비 표시 — 0이면 "무료" */
+export function formatBuyerShipping(buyerShippingUsd) {
+  if (typeof buyerShippingUsd !== 'number' || !Number.isFinite(buyerShippingUsd)) return '';
+  return buyerShippingUsd === 0 ? '무료' : usd(buyerShippingUsd);
+}
+
+/** 드롭다운 문구 — 무료: "추천 · 정책명 — 무료배송" / 고정: "정책명 — $7.90" / 선택 불가: "정책명 — 선택 불가: 사유" */
+export function policyOptionLabel(policy) {
+  if (!policy.supported) return `${policy.name} — 선택 불가: ${policy.unsupportedMessage || '자동 리스팅에서 사용할 수 없습니다.'}`;
+  if (policy.buyerShippingUsd === 0) return `추천 · ${policy.name} — 무료배송`;
+  return `${policy.name} — ${usd(policy.buyerShippingUsd)}`;
+}
+
+/**
+ * 정책명 검색 + 그룹: 무료배송(추천) → 유료배송(고정 금액, 오름차순) → 선택 불가
+ * 선택된 정책은 검색어와 무관하게 항상 포함 (선택값이 사라지지 않게)
+ */
+export function groupShippingPolicies(policies, query = '', selectedPolicyId = null) {
+  const q = String(query || '').trim().toLowerCase();
+  const match = (p) => !q || p.name.toLowerCase().includes(q) || p.policyId === selectedPolicyId;
+  const visible = policies.filter(match);
+  const byCost = (a, b) => (a.buyerShippingUsd ?? 0) - (b.buyerShippingUsd ?? 0) || a.name.localeCompare(b.name);
+  return [
+    { key: 'free', label: '무료배송', policies: visible.filter(p => p.supported && p.buyerShippingUsd === 0).sort((a, b) => a.name.localeCompare(b.name)) },
+    { key: 'fixed', label: '유료배송 (고정 배송비)', policies: visible.filter(p => p.supported && p.buyerShippingUsd > 0).sort(byCost) },
+    { key: 'unsupported', label: '선택 불가', policies: visible.filter(p => !p.supported).sort((a, b) => a.name.localeCompare(b.name)) },
+  ];
+}
+
+/** 신규 USD CSV는 배송정책 선택 전 DB 가져오기 불가 (레거시 KRW CSV는 policyRequired=false) */
+export function importButtonState({ selectedCount, policyRequired, hasPolicy }) {
+  if (policyRequired && !hasPolicy) return { disabled: true, reason: 'eBay 배송정책을 선택하면 상품을 가져올 수 있습니다.' };
+  if (!selectedCount) return { disabled: true, reason: '' };
+  return { disabled: false, reason: '' };
+}
+
+/** 구매자 총 결제 = eBay 등록가 + 선택 정책 구매자 배송비 (등록가에는 더하지 않음) */
+export function buyerTotalLabel(listingPriceUsd, policy) {
+  const price = Number(listingPriceUsd);
+  if (!policy || typeof policy.buyerShippingUsd !== 'number' || listingPriceUsd === '' || listingPriceUsd === null || listingPriceUsd === undefined || !Number.isFinite(price)) return '';
+  return usd((Math.round(price * 100) + Math.round(policy.buyerShippingUsd * 100)) / 100);
+}

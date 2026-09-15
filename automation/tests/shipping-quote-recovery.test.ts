@@ -99,6 +99,8 @@ const store = vi.hoisted(() => {
 });
 
 import * as schema from '../src/db/schema.js';
+import { resetShippingPolicyCache } from '../src/services/ebay-shipping-policies.js';
+import { FULFILLMENT_POLICIES, policySnapshot } from './fixtures/ebay-policies.js';
 import Fastify from 'fastify';
 import { Eta } from 'eta';
 import { parseCsvRawText, detectFixedHeaderMapping, detectMappingByKeyword, applyMapping, buildImportPreview, describeRowShipping, summarizeQuoteRows, isQuoteRowUnfinished } from '../src/lib/csv-parser.js';
@@ -157,7 +159,7 @@ function setEnv(overrides: Record<string, string | undefined> = {}) {
     DATABASE_URL: 'postgres://mock', EBAY_ENVIRONMENT: 'SANDBOX',
     MAIN_SERVICE_URL: MAIN, SHIPPING_QUOTE_INTERNAL_TOKEN: TOKEN,
     AUTO_LISTING_SHIPPING_PRICING_ENABLED: 'false', AUTO_LISTING_SHIPPING_SHADOW_ENABLED: 'false', AUTO_LISTING_SHIPPING_EXCHANGE_RATE: '1300',
-    EBAY_POLICY_BUYER_SHIPPING_USD: '7.90', AUTO_LISTING_KPL_US_SERVICE_CODE: 'KPL_SF_US', AUTO_LISTING_EGS_SERVICE_CODE: 'EGS_STD_US',
+    AUTO_LISTING_KPL_US_SERVICE_CODE: 'KPL_SF_US', AUTO_LISTING_EGS_SERVICE_CODE: 'EGS_STD_US',
     ...overrides,
   });
 }
@@ -226,6 +228,9 @@ beforeEach(() => {
     vi.spyOn(console, level).mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(' ')); });
   }
   vi.spyOn(EbayClient.prototype as any, 'suggestCategoryId').mockResolvedValue('261068');
+  //   eBay 배송정책 목록 (READ-ONLY 조회 mock) — 캐시 초기화
+  resetShippingPolicyCache();
+  vi.spyOn(EbayClient.prototype, 'getFulfillmentPolicies').mockResolvedValue(FULFILLMENT_POLICIES);
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
     if (callName !== 'AddItem') throw new Error(`unexpected eBay call ${callName}`);
@@ -241,7 +246,7 @@ function parsedRows() {
 }
 
 function seedUpload(uploadId = 'upload-r') {
-  const rows = parsedRows();
+  const rows = parsedRows().map((r: any) => ({ ...r, shippingPolicy: policySnapshot('fixed790') }));
   store.rowsOf(schema.csvUploads).push({ id: 1, uploadId, filename: 'r.csv', rowCount: rows.length, status: 'mapped', parsedRows: rows });
   return rows;
 }
@@ -728,13 +733,14 @@ function upload138Rows() {
       ? { ok: true as const, provider: 'KPL' as const, serviceCode: 'KPL_SF_US', destinationCountry: 'US', chargeableWeightG: g!, chargeableWeightKg: g! / 1000, bracketWeightKg: bracket![0], shippingKrw: bracket![1], rateVersionId: 4, rateEffectiveFrom: '2026-09-13' }
       : { ok: false as const, blockedReason: kind === 'timeout' ? 'QUOTE_TIMEOUT' : kind === 'over' ? 'WEIGHT_OVER_MAX_BRACKET' : 'CHARGEABLE_WEIGHT_INVALID' };
     row.selectedShippingProvider = 'KPL';
-    row.shippingQuote = buildShippingQuoteSnapshot({ provider: 'KPL', serviceCode: 'KPL_SF_US', chargeableWeightG: g, csvSalePriceUsd: 25.4, exchangeRate: cfg.exchangeRate, buyerShippingUsd: cfg.buyerShippingUsd, outcome, now });
+    row.shippingQuote = buildShippingQuoteSnapshot({ provider: 'KPL', serviceCode: 'KPL_SF_US', chargeableWeightG: g, csvSalePriceUsd: 25.4, exchangeRate: cfg.exchangeRate, buyerShippingUsd: null, outcome, now });
   });
   return { rows, plan };
 }
 
 function seedUpload138() {
   const { rows, plan } = upload138Rows();
+  rows.forEach((r: any) => { r.shippingPolicy = policySnapshot('fixed790'); });   // import에는 배송정책 선택 필수
   store.rowsOf(schema.csvUploads).push({ id: 138, uploadId: 'upload-r', filename: '138.csv', rowCount: rows.length, status: 'mapped', parsedRows: rows });
   return plan;
 }

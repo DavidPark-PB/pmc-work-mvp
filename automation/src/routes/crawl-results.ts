@@ -10,7 +10,8 @@ import { crawlDisplayCsv, resolveDisplayPrices } from '../services/listing-price
 import { applySalePriceOverride } from '../services/shipping-pricing.js';
 import { getShippingPricingConfig, isShippingProvider } from '../lib/shipping-config.js';
 import { resolveChargeableWeight } from '../lib/shipping-quote-status.js';
-import { extractProductId, selectRowsForImport, buildImportRawData } from '../lib/csv-parser.js';
+import { importExternalId, selectRowsForImport, buildImportRawData } from '../lib/csv-parser.js';
+import { readShippingPolicySnapshot, SHIPPING_POLICY_IMPORT_REQUIRED_MESSAGE } from '../services/ebay-shipping-policies.js';
 import { getUser } from '../lib/user-session.js';
 import { translateProduct } from '../services/translate.js';
 import { getDescriptionTemplate, buildPlatformDescription } from '../services/description.js';
@@ -84,6 +85,11 @@ export async function crawlResultRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: (e as Error).message });
     }
 
+    //   신규 USD CSV(toybox)는 upload에서 eBay 배송정책을 선택해야 가져올 수 있다 (레거시 KRW CSV는 제한 없음)
+    if (selected.some(({ row }) => row.priceCurrency === 'USD' && !readShippingPolicySnapshot(row.shippingPolicy))) {
+      return reply.status(400).send({ error: SHIPPING_POLICY_IMPORT_REQUIRED_MESSAGE, code: 'SHIPPING_POLICY_NOT_SELECTED' });
+    }
+
     const baseUrl = sourceName === '쿠팡' ? 'https://www.coupang.com' : 'https://unknown.com';
     const sourceId = await ensureSourceId(sourceName, baseUrl);
 
@@ -91,6 +97,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
     let updated = 0;
     let errors = 0;
     const crawlResultIds: number[] = [];
+    const importedByIndex = new Map<number, number>();
 
     // 배치 처리: 10개씩 병렬 처리하여 대용량 CSV 속도 개선
     const BATCH_SIZE = 10;
@@ -107,7 +114,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
           const quoteMatches = !!quote && quote.provider === provider && quote.chargeableWeightG === resolveChargeableWeight(parsedRow).weightG;
           row = { ...parsedRow, selectedShippingProvider: provider, shippingQuote: quoteMatches ? quote : null };
         }
-        const externalId = extractProductId(row.url) || `name_${row.name.replace(/\s+/g, '_').slice(0, 50)}_${row.price}`;
+        const externalId = importExternalId(row);
         // 기존 키 + CSV 원본 전체 컬럼/정규화 값 보존 (rawData.csvImport)
         const rawData = buildImportRawData(row, { uploadId, rowIndex: index });
         // 판매가(USD) 매핑 시 price는 USD 값 그대로, currency로 통화 구분
@@ -133,7 +140,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
               crawledAt: new Date(),
             })
             .where(eq(crawlResults.id, existing.id));
-          return { type: 'updated' as const, id: existing.id };
+          return { type: 'updated' as const, id: existing.id, index };
         } else {
           const [inserted] = await db.insert(crawlResults).values({
             sourceId,
@@ -148,7 +155,7 @@ export async function crawlResultRoutes(app: FastifyInstance) {
             ownerId: user.id,
             ownerName: user.name,
           }).returning();
-          return { type: 'imported' as const, id: inserted.id };
+          return { type: 'imported' as const, id: inserted.id, index };
         }
       }));
 
@@ -157,16 +164,20 @@ export async function crawlResultRoutes(app: FastifyInstance) {
           if (result.value.type === 'imported') imported++;
           else updated++;
           crawlResultIds.push(result.value.id);
+          importedByIndex.set(result.value.index, result.value.id);
         } else {
           errors++;
         }
       }
     }
 
-    // 업로드 이력 업데이트
+    // 업로드 이력 업데이트 + 행별 crawl_results.id 기록 (정책 변경 시 이미 가져온 상품을 찾는 기준)
     try {
+      const latest = await db.query.csvUploads.findFirst({ where: eq(csvUploads.uploadId, uploadId) });
+      const latestRows = latest?.parsedRows ?? rows;
+      const parsedRows = latestRows.map((r, index) => (importedByIndex.has(index) ? { ...r, importedCrawlResultId: importedByIndex.get(index)! } : r));
       await db.update(csvUploads)
-        .set({ importedCount: imported + updated, status: 'imported' })
+        .set({ importedCount: imported + updated, status: 'imported', parsedRows })
         .where(eq(csvUploads.uploadId, uploadId));
     } catch {
       // 이력 업데이트 실패해도 결과는 반환
