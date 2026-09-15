@@ -398,7 +398,13 @@ export class EbayClient implements PlatformAdapter {
     <Site>US</Site>
   </Item>`;
 
-    const response = await this.callTradingAPI('AddItem', requestBody);
+    //   AddItem 결과 구분: 요청이 eBay에 도달했는지 모르는 오류는 UNKNOWN (재시도 전 기존 상품 확인 필요), Ack 실패는 REJECTED
+    let response: string;
+    try {
+      response = await this.callTradingAPI('AddItem', requestBody);
+    } catch (e) {
+      throw Object.assign(e instanceof Error ? e : new Error(String(e)), { ebayAddItemOutcome: 'UNKNOWN' });
+    }
     const ack = this.extractXmlValue(response, 'Ack');
 
     // Extract ALL errors/warnings from response
@@ -411,7 +417,7 @@ export class EbayClient implements PlatformAdapter {
       const realErrors = allErrors.filter(msg => !msg.includes('renamed as per eBay recommendations'));
       if (realErrors.length > 0) {
         console.error(`[eBay] AddItem failed (Ack=${ack}):`, realErrors.join(' | '));
-        throw new Error(`eBay AddItem 실패: ${realErrors[0]}`);
+        throw Object.assign(new Error(`eBay AddItem 실패: ${realErrors[0]}`), { ebayAddItemOutcome: 'REJECTED' });
       }
       // Only "renamed" warnings — log and continue
       console.log(`[eBay] Item specifics renamed (non-fatal warning), Ack=${ack}`);
@@ -421,7 +427,7 @@ export class EbayClient implements PlatformAdapter {
     if (!itemId) {
       console.error(`[eBay] AddItem: no ItemID returned. Ack=${ack}. Errors:`, allErrors.join(' | '));
       console.error(`[eBay] Response snippet:`, response.slice(0, 500));
-      throw new Error(`eBay AddItem 실패: ItemID 없음 (${allErrors[0] || 'unknown'})`);
+      throw Object.assign(new Error(`eBay AddItem 실패: ItemID 없음 (${allErrors[0] || 'unknown'})`), { ebayAddItemOutcome: 'UNKNOWN' });
     }
     return {
       itemId,
@@ -541,6 +547,58 @@ export class EbayClient implements PlatformAdapter {
     }
 
     return allItems;
+  }
+
+  /** getActiveSkuIndex 페이지 사이 대기 (ms) — 테스트는 0 */
+  static activeListPageDelayMs = 500;
+
+  /**
+   * 중복 등록 방지용 활성 리스팅 SKU(Custom Label) 색인 — READ-ONLY GetMyeBaySelling ActiveList (getActiveListings와 같은 호출)
+   * 결과가 불확실하면(Ack 실패, ActiveList 없음, 페이지/건수 불일치) 예외 — 호출자는 AddItem을 실행하지 않는다.
+   * 반환: SKU → Item ID 목록
+   */
+  async getActiveSkuIndex(maxPages = 100): Promise<Map<string, string[]>> {
+    const index = new Map<string, string[]>();
+    let seen = 0;
+    let expectedEntries: number | null = null;
+    for (let pageNumber = 1; ; pageNumber++) {
+      if (pageNumber > maxPages) throw new Error(`eBay 활성 리스팅이 ${maxPages}페이지를 넘어 확인을 중단했습니다`);
+      const response = await this.callTradingAPI('GetMyeBaySelling', `
+  <ActiveList>
+    <Include>true</Include>
+    <Pagination>
+      <EntriesPerPage>200</EntriesPerPage>
+      <PageNumber>${pageNumber}</PageNumber>
+    </Pagination>
+  </ActiveList>
+  <DetailLevel>ReturnAll</DetailLevel>`);
+      const ack = this.extractXmlValue(response, 'Ack');
+      if (ack !== 'Success' && ack !== 'Warning') {
+        throw new Error(`GetMyeBaySelling 실패 (Ack=${ack || '없음'})`);
+      }
+      const activeList = response.match(/<ActiveList>([\s\S]*)<\/ActiveList>/)?.[1];
+      if (activeList === undefined) throw new Error('GetMyeBaySelling 응답에 ActiveList가 없습니다');
+      const totalPages = parseInt(this.extractXmlValue(activeList, 'TotalNumberOfPages'), 10);
+      const totalEntries = parseInt(this.extractXmlValue(activeList, 'TotalNumberOfEntries'), 10);
+      if (!Number.isInteger(totalPages) || !Number.isInteger(totalEntries)) throw new Error('GetMyeBaySelling 페이지 정보가 없습니다');
+      if (expectedEntries === null) expectedEntries = totalEntries;
+      else if (expectedEntries !== totalEntries) throw new Error('확인 중 eBay 활성 리스팅 수가 바뀌었습니다');
+
+      for (const match of activeList.matchAll(/<Item>([\s\S]*?)<\/Item>/g)) {
+        seen++;
+        const itemId = this.extractXmlValue(match[1], 'ItemID');
+        const sku = this.extractXmlValue(match[1], 'SKU');
+        if (!itemId) throw new Error('ItemID 없는 활성 리스팅 응답');
+        if (!sku) continue;
+        const ids = index.get(sku) ?? [];
+        if (!ids.includes(itemId)) ids.push(itemId);
+        index.set(sku, ids);
+      }
+      if (pageNumber >= totalPages) break;
+      if (EbayClient.activeListPageDelayMs > 0) await new Promise(r => setTimeout(r, EbayClient.activeListPageDelayMs));
+    }
+    if (seen !== expectedEntries) throw new Error(`eBay 활성 리스팅 수 불일치 (응답 ${seen} / 전체 ${expectedEntries})`);
+    return index;
   }
 
   // ─── REST API 호출 (Taxonomy API 등) ─────────────────────

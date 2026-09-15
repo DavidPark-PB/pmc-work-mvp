@@ -185,6 +185,9 @@ export const uploadJobs = pgTable('upload_jobs', {
     platformItemId?: string;
     listingUrl?: string;
     error?: string;
+    status?: 'SUCCESS' | 'ALREADY_LISTED' | 'FAILED' | 'SKIPPED_EBAY_REQUIRED';
+    code?: string | null;
+    productId?: number;
   }[]>().default([]).notNull(),
   dryRun: boolean('dry_run').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),

@@ -120,6 +120,7 @@ import {
 } from '../src/services/ebay-shipping-policies.js';
 import { formatBuyerShipping, policyOptionLabel, buyerTotalLabel, groupShippingPolicies, importButtonState, createPolicySelection, isPersistedPolicy, POLICY_PLACEHOLDER_LABEL, POLICY_SAVING_LABEL } from '../public/js/import-selection.js';
 import { FULFILLMENT_POLICIES, POLICY_IDS, policySnapshot } from './fixtures/ebay-policies.js';
+import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -191,6 +192,8 @@ beforeEach(() => {
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
     tradingCalls.push(callName);
+    //   신규 CSV eBay 등록 전 READ-ONLY 중복 확인 — 같은 SKU 활성 상품 없음
+    if (callName === 'GetMyeBaySelling') return EMPTY_ACTIVE_LIST;
     if (callName !== 'AddItem') throw new Error(`unexpected eBay call ${callName}`);
     addItemBodies.push(body);
     return `<AddItemResponse><Ack>Success</Ack><ItemID>${700000 + addItemBodies.length}</ItemID></AddItemResponse>`;
@@ -553,7 +556,8 @@ describe('16-24. AddItem ShippingProfileID · 차단 · 레거시 분기', () =>
     const src = fs.readFileSync(path.join(process.cwd(), 'src/services/listing-service.ts'), 'utf-8');
     expect(src.match(/resolveCsvShippingPolicy\(/g)).toHaveLength(1);
     expect(src.match(/await resolveProductSalePrice\(/g)).toHaveLength(3);
-    expect(src.match(/shippingProfileId: pricing\.shippingProfileId/g)).toHaveLength(3);
+    //   레거시 create/retry/relist 3곳 + 신규 CSV eBay 중복 방지 경로 create/retry/relist 3곳
+    expect(src.match(/shippingProfileId: pricing\.shippingProfileId/g)).toHaveLength(6);
 
     for (const p of store.rowsOf(schema.products)) delete p.metadata.csvImport.shippingPolicy;
     store.rowsOf(schema.platformListings).push(
@@ -561,7 +565,8 @@ describe('16-24. AddItem ShippingProfileID · 차단 · 레거시 분기', () =>
       { id: 8003, productId: p1, platform: 'ebay', status: 'ended', price: '1', quantity: 5 },
     );
     const before = addItemBodies.length;
-    await expect(createListing(p1, 'ebay')).rejects.toMatchObject({ code: 'SHIPPING_POLICY_NOT_SELECTED' });
+    //   p1은 위에서 eBay 등록 완료 → 신규 CSV 재등록 요청은 AddItem 없이 기존 등록 확인 (중복 방지)
+    await expect(createListing(p1, 'ebay')).resolves.toMatchObject({ existing: true });
     await expect(retryListing(8002)).rejects.toMatchObject({ code: 'SHIPPING_POLICY_NOT_SELECTED' });
     await expect(relistListing(8003)).rejects.toMatchObject({ code: 'SHIPPING_POLICY_NOT_SELECTED' });
     expect(addItemBodies).toHaveLength(before);

@@ -116,6 +116,40 @@ export function importExternalId(row: Pick<CsvRow, 'url' | 'name' | 'price'>): s
   return extractProductId(row.url) || `name_${row.name.replace(/\s+/g, '_').slice(0, 50)}_${row.price}`;
 }
 
+export const CSV_DUPLICATE_SKU_CODE = 'CSV_DUPLICATE_SKU';
+
+/**
+ * USD CSV 안의 같은 상품 중복 행 — eBay/Shopify 중복 등록을 막기 위해 가져오기 전에 차단
+ * 고유값 우선순위: CSV 상품코드(SKU) → external_id(import 규칙) → uploadId+행 번호(항상 고유라 중복 없음)
+ * 반환: 행 index → 같은 값을 가진 행 번호(1부터) 목록
+ */
+export function findDuplicateCsvRows(rows: Pick<CsvRow, 'priceCurrency' | 'sourceProductCode' | 'url' | 'name' | 'price' | 'sourceRowNumber'>[]): Map<number, { key: string; rowNumbers: number[] }> {
+  const groups = new Map<string, number[]>();
+  const add = (key: string, index: number) => {
+    const list = groups.get(key) ?? [];
+    list.push(index);
+    groups.set(key, list);
+  };
+  rows.forEach((row, index) => {
+    if (row.priceCurrency !== 'USD') return;
+    const code = (row.sourceProductCode ?? '').trim().toUpperCase();
+    if (code) add(`SKU:${code}`, index);
+    else add(`EXTERNAL:${importExternalId(row)}`, index);
+  });
+  const out = new Map<number, { key: string; rowNumbers: number[] }>();
+  for (const [key, indices] of groups) {
+    if (indices.length < 2) continue;
+    const rowNumbers = indices.map(i => rows[i].sourceRowNumber ?? i + 1);
+    for (const index of indices) out.set(index, { key, rowNumbers });
+  }
+  return out;
+}
+
+export function duplicateCsvRowMessage(dup: { key: string; rowNumbers: number[] }): string {
+  const label = dup.key.startsWith('SKU:') ? `상품코드(SKU) ${dup.key.slice(4)}` : '상품 URL/이름';
+  return `CSV 안에 같은 ${label}가 ${dup.rowNumbers.length}개 행(${dup.rowNumbers.join(', ')}행)에 있어 가져올 수 없습니다. 중복 행을 정리한 뒤 다시 업로드하세요.`;
+}
+
 function parseCsvLine(line: string): string[] {
   const fields: string[] = [];
   let current = '';
@@ -960,6 +994,8 @@ export interface ImportPreviewRow {
   errorCount: number;
   warningCount: number;
   defaultSelected: boolean;
+  /** CSV 안 같은 SKU 중복 — 선택 불가 */
+  duplicateSku: boolean;
   // 배송 (USD CSV 업로드에서만 사용)
   shippingProvider: 'KPL' | 'eGS' | null;
   canQuote: boolean;
@@ -1158,8 +1194,12 @@ export function buildImportPreview(rows: CsvRow[]): {
   showShipping: boolean;
 } {
   const hasUsd = rows.some(r => r.priceCurrency === 'USD');
+  const duplicates = findDuplicateCsvRows(rows);
   const previewRows = rows.map((row, index): ImportPreviewRow => {
-    const issues = row.issues ?? [];
+    const dup = duplicates.get(index);
+    const issues = dup
+      ? [...(row.issues ?? []), { code: CSV_DUPLICATE_SKU_CODE, level: 'error' as const, message: duplicateCsvRowMessage(dup) }]
+      : row.issues ?? [];
     const errorCount = issues.filter(i => i.level === 'error').length;
     const priceValue = row.priceCurrency === 'USD' ? row.salePriceUsd : row.price;
     let priceLabel = '—';
@@ -1179,6 +1219,7 @@ export function buildImportPreview(rows: CsvRow[]): {
       errorCount,
       warningCount: issues.length - errorCount,
       defaultSelected: errorCount === 0,
+      duplicateSku: !!dup,
       ...describeRowShipping(row),
       quoteUnfinished: isQuoteRowUnfinished(row),
     };

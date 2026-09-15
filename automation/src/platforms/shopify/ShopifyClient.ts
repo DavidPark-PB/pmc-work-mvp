@@ -258,6 +258,31 @@ export class ShopifyClient implements PlatformAdapter {
     }
   }
 
+  /**
+   * SKU로 기존 Shopify 상품 조회 (READ-ONLY GraphQL) — 등록 응답 저장 실패 후 재시도 시 중복 생성 방지용
+   */
+  async findProductBySku(sku: string): Promise<ListingResult | null> {
+    if (!sku) return null;
+    const data = await this.callGraphQL(
+      `query($q: String!) { productVariants(first: 10, query: $q) { edges { node { sku product { legacyResourceId handle } } } } }`,
+      { q: `sku:${JSON.stringify(sku)}` },
+    );
+    //   응답이 불확실하면 예외 — 호출자는 새 상품을 만들지 않는다
+    if (data?.errors) throw new Error(`Shopify SKU 조회 오류: ${JSON.stringify(data.errors).slice(0, 200)}`);
+    const edges = data?.data?.productVariants?.edges;
+    if (!Array.isArray(edges)) throw new Error('Shopify SKU 조회 응답 형식 오류');
+    //   검색은 부분 일치일 수 있어 SKU 정확히 같은 variant만 사용, 서로 다른 상품이 2개 이상이면 불확실
+    const exact = edges.map((e: any) => e?.node).filter((n: any) => n && n.sku === sku);
+    const productIds = [...new Set(exact.map((n: any) => String(n.product?.legacyResourceId ?? '')))];
+    if (productIds.length === 0) return null;
+    if (productIds.length > 1 || !productIds[0]) throw new Error(`Shopify에 같은 SKU(${sku}) 상품이 ${productIds.length}개 있습니다`);
+    const node = exact[0];
+    return {
+      itemId: String(node.product.legacyResourceId),
+      url: `https://${env.SHOPIFY_STORE_URL}/products/${node.product.handle}`,
+    };
+  }
+
   async createListing(input: ListingInput): Promise<ListingResult> {
     const productData = {
       product: {

@@ -110,11 +110,12 @@ import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
 import { uploadRoutes } from '../src/routes/upload.js';
 import { crawlResultRoutes } from '../src/routes/crawl-results.js';
 import { getShippingPricingConfig, publicShippingPricingConfig } from '../src/lib/shipping-config.js';
-import { requestShippingQuote, requestShippingQuotesDeduped, QUOTE_CONCURRENCY, QUOTE_MAX_RETRIES, QUOTE_RETRY_DELAYS_MS, QUOTE_TIMEOUT_MS } from '../src/lib/shipping-quote-client.js';
+import { quoteTimers, requestShippingQuote, requestShippingQuotesDeduped, QUOTE_CONCURRENCY, QUOTE_MAX_RETRIES, QUOTE_RETRY_DELAYS_MS, QUOTE_TIMEOUT_MS } from '../src/lib/shipping-quote-client.js';
 import { quoteUploadRows, applyShippingAlternatives, unfinishedQuoteSelections } from '../src/services/shipping-quote-service.js';
 import { buildShippingQuoteSnapshot } from '../src/services/shipping-pricing.js';
 import { describeQuoteReason, resolveChargeableWeight } from '../src/lib/shipping-quote-status.js';
 import { formatQuoteSummary, formatQuoteProgress, formatQuoteCompletion, unfinishedButtonState, providerOverrides, createSingleFlight, countQuoteCategories, createProviderState } from '../public/js/import-selection.js';
+import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -184,6 +185,16 @@ function mainResponse(body: any): Scripted {
   return { status: 200, body: { ok: true, mode: 'raw', quote, blockedReason: null } };
 }
 
+//   요청 timeout은 실제 타이머 대신 가짜 스케줄러에 등록 — 'timeout' 응답은 그 요청의 deadline을 즉시 발생시킨다
+//   (이전: 실제 5ms 타이머가 가짜 fetch의 abort 구독보다 먼저 끝나면 abort를 놓쳐 5초 test timeout — 부하 시 간헐 실패)
+const pendingTimeouts = new Map<AbortSignal, { controller: AbortController; ms: number }>();
+const timeoutDeadlines: number[] = [];
+const fakeStartTimeout = (controller: AbortController, ms: number) => {
+  pendingTimeouts.set(controller.signal, { controller, ms });
+  return () => { pendingTimeouts.delete(controller.signal); };
+};
+const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' });
+
 const fakeFetch = vi.fn(async (url: string, init: any) => {
   const body = JSON.parse(init.body);
   fetchCalls.push({ url, body, headers: init.headers });
@@ -191,12 +202,19 @@ const fakeFetch = vi.fn(async (url: string, init: any) => {
   inflight++;
   maxInflight = Math.max(maxInflight, inflight);
   try {
-    await new Promise(r => setTimeout(r, 2));
+    //   실제 fetch처럼 이미 abort된 signal은 즉시 reject
+    if (init.signal?.aborted) throw abortError();
+    await new Promise(r => setImmediate(r));   // 동시 실행 측정용 양보 (시간 대기 없음)
     const res = (script && script(body, attempt)) || mainResponse(body);
     if (res === 'network') throw new TypeError('fetch failed');
     if (res === 'timeout') {
+      const pending = pendingTimeouts.get(init.signal);
+      if (!pending) throw new Error('timeout이 예약되지 않은 요청');
+      timeoutDeadlines.push(pending.ms);
       return await new Promise<any>((_resolve, reject) => {
-        init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        if (init.signal.aborted) return reject(abortError());
+        init.signal.addEventListener('abort', () => reject(abortError()), { once: true });
+        pending.controller.abort();   // deadline 도달
       });
     }
     return { ok: res.status >= 200 && res.status < 300, status: res.status, text: async () => JSON.stringify(res.body) };
@@ -209,6 +227,7 @@ let addItemBodies: string[] = [];
 let logs: string[] = [];
 const startPriceOf = (b: string) => b.match(/<StartPrice currencyID="USD">([^<]+)<\/StartPrice>/)?.[1];
 const noSleep = { sleep: async () => {} };
+const realQuoteTimers = { ...quoteTimers };
 
 beforeEach(() => {
   store.tables.clear();
@@ -224,6 +243,11 @@ beforeEach(() => {
   logs = [];
   vi.restoreAllMocks();
   vi.stubGlobal('fetch', fakeFetch);
+  pendingTimeouts.clear();
+  timeoutDeadlines.length = 0;
+  //   route 안에서 만들어지는 견적 job까지 실제 시간을 기다리지 않도록 기본 타이머 교체
+  quoteTimers.sleep = async () => {};
+  quoteTimers.startTimeout = fakeStartTimeout;
   for (const level of ['log', 'warn', 'error', 'info'] as const) {
     vi.spyOn(console, level).mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(' ')); });
   }
@@ -233,12 +257,14 @@ beforeEach(() => {
   vi.spyOn(EbayClient.prototype, 'getFulfillmentPolicies').mockResolvedValue(FULFILLMENT_POLICIES);
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
+    //   신규 CSV eBay 등록 전 READ-ONLY 중복 확인 — 같은 SKU 활성 상품 없음
+    if (callName === 'GetMyeBaySelling') return EMPTY_ACTIVE_LIST;
     if (callName !== 'AddItem') throw new Error(`unexpected eBay call ${callName}`);
     addItemBodies.push(body);
     return `<AddItemResponse><Ack>Success</Ack><ItemID>${500000 + addItemBodies.length}</ItemID></AddItemResponse>`;
   });
 });
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); quoteTimers.sleep = realQuoteTimers.sleep; quoteTimers.startTimeout = realQuoteTimers.startTimeout; });
 
 function parsedRows() {
   const raw = parseCsvRawText(CSV);
@@ -300,17 +326,18 @@ describe('1-5. 제한 동시성 큐 · 재시도 · 중복 제거', () => {
     const delays: number[] = [];
     const retries: number[] = [];
     const outcome = await requestShippingQuote({ provider: 'KPL', serviceCode: 'KPL_SF_US', chargeableWeightG: 307 }, {
-      config: getShippingPricingConfig(), fetchImpl: fakeFetch as any, timeoutMs: 5,
+      config: getShippingPricingConfig(), fetchImpl: fakeFetch as any,
       sleep: async (ms) => { delays.push(ms); }, onRetry: (n) => retries.push(n),
     });
     expect(outcome).toEqual({ ok: false, blockedReason: 'QUOTE_TIMEOUT', retries: 3 });
     expect(fetchCalls).toHaveLength(4);
     expect(delays).toEqual([300, 800, 1500]);
     expect(retries).toEqual([1, 2, 3]);
+    expect(timeoutDeadlines).toEqual([8000, 8000, 8000, 8000]);   // 요청마다 기본 8초 deadline (가짜 스케줄러 — 실제 대기 없음)
 
     fetchCalls = [];
     script = (_b, attempt) => (attempt <= 2 ? 'timeout' : null);
-    expect(await requestShippingQuote({ provider: 'KPL', serviceCode: 'KPL_SF_US', chargeableWeightG: 307 }, { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any, timeoutMs: 5, ...noSleep }))
+    expect(await requestShippingQuote({ provider: 'KPL', serviceCode: 'KPL_SF_US', chargeableWeightG: 307 }, { config: getShippingPricingConfig(), fetchImpl: fakeFetch as any, ...noSleep }))
       .toMatchObject({ ok: true, shippingKrw: 13900, retries: 2 });
   });
 
@@ -454,7 +481,7 @@ describe('13-16. 대체 배송사 견적 · 적용', () => {
 
   it('13b. 선택 배송사가 자동 재시도 후에도 timeout이면 그때 대체 배송사 견적 (재시도 기록 표시)', async () => {
     script = (body) => (body.provider === 'KPL' ? 'timeout' : null);
-    const result = await quoteUploadRows(parsedRows(), kpl(0), quoteDeps({ timeoutMs: 5 }));
+    const result = await quoteUploadRows(parsedRows(), kpl(0), quoteDeps());
     expect(fetchCalls.map(c => c.body.provider)).toEqual(['KPL', 'KPL', 'KPL', 'KPL', 'eGS']);
     expect(result.snapshots.get(0)).toMatchObject({ status: 'BLOCKED', blockedReason: 'QUOTE_TIMEOUT', retries: 3 });
     expect(describeRowShipping(result.rows[0])).toMatchObject({
@@ -539,7 +566,7 @@ describe('17-20. 화면 사유 · 요약 · 진행상태 · 중복 실행', () =
 
     seedUpload();
     script = (body) => (body.provider === 'KPL' && body.actualWeightKg === 0.307 ? 'timeout' : null);
-    const result = await quoteUploadRows(uploadRow().parsedRows, kpl(0, 6, 7, 8), quoteDeps({ timeoutMs: 5 }));
+    const result = await quoteUploadRows(uploadRow().parsedRows, kpl(0, 6, 7, 8), quoteDeps());
     uploadRow().parsedRows = result.rows;
     const preview = buildImportPreview(result.rows);
     const html = renderStep2(preview);

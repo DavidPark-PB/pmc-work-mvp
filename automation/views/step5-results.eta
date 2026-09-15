@@ -24,7 +24,12 @@
       <div class="number"><%= it.job.failed %></div>
       <div class="label">실패</div>
     </div>
+    <div class="summary-item summary-total">
+      <div class="number"><%= it.job.results.filter(r => r.status === 'SKIPPED_EBAY_REQUIRED').length %></div>
+      <div class="label">미실행</div>
+    </div>
   </div>
+  <div id="product-result-summary" data-testid="product-result-summary" class="mt-16"></div>
 
   <div class="flex gap-16 flex-wrap text-muted" style="margin-bottom: var(--space-2);">
     <div>
@@ -76,10 +81,18 @@
           <td class="truncate"><%= r.title %></td>
           <td><span class="badge badge-<%= r.platform || 'ebay' %>"><%= (r.platform || '').toUpperCase() %></span></td>
           <td>
-            <% if (r.success) { %>
-              <span class="badge badge-success"><i class="ti ti-check"></i> 성공</span>
+            <% const rStatus = r.status || (r.success ? 'SUCCESS' : 'FAILED'); %>
+            <% if (rStatus === 'SUCCESS') { %>
+              <span class="badge badge-success" data-result-status="SUCCESS"><i class="ti ti-check"></i> <%= r.code === 'ADOPTED_EXISTING' ? '성공 (기존 상품 연결)' : '성공' %></span>
+            <% } else if (rStatus === 'ALREADY_LISTED') { %>
+              <span class="badge badge-success" data-result-status="ALREADY_LISTED"><i class="ti ti-check"></i> 기존 등록 확인</span>
+            <% } else if (rStatus === 'SKIPPED_EBAY_REQUIRED') { %>
+              <span class="badge badge-pending" data-result-status="SKIPPED_EBAY_REQUIRED"><i class="ti ti-player-pause"></i> 미실행 · eBay 등록 필요</span>
+              <% if (r.platform === 'shopify' && r.productId) { %>
+              <button type="button" class="btn btn-secondary btn-xs retry-shopify-btn" data-product-id="<%= r.productId %>" title="eBay가 active로 등록된 뒤 새 job에서 Shopify 단계만 실행합니다">Shopify만 다시 실행</button>
+              <% } %>
             <% } else { %>
-              <span class="badge badge-error"><i class="ti ti-x"></i> 실패</span>
+              <span class="badge badge-error" data-result-status="FAILED"><i class="ti ti-x"></i> 실패<%= r.code ? ' · ' + r.code : '' %></span>
             <% } %>
           </td>
           <td class="font-mono"><%= r.platformItemId || '-' %></td>
@@ -106,3 +119,39 @@
   <a href="/" class="btn btn-secondary"><i class="ti ti-shopping-cart"></i> 상품 관리</a>
   <a href="/history" class="btn btn-secondary"><i class="ti ti-history"></i> 히스토리</a>
 </div>
+
+<script type="module">
+import { summarizeProductResults } from '/js/listing-plan.js';
+const results = <%~ JSON.stringify(it.job.results).replace(/</g, '\\u003c') %>;
+const box = document.getElementById('product-result-summary');
+const list = document.createElement('ul');
+list.className = 'product-result-list';
+summarizeProductResults(results).forEach(item => {
+  const li = document.createElement('li');
+  const title = document.createElement('strong');
+  title.textContent = item.title + ': ';
+  li.append(title, item.text);
+  list.appendChild(li);
+});
+if (list.children.length) box.appendChild(list);
+
+//   미실행 Shopify: 새 job에서 Shopify 단계만 실행 (eBay는 호출하지 않음 — DB에 active eBay Item ID가 없으면 다시 미실행)
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.retry-shopify-btn');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/listings/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productIds: [Number(btn.dataset.productId)], platforms: ['shopify'], csvPlatforms: ['shopify'], dryRun: false }),
+    });
+    const data = await res.json();
+    if (data.jobId) window.location.href = '/upload?jobId=' + data.jobId;
+    else { alert(data.error || '실행 실패'); btn.disabled = false; }
+  } catch (err) {
+    alert('요청 실패: ' + err.message);
+    btn.disabled = false;
+  }
+});
+</script>

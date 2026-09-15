@@ -119,7 +119,7 @@
         <% it.rows.forEach((row) => { %>
         <tr class="import-row<%= row.errorCount > 0 ? ' import-row-error' : '' %>" data-index="<%= row.index %>" data-quote-category="<%= row.quoteCategory %>" data-quote-unfinished="<%= row.quoteUnfinished ? 'true' : 'false' %>" data-listing-usd="<%= row.listingPriceUsd ?? '' %>">
           <td>
-            <input type="checkbox" class="import-row-check" data-index="<%= row.index %>" aria-label="상품 선택 <%= row.index + 1 %>"<%~ row.defaultSelected ? ' checked' : '' %>>
+            <input type="checkbox" class="import-row-check" data-index="<%= row.index %>" aria-label="상품 선택 <%= row.index + 1 %>"<%~ row.defaultSelected ? ' checked' : '' %><%~ row.duplicateSku ? ' disabled data-duplicate-sku="true"' : '' %>>
           </td>
           <td>
             <% if (row.image) { %>
@@ -154,6 +154,9 @@
             <% } %>
           </td>
           <td class="nowrap">
+            <% if (row.duplicateSku) { %>
+              <span class="badge badge-error" data-testid="duplicate-sku" title="<%= row.issues.map(i => i.message).join(', ') %>"><i class="ti ti-copy-off"></i> SKU 중복</span>
+            <% } %>
             <% if (row.errorCount > 0) { %>
               <span class="badge badge-error" title="<%= row.issues.map(i => i.message).join(', ') %>"><i class="ti ti-alert-circle"></i> 오류 <%= row.errorCount %></span>
             <% } else if (row.warningCount > 0) { %>
@@ -257,8 +260,9 @@ const uploadId = <%~ JSON.stringify(it.uploadId).replace(/</g, '\\u003c') %>;
 const showShipping = <%~ showShipping ? 'true' : 'false' %>;
 const checkboxes = Array.from(document.querySelectorAll('.import-row-check'));
 const indexOf = (el) => Number(el.dataset.index);
+//   CSV 안 SKU 중복 행은 선택 대상에서 제외 (전체 선택에도 포함하지 않음)
 const selection = createSelection(
-  checkboxes.map(indexOf),
+  checkboxes.filter(cb => !cb.dataset.duplicateSku).map(indexOf),
   checkboxes.filter(cb => cb.checked).map(indexOf),
 );
 const providerSelects = Array.from(document.querySelectorAll('.row-provider'));

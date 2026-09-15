@@ -10,7 +10,7 @@ import { crawlDisplayCsv, resolveDisplayPrices } from '../services/listing-price
 import { applySalePriceOverride } from '../services/shipping-pricing.js';
 import { getShippingPricingConfig, isShippingProvider } from '../lib/shipping-config.js';
 import { resolveChargeableWeight } from '../lib/shipping-quote-status.js';
-import { importExternalId, selectRowsForImport, buildImportRawData } from '../lib/csv-parser.js';
+import { importExternalId, selectRowsForImport, buildImportRawData, findDuplicateCsvRows, duplicateCsvRowMessage, CSV_DUPLICATE_SKU_CODE } from '../lib/csv-parser.js';
 import { readShippingPolicySnapshot, SHIPPING_POLICY_IMPORT_REQUIRED_MESSAGE } from '../services/ebay-shipping-policies.js';
 import { getUser } from '../lib/user-session.js';
 import { translateProduct } from '../services/translate.js';
@@ -83,6 +83,17 @@ export async function crawlResultRoutes(app: FastifyInstance) {
       selected = selectRowsForImport(rows, selectedIndices);
     } catch (e) {
       return reply.status(400).send({ error: (e as Error).message });
+    }
+
+    //   신규 USD CSV: 같은 상품(SKU → external_id)이 CSV 안에 중복된 행은 가져오지 않음 (eBay/Shopify 중복 등록 방지)
+    const duplicates = findDuplicateCsvRows(rows);
+    const duplicateSelected = selected.filter(({ index }) => duplicates.has(index));
+    if (duplicateSelected.length > 0) {
+      return reply.status(400).send({
+        error: duplicateCsvRowMessage(duplicates.get(duplicateSelected[0].index)!),
+        code: CSV_DUPLICATE_SKU_CODE,
+        rows: duplicateSelected.map(({ index }) => index),
+      });
     }
 
     //   신규 USD CSV(toybox)는 upload에서 eBay 배송정책을 선택해야 가져올 수 있다 (레거시 KRW CSV는 제한 없음)

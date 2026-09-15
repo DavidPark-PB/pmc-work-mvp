@@ -122,11 +122,12 @@ import { parseCsvRawText, detectFixedHeaderMapping, detectMappingByKeyword, appl
 import { importFromCrawl, createListing, retryListing, relistListing } from '../src/services/listing-service.js';
 import { calculatePriceSimple } from '../src/services/pricing.js';
 import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
-import { listingRoutes } from '../src/routes/listings.js';
+import { listingRoutes, listingJobTimers } from '../src/routes/listings.js';
 import { getShippingPricingConfig, publicShippingPricingConfig } from '../src/lib/shipping-config.js';
 import { requestShippingQuote } from '../src/lib/shipping-quote-client.js';
 import { buildShippingQuoteSnapshot, CSV_PRICE_MESSAGES } from '../src/services/shipping-pricing.js';
 import { classifyCsvProduct, crawlDisplayCsv, readProductCsvMetadata, resolveDisplayPrices, ListingPriceError } from '../src/services/listing-price.js';
+import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -186,6 +187,7 @@ let tradingCalls: string[] = [];
 const startPriceOf = (b: string) => b.match(/<StartPrice currencyID="USD">([^<]+)<\/StartPrice>/)?.[1];
 
 beforeEach(() => {
+  listingJobTimers.sleep = async () => {};   // job 단계 사이 실제 500ms 대기 없음
   store.tables.clear();
   store.nextId.clear();
   store.rowsOf(schema.pricingSettings).push({ id: 1, platform: 'ebay', marginRate: '0.20', exchangeRate: '1300.00', platformFeeRate: '0.18', defaultShippingKrw: '12000' });
@@ -203,6 +205,8 @@ beforeEach(() => {
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
     tradingCalls.push(callName);
+    //   신규 CSV eBay 등록 전 READ-ONLY 중복 확인 — 같은 SKU 활성 상품 없음
+    if (callName === 'GetMyeBaySelling') return EMPTY_ACTIVE_LIST;
     if (callName !== 'AddItem') throw new Error(`unexpected eBay call ${callName}`);
     addItemBodies.push(body);
     return `<AddItemResponse><Ack>Success</Ack><ItemID>${400000 + addItemBodies.length}</ItemID></AddItemResponse>`;
@@ -570,8 +574,12 @@ describe('11. 실제 eBay 호출 0건', () => {
     await createListing(toybox, 'ebay');
     await createListing(legacy, 'ebay');
     setEnv();
-    await expect(createListing(toybox, 'ebay')).rejects.toMatchObject({ code: 'SHIPPING_PRICING_DISABLED' });
-    expect(tradingCalls).toEqual(['AddItem', 'AddItem']);
+    //   이미 eBay Item ID가 있는 신규 CSV 상품은 AddItem 재호출 없이 기존 등록으로 처리 (중복 등록 방지)
+    await expect(createListing(toybox, 'ebay')).resolves.toMatchObject({ existing: true, itemId: '400001' });
+    const unlisted = await toyboxProduct(1, 102, { provider: 'KPL' });
+    await expect(createListing(unlisted, 'ebay')).rejects.toMatchObject({ code: 'SHIPPING_PRICING_DISABLED' });
+    //   신규 CSV eBay는 AddItem 전에 READ-ONLY GetMyeBaySelling 중복 확인 1회, 레거시는 기존대로 AddItem만
+    expect(tradingCalls).toEqual(['GetMyeBaySelling', 'AddItem', 'AddItem']);
     expect(axiosPost).not.toHaveBeenCalled();
     expect(axiosGet).not.toHaveBeenCalled();
     expect(fetchCalls.every(c => c.url === `${MAIN}/api/internal/shipping/quote`)).toBe(true);

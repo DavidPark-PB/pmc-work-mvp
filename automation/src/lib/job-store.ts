@@ -6,6 +6,8 @@ import { db } from '../db/index.js';
 import { uploadJobs } from '../db/schema.js';
 import { eq, desc } from 'drizzle-orm';
 
+export type JobResultStatus = 'SUCCESS' | 'ALREADY_LISTED' | 'FAILED' | 'SKIPPED_EBAY_REQUIRED';
+
 export interface JobResult {
   crawlResultId: number;
   title: string;
@@ -14,6 +16,11 @@ export interface JobResult {
   platformItemId?: string;
   listingUrl?: string;
   error?: string;
+  /** 플랫폼별 결과 — 실패(FAILED)와 선행조건 미충족 미실행(SKIPPED_EBAY_REQUIRED)을 구분. 이전 job은 없음 */
+  status?: JobResultStatus;
+  /** 차단/오류 코드 (SHIPPING_PRICING_DISABLED, EBAY_REQUIRED 등) 또는 ADOPTED_EXISTING */
+  code?: string | null;
+  productId?: number;
 }
 
 export interface JobState {
@@ -77,8 +84,9 @@ export const jobStore = {
     });
   },
 
-  async update(jobId: string, partial: Partial<Pick<JobState, 'status' | 'completed' | 'failed' | 'results' | 'finishedAt'>>): Promise<void> {
+  async update(jobId: string, partial: Partial<Pick<JobState, 'status' | 'total' | 'completed' | 'failed' | 'results' | 'finishedAt'>>): Promise<void> {
     const updates: Record<string, any> = {};
+    if (partial.total !== undefined) updates.total = partial.total;
     if (partial.status !== undefined) updates.status = partial.status;
     if (partial.completed !== undefined) updates.completed = partial.completed;
     if (partial.failed !== undefined) updates.failed = partial.failed;

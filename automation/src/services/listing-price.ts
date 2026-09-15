@@ -13,7 +13,8 @@ import { evaluateCsvListingPrice, formatUsdAmount, type CsvListingPriceOk, type 
 import { isShippingProvider, type ShippingPricingConfig, type ShippingProvider } from '../lib/shipping-config.js';
 import { readShippingPolicySnapshot, type ShippingPolicySnapshot } from './ebay-shipping-policies.js';
 
-export type SalePriceSource = 'CSV_USD_PLUS_SHIPPING' | 'LEGACY_CALCULATED';
+/** CSV_USD_SALE_PRICE: 신규 CSV Shopify — CSV 판매가(USD) 그대로 (배송비는 Shopify checkout에서 별도 청구) */
+export type SalePriceSource = 'CSV_USD_PLUS_SHIPPING' | 'CSV_USD_SALE_PRICE' | 'LEGACY_CALCULATED';
 export type DisplayPriceSource = SalePriceSource | 'CSV_USD_BLOCKED';
 
 /**
@@ -210,8 +211,9 @@ export function resolveListingSalePrice(
     return { salePrice: legacy.salePrice, shippingCost: legacy.shippingCost, currency: 'USD', source: 'LEGACY_CALCULATED', productClass: 'LEGACY' };
   }
 
-  if (options.platform !== 'ebay') {
-    throw new ListingPriceError('PLATFORM_UNSUPPORTED', '판매가(USD) CSV 상품은 현재 eBay에만 등록할 수 있습니다.');
+  //   신규 CSV: eBay + Shopify(eBay 성공 후)만 지원. 선행조건은 listing-service 공용 resolver에서 확인
+  if (options.platform !== 'ebay' && options.platform !== 'shopify') {
+    throw new ListingPriceError('PLATFORM_UNSUPPORTED', '판매가(USD) CSV 상품은 현재 eBay·Shopify에만 등록할 수 있습니다.');
   }
   if (csv.currency !== 'USD') {
     throw new ListingPriceError('SALE_PRICE_INVALID', SALE_PRICE_INVALID_MESSAGE);
@@ -223,6 +225,11 @@ export function resolveListingSalePrice(
   }
   assertMatchesSource(salePrice, csv, options.sourceCrawl);
   const productClass = classifyCsvProduct(csv, options.sourceCrawl);
+
+  //   Shopify: CSV 판매가(salePriceUsd) 그대로 — 국제배송비·eBay 정책 배송비를 더하지 않음 (Shopify checkout 배송비 별도)
+  if (options.platform === 'shopify') {
+    return { salePrice, shippingCost: legacy.shippingCost, currency: 'USD', source: 'CSV_USD_SALE_PRICE', productClass };
+  }
 
   // Release guard + 수동 판매가 · 적용무게 · 배송 견적 snapshot 검증 후 최종 등록가
   const evaluated = evaluateCsvListingPrice(csv, options.shipping ?? SHIPPING_DISABLED);
@@ -289,7 +296,8 @@ export function resolveDisplayPrices(input: {
     return {
       costKrw: numberOrNull(csv.purchaseCostKrw) ?? 0,
       ebayPrice: evaluated.ok ? evaluated.salePrice : 0,
-      shopifyPrice: 0,
+      //   Shopify는 eBay 성공 후 CSV 판매가 그대로 등록 (배송비는 Shopify checkout에서 별도)
+      shopifyPrice: evaluated.csvSalePriceUsd ?? 0,
       alibabaPrice: 0,
       shopeePrice: 0,
       priceSource: evaluated.ok ? evaluated.source : 'CSV_USD_BLOCKED',

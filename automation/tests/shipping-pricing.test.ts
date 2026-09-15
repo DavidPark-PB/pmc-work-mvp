@@ -126,12 +126,13 @@ import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
 import { uploadRoutes } from '../src/routes/upload.js';
 import { crawlResultRoutes } from '../src/routes/crawl-results.js';
 import { productRoutes } from '../src/routes/products.js';
-import { listingRoutes } from '../src/routes/listings.js';
+import { listingRoutes, listingJobTimers } from '../src/routes/listings.js';
 import { getShippingPricingConfig, publicShippingPricingConfig } from '../src/lib/shipping-config.js';
 import { buildQuoteRequestBody, requestShippingQuote, parseQuoteResponse, QUOTE_TIMEOUT_MS } from '../src/lib/shipping-quote-client.js';
 import { quoteUploadRows } from '../src/services/shipping-quote-service.js';
 import { shippingKrwToUsdCents, evaluateCsvListingPrice, applySalePriceOverride } from '../src/services/shipping-pricing.js';
 import { resolveDisplayPrices, readProductCsvMetadata } from '../src/services/listing-price.js';
+import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -229,6 +230,7 @@ const startPriceOf = (body: string) => body.match(/<StartPrice currencyID="USD">
 let logs: string[] = [];
 
 beforeEach(() => {
+  listingJobTimers.sleep = async () => {};   // job 단계 사이 실제 500ms 대기 없음
   store.tables.clear();
   store.nextId.clear();
   store.rowsOf(schema.pricingSettings).push({ id: 1, platform: 'ebay', marginRate: '0.20', exchangeRate: '1300.00', platformFeeRate: '0.18', defaultShippingKrw: '12000' });
@@ -248,6 +250,8 @@ beforeEach(() => {
   vi.spyOn(EbayClient.prototype, 'getFulfillmentPolicies').mockResolvedValue(FULFILLMENT_POLICIES);
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
+    //   신규 CSV eBay 등록 전 READ-ONLY 중복 확인 — 같은 SKU 활성 상품 없음
+    if (callName === 'GetMyeBaySelling') return EMPTY_ACTIVE_LIST;
     if (callName !== 'AddItem') throw new Error(`unexpected eBay call ${callName}`);
     addItemBodies.push(body);
     return `<AddItemResponse><Ack>Success</Ack><ItemID>${200000 + addItemBodies.length}</ItemID></AddItemResponse>`;

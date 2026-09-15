@@ -130,11 +130,23 @@ export interface QuoteRequestDeps {
   timeoutMs?: number;
   retryDelaysMs?: readonly number[];
   sleep?: (ms: number) => Promise<void>;
+  /** 요청 timeout 예약 — 반환 함수로 취소 (기본: setTimeout으로 controller.abort) */
+  startTimeout?: (controller: AbortController, ms: number) => () => void;
   /** 재시도 직전 호출 (진행상태 표시용) */
   onRetry?: (retryNumber: number, reason: string) => void;
 }
 
-const defaultSleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+/**
+ * 재시도 대기 · 요청 timeout 타이머 (기본값은 실제 시간).
+ * 테스트는 이 객체를 교체해 실제 시간을 기다리지 않는다 — route 안에서 만들어지는 견적 job도 같은 기본값을 쓴다.
+ */
+export const quoteTimers = {
+  sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
+  startTimeout: (controller: AbortController, ms: number): (() => void) => {
+    const timer = setTimeout(() => controller.abort(), ms);
+    return () => clearTimeout(timer);
+  },
+};
 
 /** 단건 견적 — timeout 8초, 일시적 오류에 한해 최대 3회 재시도 */
 export async function requestShippingQuote(input: QuoteRequestInput, deps: QuoteRequestDeps): Promise<ShippingQuoteOutcome> {
@@ -144,14 +156,15 @@ export async function requestShippingQuote(input: QuoteRequestInput, deps: Quote
   const logger = deps.logger ?? console;
   const timeoutMs = deps.timeoutMs ?? QUOTE_TIMEOUT_MS;
   const delays = deps.retryDelaysMs ?? QUOTE_RETRY_DELAYS_MS;
-  const sleep = deps.sleep ?? defaultSleep;
+  const sleep = deps.sleep ?? quoteTimers.sleep;
+  const startTimeout = deps.startTimeout ?? quoteTimers.startTimeout;
   const url = `${mainServiceUrl.replace(/\/+$/, '')}/api/internal/shipping/quote`;
   const body = JSON.stringify(buildQuoteRequestBody(input));
 
   let internalErrorRetries = 0;
   for (let attempt = 0; ; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelTimeout = startTimeout(controller, timeoutMs);
     let retryable = false;
     let reason = 'QUOTE_REQUEST_FAILED';
     let httpStatus: number | undefined;
@@ -192,7 +205,7 @@ export async function requestShippingQuote(input: QuoteRequestInput, deps: Quote
       retryable = true;
       reason = (e as Error).name === 'AbortError' ? 'QUOTE_TIMEOUT' : 'QUOTE_NETWORK_ERROR';
     } finally {
-      clearTimeout(timer);
+      cancelTimeout();
     }
     if (!retryable || attempt >= QUOTE_MAX_RETRIES) {
       logger.warn(`[shipping-quote] blocked: ${reason} (${input.provider}, retries ${attempt})`);

@@ -131,6 +131,7 @@ import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
 import { crawlResultRoutes } from '../src/routes/crawl-results.js';
 import { requestShippingQuote } from '../src/lib/shipping-quote-client.js';
 import { getShippingPricingConfig } from '../src/lib/shipping-config.js';
+import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
 
 /**
  * PMC AUTO Phase 1–2 → production source (pmc-work-mvp/automation) integration.
@@ -214,6 +215,8 @@ beforeEach(() => {
   vi.spyOn(EbayClient.prototype, 'getFulfillmentPolicies').mockResolvedValue(FULFILLMENT_POLICIES);
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
+    //   신규 CSV eBay 등록 전 READ-ONLY 중복 확인 — 같은 SKU 활성 상품 없음
+    if (callName === 'GetMyeBaySelling') return EMPTY_ACTIVE_LIST;
     if (callName !== 'AddItem') throw new Error(`unexpected eBay call ${callName}`);
     addItemBodies.push(body);
     return `<AddItemResponse><Ack>Success</Ack><ItemID>${300000 + addItemBodies.length}</ItemID></AddItemResponse>`;

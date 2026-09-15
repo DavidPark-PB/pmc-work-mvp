@@ -124,8 +124,9 @@ import {
   ListingPriceError,
 } from '../src/services/listing-price.js';
 import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
-import { listingRoutes } from '../src/routes/listings.js';
+import { listingRoutes, listingJobTimers } from '../src/routes/listings.js';
 import { crawlResultRoutes } from '../src/routes/crawl-results.js';
+import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -188,12 +189,15 @@ function seedCrawlFromCsv(csv: string, rowIndex: number, id: number, fixed = tru
 const startPriceOf = (body: string) => body.match(/<StartPrice currencyID="USD">([^<]+)<\/StartPrice>/)?.[1];
 
 beforeEach(() => {
+  listingJobTimers.sleep = async () => {};   // job 단계 사이 실제 500ms 대기 없음
   resetDb();
   addItemBodies = [];
   vi.restoreAllMocks();
   vi.spyOn(EbayClient.prototype as any, 'suggestCategoryId').mockResolvedValue('261068');
   vi.spyOn(EbayClient.prototype as any, 'callTradingAPI').mockImplementation(async (...args: unknown[]) => {
     const [callName, body] = args as [string, string];
+    //   신규 CSV eBay 등록 전 READ-ONLY 중복 확인 — 같은 SKU 활성 상품 없음
+    if (callName === 'GetMyeBaySelling') return EMPTY_ACTIVE_LIST;
     if (callName !== 'AddItem') throw new Error(`unexpected eBay call ${callName}`);
     addItemBodies.push(body);
     return `<AddItemResponse><Ack>Success</Ack><ItemID>${100000 + addItemBodies.length}</ItemID></AddItemResponse>`;
@@ -319,9 +323,11 @@ describe('createListing — AddItem payload (mock)', () => {
     expect(addItemBodies).toHaveLength(0);
   });
 
-  it('USD CSV 상품은 eBay 외 플랫폼 등록 차단', async () => {
+  it('USD CSV 상품은 eBay·Shopify 외 플랫폼 등록 차단, Shopify는 eBay 등록 성공이 먼저 필요', async () => {
     const productId = await importFromCrawl(seedCrawlFromCsv(FULL_CSV, 0, 101).id);
-    await expect(createListing(productId, 'shopify')).rejects.toMatchObject({ code: 'PLATFORM_UNSUPPORTED' });
+    await expect(createListing(productId, 'alibaba')).rejects.toMatchObject({ code: 'PLATFORM_UNSUPPORTED' });
+    //   신규 CSV Shopify: CSV 판매가 그대로지만 eBay active Item ID가 없으면 차단 (기존: PLATFORM_UNSUPPORTED)
+    await expect(createListing(productId, 'shopify')).rejects.toMatchObject({ code: 'EBAY_REQUIRED' });
   });
 });
 
@@ -393,7 +399,8 @@ describe('10. 화면 USD/KRW 구분', () => {
     const crawl = seedCrawlFromCsv(FULL_CSV, 0, 101);
     const display = resolveDisplayPrices({ costKrw: parseFloat(crawl.price), csv: crawlDisplayCsv(crawl), allSettings });
     expect(display).toMatchObject({
-      costKrw: 19500, ebayPrice: 0, shopifyPrice: 0, priceSource: 'CSV_USD_BLOCKED',
+      //   Shopify 표시가 = CSV 판매가 그대로 (배송비 반영 플래그와 무관)
+      costKrw: 19500, ebayPrice: 0, shopifyPrice: 25.4, priceSource: 'CSV_USD_BLOCKED',
       ebayListingBlocked: true, ebayBlockCode: 'SHIPPING_PRICING_DISABLED', ebayEditValue: 25.4,
     });
     expect(display.priceNote).toBe('CSV $25.40 · 차단: 배송비 반영 기능이 비활성화되어 있어 이 상품을 eBay에 등록하지 않았습니다.');

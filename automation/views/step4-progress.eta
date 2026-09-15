@@ -30,6 +30,10 @@
       <div class="number" id="stat-fail">0</div>
       <div class="label">실패</div>
     </div>
+    <div class="summary-item summary-total">
+      <div class="number" id="stat-skipped">0</div>
+      <div class="label">미실행</div>
+    </div>
   </div>
 </div>
 
@@ -65,8 +69,24 @@
   </div>
 </div>
 
+<script type="module">
+import * as ListingPlan from '/js/listing-plan.js';
+window.ListingPlan = ListingPlan;
+</script>
 <script>
 const jobId = '<%= it.jobId %>';
+//   플랫폼별 결과 상태 (listing-plan.js 로드 전이면 success 기준 표시)
+function resultBadge(r) {
+  const LP = window.ListingPlan;
+  const status = LP ? LP.resultStatus(r) : (r.success ? 'SUCCESS' : 'FAILED');
+  const label = LP ? LP.resultLabel(r) : (r.success ? '성공' : '실패');
+  const cls = status === 'FAILED' ? 'badge-error' : status === 'SKIPPED_EBAY_REQUIRED' ? 'badge-pending' : 'badge-success';
+  const icon = status === 'FAILED' ? 'ti-x' : status === 'SKIPPED_EBAY_REQUIRED' ? 'ti-player-pause' : 'ti-check';
+  return '<span class="badge ' + cls + '" data-result-status="' + status + '"><i class="ti ' + icon + '"></i> ' + escapeHtml(label) + '</span>';
+}
+function skippedCount(job) {
+  return job.results.filter(r => r.status === 'SKIPPED_EBAY_REQUIRED').length;
+}
 const progressBar = document.getElementById('progress-bar');
 const statusText = document.getElementById('status-text');
 const statusBadge = document.getElementById('status-badge');
@@ -100,16 +120,18 @@ evtSource.onopen = function() {
 evtSource.onmessage = function(event) {
   setConnected();
   const job = JSON.parse(event.data);
-  const pct = job.total > 0 ? Math.round(((job.completed + job.failed) / job.total) * 100) : 0;
+  const skipped = skippedCount(job);
+  const pct = job.total > 0 ? Math.round(((job.completed + job.failed + skipped) / job.total) * 100) : 0;
 
   progressBar.style.width = pct + '%';
   progressBar.textContent = pct + '%';
   statTotal.textContent = job.total;
   statSuccess.textContent = job.completed;
   statFail.textContent = job.failed;
+  document.getElementById('stat-skipped').textContent = skipped;
 
   if (job.status === 'running') {
-    statusText.textContent = job.platforms.join(' + ').toUpperCase() + ' 업로드 중... (' + (job.completed + job.failed) + '/' + job.total + ')';
+    statusText.textContent = job.platforms.join(' + ').toUpperCase() + ' 업로드 중... (' + (job.completed + job.failed + skipped) + '/' + job.total + ')';
   } else {
     var allFailed = job.failed === job.total;
     var hasFail = job.failed > 0;
@@ -149,10 +171,7 @@ evtSource.onmessage = function(event) {
       '<td class="text-muted">' + (i + 1) + '</td>' +
       '<td class="truncate">' + escapeHtml(r.title) + '</td>' +
       '<td><span class="badge badge-' + (r.platform || 'ebay') + '">' + (r.platform || '').toUpperCase() + '</span></td>' +
-      '<td>' + (r.success
-        ? '<span class="badge badge-success"><i class="ti ti-check"></i> 성공</span>'
-        : '<span class="badge badge-error"><i class="ti ti-x"></i> 실패</span>') +
-      '</td>' +
+      '<td>' + resultBadge(r) + '</td>' +
       '<td>' + (r.listingUrl
         ? '<a href="' + r.listingUrl + '" target="_blank"><i class="ti ti-external-link"></i> 보기</a>'
         : (r.error ? '<span class="text-muted" title="' + escapeHtml(r.error) + '">' + escapeHtml(r.error.substring(0, 40)) + '</span>' : '-')) +

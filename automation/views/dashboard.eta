@@ -130,7 +130,7 @@
         %>
         <tr class="<%= !canCheck ? 'row-locked' : '' %>">
           <td class="td-check">
-            <input type="checkbox" class="row-check pending-check" value="<%= c.id %>" data-type="crawl" onchange="updateActionBar('pending')"<%= !canCheck ? ' disabled' : '' %>>
+            <input type="checkbox" class="row-check pending-check" value="<%= c.id %>" data-type="crawl" data-csv="<%= c.priceSource !== 'LEGACY_CALCULATED' ? '1' : '0' %>" data-ebay-ready="<%= c.ebayListingBlocked ? '0' : '1' %>" data-ebay-listed="0" onchange="updateActionBar('pending')"<%= !canCheck ? ' disabled' : '' %>>
           </td>
           <td class="td-thumb"><% if (c.imageUrl) { %><img class="thumb" src="<%= imgProxy(c.imageUrl) %>" alt=""><% } else { %><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div><% } %></td>
           <td class="td-title td-editable" data-title-ko="<%= c.titleKo %>" data-title-en="<%= c.titleEn || '' %>" data-edit-type="crawl" data-edit-id="<%= c.id %>" data-edit-field="title" data-edit-value="<%= c.titleKo %>" onclick="startEdit(this)">
@@ -155,7 +155,8 @@
             <div class="inline-upload">
               <div class="multi-select" id="ms-<%= c.id %>">
                 <div class="multi-select-trigger" onclick="toggleMultiSelect(<%= c.id %>)">
-                  <span class="ms-label"><%= c.ebayListingBlocked ? '선택' : 'eBay' %></span>
+                  <% const cCsv = c.priceSource !== 'LEGACY_CALCULATED'; %>
+                  <span class="ms-label"><%= c.ebayListingBlocked ? (cCsv ? 'Shopify' : '선택') : (cCsv ? 'eBay+Shopify' : 'eBay') %></span>
                   <i class="ti ti-chevron-down"></i>
                 </div>
                 <div class="multi-select-dropdown">
@@ -164,7 +165,7 @@
                   <% } else { %>
                   <label><input type="checkbox" value="ebay" checked onchange="updateMsLabel(<%= c.id %>)"> eBay</label>
                   <% } %>
-                  <label><input type="checkbox" value="shopify" onchange="updateMsLabel(<%= c.id %>)"> Shopify</label>
+                  <label><input type="checkbox" value="shopify"<%~ cCsv ? ' checked data-csv-default="1"' : '' %> onchange="updateMsLabel(<%= c.id %>)"> Shopify</label>
                   <label><input type="checkbox" value="alibaba" onchange="updateMsLabel(<%= c.id %>)"> Alibaba</label>
                   <label><input type="checkbox" value="shopee" onchange="updateMsLabel(<%= c.id %>)"> Shopee</label>
                 </div>
@@ -320,7 +321,7 @@
         <tr class="<%= hasLiveOnPlatform ? 'row-live' : '' %>">
           <td class="td-check">
             <% if (!hasLiveOnPlatform) { %>
-              <input type="checkbox" class="row-check all-check" data-type="<%= item.type %>" value="<%= item.id %>" onchange="updateActionBar('all')">
+              <input type="checkbox" class="row-check all-check" data-type="<%= item.type %>" value="<%= item.id %>" data-csv="<%= item.priceSource !== 'LEGACY_CALCULATED' ? '1' : '0' %>" data-ebay-ready="<%= item.ebayListingBlocked ? '0' : '1' %>" data-ebay-listed="<%= listings.some(l => l.platform === 'ebay' && l.status === 'active' && l.listingUrl) ? '1' : '0' %>" onchange="updateActionBar('all')">
             <% } %>
           </td>
           <td class="font-mono"><% if (item.sku) { %><%= item.sku %><% } else { %><span class="text-muted">—</span><% } %></td>
@@ -422,7 +423,8 @@
               <div class="inline-upload">
                 <div class="multi-select" id="ms-all-<%= item.type %>-<%= item.id %>">
                   <div class="multi-select-trigger" onclick="toggleMultiSelect('all-<%= item.type %>-<%= item.id %>')">
-                    <span class="ms-label"><%= item.ebayListingBlocked ? '선택' : 'eBay' %></span>
+                    <% const itemCsv = item.priceSource !== 'LEGACY_CALCULATED'; %>
+                    <span class="ms-label"><%= item.ebayListingBlocked ? (itemCsv ? 'Shopify' : '선택') : (itemCsv ? 'eBay+Shopify' : 'eBay') %></span>
                     <i class="ti ti-chevron-down"></i>
                   </div>
                   <div class="multi-select-dropdown">
@@ -431,7 +433,7 @@
                     <% } else { %>
                     <label><input type="checkbox" value="ebay" checked onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> eBay</label>
                     <% } %>
-                    <label><input type="checkbox" value="shopify" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Shopify</label>
+                    <label><input type="checkbox" value="shopify"<%~ itemCsv ? ' checked data-csv-default="1"' : '' %> onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Shopify</label>
                     <label><input type="checkbox" value="alibaba" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Alibaba</label>
                     <label><input type="checkbox" value="shopee" onchange="updateMsLabel('all-<%= item.type %>-<%= item.id %>')"> Shopee</label>
                   </div>
@@ -500,9 +502,101 @@
 .btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-success { background: #22c55e; color: #fff; border: none; padding: 8px 18px; border-radius: 8px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font-size: 0.875rem; transition: background 0.15s; }
 .btn-success:hover { background: #16a34a; }
+.csv-listing-dialog { border: none; border-radius: 12px; padding: 20px 22px; max-width: 460px; width: calc(100% - 32px); box-shadow: 0 12px 40px rgba(0,0,0,0.2); }
+.csv-listing-dialog::backdrop { background: rgba(0,0,0,0.35); }
+.csv-listing-dialog h3 { margin: 0 0 12px; font-size: 1rem; }
+.csv-listing-dialog dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0 0 12px; font-size: 0.875rem; }
+.csv-listing-dialog dd { margin: 0; font-weight: 600; }
+.csv-listing-dialog ul { margin: 0 0 12px; padding-left: 18px; font-size: 0.8125rem; color: #475569; }
+.csv-listing-disabled { color: #b91c1c; font-size: 0.8125rem; margin: 0 0 12px; }
+.csv-listing-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.csv-listing-platforms { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.875rem; }
+.csv-listing-platforms legend { font-size: 0.75rem; color: #64748b; padding: 0 4px; }
 </style>
 
+<dialog id="csv-listing-dialog" class="csv-listing-dialog" data-testid="csv-listing-dialog">
+  <h3><i class="ti ti-truck-delivery"></i> 신규 CSV 상품 등록 확인</h3>
+  <fieldset class="csv-listing-platforms">
+    <legend>신규 CSV 상품 등록 플랫폼</legend>
+    <label><input type="checkbox" id="csv-plan-ebay-check" checked> eBay</label>
+    <label><input type="checkbox" id="csv-plan-shopify-check" checked> Shopify (eBay 성공 후)</label>
+  </fieldset>
+  <dl>
+    <dt>선택 상품</dt><dd id="csv-plan-selected">0개</dd>
+    <dt>eBay 등록 예정</dt><dd id="csv-plan-ebay">0개</dd>
+    <dt>eBay 성공 후 Shopify 등록 예정</dt><dd id="csv-plan-shopify">0개</dd>
+  </dl>
+  <ul id="csv-plan-notes"></ul>
+  <p class="csv-listing-disabled" id="csv-plan-disabled" hidden></p>
+  <div class="csv-listing-actions">
+    <button type="button" class="btn btn-secondary btn-sm" id="csv-plan-cancel">취소</button>
+    <button type="button" class="btn btn-primary btn-sm" id="csv-plan-start">등록 시작</button>
+  </div>
+</dialog>
+
+<script type="module">
+import * as ListingPlan from '/js/listing-plan.js';
+window.ListingPlan = ListingPlan;
+</script>
+
 <script>
+const LISTING_PRICING_ENABLED = <%~ it.releaseGuard && it.releaseGuard.shippingPricingEnabled ? 'true' : 'false' %>;
+
+/** 선택 체크박스 → 리스팅 계획 입력 */
+function listingPlanItems(checkboxes) {
+  return Array.from(checkboxes).map(cb => ({
+    csv: cb.dataset.csv === '1',
+    ebayReady: cb.dataset.ebayReady === '1',
+    ebayListed: cb.dataset.ebayListed === '1',
+  }));
+}
+
+/**
+ * 신규 CSV가 포함되면 업로드 시작 전 확인 (레거시만 선택하면 바로 진행)
+ * 신규 CSV 플랫폼 기본값 eBay + Shopify — 확인창에서 Shopify 체크 해제 가능, Shopify 단독은 시작 불가
+ * 반환: null = 취소, { csvPlatforms } = 진행 (레거시만이면 csvPlatforms undefined)
+ */
+function confirmListingPlan(items, initialCsvPlatforms) {
+  if (!items.some(i => i.csv)) return Promise.resolve({ csvPlatforms: undefined });
+  if (!window.ListingPlan) { alert('화면을 준비하는 중입니다. 잠시 후 다시 시도하세요.'); return Promise.resolve(null); }
+  return new Promise(resolve => {
+    const dlg = document.getElementById('csv-listing-dialog');
+    const ebayCheck = document.getElementById('csv-plan-ebay-check');
+    const shopifyCheck = document.getElementById('csv-plan-shopify-check');
+    const start = document.getElementById('csv-plan-start');
+    const cancel = document.getElementById('csv-plan-cancel');
+    const initial = initialCsvPlatforms || window.ListingPlan.defaultCsvPlatforms();
+    ebayCheck.checked = initial.includes('ebay');
+    shopifyCheck.checked = initial.includes('shopify');
+    let plan;
+    const refresh = () => {
+      const csvPlatforms = [ebayCheck.checked ? 'ebay' : null, shopifyCheck.checked ? 'shopify' : null].filter(Boolean);
+      plan = window.ListingPlan.buildCsvListingPlan({ items, csvPlatforms, pricingEnabled: LISTING_PRICING_ENABLED });
+      document.getElementById('csv-plan-selected').textContent = plan.selectedCount + '개' + (plan.legacyCount ? ' (신규 CSV ' + plan.csvCount + ' · 기존 ' + plan.legacyCount + ')' : '');
+      document.getElementById('csv-plan-ebay').textContent = plan.ebayCount + '개';
+      document.getElementById('csv-plan-shopify').textContent = plan.shopifyCount + '개';
+      const notes = document.getElementById('csv-plan-notes');
+      notes.replaceChildren(...plan.notes.map(n => { const li = document.createElement('li'); li.textContent = n; return li; }));
+      const disabled = document.getElementById('csv-plan-disabled');
+      disabled.textContent = plan.disabledReason;
+      disabled.hidden = !plan.disabledReason;
+      start.disabled = !plan.canStart;
+    };
+    const done = (result) => {
+      start.onclick = null; cancel.onclick = null; ebayCheck.onchange = null; shopifyCheck.onchange = null; dlg.oncancel = null;
+      if (dlg.open) dlg.close();
+      resolve(result);
+    };
+    ebayCheck.onchange = refresh;
+    shopifyCheck.onchange = refresh;
+    refresh();
+    start.onclick = () => { if (plan.canStart) done({ csvPlatforms: plan.csvPlatforms }); };
+    cancel.onclick = () => done(null);
+    dlg.oncancel = () => done(null);
+    dlg.showModal();
+  });
+}
+
 // 영문/한글 토글
 function toggleLang(showEn) {
   document.querySelectorAll('.td-title[data-title-ko]').forEach(td => {
@@ -737,8 +831,11 @@ async function uploadSelected(group) {
 
   if (crawlResultIds.length === 0 && productIds.length === 0) return;
   if (platforms.length === 0) { alert('플랫폼을 1개 이상 선택하세요.'); return; }
+  const plan = await confirmListingPlan(listingPlanItems(checks));
+  if (!plan) return;
 
   const body = { platforms, dryRun: false };
+  if (plan.csvPlatforms) body.csvPlatforms = plan.csvPlatforms;
   if (crawlResultIds.length > 0) body.crawlResultIds = crawlResultIds;
   if (productIds.length > 0) body.productIds = productIds;
 
@@ -831,10 +928,15 @@ async function uploadSingle(id, type, btn) {
   const platforms = Array.from(checked).map(cb => cb.value);
 
   if (platforms.length === 0) { alert('플랫폼을 1개 이상 선택하세요.'); return; }
+  const rowCheck = btn.closest('tr') ? btn.closest('tr').querySelector('.row-check') : null;
+  //   행 메뉴의 eBay/Shopify 선택을 확인창 초기값으로 사용 (신규 CSV 행은 둘 다 기본 체크)
+  const plan = rowCheck ? await confirmListingPlan(listingPlanItems([rowCheck]), platforms.filter(p => p === 'ebay' || p === 'shopify')) : { csvPlatforms: undefined };
+  if (!plan) return;
 
   const body = type === 'product'
     ? { productIds: [id], platforms, dryRun: false }
     : { crawlResultIds: [id], platforms, dryRun: false };
+  if (plan.csvPlatforms) body.csvPlatforms = plan.csvPlatforms;
 
   btn.disabled = true;
   btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i>';
