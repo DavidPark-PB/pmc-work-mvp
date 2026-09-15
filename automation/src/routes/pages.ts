@@ -4,7 +4,7 @@
 import type { FastifyInstance } from 'fastify';
 import { db } from '../db/index.js';
 import { auditLogs, crawlResults, crawlSources, csvUploads, platformListings, productImages, products, users } from '../db/schema.js';
-import { eq, ne, inArray, sql, desc, asc, ilike, and, isNotNull, gte, lte } from 'drizzle-orm';
+import { eq, ne, inArray, sql, desc, asc, ilike, and, isNull, isNotNull, gte, lte } from 'drizzle-orm';
 import { calculatePriceSync, getAllPricingSettings } from '../services/pricing.js';
 import { buildImportPreview, detectFixedHeaderMapping } from '../lib/csv-parser.js';
 import { crawlDisplayCsv, readProductCsvMetadata, resolveDisplayPrices } from '../services/listing-price.js';
@@ -90,7 +90,8 @@ export async function pageRoutes(app: FastifyInstance) {
       })
         .from(crawlResults)
         .leftJoin(crawlSources, eq(crawlResults.sourceId, crawlSources.id))
-        .where(eq(crawlResults.status, 'new'))
+        //   이미 상품으로 가져온 행은 업로드 대기가 아니다 (재가져오기로 status가 'new'로 남은 행 제외)
+        .where(and(eq(crawlResults.status, 'new'), isNull(crawlResults.productId)))
         .orderBy(desc(crawlResults.crawledAt))
         .limit(200),
       // running job만 조회 (전체 로드 방지)
@@ -98,6 +99,32 @@ export async function pageRoutes(app: FastifyInstance) {
       // 가격 설정 1회 조회 (N+1 방지)
       getAllPricingSettings(),
     ]);
+
+    //   고유 상품 기준 집계: 판매중(active 1개 이상) / 판매 취소(전부 ended) / 업로드 대기(플랫폼 등록 없음 + 미가져온 crawl 행)
+    const [pipelineRows] = await db.execute(sql`
+      WITH product_state AS (
+        SELECT p.id,
+               COUNT(pl.id) FILTER (WHERE pl.status = 'active') AS active_count,
+               COUNT(pl.id) FILTER (WHERE pl.status = 'ended') AS ended_count,
+               COUNT(pl.id) AS listing_count
+        FROM products p
+        LEFT JOIN platform_listings pl ON pl.product_id = p.id
+        WHERE p.status <> 'trashed'
+        GROUP BY p.id
+      )
+      SELECT
+        (SELECT COUNT(*) FROM product_state) AS products,
+        (SELECT COUNT(*) FROM product_state WHERE active_count > 0) AS listed,
+        (SELECT COUNT(*) FROM product_state WHERE active_count = 0 AND ended_count > 0) AS ended,
+        (SELECT COUNT(*) FROM product_state WHERE listing_count = 0) AS unlisted,
+        (SELECT COUNT(*) FROM crawl_results WHERE status = 'new' AND product_id IS NULL) AS pending_crawl
+    `).then(r => r.rows as any[]);
+    const pipelineCounts = {
+      total: Number(pipelineRows?.products ?? 0) + Number(pipelineRows?.pending_crawl ?? 0),
+      listed: Number(pipelineRows?.listed ?? 0),
+      ended: Number(pipelineRows?.ended ?? 0),
+      waiting: Number(pipelineRows?.unlisted ?? 0) + Number(pipelineRows?.pending_crawl ?? 0),
+    };
 
     // running job → activeJobs 변환
     const activeJobs = activeJobRows.map(r => ({ id: r.id, ...r.job }));
@@ -206,6 +233,8 @@ export async function pageRoutes(app: FastifyInstance) {
         crawlByStatus: toMap(crawlByStatus),
         completedCount: (listingStatusMap['active'] || 0) + (listingStatusMap['ended'] || 0),
         endedCount: listingStatusMap['ended'] || 0,
+        //   고유 상품 기준 파이프라인 수 (listing 행 수·과거 job과 섞지 않음)
+        pipeline: pipelineCounts,
       },
       allItems,
       // 하위 호환: 업로드 대기 탭에서 crawlItems 직접 사용

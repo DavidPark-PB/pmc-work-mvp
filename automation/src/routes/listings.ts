@@ -6,6 +6,7 @@ import { randomUUID } from 'crypto';
 import { jobStore, type JobState } from '../lib/job-store.js';
 import { importFromCrawl, createListing, retryListing, endListing, cancelListing, relistListing, deleteProduct } from '../services/listing-service.js';
 import { createEbayDuplicateChecker, type EbayDuplicateChecker } from '../services/ebay-duplicate-check.js';
+import { reconcileListings } from '../services/listing-reconcile.js';
 import { syncAllInventory } from '../services/inventory-sync.js';
 import { db } from '../db/index.js';
 import { crawlResults, platformListings, products } from '../db/schema.js';
@@ -339,6 +340,39 @@ export async function listingRoutes(app: FastifyInstance) {
 
     // Fastify가 자동 응답하지 않도록
     return reply;
+  });
+
+  //   POST /api/listings/reconcile — 실제 eBay/Shopify 등록 상태 조회 후 내부 연결만 보정
+  //   dryRun(기본 true): 조회·계획만. dryRun=false: 확정 매칭만 platform_listings 갱신 (플랫폼 쓰기·신규 등록 없음)
+  app.post('/listings/reconcile', async (request, reply) => {
+    const user = getUser(request);
+    if (!user) return reply.status(401).send({ error: '이름을 먼저 설정해 주세요.' });
+    if (!user.isAdmin) return reply.status(403).send({ error: '실제 플랫폼 상태 동기화는 관리자만 이용할 수 있습니다.' });
+
+    const { dryRun = true, productIds } = (request.body ?? {}) as { dryRun?: boolean; productIds?: number[] };
+    if (productIds !== undefined && (!Array.isArray(productIds) || productIds.some(id => !Number.isInteger(id)))) {
+      return reply.status(400).send({ error: 'productIds 형식이 올바르지 않습니다.' });
+    }
+
+    const result = await reconcileListings({ dryRun, productIds });
+    if (!dryRun) {
+      logBatchAction(user, 'listing.reconcile', {
+        targetType: 'listing',
+        count: result.updated + result.inserted,
+        details: { summary: result.summary, updated: result.updated, inserted: result.inserted },
+      });
+    }
+    return {
+      applied: result.applied,
+      updated: result.updated,
+      inserted: result.inserted,
+      summary: result.summary,
+      external: result.external,
+      //   확인 필요 항목만 화면에 전달 (플랫폼 원본 응답·토큰은 전달하지 않음)
+      matchRequired: result.rows.filter(r => r.status === 'MATCH_REQUIRED').slice(0, 50).map(r => ({
+        productId: r.productId, sku: r.sku, title: r.title, reason: r.ebay.reason || r.shopify.reason || '',
+      })),
+    };
   });
 
   // POST /api/listings/sync-inventory — 재고 동기화

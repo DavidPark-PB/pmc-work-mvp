@@ -147,7 +147,8 @@ export async function crawlResultRoutes(app: FastifyInstance) {
               url: row.url,
               imageUrl: row.image ? row.image.split('|||')[0] : '',
               rawData,
-              status: 'new',
+              //   이미 상품으로 가져온 행은 'imported' 유지 — 되돌리면 등록 완료 상품이 업로드 대기로 보인다
+              status: existing.productId ? existing.status : 'new',
               crawledAt: new Date(),
             })
             .where(eq(crawlResults.id, existing.id));

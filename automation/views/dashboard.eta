@@ -29,16 +29,12 @@
   const allItems = it.allItems || [];
   const crawlItems = it.recentCrawlResults || [];
 
-  // 업로드 대기: crawl_results status='new'
-  const pendingCount = it.stats.crawlByStatus['new'] || 0;
-
-  // 완료 내역 count (서버에서 쿼리)
-  const completedCount = it.stats.completedCount || 0;
-
-  // 판매 취소 count
-  const endedCount = it.stats.endedCount || 0;
-
-  const totalCount = allItems.length;
+  //   고유 상품 기준 (listing 행 수·과거 job 카드와 섞지 않음)
+  const pipeline = it.stats.pipeline || {};
+  const pendingCount = pipeline.waiting ?? (it.stats.crawlByStatus['new'] || 0);
+  const completedCount = pipeline.listed ?? (it.stats.completedCount || 0);
+  const endedCount = pipeline.ended ?? (it.stats.endedCount || 0);
+  const totalCount = pipeline.total ?? allItems.length;
 
   // 상태 라벨 매핑
   const statusLabel = { error: '실패', draft: '대기', pending: '검수중', ended: '종료' };
@@ -62,6 +58,9 @@
         <span class="lang-toggle-track"></span>
         <span class="lang-toggle-label-right lang-en">EN</span>
       </label>
+      <button class="btn btn-sm" id="btn-reconcile" onclick="reconcileListings()" title="eBay·Shopify 실제 등록 상태를 읽어 내부 연결만 보정 (신규 등록 없음)">
+        <i class="ti ti-refresh"></i> 실제 플랫폼 상태 동기화
+      </button>
       <a href="/upload-csv" class="btn btn-primary btn-sm">
         <i class="ti ti-file-upload"></i> CSV 업로드
       </a>
@@ -379,8 +378,26 @@
               const successCount = listings.filter(l => l.status === 'active').length;
               const totalListings = listings.length;
             %>
-            <% if (item.type === 'crawl' || totalListings === 0) { %>
-              <span class="badge badge-draft"><i class="ti ti-clock"></i> 업로드 대기</span>
+            <%
+              //   실제 platform_listings 기준 (eBay·Shopify 2개 채널)
+              const ebayLi = listingMap['ebay'];
+              const shopifyLi = listingMap['shopify'];
+              const ebayLive = !!ebayLi && ebayLi.status === 'active';
+              const shopifyLive = !!shopifyLi && shopifyLi.status === 'active';
+              const needsCheck = listings.some(l => (l.platform === 'ebay' || l.platform === 'shopify') && (l.status === 'error' || l.status === 'pending'));
+            %>
+            <% if (item.type === 'product' && (ebayLive || shopifyLive)) { %>
+              <% if (ebayLive && shopifyLive) { %>
+                <span class="badge badge-success" data-pipeline-status="BOTH"><i class="ti ti-check"></i> 2/2 판매중</span>
+              <% } else if (ebayLive) { %>
+                <span class="badge badge-pending" data-pipeline-status="EBAY_ONLY"><i class="ti ti-check"></i> 1/2 · Shopify 미연결</span>
+              <% } else { %>
+                <span class="badge badge-pending" data-pipeline-status="SHOPIFY_ONLY"><i class="ti ti-check"></i> 1/2 · eBay 미연결</span>
+              <% } %>
+            <% } else if (item.type === 'product' && needsCheck) { %>
+              <span class="badge badge-error" data-pipeline-status="MATCH_REQUIRED"><i class="ti ti-alert-circle"></i> 연결 확인 필요</span>
+            <% } else if (item.type === 'crawl' || totalListings === 0) { %>
+              <span class="badge badge-draft" data-pipeline-status="NONE"><i class="ti ti-clock"></i> 업로드 대기</span>
             <% } else if (allEnded) { %>
               <span class="badge badge-ended"><i class="ti ti-player-stop"></i> 판매 취소</span>
             <% } else if (allActive) { %>
@@ -595,6 +612,46 @@ function confirmListingPlan(items, initialCsvPlatforms) {
     dlg.oncancel = () => done(null);
     dlg.showModal();
   });
+}
+
+//   실제 플랫폼 상태 동기화 — READ-ONLY 조회로 계획을 먼저 보여주고, 확인해야 내부 DB만 갱신 (신규 등록·플랫폼 수정 없음)
+async function reconcileListings() {
+  const btn = document.getElementById('btn-reconcile');
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> 조회 중...';
+  try {
+    const preview = await (await fetch('/api/listings/reconcile', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dryRun: true }),
+    })).json();
+    if (preview.error) { alert(preview.error); return; }
+    const s = preview.summary;
+    const lines = [
+      '실제 플랫폼 조회 결과 (신규 등록 없음)',
+      '',
+      '양쪽 등록: ' + s.both + '개',
+      'eBay만: ' + s.ebayOnly + '개',
+      'Shopify만: ' + s.shopifyOnly + '개',
+      '양쪽 미등록: ' + s.none + '개',
+      '확인 필요: ' + s.matchRequired + '개',
+      '',
+      '내부 DB 연결 보정 예정: ' + s.plannedUpdates + '건',
+    ];
+    if (s.plannedUpdates === 0) { alert(lines.join('\n') + '\n\n변경할 내용이 없습니다.'); return; }
+    if (!confirm(lines.join('\n') + '\n\n내부 DB 연결을 보정할까요?')) return;
+    btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> 보정 중...';
+    const applied = await (await fetch('/api/listings/reconcile', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dryRun: false }),
+    })).json();
+    if (applied.error) { alert(applied.error); return; }
+    alert('동기화 완료 — 갱신 ' + applied.updated + ' · 추가 ' + applied.inserted + ' · 확인 필요 ' + applied.summary.matchRequired);
+    window.location.reload();
+  } catch (e) {
+    alert('동기화 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = label;
+  }
 }
 
 // 영문/한글 토글
