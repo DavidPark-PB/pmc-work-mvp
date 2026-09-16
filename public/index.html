@@ -97,11 +97,27 @@
       setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.4s'; }, 3200);
       setTimeout(() => t.remove(), 3700);
     }
+    //   세션 만료(401) 공통 처리 — 화면마다 "로드 실패: Authentication required" 를 띄우는 대신
+    //   한 번만 안내하고 로그인 화면으로 보낸다 (로그인 후 보던 화면으로 복귀)
+    let redirectingToLogin = false;
+    function goToLogin() {
+      if (redirectingToLogin) return;
+      redirectingToLogin = true;
+      showToast('🔒 로그인 세션이 만료됐습니다. 로그인 화면으로 이동합니다.', '#e53935');
+      const next = encodeURIComponent(window.location.pathname + window.location.search);
+      setTimeout(() => { window.location.href = '/login.html?next=' + next; }, 1200);
+    }
+
     window.fetch = async function(...args) {
       let res;
       try { res = await origFetch(...args); } catch (e) { throw e; }
       // 200 대 응답은 그대로 통과
       if (res.ok) return res;
+      //   로그인/로그아웃 요청 자체의 401 은 그 화면에서 처리
+      const reqUrl = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+      if (res.status === 401 && !reqUrl.includes('/api/auth/login') && !reqUrl.includes('/api/auth/logout')) {
+        goToLogin();
+      }
       const ct = res.headers.get('content-type') || '';
       // JSON 응답이면 호출자가 알아서 처리하도록 그대로 둠
       if (ct.includes('application/json')) return res;

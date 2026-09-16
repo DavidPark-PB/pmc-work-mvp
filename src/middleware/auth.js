@@ -32,6 +32,8 @@ const userRepo = require('../db/userRepository');
 
 const COOKIE_NAME = 'pmc_session';
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7일
+//   활동 중인 세션은 하루가 지나면 자동 연장 (작업 중 갑자기 만료돼 화면이 멈추는 것 방지)
+const COOKIE_RENEW_AFTER_MS = 24 * 60 * 60 * 1000;
 
 const PUBLIC_PATHS = [
   '/login.html',
@@ -130,6 +132,13 @@ function setSessionCookie(res, userId) {
     maxAge: COOKIE_MAX_AGE,
     path: '/',
   });
+}
+
+/** 세션 발급 후 하루가 지났고 아직 만료 전이면 연장 대상 */
+function shouldRenewSession(session, now = Date.now()) {
+  if (!session || typeof session.timestamp !== 'number') return false;
+  const age = now - session.timestamp;
+  return age >= COOKIE_RENEW_AFTER_MS && age < COOKIE_MAX_AGE;
 }
 
 // ── req.user 주입 ──
@@ -237,6 +246,10 @@ async function authGuard(req, res, next) {
       return res.redirect('/login.html');
     }
     req.user = user;
+    //   활동 중인 세션 자동 연장 (레거시 포맷 세션은 그대로 둔다)
+    if (!session.legacy && shouldRenewSession(session)) {
+      try { setSessionCookie(res, session.userId); } catch { /* 연장 실패해도 요청은 계속 */ }
+    }
     next();
   } catch (err) {
     const cause = err && err.cause ? ` cause=${err.cause.code || ''} ${err.cause.message || err.cause}` : '';
@@ -457,6 +470,10 @@ async function adminResetPasswordHandler(req, res) {
 }
 
 module.exports = {
+  // 세션 정책 (테스트·운영 점검용)
+  COOKIE_MAX_AGE,
+  COOKIE_RENEW_AFTER_MS,
+  shouldRenewSession,
   // 미들웨어
   authGuard,
   requireAdmin,

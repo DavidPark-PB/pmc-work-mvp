@@ -189,7 +189,10 @@ document.getElementById('loginForm').addEventListener('submit', async function(e
           await Notification.requestPermission().catch(() => {});
         }
       } catch {}
-      window.location.replace('/');
+      //   세션 만료로 넘어온 경우 보던 화면으로 복귀 (같은 사이트 경로만 허용)
+      var next = new URLSearchParams(window.location.search).get('next');
+      var safeNext = next && /^\/(?!\/)/.test(next) ? next : '/';
+      window.location.replace(safeNext);
       return;
     } else if (res.status === 429 && data.retryAfterSeconds) {
       // 사장님 요청 2026-05: 429 차단 시 남은 시간 표시
