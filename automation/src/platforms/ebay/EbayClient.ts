@@ -233,6 +233,12 @@ export class EbayClient implements PlatformAdapter {
     return match ? match[1] : '';
   }
 
+  /** 속성이 붙는 값 (<CurrentPrice currencyID="USD">36.10</CurrentPrice>) */
+  private extractXmlValueWithAttributes(xml: string, tag: string): string {
+    const match = xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>(.*?)</${tag}>`));
+    return match ? match[1] : '';
+  }
+
   // ─── PlatformAdapter 구현 ─────────────────────────────────
 
   async testConnection(): Promise<boolean> {
@@ -506,63 +512,24 @@ export class EbayClient implements PlatformAdapter {
 
   // ─── 추가 메서드 ──────────────────────────────────────────
 
-  /** 활성 리스팅 조회 (전체 페이지) */
-  async getActiveListings(): Promise<{ itemId: string; sku: string; title: string; price: string; quantity: string }[]> {
-    const allItems: { itemId: string; sku: string; title: string; price: string; quantity: string }[] = [];
-    let pageNumber = 1;
-    let hasMore = true;
-
-    while (hasMore) {
-      const requestBody = `
-  <ActiveList>
-    <Include>true</Include>
-    <Pagination>
-      <EntriesPerPage>200</EntriesPerPage>
-      <PageNumber>${pageNumber}</PageNumber>
-    </Pagination>
-  </ActiveList>
-  <DetailLevel>ReturnAll</DetailLevel>`;
-
-      const response = await this.callTradingAPI('GetMyeBaySelling', requestBody);
-
-      // 아이템 파싱
-      const itemRegex = /<Item>([\s\S]*?)<\/Item>/g;
-      let match;
-      while ((match = itemRegex.exec(response)) !== null) {
-        const itemXml = match[1];
-        allItems.push({
-          itemId: this.extractXmlValue(itemXml, 'ItemID'),
-          sku: this.extractXmlValue(itemXml, 'SKU'),
-          title: this.extractXmlValue(itemXml, 'Title'),
-          price: this.extractXmlValue(itemXml, 'CurrentPrice'),
-          quantity: this.extractXmlValue(itemXml, 'Quantity'),
-        });
-      }
-
-      const totalPages = parseInt(this.extractXmlValue(response, 'TotalNumberOfPages') || '1');
-      hasMore = pageNumber < totalPages;
-      pageNumber++;
-
-      if (hasMore) await new Promise(r => setTimeout(r, 500));
-    }
-
-    return allItems;
-  }
-
-  /** getActiveSkuIndex 페이지 사이 대기 (ms) — 테스트는 0 */
+  /** getActiveListings / getActiveSkuIndex 페이지 사이 대기 (ms) — 테스트는 0 */
   static activeListPageDelayMs = 500;
 
   /**
-   * 중복 등록 방지용 활성 리스팅 SKU(Custom Label) 색인 — READ-ONLY GetMyeBaySelling ActiveList (getActiveListings와 같은 호출)
-   * 결과가 불확실하면(Ack 실패, ActiveList 없음, 페이지/건수 불일치) 예외 — 호출자는 AddItem을 실행하지 않는다.
-   * 반환: SKU → Item ID 목록
+   * 활성 리스팅 전체 페이지 조회 (READ-ONLY GetMyeBaySelling ActiveList)
+   *
+   * 응답에는 ActiveList 외에 SoldList·UnsoldList도 함께 오고 그 항목은 페이지마다 반복된다.
+   * 따라서 반드시 ActiveList 구간만 파싱하고 ItemID로 중복을 제거한다 (이전: 전체 응답 파싱 → 활성 수가 약 3배).
+   * 결과가 불확실하면(Ack 실패, ActiveList 없음, 같은 페이지 반복, API 총 건수 불일치) 예외 — 호출자는 개수를 신뢰하지 않는다.
    */
-  async getActiveSkuIndex(maxPages = 100): Promise<Map<string, string[]>> {
-    const index = new Map<string, string[]>();
-    let seen = 0;
-    let expectedEntries: number | null = null;
+  private async fetchActiveListPages(): Promise<{ items: string[]; totalEntries: number; totalPages: number }> {
+    const items: string[] = [];
+    const seenItemIds = new Set<string>();
+    let previousFirstItemId: string | null = null;
+    let totalEntries: number | null = null;
+    let totalPages = 1;
+
     for (let pageNumber = 1; ; pageNumber++) {
-      if (pageNumber > maxPages) throw new Error(`eBay 활성 리스팅이 ${maxPages}페이지를 넘어 확인을 중단했습니다`);
       const response = await this.callTradingAPI('GetMyeBaySelling', `
   <ActiveList>
     <Include>true</Include>
@@ -572,32 +539,78 @@ export class EbayClient implements PlatformAdapter {
     </Pagination>
   </ActiveList>
   <DetailLevel>ReturnAll</DetailLevel>`);
+
       const ack = this.extractXmlValue(response, 'Ack');
-      if (ack !== 'Success' && ack !== 'Warning') {
-        throw new Error(`GetMyeBaySelling 실패 (Ack=${ack || '없음'})`);
-      }
+      if (ack !== 'Success' && ack !== 'Warning') throw new Error(`GetMyeBaySelling 실패 (Ack=${ack || '없음'})`);
+
+      //   SoldList/UnsoldList가 섞이지 않도록 ActiveList 구간만 사용
       const activeList = response.match(/<ActiveList>([\s\S]*)<\/ActiveList>/)?.[1];
       if (activeList === undefined) throw new Error('GetMyeBaySelling 응답에 ActiveList가 없습니다');
-      const totalPages = parseInt(this.extractXmlValue(activeList, 'TotalNumberOfPages'), 10);
-      const totalEntries = parseInt(this.extractXmlValue(activeList, 'TotalNumberOfEntries'), 10);
-      if (!Number.isInteger(totalPages) || !Number.isInteger(totalEntries)) throw new Error('GetMyeBaySelling 페이지 정보가 없습니다');
-      if (expectedEntries === null) expectedEntries = totalEntries;
-      else if (expectedEntries !== totalEntries) throw new Error('확인 중 eBay 활성 리스팅 수가 바뀌었습니다');
 
-      for (const match of activeList.matchAll(/<Item>([\s\S]*?)<\/Item>/g)) {
-        seen++;
-        const itemId = this.extractXmlValue(match[1], 'ItemID');
-        const sku = this.extractXmlValue(match[1], 'SKU');
-        if (!itemId) throw new Error('ItemID 없는 활성 리스팅 응답');
-        if (!sku) continue;
-        const ids = index.get(sku) ?? [];
-        if (!ids.includes(itemId)) ids.push(itemId);
-        index.set(sku, ids);
+      const pages = parseInt(this.extractXmlValue(activeList, 'TotalNumberOfPages'), 10);
+      const entries = parseInt(this.extractXmlValue(activeList, 'TotalNumberOfEntries'), 10);
+      if (!Number.isInteger(pages) || !Number.isInteger(entries)) throw new Error('GetMyeBaySelling 페이지 정보가 없습니다');
+      if (totalEntries === null) { totalEntries = entries; totalPages = pages; }
+      else if (totalEntries !== entries || totalPages !== pages) throw new Error('확인 중 eBay 활성 리스팅 수가 바뀌었습니다');
+      if (pageNumber > totalPages) break;
+
+      const pageItems = [...activeList.matchAll(/<Item>([\s\S]*?)<\/Item>/g)].map(m => m[1]);
+      const pageItemIds = pageItems.map(xml => this.extractXmlValue(xml, 'ItemID'));
+      if (pageItemIds.some(id => !id)) throw new Error('ItemID 없는 활성 리스팅 응답');
+
+      //   같은 페이지가 반복되면(PageNumber 미반영) 즉시 중단
+      const firstItemId = pageItemIds[0] ?? null;
+      if (pageNumber > 1 && firstItemId !== null && firstItemId === previousFirstItemId) {
+        throw new Error(`GetMyeBaySelling 페이지 ${pageNumber}가 이전 페이지와 같습니다 (PageNumber 미반영)`);
       }
+      previousFirstItemId = firstItemId;
+
+      for (let i = 0; i < pageItems.length; i++) {
+        const itemId = pageItemIds[i];
+        if (seenItemIds.has(itemId)) continue;   // 고유 ItemID 기준
+        seenItemIds.add(itemId);
+        items.push(pageItems[i]);
+      }
+
       if (pageNumber >= totalPages) break;
       if (EbayClient.activeListPageDelayMs > 0) await new Promise(r => setTimeout(r, EbayClient.activeListPageDelayMs));
     }
-    if (seen !== expectedEntries) throw new Error(`eBay 활성 리스팅 수 불일치 (응답 ${seen} / 전체 ${expectedEntries})`);
+
+    //   API 총 건수와 고유 ItemID 수가 다르면 개수를 신뢰할 수 없다 (fail closed)
+    if (totalEntries === null) throw new Error('GetMyeBaySelling 응답이 없습니다');
+    if (items.length !== totalEntries) {
+      throw new Error(`eBay 활성 리스팅 수 불일치 (고유 ItemID ${items.length} / API 전체 ${totalEntries})`);
+    }
+    return { items, totalEntries, totalPages };
+  }
+
+  /** 활성 리스팅 조회 (전체 페이지, 고유 ItemID 기준) */
+  async getActiveListings(): Promise<{ itemId: string; sku: string; title: string; price: string; quantity: string }[]> {
+    const { items } = await this.fetchActiveListPages();
+    return items.map(itemXml => ({
+      itemId: this.extractXmlValue(itemXml, 'ItemID'),
+      sku: this.extractXmlValue(itemXml, 'SKU'),
+      title: this.extractXmlValue(itemXml, 'Title'),
+      price: this.extractXmlValueWithAttributes(itemXml, 'CurrentPrice'),
+      quantity: this.extractXmlValue(itemXml, 'Quantity'),
+    }));
+  }
+
+  /**
+   * 중복 등록 방지용 활성 리스팅 SKU(Custom Label) 색인 — 같은 READ-ONLY 조회 결과 사용
+   * 반환: SKU → Item ID 목록 (같은 SKU가 2개 이상이면 호출자가 자동 연결하지 않는다)
+   */
+  async getActiveSkuIndex(): Promise<Map<string, string[]>> {
+    const { items } = await this.fetchActiveListPages();
+    const index = new Map<string, string[]>();
+    for (const itemXml of items) {
+      const itemId = this.extractXmlValue(itemXml, 'ItemID');
+      const sku = this.extractXmlValue(itemXml, 'SKU');
+      if (!sku) continue;
+      const ids = index.get(sku) ?? [];
+      if (!ids.includes(itemId)) ids.push(itemId);
+      index.set(sku, ids);
+    }
     return index;
   }
 
