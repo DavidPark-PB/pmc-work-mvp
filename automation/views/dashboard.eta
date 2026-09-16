@@ -3,7 +3,10 @@
   <h1 class="page-title">상품 관리</h1>
 </div>
 
-<%/* ── 진행중 잡 배너 ── */%>
+<%/* ── 진행중 잡 배너 (최근 실행 중인 job만 — 오래된 running job은 중단 추정) ── */%>
+<% if ((it.staleJobs || 0) > 0) { %>
+<p class="stale-jobs" data-testid="stale-jobs"><i class="ti ti-alert-triangle"></i> 오래전에 시작돼 중단된 것으로 보이는 작업 <%= it.staleJobs %>개는 현재 상태에 포함하지 않았습니다.</p>
+<% } %>
 <% if (it.activeJobs.length > 0) { %>
 <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--space-5);">
   <% it.activeJobs.forEach((job) => { %>
@@ -29,12 +32,15 @@
   const allItems = it.allItems || [];
   const crawlItems = it.recentCrawlResults || [];
 
-  //   고유 상품 기준 (listing 행 수·과거 job 카드와 섞지 않음)
-  const pipeline = it.stats.pipeline || {};
-  const pendingCount = pipeline.waiting ?? (it.stats.crawlByStatus['new'] || 0);
-  const completedCount = pipeline.listed ?? (it.stats.completedCount || 0);
-  const endedCount = pipeline.ended ?? (it.stats.endedCount || 0);
-  const totalCount = pipeline.total ?? allItems.length;
+  //   고유 products.id 기준 상호 배타 집계 (crawl 행·listing 행·과거 job과 섞지 않음)
+  const pipeline = it.pipeline || { total: 0 };
+  const pipelineTabs = it.pipelineTabs || [];
+  const uploadFilters = it.uploadFilters || [];
+  const filters = it.filters || { status: 'ALL', uploadId: 'ALL' };
+  const crawlWaiting = it.crawlWaiting || 0;
+  const tabCount = (key) => (key === 'ALL' ? pipeline.total : (pipeline[key] || 0));
+  const filterHref = (status, uploadId) => '/?status=' + encodeURIComponent(status) + (uploadId && uploadId !== 'ALL' ? '&uploadId=' + encodeURIComponent(uploadId) : '');
+  const selectedUpload = uploadFilters.find(u => u.uploadId === filters.uploadId);
 
   // 상태 라벨 매핑
   const statusLabel = { error: '실패', draft: '대기', pending: '검수중', ended: '종료' };
@@ -69,15 +75,41 @@
   </div>
 
   <%/* ── 탭 바 ── */%>
-  <div class="tab-bar">
-    <button class="tab-item active" data-tab="all">전체 <span class="tab-count"><%= totalCount %></span></button>
-    <button class="tab-item" data-tab="pending">업로드 대기 <span class="tab-count"><%= pendingCount %></span></button>
-    <button class="tab-item" data-tab="completed">업로드 완료 <span class="tab-count"><%= completedCount %></span></button>
-    <button class="tab-item" data-tab="ended">판매 취소 <span class="tab-count"><%= endedCount %></span></button>
+  <div class="pipeline-filter">
+    <label for="upload-filter">CSV 업로드</label>
+    <select id="upload-filter" class="select-sm" onchange="applyUploadFilter(this.value)">
+      <option value="ALL"<%~ filters.uploadId === 'ALL' ? ' selected' : '' %>>전체 업로드</option>
+      <% uploadFilters.forEach((u) => { %>
+      <option value="<%= u.uploadId %>"<%~ filters.uploadId === u.uploadId ? ' selected' : '' %>><%= new Date(u.createdAt).toLocaleDateString('ko-KR') %> · <%= u.filename %> · 상품 <%= u.productCount %>개</option>
+      <% }) %>
+      <option value="LEGACY"<%~ filters.uploadId === 'LEGACY' ? ' selected' : '' %>>기존 레거시 상품 (CSV 아님)</option>
+    </select>
+    <% if (selectedUpload) { %>
+    <span class="upload-summary" data-testid="upload-summary">
+      <%= selectedUpload.uploadId %> · 원본 <%= selectedUpload.rowCount %>행 · 가져온 상품 <%= selectedUpload.productCount %>개 ·
+      양쪽 <%= selectedUpload.counts.LISTED_BOTH %> · eBay만 <%= selectedUpload.counts.EBAY_ONLY %> · Shopify만 <%= selectedUpload.counts.SHOPIFY_ONLY %> ·
+      미등록 <%= selectedUpload.counts.READY %> · 실패 <%= selectedUpload.counts.FAILED %> · 처리 중 <%= selectedUpload.counts.PROCESSING %> ·
+      판매 취소 <%= selectedUpload.counts.CANCELLED %> · 선택하지 않은 원본 행 <%= Math.max(0, selectedUpload.rowCount - selectedUpload.productCount) %>개
+    </span>
+    <% } %>
   </div>
 
-  <%/* ════════ 업로드 대기 탭 ════════ */%>
-  <div id="tab-pending" class="tab-panel" style="display: none;">
+  <div class="tab-bar">
+    <% pipelineTabs.forEach((tab) => { %>
+    <a class="tab-item<%~ filters.status === tab.key ? ' active' : '' %>" href="<%= filterHref(tab.key, filters.uploadId) %>" data-tab-status="<%= tab.key %>"><%= tab.label %> <span class="tab-count"><%= tabCount(tab.key) %></span></a>
+    <% }) %>
+  </div>
+
+  <%/* ════════ 수집 데이터 · DB 가져오기 대기 (상품 파이프라인과 분리) ════════ */%>
+  <div class="crawl-waiting-header">
+    <div>
+      <strong>수집 데이터 · DB 가져오기 대기</strong>
+      <span class="text-muted" data-testid="crawl-waiting-count"><%= crawlWaiting %>개</span>
+      <span class="text-muted">— 아직 상품으로 가져오지 않은 행이라 상품 수에 포함하지 않습니다.</span>
+    </div>
+    <button class="btn btn-sm" onclick="toggleCrawlWaiting()"><i class="ti ti-chevron-down"></i> 열기/닫기</button>
+  </div>
+  <div id="tab-pending" class="tab-panel" style="display: none;" data-testid="crawl-waiting-panel">
     <div class="action-bar action-bar-disabled" id="pending-action-bar">
       <span class="action-bar-count">상품을 선택하세요</span>
       <div style="display: flex; gap: 8px; align-items: center;">
@@ -186,76 +218,7 @@
     <% } %>
   </div>
 
-  <%/* ════════ 완료 내역 탭 ════════ */%>
-  <div id="tab-completed" class="tab-panel" style="display: none;">
-    <%/* ── 툴바: 검색 + 필터 + 재고동기화 ── */%>
-    <div class="completed-toolbar">
-      <div class="completed-toolbar-left">
-        <div class="search-box">
-          <i class="ti ti-search"></i>
-          <input type="text" id="completed-search" placeholder="상품명, SKU 검색..." class="search-input">
-        </div>
-        <select id="completed-status-filter" class="select-sm" onchange="loadCompleted(1)">
-          <option value="">전체 상태</option>
-          <option value="active">판매중</option>
-          <option value="error">실패</option>
-          <option value="pending">검수중</option>
-          <option value="draft">대기</option>
-        </select>
-        <select id="completed-platform-filter" class="select-sm" onchange="loadCompleted(1)">
-          <option value="">전체 판매처</option>
-          <option value="ebay">eBay</option>
-          <option value="shopify">Shopify</option>
-          <option value="alibaba">Alibaba</option>
-          <option value="shopee">Shopee</option>
-        </select>
-      </div>
-      <button id="syncInventoryBtn" class="btn btn-secondary btn-sm" onclick="syncInventory()">
-        <i class="ti ti-refresh"></i> 재고 동기화
-      </button>
-    </div>
-
-    <%/* ── 테이블 ── */%>
-    <div id="completed-table-wrap">
-      <div class="empty-state">
-        <i class="ti ti-list-check"></i>
-        <p>업로드 완료된 항목이 없습니다</p>
-      </div>
-    </div>
-
-    <%/* ── 페이징 ── */%>
-    <div id="completed-pagination" class="pagination" style="display: none;"></div>
-  </div>
-
-  <%/* ════════ 판매 취소 탭 ════════ */%>
-  <div id="tab-ended" class="tab-panel" style="display: none;">
-    <div class="completed-toolbar">
-      <div class="completed-toolbar-left">
-        <div class="search-box">
-          <i class="ti ti-search"></i>
-          <input type="text" id="ended-search" placeholder="상품명, SKU 검색..." class="search-input">
-        </div>
-        <select id="ended-platform-filter" class="select-sm" onchange="loadEnded(1)">
-          <option value="">전체 판매처</option>
-          <option value="ebay">eBay</option>
-          <option value="shopify">Shopify</option>
-          <option value="alibaba">Alibaba</option>
-          <option value="shopee">Shopee</option>
-        </select>
-      </div>
-    </div>
-
-    <div id="ended-table-wrap">
-      <div class="empty-state">
-        <i class="ti ti-player-stop"></i>
-        <p>판매 취소된 항목이 없습니다</p>
-      </div>
-    </div>
-
-    <div id="ended-pagination" class="pagination" style="display: none;"></div>
-  </div>
-
-  <%/* ════════ 전체 탭 ════════ */%>
+  <%/* ════════ 상품 파이프라인 (고유 product) ════════ */%>
   <div id="tab-all" class="tab-panel">
     <div class="action-bar action-bar-disabled" id="all-action-bar">
       <span class="action-bar-count">상품을 선택하세요</span>
@@ -379,37 +342,31 @@
               const totalListings = listings.length;
             %>
             <%
-              //   실제 platform_listings 기준 (eBay·Shopify 2개 채널)
-              const ebayLi = listingMap['ebay'];
-              const shopifyLi = listingMap['shopify'];
-              const ebayLive = !!ebayLi && ebayLi.status === 'active';
-              const shopifyLive = !!shopifyLi && shopifyLi.status === 'active';
-              const needsCheck = listings.some(l => (l.platform === 'ebay' || l.platform === 'shopify') && (l.status === 'error' || l.status === 'pending'));
+              //   서버 집계(고유 product 상태)와 같은 값을 그대로 표시 — 탭 숫자와 행 표시가 어긋나지 않게
+              const pipelineStatus = item.pipelineStatus || 'NONE';
+              const badgeByStatus = {
+                LISTED_BOTH: ['badge-success', 'ti-check', '2/2 판매중'],
+                EBAY_ONLY: ['badge-pending', 'ti-check', '1/2 · Shopify 미연결'],
+                SHOPIFY_ONLY: ['badge-pending', 'ti-check', '1/2 · eBay 미연결'],
+                FAILED: ['badge-error', 'ti-alert-circle', '등록 실패'],
+                PROCESSING: ['badge-pending', 'ti-loader', '처리 중'],
+                CANCELLED: ['badge-ended', 'ti-player-stop', '판매 취소'],
+                READY: ['badge-draft', 'ti-clock', '미등록'],
+              };
+              const shopifyError = (listingMap['shopify'] && listingMap['shopify'].status === 'error') ? (listingMap['shopify'].error || 'Shopify 등록 실패') : '';
+              const ebayError = (listingMap['ebay'] && listingMap['ebay'].status === 'error') ? (listingMap['ebay'].error || 'eBay 등록 실패') : '';
             %>
-            <% if (item.type === 'product' && (ebayLive || shopifyLive)) { %>
-              <% if (ebayLive && shopifyLive) { %>
-                <span class="badge badge-success" data-pipeline-status="BOTH"><i class="ti ti-check"></i> 2/2 판매중</span>
-              <% } else if (ebayLive) { %>
-                <span class="badge badge-pending" data-pipeline-status="EBAY_ONLY"><i class="ti ti-check"></i> 1/2 · Shopify 미연결</span>
-              <% } else { %>
-                <span class="badge badge-pending" data-pipeline-status="SHOPIFY_ONLY"><i class="ti ti-check"></i> 1/2 · eBay 미연결</span>
-              <% } %>
-            <% } else if (item.type === 'product' && needsCheck) { %>
-              <span class="badge badge-error" data-pipeline-status="MATCH_REQUIRED"><i class="ti ti-alert-circle"></i> 연결 확인 필요</span>
-            <% } else if (item.type === 'crawl' || totalListings === 0) { %>
-              <span class="badge badge-draft" data-pipeline-status="NONE"><i class="ti ti-clock"></i> 업로드 대기</span>
-            <% } else if (allEnded) { %>
-              <span class="badge badge-ended"><i class="ti ti-player-stop"></i> 판매 취소</span>
-            <% } else if (allActive) { %>
-              <span class="badge badge-success"><i class="ti ti-check"></i> <%= totalListings > 1 ? successCount + '/' + totalListings + ' ' : '' %>판매중</span>
-            <% } else if (hasError && activeListings_.every(l => l.status === 'error')) { %>
-              <span class="badge badge-error"><i class="ti ti-alert-circle"></i> 업로드 실패</span>
-            <% } else if (successCount > 0 && hasError) { %>
-              <span class="badge badge-pending"><%= successCount %>/<%= activeListings_.length %> 판매중 (일부 실패)</span>
-            <% } else if (successCount > 0) { %>
-              <span class="badge badge-pending"><%= successCount %>/<%= activeListings_.length %> 판매중</span>
+            <% if (item.type === 'crawl') { %>
+              <span class="badge badge-draft" data-pipeline-status="CRAWL"><i class="ti ti-clock"></i> DB 가져오기 대기</span>
             <% } else { %>
-              <span class="badge badge-pending"><i class="ti ti-loader"></i> 업로드중</span>
+              <% const badge = badgeByStatus[pipelineStatus] || badgeByStatus.READY; %>
+              <span class="badge <%= badge[0] %>" data-pipeline-status="<%= pipelineStatus %>"><i class="ti <%= badge[1] %>"></i> <%= badge[2] %></span>
+              <% if (pipelineStatus === 'EBAY_ONLY' && shopifyError) { %>
+                <span class="badge badge-error" data-testid="shopify-error" title="<%= shopifyError %>"><i class="ti ti-alert-circle"></i> Shopify 실패</span>
+              <% } %>
+              <% if (pipelineStatus === 'SHOPIFY_ONLY' && ebayError) { %>
+                <span class="badge badge-error" data-testid="ebay-error" title="<%= ebayError %>"><i class="ti ti-alert-circle"></i> eBay 실패</span>
+              <% } %>
             <% } %>
           </td>
           <td class="nowrap">
@@ -527,6 +484,12 @@
 .csv-listing-dialog ul { margin: 0 0 12px; padding-left: 18px; font-size: 0.8125rem; color: #475569; }
 .csv-listing-disabled { color: #b91c1c; font-size: 0.8125rem; margin: 0 0 12px; }
 .csv-listing-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.pipeline-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 8px; font-size: 0.8125rem; }
+.pipeline-filter label { color: #64748b; }
+.upload-summary { color: #475569; }
+a.tab-item { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+.crawl-waiting-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 16px 0 8px; }
+.stale-jobs { font-size: 0.8125rem; color: #64748b; margin: 4px 0 12px; }
 .csv-listing-platforms { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.875rem; }
 .csv-listing-platforms legend { font-size: 0.75rem; color: #64748b; padding: 0 4px; }
 </style>
@@ -824,25 +787,19 @@ function closeTranslateModal() {
   location.reload();
 }
 
-// 탭 전환
-document.querySelectorAll('.tab-item').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
-    tab.classList.add('active');
-    document.getElementById('tab-' + tab.dataset.tab).style.display = 'block';
-    // 완료 내역 탭 최초 로드
-    if (tab.dataset.tab === 'completed' && !completedState.loaded) {
-      completedState.loaded = true;
-      loadCompleted(1);
-    }
-    // 판매 취소 탭 최초 로드
-    if (tab.dataset.tab === 'ended' && !endedState.loaded) {
-      endedState.loaded = true;
-      loadEnded(1);
-    }
-  });
-});
+//   CSV 업로드 필터 (상태 탭은 링크로 서버 필터)
+function applyUploadFilter(uploadId) {
+  const params = new URLSearchParams(window.location.search);
+  params.set('uploadId', uploadId);
+  if (!params.get('status')) params.set('status', 'ALL');
+  window.location.href = '/?' + params.toString();
+}
+
+//   수집 데이터(아직 상품으로 가져오지 않은 crawl 행) 영역 열기/닫기
+function toggleCrawlWaiting() {
+  const panel = document.getElementById('tab-pending');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
 
 // 전체 선택/해제
 function toggleAll(master, group) {
@@ -1156,379 +1113,6 @@ async function cancelListings(listingIds, btn) {
     btn.innerHTML = '<i class="ti ti-x"></i> 업로드 취소';
     alert('요청 실패: ' + e.message);
   }
-}
-
-// ════════ 완료 내역 AJAX ════════
-const completedState = { page: 1, sort: 'createdAt', order: 'desc', loaded: false };
-const sourceLabelsJS = { coupang: '쿠팡', lotte: '롯데온', emart: '이마트', naver: '네이버' };
-const statusLabelJS = { error: '실패', draft: '대기', pending: '검수중', ended: '종료' };
-
-let searchTimer = null;
-document.getElementById('completed-search').addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => loadCompleted(1), 300);
-});
-
-function setCompletedSort(col) {
-  if (completedState.sort === col) {
-    completedState.order = completedState.order === 'desc' ? 'asc' : 'desc';
-  } else {
-    completedState.sort = col;
-    completedState.order = col === 'title' || col === 'sku' ? 'asc' : 'desc';
-  }
-  loadCompleted(completedState.page);
-}
-
-async function loadCompleted(page) {
-  completedState.page = page;
-  const q = document.getElementById('completed-search').value;
-  const status = document.getElementById('completed-status-filter').value;
-  const platform = document.getElementById('completed-platform-filter').value;
-
-  const params = new URLSearchParams({
-    page: String(page), limit: '50',
-    sort: completedState.sort, order: completedState.order,
-    q, status, platform,
-  });
-
-  const wrap = document.getElementById('completed-table-wrap');
-  wrap.innerHTML = '<div style="text-align:center;padding:var(--space-8);color:var(--text-muted);"><i class="ti ti-loader spinner-icon" style="font-size:24px;"></i></div>';
-
-  try {
-    const res = await fetch('/api/completed?' + params);
-    const { data, pagination } = await res.json();
-    renderCompletedTable(data, pagination);
-  } catch (e) {
-    wrap.innerHTML = '<div class="empty-state"><i class="ti ti-alert-circle"></i><p>데이터 로드 실패</p></div>';
-  }
-}
-
-function renderCompletedTable(items, pagination) {
-  const wrap = document.getElementById('completed-table-wrap');
-  const pagEl = document.getElementById('completed-pagination');
-
-  // 탭 카운트 업데이트
-  const tabBtn = document.querySelector('[data-tab="completed"]');
-  if (tabBtn) {
-    const countEl = tabBtn.querySelector('.tab-count');
-    if (countEl) countEl.textContent = pagination.total;
-  }
-
-  if (items.length === 0) {
-    wrap.innerHTML = '<div class="empty-state"><i class="ti ti-list-check"></i><p>업로드 완료된 항목이 없습니다</p></div>';
-    pagEl.style.display = 'none';
-    return;
-  }
-
-  const sortIcon = (col) => {
-    if (completedState.sort !== col) return '';
-    return completedState.order === 'asc'
-      ? ' <i class="ti ti-chevron-up" style="font-size:12px;"></i>'
-      : ' <i class="ti ti-chevron-down" style="font-size:12px;"></i>';
-  };
-
-  let html = '<table><thead><tr>';
-  html += '<th class="sortable" onclick="setCompletedSort(\'sku\')">SKU' + sortIcon('sku') + '</th>';
-  html += '<th class="th-thumb">이미지</th>';
-  html += '<th class="td-title sortable" onclick="setCompletedSort(\'title\')">상품명' + sortIcon('title') + '</th>';
-  html += '<th class="sortable" onclick="setCompletedSort(\'sourcePlatform\')">소싱처' + sortIcon('sourcePlatform') + '</th>';
-  html += '<th>판매처</th>';
-  html += '<th>상태</th>';
-  html += '<th class="sortable" onclick="setCompletedSort(\'createdAt\')">등록일' + sortIcon('createdAt') + '</th>';
-  html += '<th>액션</th>';
-  html += '</tr></thead><tbody>';
-
-  items.forEach(p => {
-    const listings = typeof p.listings === 'string' ? JSON.parse(p.listings) : (p.listings || []);
-    const activeListings = listings.filter(l => l.status !== 'ended');
-    const hasActiveListing = activeListings.length > 0;
-    const hasError = activeListings.some(l => l.status === 'error');
-    const allActive = activeListings.every(l => l.status === 'active') && hasActiveListing;
-    const allEnded = !hasActiveListing && listings.length > 0;
-    const isSoldout = p.status === 'soldout';
-
-    html += '<tr class="' + (isSoldout ? 'row-soldout' : '') + '">';
-    html += '<td class="font-mono">' + esc(p.sku) + '</td>';
-
-    // 썸네일
-    if (p.imageUrl) {
-      html += '<td class="td-thumb"><img class="thumb" src="/api/img-proxy?url=' + encodeURIComponent(p.imageUrl) + '" alt=""></td>';
-    } else {
-      html += '<td class="td-thumb"><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div></td>';
-    }
-
-    // 상품명 (토글 대응)
-    const isEn = document.getElementById('lang-toggle')?.checked;
-    const titleEn = esc(p.title || '');
-    const titleKo = esc(p.titleKo || p.title || '');
-    const showTitle = isEn && p.titleKo && p.title !== p.titleKo ? titleEn : titleKo;
-    const untranslated = isEn && (!p.titleKo || p.title === p.titleKo) ? ' title-untranslated' : '';
-    if (p.sourceUrl) {
-      html += '<td class="td-title" data-title-ko="' + titleKo + '" data-title-en="' + titleEn + '"><span class="truncate"><a href="' + esc(p.sourceUrl) + '" target="_blank" rel="noopener" class="title-text' + untranslated + '">' + showTitle + '</a></span></td>';
-    } else {
-      html += '<td class="td-title" data-title-ko="' + titleKo + '" data-title-en="' + titleEn + '"><span class="truncate"><span class="title-text' + untranslated + '">' + showTitle + '</span></span></td>';
-    }
-
-    // 소싱처
-    html += '<td class="nowrap">' + (sourceLabelsJS[p.sourcePlatform] || p.sourcePlatform || '—') + '</td>';
-
-    // 판매처
-    html += '<td><div style="display:flex;gap:4px;flex-wrap:wrap;">';
-    listings.forEach(l => {
-      const isActive = l.status === 'active';
-      const badgeClass = l.status === 'error' ? 'badge-error'
-        : l.status === 'pending' ? 'badge-pending'
-        : l.status === 'ended' ? 'badge-ended'
-        : l.status === 'draft' ? 'badge-draft'
-        : 'badge-' + l.platform;
-      const label = isActive
-        ? l.platform + ' $' + Number(l.price).toFixed(2)
-        : l.platform + ' ' + (statusLabelJS[l.status] || l.status);
-      if (isActive && l.listingUrl) {
-        html += '<span class="badge ' + badgeClass + '"><a href="' + esc(l.listingUrl) + '" target="_blank" rel="noopener" style="text-decoration:none;color:inherit;">' + label + '</a><i class="ti ti-x badge-action" onclick="event.stopPropagation(); endListings([' + l.id + '], this)" title="판매 내리기"></i></span>';
-      } else if (l.status === 'error') {
-        html += '<span class="badge badge-error">' + l.platform + ' 실패 <i class="ti ti-refresh badge-action" onclick="retryListings([' + l.id + '], this)" title="재시도"></i></span>';
-      } else if (l.listingUrl) {
-        html += '<a href="' + esc(l.listingUrl) + '" target="_blank" rel="noopener" style="text-decoration:none;"><span class="badge ' + badgeClass + '">' + label + '</span></a>';
-      } else {
-        html += '<span class="badge ' + badgeClass + '">' + label + '</span>';
-      }
-    });
-    html += '</div></td>';
-
-    // 상태
-    const successCount = activeListings.filter(l => l.status === 'active').length;
-    const totalListings = activeListings.length;
-    if (isSoldout) {
-      html += '<td><span class="badge badge-error">품절</span></td>';
-    } else if (totalListings === 0) {
-      html += '<td><span class="badge badge-unregistered">미등록</span></td>';
-    } else if (allEnded) {
-      html += '<td><span class="badge badge-ended">판매종료</span></td>';
-    } else if (allActive) {
-      html += '<td><span class="badge badge-success">' + (totalListings > 1 ? successCount + '/' + totalListings + ' ' : '') + '판매중</span></td>';
-    } else if (hasError && activeListings.every(l => l.status === 'error')) {
-      html += '<td><span class="badge badge-error">업로드 실패</span></td>';
-    } else if (successCount > 0 && hasError) {
-      html += '<td><span class="badge badge-pending">' + successCount + '/' + activeListings.length + ' 판매중 (일부 실패)</span></td>';
-    } else if (successCount > 0) {
-      html += '<td><span class="badge badge-pending">' + successCount + '/' + activeListings.length + ' 판매중</span></td>';
-    } else {
-      html += '<td><span class="badge badge-pending">업로드 대기</span></td>';
-    }
-
-    // 등록일
-    const date = p.createdAt ? new Date(p.createdAt).toLocaleDateString('ko-KR') : '—';
-    html += '<td class="text-muted nowrap">' + date + '</td>';
-
-    // 액션 버튼
-    const retryableIds = listings.filter(l => ['draft', 'pending', 'error'].includes(l.status)).map(l => l.id);
-    const activeIds = listings.filter(l => l.status === 'active').map(l => l.id);
-    const cancellableIds = listings.filter(l => ['draft', 'pending', 'error'].includes(l.status)).map(l => l.id);
-    let actions = '';
-    if (retryableIds.length > 0) {
-      actions += '<button class="btn btn-secondary btn-xs" onclick="retryListings([' + retryableIds.join(',') + '], this)"><i class="ti ti-refresh"></i> 재시도</button>';
-    }
-    if (cancellableIds.length > 0) {
-      actions += '<button class="btn btn-secondary btn-xs" onclick="cancelListings([' + cancellableIds.join(',') + '], this)"><i class="ti ti-x"></i> 업로드 취소</button>';
-    }
-    if (activeIds.length > 0) {
-      actions += '<button class="btn btn-error btn-xs" onclick="endListings([' + activeIds.join(',') + '], this)"><i class="ti ti-player-stop"></i> 판매 내리기</button>';
-    }
-    html += '<td class="nowrap"><div style="display:flex;gap:4px;flex-wrap:wrap;">' + actions + '</div></td>';
-    html += '</tr>';
-  });
-
-  html += '</tbody></table>';
-  wrap.innerHTML = html;
-
-  // 페이징
-  if (pagination.totalPages <= 1) {
-    pagEl.style.display = 'none';
-    return;
-  }
-  pagEl.style.display = 'flex';
-  let pagHtml = '';
-  pagHtml += '<button class="page-btn ' + (pagination.page <= 1 ? 'disabled' : '') + '" onclick="loadCompleted(' + (pagination.page - 1) + ')"><i class="ti ti-chevron-left"></i></button>';
-
-  const maxVisible = 5;
-  let startPage = Math.max(1, pagination.page - Math.floor(maxVisible / 2));
-  let endPage = Math.min(pagination.totalPages, startPage + maxVisible - 1);
-  if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
-
-  if (startPage > 1) {
-    pagHtml += '<button class="page-btn" onclick="loadCompleted(1)">1</button>';
-    if (startPage > 2) pagHtml += '<span class="page-info">…</span>';
-  }
-  for (let i = startPage; i <= endPage; i++) {
-    pagHtml += '<button class="page-btn ' + (i === pagination.page ? 'active' : '') + '" onclick="loadCompleted(' + i + ')">' + i + '</button>';
-  }
-  if (endPage < pagination.totalPages) {
-    if (endPage < pagination.totalPages - 1) pagHtml += '<span class="page-info">…</span>';
-    pagHtml += '<button class="page-btn" onclick="loadCompleted(' + pagination.totalPages + ')">' + pagination.totalPages + '</button>';
-  }
-
-  pagHtml += '<button class="page-btn ' + (pagination.page >= pagination.totalPages ? 'disabled' : '') + '" onclick="loadCompleted(' + (pagination.page + 1) + ')"><i class="ti ti-chevron-right"></i></button>';
-  pagHtml += '<span class="page-info">' + pagination.total + '개 중 ' + ((pagination.page - 1) * pagination.limit + 1) + '-' + Math.min(pagination.page * pagination.limit, pagination.total) + '</span>';
-  pagEl.innerHTML = pagHtml;
-}
-
-function esc(s) {
-  if (!s) return '';
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-// 재고 동기화
-async function syncInventory() {
-  const btn = document.getElementById('syncInventoryBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<i class="ti ti-loader"></i> 동기화 중...';
-  try {
-    const res = await fetch('/api/listings/sync-inventory', { method: 'POST' });
-    const data = await res.json();
-    btn.innerHTML = '<i class="ti ti-check"></i> 완료 (' + data.changed + '개 변경)';
-    if (data.changed > 0) setTimeout(() => location.reload(), 1500);
-    else setTimeout(() => { btn.innerHTML = '<i class="ti ti-refresh"></i> 재고 동기화'; btn.disabled = false; }, 2000);
-  } catch (e) {
-    btn.innerHTML = '<i class="ti ti-alert-circle"></i> 실패';
-    setTimeout(() => { btn.innerHTML = '<i class="ti ti-refresh"></i> 재고 동기화'; btn.disabled = false; }, 2000);
-  }
-}
-
-// ════════ 판매 취소 AJAX ════════
-const endedState = { page: 1, sort: 'createdAt', order: 'desc', loaded: false };
-
-let endedSearchTimer = null;
-document.getElementById('ended-search').addEventListener('input', () => {
-  clearTimeout(endedSearchTimer);
-  endedSearchTimer = setTimeout(() => loadEnded(1), 300);
-});
-
-async function loadEnded(page) {
-  endedState.page = page;
-  const q = document.getElementById('ended-search').value;
-  const platform = document.getElementById('ended-platform-filter').value;
-
-  const params = new URLSearchParams({
-    page: String(page), limit: '50',
-    sort: endedState.sort, order: endedState.order,
-    q, platform,
-  });
-
-  const wrap = document.getElementById('ended-table-wrap');
-  wrap.innerHTML = '<div style="text-align:center;padding:var(--space-8);color:var(--text-muted);"><i class="ti ti-loader spinner-icon" style="font-size:24px;"></i></div>';
-
-  try {
-    const res = await fetch('/api/ended?' + params);
-    const { data, pagination } = await res.json();
-    renderEndedTable(data, pagination);
-  } catch (e) {
-    wrap.innerHTML = '<div class="empty-state"><i class="ti ti-alert-circle"></i><p>데이터 로드 실패</p></div>';
-  }
-}
-
-function renderEndedTable(items, pagination) {
-  const wrap = document.getElementById('ended-table-wrap');
-  const pagEl = document.getElementById('ended-pagination');
-
-  // 탭 카운트 업데이트
-  const tabBtn = document.querySelector('[data-tab="ended"]');
-  if (tabBtn) {
-    const countEl = tabBtn.querySelector('.tab-count');
-    if (countEl) countEl.textContent = pagination.total;
-  }
-
-  if (items.length === 0) {
-    wrap.innerHTML = '<div class="empty-state"><i class="ti ti-player-stop"></i><p>판매 취소된 항목이 없습니다</p></div>';
-    pagEl.style.display = 'none';
-    return;
-  }
-
-  let html = '<table><thead><tr>';
-  html += '<th>SKU</th>';
-  html += '<th class="th-thumb">이미지</th>';
-  html += '<th class="td-title">상품명</th>';
-  html += '<th>소싱처</th>';
-  html += '<th>판매처</th>';
-  html += '<th>판매가</th>';
-  html += '<th>액션</th>';
-  html += '</tr></thead><tbody>';
-
-  items.forEach(p => {
-    html += '<tr>';
-    html += '<td class="font-mono">' + esc(p.sku) + '</td>';
-
-    // 썸네일
-    if (p.imageUrl) {
-      html += '<td class="td-thumb"><img class="thumb" src="/api/img-proxy?url=' + encodeURIComponent(p.imageUrl) + '" alt=""></td>';
-    } else {
-      html += '<td class="td-thumb"><div class="thumb thumb-empty"><i class="ti ti-photo-off"></i></div></td>';
-    }
-
-    // 상품명 (토글 대응)
-    const isEn2 = document.getElementById('lang-toggle')?.checked;
-    const titleEn2 = esc(p.title || '');
-    const titleKo2 = esc(p.titleKo || p.title || '');
-    const showTitle2 = isEn2 && p.titleKo && p.title !== p.titleKo ? titleEn2 : titleKo2;
-    const untranslated2 = isEn2 && (!p.titleKo || p.title === p.titleKo) ? ' title-untranslated' : '';
-    if (p.sourceUrl) {
-      html += '<td class="td-title" data-title-ko="' + titleKo2 + '" data-title-en="' + titleEn2 + '"><span class="truncate"><a href="' + esc(p.sourceUrl) + '" target="_blank" rel="noopener" class="title-text' + untranslated2 + '">' + showTitle2 + '</a></span></td>';
-    } else {
-      html += '<td class="td-title" data-title-ko="' + titleKo2 + '" data-title-en="' + titleEn2 + '"><span class="truncate"><span class="title-text' + untranslated2 + '">' + showTitle2 + '</span></span></td>';
-    }
-
-    // 소싱처
-    html += '<td class="nowrap">' + (sourceLabelsJS[p.sourcePlatform] || p.sourcePlatform || '—') + '</td>';
-
-    // 판매처
-    html += '<td><span class="badge badge-ended">' + esc(p.listingPlatform) + ' 종료</span></td>';
-
-    // 판매가
-    html += '<td class="tabular-nums nowrap">$' + (p.listingPrice ? Number(p.listingPrice).toFixed(2) : '—') + '</td>';
-
-    // 액션
-    html += '<td class="nowrap"><div style="display:flex;gap:4px;flex-wrap:wrap;">';
-    html += '<button class="btn btn-primary btn-xs" onclick="relistListings([' + p.listingId + '], this)"><i class="ti ti-upload"></i> 판매 재개</button>';
-    html += '<button class="btn btn-error btn-xs" onclick="deleteProducts([' + p.id + '], this)"><i class="ti ti-trash"></i> 삭제</button>';
-    html += '</div></td>';
-
-    html += '</tr>';
-  });
-
-  html += '</tbody></table>';
-  wrap.innerHTML = html;
-
-  // 페이징
-  if (pagination.totalPages <= 1) {
-    pagEl.style.display = 'none';
-    return;
-  }
-  pagEl.style.display = 'flex';
-  let pagHtml = '';
-  pagHtml += '<button class="page-btn ' + (pagination.page <= 1 ? 'disabled' : '') + '" onclick="loadEnded(' + (pagination.page - 1) + ')"><i class="ti ti-chevron-left"></i></button>';
-
-  const maxVisible = 5;
-  let startPage = Math.max(1, pagination.page - Math.floor(maxVisible / 2));
-  let endPage = Math.min(pagination.totalPages, startPage + maxVisible - 1);
-  if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
-
-  if (startPage > 1) {
-    pagHtml += '<button class="page-btn" onclick="loadEnded(1)">1</button>';
-    if (startPage > 2) pagHtml += '<span class="page-info">…</span>';
-  }
-  for (var i = startPage; i <= endPage; i++) {
-    pagHtml += '<button class="page-btn ' + (i === pagination.page ? 'active' : '') + '" onclick="loadEnded(' + i + ')">' + i + '</button>';
-  }
-  if (endPage < pagination.totalPages) {
-    if (endPage < pagination.totalPages - 1) pagHtml += '<span class="page-info">…</span>';
-    pagHtml += '<button class="page-btn" onclick="loadEnded(' + pagination.totalPages + ')">' + pagination.totalPages + '</button>';
-  }
-
-  pagHtml += '<button class="page-btn ' + (pagination.page >= pagination.totalPages ? 'disabled' : '') + '" onclick="loadEnded(' + (pagination.page + 1) + ')"><i class="ti ti-chevron-right"></i></button>';
-  pagHtml += '<span class="page-info">' + pagination.total + '개 중 ' + ((pagination.page - 1) * pagination.limit + 1) + '-' + Math.min(pagination.page * pagination.limit, pagination.total) + '</span>';
-  pagEl.innerHTML = pagHtml;
 }
 
 // 판매 재개 (ended → re-upload)

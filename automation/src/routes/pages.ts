@@ -10,6 +10,7 @@ import { buildImportPreview, detectFixedHeaderMapping } from '../lib/csv-parser.
 import { crawlDisplayCsv, readProductCsvMetadata, resolveDisplayPrices } from '../services/listing-price.js';
 import { getShippingPricingConfig, publicShippingPricingConfig } from '../lib/shipping-config.js';
 import { readShippingPolicySnapshot } from '../services/ebay-shipping-policies.js';
+import { loadCrawlWaitingCount, loadPipelineCounts, loadPipelineProducts, loadUploadFilters, splitStaleJobs, PIPELINE_TABS, PIPELINE_STATUSES } from '../services/product-pipeline.js';
 import { jobStore } from '../lib/job-store.js';
 import { getUser } from '../lib/user-session.js';
 import fs from 'fs';
@@ -18,6 +19,10 @@ import path from 'path';
 export async function pageRoutes(app: FastifyInstance) {
   // 대시보드 홈
   app.get('/', async (request, reply) => {
+    const { status: statusQuery, uploadId: uploadIdQuery } = request.query as { status?: string; uploadId?: string };
+    const pipelineStatusParam = statusQuery && (PIPELINE_STATUSES as readonly string[]).includes(statusQuery) ? statusQuery : 'ALL';
+    const uploadIdParam = uploadIdQuery && uploadIdQuery.trim() ? uploadIdQuery.trim() : 'ALL';
+
     const [
       productsByStatus,
       listingsByPlatform,
@@ -36,42 +41,8 @@ export async function pageRoutes(app: FastifyInstance) {
         .from(platformListings).groupBy(platformListings.status),
       db.select({ status: crawlResults.status, count: sql<number>`count(*)` })
         .from(crawlResults).groupBy(crawlResults.status),
-      // 상품 + 리스팅 통합 쿼리 (json_agg로 리스팅 배열 집계)
-      db.select({
-        id: products.id,
-        sku: products.sku,
-        titleKo: products.titleKo,
-        title: products.title,
-        status: products.status,
-        costPrice: products.costPrice,
-        metadata: products.metadata,
-        sourceUrl: products.sourceUrl,
-        sourcePlatform: products.sourcePlatform,
-        createdAt: products.createdAt,
-        imageUrl: sql<string>`COALESCE(
-          NULLIF((SELECT url FROM product_images WHERE product_id = ${products.id} AND url IS NOT NULL AND url != '' ORDER BY position LIMIT 1), ''),
-          (SELECT image_url FROM crawl_results WHERE product_id = ${products.id} AND image_url IS NOT NULL AND image_url != '' LIMIT 1)
-        )`,
-        listings: sql<string>`COALESCE(
-          json_agg(
-            json_build_object(
-              'id', ${platformListings.id},
-              'platform', ${platformListings.platform},
-              'price', ${platformListings.price},
-              'status', ${platformListings.status},
-              'listingUrl', ${platformListings.listingUrl},
-              'quantity', ${platformListings.quantity}
-            )
-          ) FILTER (WHERE ${platformListings.id} IS NOT NULL),
-          '[]'
-        )`,
-      })
-        .from(products)
-        .leftJoin(platformListings, eq(products.id, platformListings.productId))
-        .where(ne(products.status, 'trashed'))
-        .groupBy(products.id, products.sku, products.titleKo, products.title, products.status, products.costPrice, products.metadata, products.sourceUrl, products.sourcePlatform, products.createdAt)
-        .orderBy(desc(products.createdAt))
-        .limit(200),
+      //   상품 목록은 product-pipeline 서비스에서 (탭·업로드 필터 + 고유 product 상태)
+      loadPipelineProducts({ status: pipelineStatusParam, uploadId: uploadIdParam, limit: 200 }),
       // 크롤 대기 데이터 (아직 상품으로 안 만든 것)
       db.select({
         id: crawlResults.id,
@@ -100,34 +71,16 @@ export async function pageRoutes(app: FastifyInstance) {
       getAllPricingSettings(),
     ]);
 
-    //   고유 상품 기준 집계: 판매중(active 1개 이상) / 판매 취소(전부 ended) / 업로드 대기(플랫폼 등록 없음 + 미가져온 crawl 행)
-    const [pipelineRows] = await db.execute(sql`
-      WITH product_state AS (
-        SELECT p.id,
-               COUNT(pl.id) FILTER (WHERE pl.status = 'active') AS active_count,
-               COUNT(pl.id) FILTER (WHERE pl.status = 'ended') AS ended_count,
-               COUNT(pl.id) AS listing_count
-        FROM products p
-        LEFT JOIN platform_listings pl ON pl.product_id = p.id
-        WHERE p.status <> 'trashed'
-        GROUP BY p.id
-      )
-      SELECT
-        (SELECT COUNT(*) FROM product_state) AS products,
-        (SELECT COUNT(*) FROM product_state WHERE active_count > 0) AS listed,
-        (SELECT COUNT(*) FROM product_state WHERE active_count = 0 AND ended_count > 0) AS ended,
-        (SELECT COUNT(*) FROM product_state WHERE listing_count = 0) AS unlisted,
-        (SELECT COUNT(*) FROM crawl_results WHERE status = 'new' AND product_id IS NULL) AS pending_crawl
-    `).then(r => r.rows as any[]);
-    const pipelineCounts = {
-      total: Number(pipelineRows?.products ?? 0) + Number(pipelineRows?.pending_crawl ?? 0),
-      listed: Number(pipelineRows?.listed ?? 0),
-      ended: Number(pipelineRows?.ended ?? 0),
-      waiting: Number(pipelineRows?.unlisted ?? 0) + Number(pipelineRows?.pending_crawl ?? 0),
-    };
+    //   고유 products.id 기준 상호 배타 집계 + 업로드 필터 목록 + 수집 데이터(미가져온 crawl) 수
+    const [pipelineCounts, uploadFilters, crawlWaiting] = await Promise.all([
+      loadPipelineCounts(uploadIdParam),
+      loadUploadFilters(10),
+      loadCrawlWaitingCount(),
+    ]);
 
-    // running job → activeJobs 변환
-    const activeJobs = activeJobRows.map(r => ({ id: r.id, ...r.job }));
+    //   진행 중 job은 최근 실행된 것만 (오래된 running job은 중단 추정 — 현재 상품 상태에 섞지 않는다)
+    const allJobs = activeJobRows.map(r => ({ id: r.id, ...r.job }));
+    const { active: activeJobs, stale: staleJobs } = splitStaleJobs(allJobs);
 
     // 헬퍼: status 맵 만들기
     const toMap = (rows: { status: string | null; count: number }[]) => {
@@ -168,7 +121,9 @@ export async function pageRoutes(app: FastifyInstance) {
         sourceUrl: p.sourceUrl,
         sourceLabel: sourceLabels[p.sourcePlatform || ''] || p.sourcePlatform || '—',
         listings: p.listings,
-        status: p.status,
+        //   서버가 계산한 고유 product 상태 (탭 숫자와 같은 규칙)
+        pipelineStatus: p.status,
+        uploadId: p.uploadId,
         costKrw: costKRW,
         priceSource,
         createdAt: p.createdAt,
@@ -237,9 +192,15 @@ export async function pageRoutes(app: FastifyInstance) {
         pipeline: pipelineCounts,
       },
       allItems,
-      // 하위 호환: 업로드 대기 탭에서 crawlItems 직접 사용
+      // 하위 호환: 수집 데이터 영역에서 crawlItems 직접 사용
       recentCrawlResults: crawlItemsWithPrice,
       activeJobs,
+      staleJobs: staleJobs.length,
+      pipeline: pipelineCounts,
+      pipelineTabs: PIPELINE_TABS,
+      uploadFilters,
+      crawlWaiting,
+      filters: { status: pipelineStatusParam, uploadId: uploadIdParam },
       releaseGuard,
     }, { layout: 'layout.eta' });
   });

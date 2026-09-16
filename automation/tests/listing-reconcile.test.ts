@@ -92,6 +92,7 @@ import {
   type ExternalListing, type InternalProduct,
 } from '../src/services/listing-reconcile.js';
 import { listingRoutes } from '../src/routes/listings.js';
+import { PIPELINE_TABS } from '../src/services/product-pipeline.js';
 import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
 import { ShopifyClient } from '../src/platforms/shopify/ShopifyClient.js';
 
@@ -315,54 +316,26 @@ describe('3. API · 플랫폼 쓰기 0', () => {
   });
 });
 
-describe('4. 화면 표시 (고유 상품 기준)', () => {
-  const render = (items: any[], pipeline: any) => new Eta({ views: path.join(process.cwd(), 'views') }).render('./dashboard', {
-    step: 0, user: { id: 'admin', name: 'Admin', isAdmin: true },
-    stats: { totalProducts: items.length, productsByStatus: {}, totalListings: 0, listingsByPlatform: {}, listingsByStatus: {}, crawlByStatus: { new: 999 }, completedCount: 777, endedCount: 5, pipeline },
-    allItems: items, recentCrawlResults: [], activeJobs: [{ id: 'old-job', status: 'running', platforms: ['ebay'], total: 10, completed: 1, failed: 0, results: [], createdAt: new Date() }],
-    releaseGuard: { shippingPricingEnabled: true, pricingDisabledCount: 0 },
-  });
-  const item = (id: number, listings: any[], type: 'product' | 'crawl' = 'product') => ({
-    type, id, sku: 'PMC-' + id, title: 't' + id, titleEn: 't', titleKo: 't', imageUrl: '', sourceUrl: '', sourceLabel: 'CSV',
-    listings: JSON.stringify(listings), status: 'active', costKrw: 0, priceSource: 'CSV_USD_PLUS_SHIPPING', createdAt: new Date(),
-    ebayPrice: 36.1, shopifyPrice: 25.4, alibabaPrice: 0, shopeePrice: 0, shippingCost: 0, ebayListingBlocked: false,
-  });
-  const live = (platform: string, id: string) => ({ id: 1, platform, price: '36.1', status: 'active', listingUrl: 'https://x/' + id, quantity: 5 });
-
-  it('2/2 판매중 · 1/2 Shopify 미연결 · 1/2 eBay 미연결 · 업로드 대기 · 연결 확인 필요', () => {
-    const html = render([
-      item(1, [live('ebay', 'e1'), live('shopify', 's1')]),
-      item(2, [live('ebay', 'e2')]),
-      item(3, [live('shopify', 's3')]),
-      item(4, []),
-      item(5, [{ id: 5, platform: 'ebay', price: '36.1', status: 'error', listingUrl: null, quantity: 5 }]),
-    ], { total: 5, waiting: 2, listed: 3, ended: 0 });
-    expect(html.match(/data-pipeline-status="(\w+)"/g)).toEqual([
-      'data-pipeline-status="BOTH"', 'data-pipeline-status="EBAY_ONLY"', 'data-pipeline-status="SHOPIFY_ONLY"',
-      'data-pipeline-status="NONE"', 'data-pipeline-status="MATCH_REQUIRED"',
-    ]);
-    expect(html).toContain('2/2 판매중');
-    expect(html).toContain('1/2 · Shopify 미연결');
-    expect(html).toContain('1/2 · eBay 미연결');
-    expect(html).toContain('연결 확인 필요');
-  });
-
-  it('탭 숫자는 고유 상품 기준 pipeline 값 사용 (listing 행 수·과거 job 카드와 무관) + 동기화 버튼', () => {
-    const html = render([item(1, [live('ebay', 'e1'), live('shopify', 's1')])], { total: 12, waiting: 4, listed: 7, ended: 1 });
-    const tab = (label: string) => html.match(new RegExp(label + ' <span class="tab-count">(\\d+)</span>'))![1];
-    expect([tab('전체'), tab('업로드 대기'), tab('업로드 완료'), tab('판매 취소')]).toEqual(['12', '4', '7', '1']);
+describe('4. 화면: 동기화 버튼 (상태 badge·탭 집계는 product-pipeline 테스트에서 검증)', () => {
+  it('상품 관리 화면에 실제 플랫폼 상태 동기화 버튼과 dry run 미리보기가 있다', () => {
+    const counts = { LISTED_BOTH: 2, EBAY_ONLY: 1, SHOPIFY_ONLY: 0, READY: 1, FAILED: 0, PROCESSING: 0, CANCELLED: 0, total: 4 };
+    const html = new Eta({ views: path.join(process.cwd(), 'views') }).render('./dashboard', {
+      step: 0, user: { id: 'admin', name: 'Admin', isAdmin: true },
+      stats: { totalProducts: 4, productsByStatus: {}, totalListings: 0, listingsByPlatform: {}, listingsByStatus: {}, crawlByStatus: {} },
+      allItems: [], recentCrawlResults: [], activeJobs: [], staleJobs: 0,
+      pipeline: counts, pipelineTabs: PIPELINE_TABS, uploadFilters: [], crawlWaiting: 0,
+      filters: { status: 'ALL', uploadId: 'ALL' },
+      releaseGuard: { shippingPricingEnabled: true, pricingDisabledCount: 0 },
+    });
     expect(html).toContain('id="btn-reconcile"');
     expect(html).toContain("fetch('/api/listings/reconcile'");
-    expect(html).toContain("body: JSON.stringify({ dryRun: true })");
+    expect(html).toContain('body: JSON.stringify({ dryRun: true })');
     expect(html).toContain('내부 DB 연결 보정 예정: ');
-    //   과거 job 카드는 그대로 보여주되 상품 상태와 섞지 않는다
-    expect(html).toContain('old-job');
   });
 
   it('이미 가져온 crawl 행은 업로드 대기 목록·재가져오기 상태 되돌림에서 제외', () => {
     const pages = fs.readFileSync(path.join(process.cwd(), 'src/routes/pages.ts'), 'utf-8');
     expect(pages).toContain("and(eq(crawlResults.status, 'new'), isNull(crawlResults.productId))");
-    expect(pages).toContain('pipeline: pipelineCounts');
     const importRoute = fs.readFileSync(path.join(process.cwd(), 'src/routes/crawl-results.ts'), 'utf-8');
     expect(importRoute).toContain("status: existing.productId ? existing.status : 'new'");
   });
