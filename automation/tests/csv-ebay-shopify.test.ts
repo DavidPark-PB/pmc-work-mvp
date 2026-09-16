@@ -396,6 +396,7 @@ describe('1. 신규 CSV 플랫폼 기본 선택 · 확인창', () => {
       stats: { totalProducts: items.length, productsByStatus: {}, totalListings: 0, listingsByPlatform: {}, listingsByStatus: {}, crawlByStatus: {}, completedCount: 0, endedCount: 0 },
       allItems: items, recentCrawlResults: [], activeJobs: [],
       releaseGuard: { shippingPricingEnabled: pricingEnabled, pricingDisabledCount: 0 },
+      view: 'all', filters: { status: 'ALL', uploadId: 'ALL', view: 'all' }, pipeline: { total: 2 }, pipelineTabs: [], uploadBatches: [], uploadFilters: [], filteredProductIds: [], crawlWaiting: 0, staleJobs: 0,
     });
   }
 

@@ -178,36 +178,71 @@ export interface UploadFilterOption {
   uploadId: string;
   filename: string;
   createdAt: Date | string;
+  /** CSV 원본 행 수 */
   rowCount: number;
+  /** DB로 가져온 행 수 (업로드 기록) */
   importedCount: number;
+  /** 현재 남아 있는 고유 상품 수 */
   productCount: number;
+  /** 가져오지 않은(선택하지 않은) 원본 행 수 */
+  notSelectedRows: number;
+  /** 등록까지 끝난 상품 (양쪽 완료) */
+  listedBoth: number;
+  /** 아직 처리할 일이 남은 상품 (미등록 + 실패 + 한쪽만) */
+  remaining: number;
   counts: PipelineCounts;
 }
 
-/** CSV 업로드별 필터 목록 + 업로드별 상태 요약 (고유 product 기준) */
+/** CSV 업로드(작업 묶음) 목록 + 업로드별 상태 요약 — 업로드마다 따로 세지 않고 한 번에 집계 */
 export async function loadUploadFilters(limit = 10): Promise<UploadFilterOption[]> {
-  const uploads = await db.execute(sql`
+  const result = await db.execute(sql`
+    WITH s AS (
+      SELECT p.id, p.metadata->'csvImport'->>'uploadId' AS upload_id,
+        bool_or(pl.platform = 'ebay' AND pl.status = 'active' AND pl.platform_item_id IS NOT NULL) AS ebay_active,
+        bool_or(pl.platform = 'shopify' AND pl.status = 'active' AND pl.platform_item_id IS NOT NULL) AS shopify_active,
+        bool_or(pl.platform IN ('ebay','shopify') AND pl.status = 'ended') AS has_ended,
+        bool_or(pl.platform IN ('ebay','shopify') AND pl.status = 'error') AS has_error,
+        bool_or(pl.platform IN ('ebay','shopify') AND pl.status = 'pending'
+          AND GREATEST(pl.updated_at, pl.created_at) > NOW() - (${PROCESSING_WINDOW_MS / 1000} || ' seconds')::interval) AS processing
+      FROM products p
+      LEFT JOIN platform_listings pl ON pl.product_id = p.id
+      WHERE p.status <> 'trashed' AND p.metadata->'csvImport'->>'uploadId' IS NOT NULL
+      GROUP BY p.id, p.metadata->'csvImport'->>'uploadId'
+    ), per_upload AS (
+      SELECT upload_id, ${STATUS_CASE} AS status, count(*)::int AS count FROM s GROUP BY 1, 2
+    )
     SELECT u.upload_id AS "uploadId", u.filename, u.created_at AS "createdAt",
-           u.row_count AS "rowCount", u.imported_count AS "importedCount"
+           u.row_count AS "rowCount", u.imported_count AS "importedCount",
+           COALESCE(json_agg(json_build_object('status', per_upload.status, 'count', per_upload.count)) FILTER (WHERE per_upload.status IS NOT NULL), '[]') AS breakdown
     FROM csv_uploads u
-    WHERE EXISTS (SELECT 1 FROM products p WHERE p.metadata->'csvImport'->>'uploadId' = u.upload_id AND p.status <> 'trashed')
+    JOIN per_upload ON per_upload.upload_id = u.upload_id
+    GROUP BY u.upload_id, u.filename, u.created_at, u.row_count, u.imported_count
     ORDER BY u.created_at DESC
     LIMIT ${limit}`);
 
-  const out: UploadFilterOption[] = [];
-  for (const upload of uploads.rows as any[]) {
-    const counts = await loadPipelineCounts(upload.uploadId);
-    out.push({
+  return (result.rows as any[]).map(upload => {
+    const counts = Object.fromEntries(PIPELINE_STATUSES.map(st => [st, 0])) as PipelineCounts;
+    let total = 0;
+    const breakdown = typeof upload.breakdown === 'string' ? JSON.parse(upload.breakdown) : upload.breakdown;
+    for (const row of breakdown as { status: PipelineStatus; count: number }[]) {
+      counts[row.status] = Number(row.count);
+      total += Number(row.count);
+    }
+    counts.total = total;
+    const rowCount = Number(upload.rowCount ?? 0);
+    return {
       uploadId: upload.uploadId,
       filename: upload.filename,
       createdAt: upload.createdAt,
-      rowCount: Number(upload.rowCount ?? 0),
+      rowCount,
       importedCount: Number(upload.importedCount ?? 0),
-      productCount: counts.total,
+      productCount: total,
+      notSelectedRows: Math.max(0, rowCount - total),
+      listedBoth: counts.LISTED_BOTH,
+      remaining: counts.READY + counts.FAILED + counts.EBAY_ONLY + counts.SHOPIFY_ONLY + counts.PROCESSING,
       counts,
-    });
-  }
-  return out;
+    };
+  });
 }
 
 /** 진행 중으로 볼 수 있는 job만 (오래된 running job은 중단 추정으로 분리) */
@@ -220,4 +255,19 @@ export function splitStaleJobs<T extends { status: string; createdAt: Date | str
     else stale.push(job);
   }
   return { active, stale };
+}
+
+/**
+ * 현재 필터(업로드 + 상태)에 해당하는 상품 id 전체 — 화면에 보이지 않는 행까지 한 번에 선택/등록하기 위한 목록
+ * 한 CSV 작업 단위를 넘지 않도록 상한을 둔다 (기본 2,000)
+ */
+export async function loadFilteredProductIds(options: { status?: string | null; uploadId?: string | null; limit?: number } = {}): Promise<number[]> {
+  const limit = options.limit ?? 2000;
+  const status = options.status && options.status !== 'ALL' ? options.status : null;
+  const result = await db.execute(sql`${productStateCte(options.uploadId)}
+    SELECT s.id FROM s
+    ${status ? sql`WHERE ${STATUS_CASE} = ${status}` : sql``}
+    ORDER BY s.id DESC
+    LIMIT ${limit}`);
+  return (result.rows as { id: number }[]).map(r => Number(r.id));
 }

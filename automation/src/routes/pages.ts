@@ -10,7 +10,7 @@ import { buildImportPreview, detectFixedHeaderMapping } from '../lib/csv-parser.
 import { crawlDisplayCsv, readProductCsvMetadata, resolveDisplayPrices } from '../services/listing-price.js';
 import { getShippingPricingConfig, publicShippingPricingConfig } from '../lib/shipping-config.js';
 import { readShippingPolicySnapshot } from '../services/ebay-shipping-policies.js';
-import { loadCrawlWaitingCount, loadPipelineCounts, loadPipelineProducts, loadUploadFilters, splitStaleJobs, PIPELINE_TABS, PIPELINE_STATUSES } from '../services/product-pipeline.js';
+import { loadCrawlWaitingCount, loadFilteredProductIds, loadPipelineCounts, loadPipelineProducts, loadUploadFilters, splitStaleJobs, PIPELINE_TABS, PIPELINE_STATUSES } from '../services/product-pipeline.js';
 import { jobStore } from '../lib/job-store.js';
 import { getUser } from '../lib/user-session.js';
 import fs from 'fs';
@@ -19,9 +19,12 @@ import path from 'path';
 export async function pageRoutes(app: FastifyInstance) {
   // 대시보드 홈
   app.get('/', async (request, reply) => {
-    const { status: statusQuery, uploadId: uploadIdQuery } = request.query as { status?: string; uploadId?: string };
+    const { status: statusQuery, uploadId: uploadIdQuery, view: viewQuery } = request.query as { status?: string; uploadId?: string; view?: string };
     const pipelineStatusParam = statusQuery && (PIPELINE_STATUSES as readonly string[]).includes(statusQuery) ? statusQuery : 'ALL';
     const uploadIdParam = uploadIdQuery && uploadIdQuery.trim() ? uploadIdQuery.trim() : 'ALL';
+    //   기본 화면 = 최근 CSV 작업 목록. uploadId를 고르면 그 작업 1건, view=all 은 전체 상품(참고용)
+    const view: 'batches' | 'batch' | 'all' = uploadIdParam !== 'ALL' ? 'batch' : (viewQuery === 'all' ? 'all' : 'batches');
+    const showProducts = view !== 'batches';
 
     const [
       productsByStatus,
@@ -42,7 +45,7 @@ export async function pageRoutes(app: FastifyInstance) {
       db.select({ status: crawlResults.status, count: sql<number>`count(*)` })
         .from(crawlResults).groupBy(crawlResults.status),
       //   상품 목록은 product-pipeline 서비스에서 (탭·업로드 필터 + 고유 product 상태)
-      loadPipelineProducts({ status: pipelineStatusParam, uploadId: uploadIdParam, limit: 200 }),
+      showProducts ? loadPipelineProducts({ status: pipelineStatusParam, uploadId: uploadIdParam, limit: 200 }) : Promise.resolve([]),
       // 크롤 대기 데이터 (아직 상품으로 안 만든 것)
       db.select({
         id: crawlResults.id,
@@ -64,19 +67,22 @@ export async function pageRoutes(app: FastifyInstance) {
         //   이미 상품으로 가져온 행은 업로드 대기가 아니다 (재가져오기로 status가 'new'로 남은 행 제외)
         .where(and(eq(crawlResults.status, 'new'), isNull(crawlResults.productId)))
         .orderBy(desc(crawlResults.crawledAt))
-        .limit(200),
+        //   수집 데이터는 참고용 전체 화면에서만 표시 (CSV 작업 화면에는 섞지 않는다)
+        .limit(view === 'all' ? 200 : 0),
       // running job만 조회 (전체 로드 방지)
       jobStore.getRunning(),
       // 가격 설정 1회 조회 (N+1 방지)
       getAllPricingSettings(),
     ]);
 
-    //   고유 products.id 기준 상호 배타 집계 + 업로드 필터 목록 + 수집 데이터(미가져온 crawl) 수
-    const [pipelineCounts, uploadFilters, crawlWaiting] = await Promise.all([
+    //   고유 products.id 기준 상호 배타 집계 + CSV 작업 묶음 목록 + (참고용) 수집 데이터 수
+    const [pipelineCounts, uploadBatches, crawlWaiting, filteredProductIds] = await Promise.all([
       loadPipelineCounts(uploadIdParam),
-      loadUploadFilters(10),
+      loadUploadFilters(12),
       loadCrawlWaitingCount(),
+      showProducts ? loadFilteredProductIds({ status: pipelineStatusParam, uploadId: uploadIdParam }) : Promise.resolve([]),
     ]);
+    const selectedBatch = uploadBatches.find(b => b.uploadId === uploadIdParam) ?? null;
 
     //   진행 중 job은 최근 실행된 것만 (오래된 running job은 중단 추정 — 현재 상품 상태에 섞지 않는다)
     const allJobs = activeJobRows.map(r => ({ id: r.id, ...r.job }));
@@ -198,9 +204,13 @@ export async function pageRoutes(app: FastifyInstance) {
       staleJobs: staleJobs.length,
       pipeline: pipelineCounts,
       pipelineTabs: PIPELINE_TABS,
-      uploadFilters,
+      uploadFilters: uploadBatches,
+      uploadBatches,
+      selectedBatch,
+      filteredProductIds,
       crawlWaiting,
-      filters: { status: pipelineStatusParam, uploadId: uploadIdParam },
+      view,
+      filters: { status: pipelineStatusParam, uploadId: uploadIdParam, view },
       releaseGuard,
     }, { layout: 'layout.eta' });
   });

@@ -496,6 +496,8 @@ describe('8. UI 안내', () => {
       stats: { totalProducts: 0, productsByStatus: {}, totalListings: 0, listingsByPlatform: {}, listingsByStatus: {}, crawlByStatus: { new: items.length }, completedCount: 0, endedCount: 0 },
       allItems: items, recentCrawlResults: items, activeJobs: [],
       releaseGuard: { shippingPricingEnabled: shipping.enabled, pricingDisabledCount: items.filter(i => i.ebayBlockCode === 'SHIPPING_PRICING_DISABLED').length },
+      //   상품 표는 CSV 작업/전체 화면에서만 렌더링 (기본 화면은 CSV 작업 목록)
+      view: 'all', filters: { status: 'ALL', uploadId: 'ALL', view: 'all' }, pipeline: { total: items.length }, pipelineTabs: [], uploadBatches: [], uploadFilters: [], filteredProductIds: [], crawlWaiting: 0, staleJobs: 0,
     });
   }
 

@@ -39,8 +39,13 @@
   const filters = it.filters || { status: 'ALL', uploadId: 'ALL' };
   const crawlWaiting = it.crawlWaiting || 0;
   const tabCount = (key) => (key === 'ALL' ? pipeline.total : (pipeline[key] || 0));
-  const filterHref = (status, uploadId) => '/?status=' + encodeURIComponent(status) + (uploadId && uploadId !== 'ALL' ? '&uploadId=' + encodeURIComponent(uploadId) : '');
-  const selectedUpload = uploadFilters.find(u => u.uploadId === filters.uploadId);
+  const view = it.view || 'batches';
+  const uploadBatches = it.uploadBatches || [];
+  const selectedUpload = it.selectedBatch || uploadFilters.find(u => u.uploadId === filters.uploadId);
+  const filteredProductIds = it.filteredProductIds || [];
+  const filterHref = (status, uploadId) => '/?status=' + encodeURIComponent(status)
+    + (uploadId && uploadId !== 'ALL' ? '&uploadId=' + encodeURIComponent(uploadId) : (view === 'all' ? '&view=all' : ''));
+  const batchLabel = (u) => new Date(u.createdAt).toLocaleDateString('ko-KR') + ' · ' + u.filename;
 
   // 상태 라벨 매핑
   const statusLabel = { error: '실패', draft: '대기', pending: '검수중', ended: '종료' };
@@ -75,22 +80,56 @@
   </div>
 
   <%/* ── 탭 바 ── */%>
+  <% if (view === 'batches') { %>
+  <div class="batch-list" data-testid="batch-list">
+    <p class="text-muted batch-intro">CSV 업로드 1건이 등록 작업 1건입니다. 작업을 열면 그 CSV 상품만 보고 한 번에 등록할 수 있습니다.</p>
+    <% if (uploadBatches.length === 0) { %>
+      <div class="empty-state"><i class="ti ti-file-upload"></i><p>아직 CSV 작업이 없습니다. CSV를 업로드해 작업을 시작하세요.</p></div>
+    <% } %>
+    <% uploadBatches.forEach((u) => { %>
+    <div class="batch-card" data-testid="batch-card" data-upload-id="<%= u.uploadId %>">
+      <div class="batch-card-main">
+        <div class="batch-card-title"><%= u.filename %></div>
+        <div class="batch-card-meta">
+          <%= new Date(u.createdAt).toLocaleString('ko-KR') %> · 원본 <%= u.rowCount %>행 · 가져온 상품 <%= u.productCount %>개 · 선택하지 않은 행 <%= u.notSelectedRows %>개
+        </div>
+        <div class="batch-card-counts">
+          <span class="badge badge-success">양쪽 완료 <%= u.counts.LISTED_BOTH %></span>
+          <span class="badge badge-pending">eBay만 <%= u.counts.EBAY_ONLY %></span>
+          <span class="badge badge-pending">Shopify만 <%= u.counts.SHOPIFY_ONLY %></span>
+          <span class="badge badge-draft">미등록 <%= u.counts.READY %></span>
+          <span class="badge badge-error">실패 <%= u.counts.FAILED %></span>
+          <% if (u.counts.PROCESSING > 0) { %><span class="badge badge-pending">처리 중 <%= u.counts.PROCESSING %></span><% } %>
+          <% if (u.counts.CANCELLED > 0) { %><span class="badge badge-ended">판매 취소 <%= u.counts.CANCELLED %></span><% } %>
+        </div>
+      </div>
+      <div class="batch-card-actions">
+        <div class="batch-card-remaining"><%= u.remaining === 0 ? '남은 작업 없음' : '남은 작업 ' + u.remaining + '개' %></div>
+        <a class="btn btn-primary btn-sm" href="<%= filterHref('ALL', u.uploadId) %>">작업 열기</a>
+      </div>
+    </div>
+    <% }) %>
+    <p class="batch-footnote">
+      <a href="/?view=all">전체 누적 상품 보기 (참고용)</a> · 아직 상품으로 가져오지 않은 수집 데이터는 <a href="/upload-csv">CSV 업로드 화면</a>에서 처리합니다.
+    </p>
+  </div>
+  <% } %>
+
+  <% if (view !== 'batches') { %>
   <div class="pipeline-filter">
-    <label for="upload-filter">CSV 업로드</label>
-    <select id="upload-filter" class="select-sm" onchange="applyUploadFilter(this.value)">
-      <option value="ALL"<%~ filters.uploadId === 'ALL' ? ' selected' : '' %>>전체 업로드</option>
-      <% uploadFilters.forEach((u) => { %>
-      <option value="<%= u.uploadId %>"<%~ filters.uploadId === u.uploadId ? ' selected' : '' %>><%= new Date(u.createdAt).toLocaleDateString('ko-KR') %> · <%= u.filename %> · 상품 <%= u.productCount %>개</option>
-      <% }) %>
-      <option value="LEGACY"<%~ filters.uploadId === 'LEGACY' ? ' selected' : '' %>>기존 레거시 상품 (CSV 아님)</option>
-    </select>
     <% if (selectedUpload) { %>
-    <span class="upload-summary" data-testid="upload-summary">
-      <%= selectedUpload.uploadId %> · 원본 <%= selectedUpload.rowCount %>행 · 가져온 상품 <%= selectedUpload.productCount %>개 ·
-      양쪽 <%= selectedUpload.counts.LISTED_BOTH %> · eBay만 <%= selectedUpload.counts.EBAY_ONLY %> · Shopify만 <%= selectedUpload.counts.SHOPIFY_ONLY %> ·
-      미등록 <%= selectedUpload.counts.READY %> · 실패 <%= selectedUpload.counts.FAILED %> · 처리 중 <%= selectedUpload.counts.PROCESSING %> ·
-      판매 취소 <%= selectedUpload.counts.CANCELLED %> · 선택하지 않은 원본 행 <%= Math.max(0, selectedUpload.rowCount - selectedUpload.productCount) %>개
-    </span>
+      <a class="btn btn-sm" href="/"><i class="ti ti-arrow-left"></i> CSV 작업 목록</a>
+      <strong data-testid="batch-title"><%= batchLabel(selectedUpload) %></strong>
+      <span class="upload-summary" data-testid="upload-summary">
+        원본 <%= selectedUpload.rowCount %>행 · 가져온 상품 <%= selectedUpload.productCount %>개 ·
+        양쪽 <%= selectedUpload.counts.LISTED_BOTH %> · eBay만 <%= selectedUpload.counts.EBAY_ONLY %> · Shopify만 <%= selectedUpload.counts.SHOPIFY_ONLY %> ·
+        미등록 <%= selectedUpload.counts.READY %> · 실패 <%= selectedUpload.counts.FAILED %> · 처리 중 <%= selectedUpload.counts.PROCESSING %> ·
+        판매 취소 <%= selectedUpload.counts.CANCELLED %> · 선택하지 않은 원본 행 <%= selectedUpload.notSelectedRows %>개
+      </span>
+    <% } else { %>
+      <a class="btn btn-sm" href="/"><i class="ti ti-arrow-left"></i> CSV 작업 목록</a>
+      <strong>전체 누적 상품 (참고용)</strong>
+      <span class="text-muted">이 화면은 과거 상품까지 모두 포함합니다. 등록 작업은 CSV 작업 화면에서 진행하세요.</span>
     <% } %>
   </div>
 
@@ -100,7 +139,8 @@
     <% }) %>
   </div>
 
-  <%/* ════════ 수집 데이터 · DB 가져오기 대기 (상품 파이프라인과 분리) ════════ */%>
+  <%/* ════════ 수집 데이터 · DB 가져오기 대기 (참고용 전체 화면에서만) ════════ */%>
+  <% if (view === 'all') { %>
   <div class="crawl-waiting-header">
     <div>
       <strong>수집 데이터 · DB 가져오기 대기</strong>
@@ -218,6 +258,8 @@
     <% } %>
   </div>
 
+  <% } %>
+
   <%/* ════════ 상품 파이프라인 (고유 product) ════════ */%>
   <div id="tab-all" class="tab-panel">
     <div class="action-bar action-bar-disabled" id="all-action-bar">
@@ -235,8 +277,16 @@
           <div><strong>배송비 계산 준비 중</strong><br>현재는 상품 검수와 가져오기만 가능합니다.<br>배송비 반영 전에는 eBay 등록이 차단됩니다.</div>
         </div>
         <% } %>
+        <% if (filteredProductIds.length > 0) { %>
+        <button class="btn btn-sm" id="btn-select-filtered" onclick="selectAllFiltered()" data-count="<%= filteredProductIds.length %>" title="현재 탭의 상품을 모두 선택합니다 (화면에 보이지 않는 행 포함)">
+          <i class="ti ti-checkbox"></i> 이 탭 전체 선택 (<%= filteredProductIds.length %>개)
+        </button>
+        <button class="btn btn-primary btn-sm" id="btn-upload-filtered" onclick="uploadFiltered()" title="현재 탭의 상품 전체를 eBay → Shopify 순서로 등록합니다">
+          <i class="ti ti-rocket"></i> 이 탭 전체 등록 (<%= filteredProductIds.length %>개)
+        </button>
+        <% } %>
         <button class="btn btn-primary btn-sm" onclick="uploadSelected('all')">
-          <i class="ti ti-upload"></i> 업로드
+          <i class="ti ti-upload"></i> 선택 업로드
         </button>
         <button class="btn btn-danger btn-sm" onclick="deleteSelected('all')">
           <i class="ti ti-trash"></i> 삭제
@@ -430,6 +480,7 @@
     </div>
     <% } %>
   </div>
+  <% } %>
 </div>
 
 <style>
@@ -489,6 +540,15 @@
 .upload-summary { color: #475569; }
 a.tab-item { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
 .crawl-waiting-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 16px 0 8px; }
+.batch-list { display: flex; flex-direction: column; gap: 8px; }
+.batch-intro { font-size: 0.8125rem; margin: 0 0 4px; }
+.batch-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 16px; }
+.batch-card-title { font-weight: 600; }
+.batch-card-meta { color: #64748b; font-size: 0.8125rem; margin: 2px 0 6px; }
+.batch-card-counts { display: flex; gap: 6px; flex-wrap: wrap; }
+.batch-card-actions { text-align: right; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.batch-card-remaining { font-size: 0.8125rem; color: #475569; }
+.batch-footnote { font-size: 0.8125rem; color: #64748b; margin: 12px 0 0; }
 .stale-jobs { font-size: 0.8125rem; color: #64748b; margin: 4px 0 12px; }
 .csv-listing-platforms { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.875rem; }
 .csv-listing-platforms legend { font-size: 0.75rem; color: #64748b; padding: 0 4px; }
@@ -787,12 +847,37 @@ function closeTranslateModal() {
   location.reload();
 }
 
-//   CSV 업로드 필터 (상태 탭은 링크로 서버 필터)
-function applyUploadFilter(uploadId) {
-  const params = new URLSearchParams(window.location.search);
-  params.set('uploadId', uploadId);
-  if (!params.get('status')) params.set('status', 'ALL');
-  window.location.href = '/?' + params.toString();
+//   현재 탭(업로드 + 상태)에 해당하는 상품 id — 화면에 보이지 않는 행 포함
+const FILTERED_PRODUCT_IDS = <%~ JSON.stringify(it.filteredProductIds || []) %>;
+
+//   이 탭 전체 선택 (체크박스 일괄)
+function selectAllFiltered() {
+  const panel = document.getElementById('tab-all');
+  panel.querySelectorAll('.row-check').forEach(cb => { cb.checked = true; });
+  updateActionBar('all');
+}
+
+//   이 탭 전체 등록 — 수백 개를 하나씩 체크하지 않고 한 번에 (신규 CSV는 eBay → Shopify)
+async function uploadFiltered() {
+  if (FILTERED_PRODUCT_IDS.length === 0) return;
+  const btn = document.getElementById('btn-upload-filtered');
+  const items = FILTERED_PRODUCT_IDS.map(() => ({ csv: true, ebayReady: true, ebayListed: false }));
+  const plan = await confirmListingPlan(items, window.ListingPlan ? window.ListingPlan.defaultCsvPlatforms() : ['ebay', 'shopify']);
+  if (!plan) return;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> 등록 시작...';
+  try {
+    const body = { productIds: FILTERED_PRODUCT_IDS, platforms: plan.csvPlatforms || ['ebay', 'shopify'], dryRun: false };
+    if (plan.csvPlatforms) body.csvPlatforms = plan.csvPlatforms;
+    const res = await fetch('/api/listings/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (data.jobId) window.location.href = '/upload?jobId=' + data.jobId;
+    else { alert(data.error || '등록 실패'); btn.disabled = false; btn.innerHTML = '<i class="ti ti-rocket"></i> 이 탭 전체 등록'; }
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ti ti-rocket"></i> 이 탭 전체 등록';
+  }
 }
 
 //   수집 데이터(아직 상품으로 가져오지 않은 crawl 행) 영역 열기/닫기

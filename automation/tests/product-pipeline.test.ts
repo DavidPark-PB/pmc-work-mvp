@@ -88,9 +88,12 @@ describe('2. 화면: 탭 · 필터 · 영역 분리', () => {
     ],
     recentCrawlResults: [], activeJobs: [], staleJobs: 8,
     pipeline: counts, pipelineTabs: PIPELINE_TABS, uploadFilters: [
-      { uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, counts },
+      { uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, notSelectedRows: 492, listedBoth: 185, remaining: 16, counts },
     ],
-    crawlWaiting: 489, filters: { status: 'ALL', uploadId: 'ALL' },
+    crawlWaiting: 489, filters: { status: 'ALL', uploadId: 'up-1', view: 'batch' }, view: 'batch',
+    uploadBatches: [{ uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, notSelectedRows: 492, listedBoth: 185, remaining: 16, counts }],
+    selectedBatch: { uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, notSelectedRows: 492, listedBoth: 185, remaining: 16, counts },
+    filteredProductIds: [1, 2, 3, 4, 5, 6],
     releaseGuard: { shippingPricingEnabled: true, pricingDisabledCount: 0 },
     ...data,
   });
@@ -104,9 +107,9 @@ describe('2. 화면: 탭 · 필터 · 영역 분리', () => {
     const sum = tabs.slice(1).reduce((a, t) => a + t[2], 0);
     expect(sum).toBe(total);
     expect(total).toBe(201);
-    //   탭은 서버 필터 링크
-    expect(html).toContain('href="/?status=LISTED_BOTH"');
-    expect(html).toContain('href="/?status=FAILED"');
+    //   탭은 CSV 작업(uploadId)을 유지한 서버 필터 링크
+    expect(html).toContain('href="/?status=LISTED_BOTH&amp;uploadId=up-1"');
+    expect(html).toContain('href="/?status=FAILED&amp;uploadId=up-1"');
   });
 
   it('행 상태 badge는 서버 상태를 그대로 쓰고, 부분 성공은 플랫폼 오류 badge를 따로 보여준다', () => {
@@ -123,22 +126,46 @@ describe('2. 화면: 탭 · 필터 · 영역 분리', () => {
     expect(html).toContain('미등록');
   });
 
-  it('CSV 업로드 필터와 업로드별 요약 (선택 시)', () => {
-    const html = render({ filters: { status: 'ALL', uploadId: 'up-1' } });
-    expect(html).toContain('id="upload-filter"');
-    expect(html).toContain('전체 업로드');
-    expect(html).toContain('기존 레거시 상품 (CSV 아님)');
+  it('CSV 작업 화면: 이 작업 요약 + 작업 목록으로 돌아가기', () => {
+    const html = render();
+    expect(html).toContain('data-testid="batch-title"');
     expect(html).toContain('toybox.csv');
+    expect(html).toContain('CSV 작업 목록');
     const summary = html.match(/data-testid="upload-summary"[\s\S]*?<\/span>/)![0];
     for (const part of ['원본 693행', '가져온 상품 201개', '양쪽 185', 'eBay만 3', 'Shopify만 0', '미등록 1', '실패 12', '처리 중 0', '판매 취소 0', '선택하지 않은 원본 행 492개']) {
       expect(summary).toContain(part);
     }
-    //   필터를 유지한 채 상태 탭 이동
     expect(html).toContain('href="/?status=EBAY_ONLY&amp;uploadId=up-1"');
   });
 
-  it('수집 데이터(crawl)는 상품 파이프라인과 분리 · 과거 중단 job은 현재 작업에서 제외', () => {
+  it('기본 화면은 최근 CSV 작업 목록 — 전역 업로드 대기 탭·누적 상품 목록 없음', () => {
+    const html = render({ view: 'batches', filters: { status: 'ALL', uploadId: 'ALL', view: 'batches' }, selectedBatch: null, filteredProductIds: [] });
+    expect(html).toContain('data-testid="batch-list"');
+    const card = html.match(/data-testid="batch-card"[\s\S]*?작업 열기/)![0];
+    for (const part of ['toybox.csv', '원본 693행', '가져온 상품 201개', '선택하지 않은 행 492개', '양쪽 완료 185', 'eBay만 3', '미등록 1', '실패 12', '남은 작업 16개']) {
+      expect(card).toContain(part);
+    }
+    expect(card).toContain('href="/?status=ALL&amp;uploadId=up-1"');
+    //   기본 화면에는 상태 탭·상품 표·수집 데이터 영역이 없다 (누적 숫자 노출 금지)
+    expect(html).not.toContain('data-tab-status=');
+    expect(html).not.toContain('id="tab-all"');
+    expect(html).not.toContain('수집 데이터 · DB 가져오기 대기');
+    expect(html).not.toMatch(/업로드 대기 <span class="tab-count"/);
+    expect(html).toContain('href="/?view=all"');
+    expect(html).toContain('href="/upload-csv"');
+  });
+
+  it('작업 화면에서 수백 개를 하나씩 체크하지 않고 탭 전체를 선택·등록할 수 있다', () => {
     const html = render();
+    expect(html).toContain('id="btn-select-filtered"');
+    expect(html).toMatch(/이 탭 전체 선택 \(6개\)/);
+    expect(html).toMatch(/이 탭 전체 등록 \(6개\)/);
+    expect(html).toContain('const FILTERED_PRODUCT_IDS = [1,2,3,4,5,6];');
+    expect(html).toContain("body.csvPlatforms = plan.csvPlatforms");
+  });
+
+  it('수집 데이터(crawl)는 참고용 전체 화면에만 · 과거 중단 job은 현재 작업에서 제외', () => {
+    const html = render({ view: 'all', filters: { status: 'ALL', uploadId: 'ALL', view: 'all' }, selectedBatch: null });
     expect(html).toContain('수집 데이터 · DB 가져오기 대기');
     const crawlCount = html.match(/data-testid="crawl-waiting-count">(\d+)개/)![1];
     expect(crawlCount).toBe('489');
@@ -153,6 +180,7 @@ describe('2. 화면: 탭 · 필터 · 영역 분리', () => {
     const view = fs.readFileSync(path.join(process.cwd(), 'views/dashboard.eta'), 'utf-8');
     expect(view).not.toMatch(/loadCompleted|loadEnded|completed-status-filter|ended-platform-filter/);
     expect(view).not.toMatch(/crawlByStatus\['new'\]/);
+    expect(view).not.toContain('업로드 대기 <span class="tab-count">');
     const pages = fs.readFileSync(path.join(process.cwd(), 'src/routes/pages.ts'), 'utf-8');
     expect(pages).toContain('loadPipelineCounts(uploadIdParam)');
     expect(pages).toContain('loadPipelineProducts({ status: pipelineStatusParam');
