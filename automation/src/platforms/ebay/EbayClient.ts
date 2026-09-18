@@ -513,18 +513,20 @@ export class EbayClient implements PlatformAdapter {
   // ─── 추가 메서드 ──────────────────────────────────────────
 
   /** getActiveListings / getActiveSkuIndex 페이지 사이 대기 (ms) — 테스트는 0 */
-  static activeListPageDelayMs = 500;
+  static activeListPageDelayMs = 200;
 
   /**
    * 활성 리스팅 전체 페이지 조회 (READ-ONLY GetMyeBaySelling ActiveList)
    *
    * 응답에는 ActiveList 외에 SoldList·UnsoldList도 함께 오고 그 항목은 페이지마다 반복된다.
    * 따라서 반드시 ActiveList 구간만 파싱하고 ItemID로 중복을 제거한다 (이전: 전체 응답 파싱 → 활성 수가 약 3배).
-   * 결과가 불확실하면(Ack 실패, ActiveList 없음, 같은 페이지 반복, API 총 건수 불일치) 예외 — 호출자는 개수를 신뢰하지 않는다.
+   * 응답이 깨졌으면(Ack 실패, ActiveList 없음, 같은 페이지 반복) 예외.
+   * 읽는 도중 판매 종료·신규 노출로 총 건수가 달라지는 것은 정상 상황이라 예외로 막지 않고 stale=true 로 알린다.
    */
-  private async fetchActiveListPages(): Promise<{ items: string[]; totalEntries: number; totalPages: number }> {
+  private async fetchActiveListPages(): Promise<{ items: string[]; totalEntries: number; totalPages: number; stale: boolean }> {
     const items: string[] = [];
     const seenItemIds = new Set<string>();
+    let stale = false;
     let previousFirstItemId: string | null = null;
     let totalEntries: number | null = null;
     let totalPages = 1;
@@ -551,7 +553,12 @@ export class EbayClient implements PlatformAdapter {
       const entries = parseInt(this.extractXmlValue(activeList, 'TotalNumberOfEntries'), 10);
       if (!Number.isInteger(pages) || !Number.isInteger(entries)) throw new Error('GetMyeBaySelling 페이지 정보가 없습니다');
       if (totalEntries === null) { totalEntries = entries; totalPages = pages; }
-      else if (totalEntries !== entries || totalPages !== pages) throw new Error('확인 중 eBay 활성 리스팅 수가 바뀌었습니다');
+      else if (totalEntries !== entries || totalPages !== pages) {
+        //   읽는 중 목록이 바뀜 (판매 종료·신규 노출) — 중단하지 않고 최신 값으로 계속, 결과는 stale 로 표시
+        stale = true;
+        totalEntries = entries;
+        totalPages = pages;
+      }
       if (pageNumber > totalPages) break;
 
       const pageItems = [...activeList.matchAll(/<Item>([\s\S]*?)<\/Item>/g)].map(m => m[1]);
@@ -576,32 +583,36 @@ export class EbayClient implements PlatformAdapter {
       if (EbayClient.activeListPageDelayMs > 0) await new Promise(r => setTimeout(r, EbayClient.activeListPageDelayMs));
     }
 
-    //   API 총 건수와 고유 ItemID 수가 다르면 개수를 신뢰할 수 없다 (fail closed)
     if (totalEntries === null) throw new Error('GetMyeBaySelling 응답이 없습니다');
-    if (items.length !== totalEntries) {
-      throw new Error(`eBay 활성 리스팅 수 불일치 (고유 ItemID ${items.length} / API 전체 ${totalEntries})`);
-    }
-    return { items, totalEntries, totalPages };
+    //   고유 ItemID 수와 API 총 건수가 다르면 그 조회분은 완전하지 않다 (호출자가 판단)
+    if (items.length !== totalEntries) stale = true;
+    return { items, totalEntries, totalPages, stale };
   }
 
   /** 활성 리스팅 조회 (전체 페이지, 고유 ItemID 기준) */
   async getActiveListings(): Promise<{ itemId: string; sku: string; title: string; price: string; quantity: string }[]> {
-    const { items } = await this.fetchActiveListPages();
-    return items.map(itemXml => ({
+    return (await this.getActiveListingsWithMeta()).items;
+  }
+
+  /** 활성 리스팅 + 조회 완전성 (stale=true 면 읽는 중 목록이 바뀌어 일부가 빠졌을 수 있음) */
+  async getActiveListingsWithMeta(): Promise<{ items: { itemId: string; sku: string; title: string; price: string; quantity: string }[]; totalEntries: number; stale: boolean }> {
+    const { items, totalEntries, stale } = await this.fetchActiveListPages();
+    const mapped = items.map(itemXml => ({
       itemId: this.extractXmlValue(itemXml, 'ItemID'),
       sku: this.extractXmlValue(itemXml, 'SKU'),
       title: this.extractXmlValue(itemXml, 'Title'),
       price: this.extractXmlValueWithAttributes(itemXml, 'CurrentPrice'),
       quantity: this.extractXmlValue(itemXml, 'Quantity'),
     }));
+    return { items: mapped, totalEntries, stale };
   }
 
   /**
    * 중복 등록 방지용 활성 리스팅 SKU(Custom Label) 색인 — 같은 READ-ONLY 조회 결과 사용
    * 반환: SKU → Item ID 목록 (같은 SKU가 2개 이상이면 호출자가 자동 연결하지 않는다)
    */
-  async getActiveSkuIndex(): Promise<Map<string, string[]>> {
-    const { items } = await this.fetchActiveListPages();
+  async getActiveSkuIndex(): Promise<{ index: Map<string, string[]>; stale: boolean }> {
+    const { items, stale } = await this.fetchActiveListPages();
     const index = new Map<string, string[]>();
     for (const itemXml of items) {
       const itemId = this.extractXmlValue(itemXml, 'ItemID');
@@ -611,7 +622,7 @@ export class EbayClient implements PlatformAdapter {
       if (!ids.includes(itemId)) ids.push(itemId);
       index.set(sku, ids);
     }
-    return index;
+    return { index, stale };
   }
 
   // ─── REST API 호출 (Taxonomy API 등) ─────────────────────

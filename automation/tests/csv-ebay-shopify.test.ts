@@ -601,20 +601,21 @@ describe('2-3. eBay → Shopify 실행 조건', () => {
     expect(dup.results[0].error).toContain('활성 상품이 2개');
   });
 
-  it('eBay 활성 목록 응답이 불완전(건수 불일치·ActiveList 없음)하면 불확실로 차단', async () => {
+  it('eBay 활성 목록 응답이 깨졌으면 차단, 조회 중 목록 변경은 stale 로 처리', async () => {
     const client = new EbayClient();
     vi.mocked((EbayClient.prototype as any).callTradingAPI).mockResolvedValueOnce(activeListResponse([{ itemId: '1', sku: 'A' }], { totalEntries: 2 }));
-    await expect(client.getActiveSkuIndex()).rejects.toThrow('활성 리스팅 수 불일치');
+    expect(await client.getActiveSkuIndex()).toMatchObject({ stale: true });   // 건수 불일치 = 불완전(차단 아님)
     vi.mocked((EbayClient.prototype as any).callTradingAPI).mockResolvedValueOnce('<GetMyeBaySellingResponse><Ack>Success</Ack></GetMyeBaySellingResponse>');
     await expect(client.getActiveSkuIndex()).rejects.toThrow('ActiveList가 없습니다');
     vi.mocked((EbayClient.prototype as any).callTradingAPI)
       .mockResolvedValueOnce(activeListResponse([{ itemId: '1', sku: 'A' }], { totalPages: 2, totalEntries: 2 }))
       .mockResolvedValueOnce(activeListResponse([{ itemId: '2', sku: 'B' }, { itemId: '3' }], { totalPages: 2, totalEntries: 3 }));
-    await expect(client.getActiveSkuIndex()).rejects.toThrow('리스팅 수가 바뀌었습니다');
+    expect(await client.getActiveSkuIndex()).toMatchObject({ stale: true });   // 조회 중 목록 변경
     vi.mocked((EbayClient.prototype as any).callTradingAPI)
       .mockResolvedValueOnce(activeListResponse([{ itemId: '1', sku: 'A' }], { totalPages: 2, totalEntries: 3 }))
       .mockResolvedValueOnce(activeListResponse([{ itemId: '2', sku: 'B' }, { itemId: '3' }], { totalPages: 2, totalEntries: 3 }));
-    expect([...(await client.getActiveSkuIndex()).entries()]).toEqual([['A', ['1']], ['B', ['2']]]);
+    const ok = await client.getActiveSkuIndex();
+    expect([[...ok.index.entries()], ok.stale]).toEqual([[['A', ['1']], ['B', ['2']]], false]);
     const checker = createEbayDuplicateChecker(async () => { throw new Error('boom'); });
     await expect(checker.find('X')).rejects.toMatchObject({ code: 'EBAY_DUPLICATE_CHECK_FAILED' });
     await expect(checker.find('Y')).rejects.toMatchObject({ code: 'EBAY_DUPLICATE_CHECK_FAILED' });

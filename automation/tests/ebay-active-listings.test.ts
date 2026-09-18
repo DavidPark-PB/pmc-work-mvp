@@ -88,19 +88,23 @@ describe('eBay 활성 리스팅 페이지네이션', () => {
     expect(requestedPages).toEqual([1, 2]);
   });
 
-  it('API 총 건수와 고유 ItemID 수가 다르면 fail closed — 중복 ItemID·건수 불일치 모두 감지', async () => {
-    //   같은 ItemID가 두 페이지에 걸쳐 중복 → 고유 수가 총 건수보다 적다
+  it('응답이 깨졌으면 예외, 읽는 중 목록이 바뀐 것은 stale 로만 표시 (신규 등록을 막지 않음)', async () => {
+    //   같은 ItemID가 두 페이지에 걸쳐 중복 → 고유 수가 총 건수보다 적다 = 불완전한 조회
     respond = (page) => sellingResponse(
       page === 1 ? [{ itemId: 'A' }, { itemId: 'B' }] : [{ itemId: 'B' }, { itemId: 'C' }],
       { page, totalPages: 2, totalEntries: 4 },
     );
-    await expect(new EbayClient().getActiveListings()).rejects.toThrow('수 불일치 (고유 ItemID 3 / API 전체 4)');
+    const dup = await new EbayClient().getActiveListingsWithMeta();
+    expect([dup.items.map(i => i.itemId), dup.stale]).toEqual([['A', 'B', 'C'], true]);
 
-    respond = (page) => sellingResponse([{ itemId: 'A' }], { page, totalPages: 1, totalEntries: 5 });
-    await expect(new EbayClient().getActiveListings()).rejects.toThrow('수 불일치');
+    //   조회 도중 판매 종료·신규 노출로 총 건수가 바뀜 → 예외 없이 stale
+    respond = (page) => sellingResponse([{ itemId: 'A' + page }], { page, totalPages: 2, totalEntries: page === 1 ? 2 : 9 });
+    const changed = await new EbayClient().getActiveListingsWithMeta();
+    expect([changed.items.length, changed.stale]).toEqual([2, true]);
 
-    respond = (page) => sellingResponse([{ itemId: 'A' }], { page, totalPages: 2, totalEntries: page === 1 ? 2 : 9 });
-    await expect(new EbayClient().getActiveListings()).rejects.toThrow('바뀌었습니다');
+    //   정상 조회는 stale 아님
+    respond = makePages(300);
+    expect((await new EbayClient().getActiveListingsWithMeta()).stale).toBe(false);
 
     respond = () => '<GetMyeBaySellingResponse><Ack>Failure</Ack></GetMyeBaySellingResponse>';
     await expect(new EbayClient().getActiveListings()).rejects.toThrow('GetMyeBaySelling 실패');
@@ -128,7 +132,7 @@ describe('eBay 활성 리스팅 페이지네이션', () => {
       page === 1 ? [{ itemId: 'A1', sku: 'SKU-A' }, { itemId: 'B1', sku: 'SKU-B' }] : [{ itemId: 'C1', sku: 'SKU-B' }, { itemId: 'D1' }],
       { page, totalPages: 2, totalEntries: 4 },
     );
-    const index = await new EbayClient().getActiveSkuIndex();
+    const { index } = await new EbayClient().getActiveSkuIndex();
     expect([...index.entries()]).toEqual([['SKU-A', ['A1']], ['SKU-B', ['B1', 'C1']]]);   // 같은 SKU 2개는 그대로 노출 → 자동 연결 차단
     const checker = createEbayDuplicateChecker(() => new EbayClient().getActiveSkuIndex());
     expect(await checker.find('SKU-A')).toEqual({ itemId: 'A1' });
@@ -147,5 +151,47 @@ describe('eBay 활성 리스팅 페이지네이션', () => {
     await new EbayClient().getActiveSkuIndex();
     const calls = vi.mocked((EbayClient.prototype as any).callTradingAPI).mock.calls.map(c => c[0]);
     expect(new Set(calls)).toEqual(new Set(['GetMyeBaySelling']));
+  });
+});
+
+describe('중복 확인 판정 (목록이 조회 중 바뀌는 상황)', () => {
+  const snap = (skus: Record<string, string[]>, stale = false) => ({ index: new Map(Object.entries(skus)), stale });
+
+  it('목록이 바뀌어도 새 SKU 는 한 번 더 확인한 뒤 신규 등록 진행 (이전: 무조건 차단)', async () => {
+    let calls = 0;
+    const checker = createEbayDuplicateChecker(async () => { calls++; return snap({ 'OTHER-SKU': ['1'] }, true); });
+    expect(await checker.find('PMC-NEW')).toBeNull();
+    expect([calls, checker.loadCount()]).toEqual([2, 2]);   // 재확인 1회까지만
+    expect(await checker.find('PMC-NEW-2')).toBeNull();
+    expect(calls).toBe(2);                                   // job 안에서는 재사용
+  });
+
+  it('재확인에서 같은 SKU 가 나타나면 AddItem 없이 그 상품에 연결', async () => {
+    let calls = 0;
+    const checker = createEbayDuplicateChecker(async () => {
+      calls++;
+      return calls === 1 ? snap({}, true) : snap({ 'PMC-1': ['990001'] }, true);
+    });
+    expect(await checker.find('PMC-1')).toEqual({ itemId: '990001' });
+  });
+
+  it('완전한 조회에서 없으면 재조회 없이 바로 신규 등록 · 같은 SKU 2개면 차단 · 조회 실패는 차단', async () => {
+    let calls = 0;
+    const clean = createEbayDuplicateChecker(async () => { calls++; return snap({ 'X': ['1'] }, false); });
+    expect(await clean.find('PMC-9')).toBeNull();
+    expect(calls).toBe(1);
+
+    const dup = createEbayDuplicateChecker(async () => snap({ 'PMC-2': ['1', '2'] }, true));
+    await expect(dup.find('PMC-2')).rejects.toMatchObject({ code: 'EBAY_DUPLICATE_CHECK_FAILED' });
+
+    const broken = createEbayDuplicateChecker(async () => { throw new Error('GetMyeBaySelling 실패 (Ack=Failure)'); });
+    await expect(broken.find('PMC-3')).rejects.toMatchObject({ code: 'EBAY_DUPLICATE_CHECK_FAILED' });
+  });
+
+  it('이 job 에서 등록한 Item ID 는 두 snapshot 모두에 반영된다', async () => {
+    const checker = createEbayDuplicateChecker(async () => snap({}, true));
+    expect(await checker.find('PMC-5')).toBeNull();
+    checker.remember('PMC-5', '700001');
+    expect(await checker.find('PMC-5')).toEqual({ itemId: '700001' });
   });
 });
