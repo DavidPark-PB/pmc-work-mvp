@@ -174,6 +174,37 @@ export async function loadPipelineProducts(options: { status?: string | null; up
   return (result.rows as any[]).map(row => ({ ...row, listings: typeof row.listings === 'string' ? row.listings : JSON.stringify(row.listings) }));
 }
 
+/** 아직 상품(product)이 만들어지지 않은 CSV 행 — 등록을 시작하면 상품이 된다 */
+export async function loadUploadPendingRowCount(uploadId: string): Promise<number> {
+  const result = await db.execute(sql`
+    SELECT count(*)::int AS count FROM crawl_results
+    WHERE raw_data->'csvImport'->>'uploadId' = ${uploadId} AND product_id IS NULL AND status <> 'trashed'`);
+  return Number((result.rows[0] as { count: number } | undefined)?.count ?? 0);
+}
+
+/** 작업 화면에 함께 보여줄, 상품이 되기 전 CSV 행 */
+export async function loadUploadPendingRows(uploadId: string, limit = 200): Promise<any[]> {
+  const result = await db.execute(sql`
+    SELECT c.id, c.title, c.title_en AS "titleEn", c.price, c.currency, c.url, c.image_url AS "imageUrl",
+           c.raw_data AS "rawData", c.status, c.crawled_at AS "crawledAt", c.owner_id AS "ownerId", c.owner_name AS "ownerName",
+           s.name AS "sourceName"
+    FROM crawl_results c
+    LEFT JOIN crawl_sources s ON s.id = c.source_id
+    WHERE c.raw_data->'csvImport'->>'uploadId' = ${uploadId} AND c.product_id IS NULL AND c.status <> 'trashed'
+    ORDER BY c.crawled_at DESC
+    LIMIT ${limit}`);
+  return result.rows as any[];
+}
+
+/** 상품이 되기 전 CSV 행 id (한 번에 등록용) */
+export async function loadUploadPendingRowIds(uploadId: string, limit = 2000): Promise<number[]> {
+  const result = await db.execute(sql`
+    SELECT id FROM crawl_results
+    WHERE raw_data->'csvImport'->>'uploadId' = ${uploadId} AND product_id IS NULL AND status <> 'trashed'
+    ORDER BY id DESC LIMIT ${limit}`);
+  return (result.rows as { id: number }[]).map(r => Number(r.id));
+}
+
 export interface UploadFilterOption {
   uploadId: string;
   filename: string;
@@ -184,6 +215,10 @@ export interface UploadFilterOption {
   importedCount: number;
   /** 현재 남아 있는 고유 상품 수 */
   productCount: number;
+  /** DB에 들어왔지만 아직 상품이 되지 않은 행 (등록하면 상품이 됨) */
+  pendingRows: number;
+  /** 이 작업의 처리 대상 = 상품 + 상품 이전 행 */
+  itemCount: number;
   /** 가져오지 않은(선택하지 않은) 원본 행 수 */
   notSelectedRows: number;
   /** 등록까지 끝난 상품 (양쪽 완료) */
@@ -210,13 +245,28 @@ export async function loadUploadFilters(limit = 10): Promise<UploadFilterOption[
       GROUP BY p.id, p.metadata->'csvImport'->>'uploadId'
     ), per_upload AS (
       SELECT upload_id, ${STATUS_CASE} AS status, count(*)::int AS count FROM s GROUP BY 1, 2
+    ), pending_rows AS (
+      SELECT raw_data->'csvImport'->>'uploadId' AS upload_id, count(*)::int AS count
+      FROM crawl_results
+      WHERE product_id IS NULL AND status <> 'trashed' AND raw_data->'csvImport'->>'uploadId' IS NOT NULL
+      GROUP BY 1
+    ), imported_rows AS (
+      SELECT raw_data->'csvImport'->>'uploadId' AS upload_id, count(*)::int AS count
+      FROM crawl_results
+      WHERE status <> 'trashed' AND raw_data->'csvImport'->>'uploadId' IS NOT NULL
+      GROUP BY 1
     )
     SELECT u.upload_id AS "uploadId", u.filename, u.created_at AS "createdAt",
            u.row_count AS "rowCount", u.imported_count AS "importedCount",
-           COALESCE(json_agg(json_build_object('status', per_upload.status, 'count', per_upload.count)) FILTER (WHERE per_upload.status IS NOT NULL), '[]') AS breakdown
+           COALESCE(pending_rows.count, 0) AS "pendingRows",
+           COALESCE(imported_rows.count, 0) AS "importedRows",
+           COALESCE((SELECT json_agg(json_build_object('status', pu.status, 'count', pu.count)) FROM per_upload pu WHERE pu.upload_id = u.upload_id), '[]') AS breakdown
     FROM csv_uploads u
-    JOIN per_upload ON per_upload.upload_id = u.upload_id
-    GROUP BY u.upload_id, u.filename, u.created_at, u.row_count, u.imported_count
+    LEFT JOIN pending_rows ON pending_rows.upload_id = u.upload_id
+    LEFT JOIN imported_rows ON imported_rows.upload_id = u.upload_id
+    --   상품이 아직 없어도(등록 전) CSV 행이 들어온 업로드는 작업으로 보여준다
+    WHERE COALESCE(imported_rows.count, 0) > 0
+       OR EXISTS (SELECT 1 FROM per_upload pu WHERE pu.upload_id = u.upload_id)
     ORDER BY u.created_at DESC
     LIMIT ${limit}`);
 
@@ -230,6 +280,11 @@ export async function loadUploadFilters(limit = 10): Promise<UploadFilterOption[
     }
     counts.total = total;
     const rowCount = Number(upload.rowCount ?? 0);
+    const pendingRows = Number(upload.pendingRows ?? 0);
+    const importedRows = Number(upload.importedRows ?? 0);
+    //   상품 이전 행도 '미등록'으로 같이 센다 (작업 목록 숫자 = 실제 남은 일)
+    counts.READY += pendingRows;
+    counts.total += pendingRows;
     return {
       uploadId: upload.uploadId,
       filename: upload.filename,
@@ -237,7 +292,9 @@ export async function loadUploadFilters(limit = 10): Promise<UploadFilterOption[
       rowCount,
       importedCount: Number(upload.importedCount ?? 0),
       productCount: total,
-      notSelectedRows: Math.max(0, rowCount - total),
+      pendingRows,
+      itemCount: total + pendingRows,
+      notSelectedRows: Math.max(0, rowCount - Math.max(importedRows, total)),
       listedBoth: counts.LISTED_BOTH,
       remaining: counts.READY + counts.FAILED + counts.EBAY_ONLY + counts.SHOPIFY_ONLY + counts.PROCESSING,
       counts,

@@ -10,7 +10,7 @@ import { buildImportPreview, detectFixedHeaderMapping } from '../lib/csv-parser.
 import { crawlDisplayCsv, readProductCsvMetadata, resolveDisplayPrices } from '../services/listing-price.js';
 import { getShippingPricingConfig, publicShippingPricingConfig } from '../lib/shipping-config.js';
 import { readShippingPolicySnapshot } from '../services/ebay-shipping-policies.js';
-import { loadCrawlWaitingCount, loadFilteredProductIds, loadPipelineCounts, loadPipelineProducts, loadUploadFilters, splitStaleJobs, PIPELINE_TABS, PIPELINE_STATUSES } from '../services/product-pipeline.js';
+import { loadCrawlWaitingCount, loadFilteredProductIds, loadPipelineCounts, loadPipelineProducts, loadUploadFilters, loadUploadPendingRowCount, loadUploadPendingRowIds, loadUploadPendingRows, splitStaleJobs, PIPELINE_TABS, PIPELINE_STATUSES } from '../services/product-pipeline.js';
 import { jobStore } from '../lib/job-store.js';
 import { getUser } from '../lib/user-session.js';
 import fs from 'fs';
@@ -67,7 +67,7 @@ export async function pageRoutes(app: FastifyInstance) {
         //   이미 상품으로 가져온 행은 업로드 대기가 아니다 (재가져오기로 status가 'new'로 남은 행 제외)
         .where(and(eq(crawlResults.status, 'new'), isNull(crawlResults.productId)))
         .orderBy(desc(crawlResults.crawledAt))
-        //   수집 데이터는 참고용 전체 화면에서만 표시 (CSV 작업 화면에는 섞지 않는다)
+        //   전체 화면에서만 전역 수집 데이터 표시 (CSV 작업 화면은 그 업로드의 행만 따로 불러온다)
         .limit(view === 'all' ? 200 : 0),
       // running job만 조회 (전체 로드 방지)
       jobStore.getRunning(),
@@ -83,6 +83,20 @@ export async function pageRoutes(app: FastifyInstance) {
       showProducts ? loadFilteredProductIds({ status: pipelineStatusParam, uploadId: uploadIdParam }) : Promise.resolve([]),
     ]);
     const selectedBatch = uploadBatches.find(b => b.uploadId === uploadIdParam) ?? null;
+
+    //   이 CSV 작업에서 아직 상품이 되지 않은 행 (등록을 시작하면 상품이 된다)
+    const batchScoped = view === 'batch' && uploadIdParam !== 'ALL' && uploadIdParam !== 'LEGACY';
+    const showPendingRows = batchScoped && (pipelineStatusParam === 'ALL' || pipelineStatusParam === 'READY');
+    const [pendingRowsForView, pendingRowIds, pendingRowCount] = await Promise.all([
+      showPendingRows ? loadUploadPendingRows(uploadIdParam, 200) : Promise.resolve([]),
+      showPendingRows ? loadUploadPendingRowIds(uploadIdParam) : Promise.resolve([]),
+      batchScoped ? loadUploadPendingRowCount(uploadIdParam) : Promise.resolve(0),
+    ]);
+    if (batchScoped) {
+      //   작업 화면 숫자에도 상품 이전 행을 포함 (작업 목록 카드와 같은 기준)
+      pipelineCounts.READY += pendingRowCount;
+      pipelineCounts.total += pendingRowCount;
+    }
 
     //   진행 중 job은 최근 실행된 것만 (오래된 running job은 중단 추정 — 현재 상품 상태에 섞지 않는다)
     const allJobs = activeJobRows.map(r => ({ id: r.id, ...r.job }));
@@ -137,7 +151,8 @@ export async function pageRoutes(app: FastifyInstance) {
       };
     });
 
-    const crawlItemsWithPrice = recentCrawlResults.map((c) => {
+    const crawlSource = view === 'batch' ? pendingRowsForView : recentCrawlResults;
+    const crawlItemsWithPrice = crawlSource.map((c: any) => {
       // USD CSV 원본: crawl price는 판매가(USD)이므로 원가(KRW)로 계산하지 않음
       const { costKrw: costKRW, priceSource, ...prices } = resolveDisplayPrices({
         costKrw: parseFloat(String(c.price)) || 0,
@@ -208,6 +223,7 @@ export async function pageRoutes(app: FastifyInstance) {
       uploadBatches,
       selectedBatch,
       filteredProductIds,
+      filteredCrawlIds: pendingRowIds,
       crawlWaiting,
       view,
       filters: { status: pipelineStatusParam, uploadId: uploadIdParam, view },

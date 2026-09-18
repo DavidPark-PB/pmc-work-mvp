@@ -43,6 +43,8 @@
   const uploadBatches = it.uploadBatches || [];
   const selectedUpload = it.selectedBatch || uploadFilters.find(u => u.uploadId === filters.uploadId);
   const filteredProductIds = it.filteredProductIds || [];
+  const filteredCrawlIds = it.filteredCrawlIds || [];
+  const bulkCount = filteredProductIds.length + filteredCrawlIds.length;
   const filterHref = (status, uploadId) => '/?status=' + encodeURIComponent(status)
     + (uploadId && uploadId !== 'ALL' ? '&uploadId=' + encodeURIComponent(uploadId) : (view === 'all' ? '&view=all' : ''));
   const batchLabel = (u) => new Date(u.createdAt).toLocaleDateString('ko-KR') + ' · ' + u.filename;
@@ -91,7 +93,7 @@
       <div class="batch-card-main">
         <div class="batch-card-title"><%= u.filename %></div>
         <div class="batch-card-meta">
-          <%= new Date(u.createdAt).toLocaleString('ko-KR') %> · 원본 <%= u.rowCount %>행 · 가져온 상품 <%= u.productCount %>개 · 선택하지 않은 행 <%= u.notSelectedRows %>개
+          <%= new Date(u.createdAt).toLocaleString('ko-KR') %> · 원본 <%= u.rowCount %>행 · 처리 대상 <%= u.itemCount %>개<% if (u.pendingRows > 0) { %> (등록 전 <%= u.pendingRows %> · 상품 <%= u.productCount %>)<% } %> · 선택하지 않은 행 <%= u.notSelectedRows %>개
         </div>
         <div class="batch-card-counts">
           <span class="badge badge-success">양쪽 완료 <%= u.counts.LISTED_BOTH %></span>
@@ -121,7 +123,7 @@
       <a class="btn btn-sm" href="/"><i class="ti ti-arrow-left"></i> CSV 작업 목록</a>
       <strong data-testid="batch-title"><%= batchLabel(selectedUpload) %></strong>
       <span class="upload-summary" data-testid="upload-summary">
-        원본 <%= selectedUpload.rowCount %>행 · 가져온 상품 <%= selectedUpload.productCount %>개 ·
+        원본 <%= selectedUpload.rowCount %>행 · 처리 대상 <%= selectedUpload.itemCount %>개<% if (selectedUpload.pendingRows > 0) { %> (등록 전 <%= selectedUpload.pendingRows %> · 상품 <%= selectedUpload.productCount %>)<% } %> ·
         양쪽 <%= selectedUpload.counts.LISTED_BOTH %> · eBay만 <%= selectedUpload.counts.EBAY_ONLY %> · Shopify만 <%= selectedUpload.counts.SHOPIFY_ONLY %> ·
         미등록 <%= selectedUpload.counts.READY %> · 실패 <%= selectedUpload.counts.FAILED %> · 처리 중 <%= selectedUpload.counts.PROCESSING %> ·
         판매 취소 <%= selectedUpload.counts.CANCELLED %> · 선택하지 않은 원본 행 <%= selectedUpload.notSelectedRows %>개
@@ -277,12 +279,12 @@
           <div><strong>배송비 계산 준비 중</strong><br>현재는 상품 검수와 가져오기만 가능합니다.<br>배송비 반영 전에는 eBay 등록이 차단됩니다.</div>
         </div>
         <% } %>
-        <% if (filteredProductIds.length > 0) { %>
-        <button class="btn btn-sm" id="btn-select-filtered" onclick="selectAllFiltered()" data-count="<%= filteredProductIds.length %>" title="현재 탭의 상품을 모두 선택합니다 (화면에 보이지 않는 행 포함)">
-          <i class="ti ti-checkbox"></i> 이 탭 전체 선택 (<%= filteredProductIds.length %>개)
+        <% if (bulkCount > 0) { %>
+        <button class="btn btn-sm" id="btn-select-filtered" onclick="selectAllFiltered()" data-count="<%= bulkCount %>" title="현재 탭의 항목을 모두 선택합니다 (화면에 보이지 않는 행 포함)">
+          <i class="ti ti-checkbox"></i> 이 탭 전체 선택 (<%= bulkCount %>개)
         </button>
-        <button class="btn btn-primary btn-sm" id="btn-upload-filtered" onclick="uploadFiltered()" title="현재 탭의 상품 전체를 eBay → Shopify 순서로 등록합니다">
-          <i class="ti ti-rocket"></i> 이 탭 전체 등록 (<%= filteredProductIds.length %>개)
+        <button class="btn btn-primary btn-sm" id="btn-upload-filtered" onclick="uploadFiltered()" title="현재 탭 전체를 eBay → Shopify 순서로 등록합니다 (등록 전 CSV 행은 상품으로 만들면서 등록)">
+          <i class="ti ti-rocket"></i> 이 탭 전체 등록 (<%= bulkCount %>개)
         </button>
         <% } %>
         <button class="btn btn-primary btn-sm" onclick="uploadSelected('all')">
@@ -849,6 +851,8 @@ function closeTranslateModal() {
 
 //   현재 탭(업로드 + 상태)에 해당하는 상품 id — 화면에 보이지 않는 행 포함
 const FILTERED_PRODUCT_IDS = <%~ JSON.stringify(it.filteredProductIds || []) %>;
+//   아직 상품이 되지 않은 CSV 행 (등록하면서 상품 생성)
+const FILTERED_CRAWL_IDS = <%~ JSON.stringify(it.filteredCrawlIds || []) %>;
 
 //   이 탭 전체 선택 (체크박스 일괄)
 function selectAllFiltered() {
@@ -859,15 +863,18 @@ function selectAllFiltered() {
 
 //   이 탭 전체 등록 — 수백 개를 하나씩 체크하지 않고 한 번에 (신규 CSV는 eBay → Shopify)
 async function uploadFiltered() {
-  if (FILTERED_PRODUCT_IDS.length === 0) return;
+  const totalCount = FILTERED_PRODUCT_IDS.length + FILTERED_CRAWL_IDS.length;
+  if (totalCount === 0) return;
   const btn = document.getElementById('btn-upload-filtered');
-  const items = FILTERED_PRODUCT_IDS.map(() => ({ csv: true, ebayReady: true, ebayListed: false }));
+  const items = Array.from({ length: totalCount }, () => ({ csv: true, ebayReady: true, ebayListed: false }));
   const plan = await confirmListingPlan(items, window.ListingPlan ? window.ListingPlan.defaultCsvPlatforms() : ['ebay', 'shopify']);
   if (!plan) return;
   btn.disabled = true;
   btn.innerHTML = '<i class="ti ti-loader spinner-icon"></i> 등록 시작...';
   try {
-    const body = { productIds: FILTERED_PRODUCT_IDS, platforms: plan.csvPlatforms || ['ebay', 'shopify'], dryRun: false };
+    const body = { platforms: plan.csvPlatforms || ['ebay', 'shopify'], dryRun: false };
+    if (FILTERED_PRODUCT_IDS.length) body.productIds = FILTERED_PRODUCT_IDS;
+    if (FILTERED_CRAWL_IDS.length) body.crawlResultIds = FILTERED_CRAWL_IDS;
     if (plan.csvPlatforms) body.csvPlatforms = plan.csvPlatforms;
     const res = await fetch('/api/listings/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await res.json();

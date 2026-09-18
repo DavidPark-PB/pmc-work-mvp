@@ -88,11 +88,11 @@ describe('2. 화면: 탭 · 필터 · 영역 분리', () => {
     ],
     recentCrawlResults: [], activeJobs: [], staleJobs: 8,
     pipeline: counts, pipelineTabs: PIPELINE_TABS, uploadFilters: [
-      { uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, notSelectedRows: 492, listedBoth: 185, remaining: 16, counts },
+      { uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, pendingRows: 0, itemCount: 201, notSelectedRows: 492, listedBoth: 185, remaining: 16, counts },
     ],
     crawlWaiting: 489, filters: { status: 'ALL', uploadId: 'up-1', view: 'batch' }, view: 'batch',
-    uploadBatches: [{ uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, notSelectedRows: 492, listedBoth: 185, remaining: 16, counts }],
-    selectedBatch: { uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, notSelectedRows: 492, listedBoth: 185, remaining: 16, counts },
+    uploadBatches: [{ uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, pendingRows: 0, itemCount: 201, notSelectedRows: 492, listedBoth: 185, remaining: 16, counts }],
+    selectedBatch: { uploadId: 'up-1', filename: 'toybox.csv', createdAt: new Date('2026-09-15'), rowCount: 693, importedCount: 691, productCount: 201, pendingRows: 0, itemCount: 201, notSelectedRows: 492, listedBoth: 185, remaining: 16, counts },
     filteredProductIds: [1, 2, 3, 4, 5, 6],
     releaseGuard: { shippingPricingEnabled: true, pricingDisabledCount: 0 },
     ...data,
@@ -132,7 +132,7 @@ describe('2. 화면: 탭 · 필터 · 영역 분리', () => {
     expect(html).toContain('toybox.csv');
     expect(html).toContain('CSV 작업 목록');
     const summary = html.match(/data-testid="upload-summary"[\s\S]*?<\/span>/)![0];
-    for (const part of ['원본 693행', '가져온 상품 201개', '양쪽 185', 'eBay만 3', 'Shopify만 0', '미등록 1', '실패 12', '처리 중 0', '판매 취소 0', '선택하지 않은 원본 행 492개']) {
+    for (const part of ['원본 693행', '처리 대상 201개', '양쪽 185', 'eBay만 3', 'Shopify만 0', '미등록 1', '실패 12', '처리 중 0', '판매 취소 0', '선택하지 않은 원본 행 492개']) {
       expect(summary).toContain(part);
     }
     expect(html).toContain('href="/?status=EBAY_ONLY&amp;uploadId=up-1"');
@@ -142,7 +142,7 @@ describe('2. 화면: 탭 · 필터 · 영역 분리', () => {
     const html = render({ view: 'batches', filters: { status: 'ALL', uploadId: 'ALL', view: 'batches' }, selectedBatch: null, filteredProductIds: [] });
     expect(html).toContain('data-testid="batch-list"');
     const card = html.match(/data-testid="batch-card"[\s\S]*?작업 열기/)![0];
-    for (const part of ['toybox.csv', '원본 693행', '가져온 상품 201개', '선택하지 않은 행 492개', '양쪽 완료 185', 'eBay만 3', '미등록 1', '실패 12', '남은 작업 16개']) {
+    for (const part of ['toybox.csv', '원본 693행', '처리 대상 201개', '선택하지 않은 행 492개', '양쪽 완료 185', 'eBay만 3', '미등록 1', '실패 12', '남은 작업 16개']) {
       expect(card).toContain(part);
     }
     expect(card).toContain('href="/?status=ALL&amp;uploadId=up-1"');
@@ -153,6 +153,23 @@ describe('2. 화면: 탭 · 필터 · 영역 분리', () => {
     expect(html).not.toMatch(/업로드 대기 <span class="tab-count"/);
     expect(html).toContain('href="/?view=all"');
     expect(html).toContain('href="/upload-csv"');
+  });
+
+  it('상품이 되기 전 CSV 행도 작업 카드·작업 화면 숫자에 포함되고 한 번에 등록된다', () => {
+    const pendingCounts = { LISTED_BOTH: 0, EBAY_ONLY: 0, SHOPIFY_ONLY: 0, READY: 376, FAILED: 0, PROCESSING: 0, CANCELLED: 0, total: 376 };
+    const batch = { uploadId: 'up-2', filename: '아이토빅.csv', createdAt: new Date('2026-09-18'), rowCount: 381, importedCount: 376, productCount: 0, pendingRows: 376, itemCount: 376, notSelectedRows: 5, listedBoth: 0, remaining: 376, counts: pendingCounts };
+    const list = render({ view: 'batches', filters: { status: 'ALL', uploadId: 'ALL', view: 'batches' }, selectedBatch: null, filteredProductIds: [], uploadBatches: [batch], pipeline: pendingCounts });
+    const card = list.match(/data-testid="batch-card"[\s\S]*?작업 열기/)![0];
+    expect(card).toContain('아이토빅.csv');
+    expect(card).toContain('처리 대상 376개');
+    expect(card).toContain('등록 전 376');
+    expect(card).toContain('미등록 376');
+    expect(card).toContain('남은 작업 376개');
+
+    const work = render({ view: 'batch', filters: { status: 'ALL', uploadId: 'up-2', view: 'batch' }, selectedBatch: batch, uploadBatches: [batch], pipeline: pendingCounts, filteredProductIds: [], filteredCrawlIds: [11, 12, 13], allItems: [] });
+    expect(work).toMatch(/이 탭 전체 등록 \(3개\)/);
+    expect(work).toContain('const FILTERED_CRAWL_IDS = [11,12,13];');
+    expect(work).toContain('if (FILTERED_CRAWL_IDS.length) body.crawlResultIds = FILTERED_CRAWL_IDS;');
   });
 
   it('작업 화면에서 수백 개를 하나씩 체크하지 않고 탭 전체를 선택·등록할 수 있다', () => {
