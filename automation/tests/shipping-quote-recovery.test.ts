@@ -116,6 +116,7 @@ import { buildShippingQuoteSnapshot } from '../src/services/shipping-pricing.js'
 import { describeQuoteReason, resolveChargeableWeight } from '../src/lib/shipping-quote-status.js';
 import { formatQuoteSummary, formatQuoteProgress, formatQuoteCompletion, unfinishedButtonState, providerOverrides, createSingleFlight, countQuoteCategories, createProviderState } from '../public/js/import-selection.js';
 import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
+import { resetActiveSkuCache } from '../src/services/ebay-duplicate-check.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -230,6 +231,7 @@ const noSleep = { sleep: async () => {} };
 const realQuoteTimers = { ...quoteTimers };
 
 beforeEach(() => {
+  resetActiveSkuCache();   // eBay 활성 SKU 색인 캐시는 테스트 간 공유하지 않는다
   store.tables.clear();
   store.nextId.clear();
   store.writes = 0;

@@ -128,6 +128,7 @@ import { requestShippingQuote } from '../src/lib/shipping-quote-client.js';
 import { buildShippingQuoteSnapshot, CSV_PRICE_MESSAGES } from '../src/services/shipping-pricing.js';
 import { classifyCsvProduct, crawlDisplayCsv, readProductCsvMetadata, resolveDisplayPrices, ListingPriceError } from '../src/services/listing-price.js';
 import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
+import { resetActiveSkuCache } from '../src/services/ebay-duplicate-check.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -187,6 +188,7 @@ let tradingCalls: string[] = [];
 const startPriceOf = (b: string) => b.match(/<StartPrice currencyID="USD">([^<]+)<\/StartPrice>/)?.[1];
 
 beforeEach(() => {
+  resetActiveSkuCache();   // eBay 활성 SKU 색인 캐시는 테스트 간 공유하지 않는다
   listingJobTimers.sleep = async () => {};   // job 단계 사이 실제 500ms 대기 없음
   store.tables.clear();
   store.nextId.clear();

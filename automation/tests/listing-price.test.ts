@@ -127,6 +127,7 @@ import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
 import { listingRoutes, listingJobTimers } from '../src/routes/listings.js';
 import { crawlResultRoutes } from '../src/routes/crawl-results.js';
 import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
+import { resetActiveSkuCache } from '../src/services/ebay-duplicate-check.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -189,6 +190,7 @@ function seedCrawlFromCsv(csv: string, rowIndex: number, id: number, fixed = tru
 const startPriceOf = (body: string) => body.match(/<StartPrice currencyID="USD">([^<]+)<\/StartPrice>/)?.[1];
 
 beforeEach(() => {
+  resetActiveSkuCache();   // eBay 활성 SKU 색인 캐시는 테스트 간 공유하지 않는다
   listingJobTimers.sleep = async () => {};   // job 단계 사이 실제 500ms 대기 없음
   resetDb();
   addItemBodies = [];

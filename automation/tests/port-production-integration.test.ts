@@ -132,6 +132,7 @@ import { crawlResultRoutes } from '../src/routes/crawl-results.js';
 import { requestShippingQuote } from '../src/lib/shipping-quote-client.js';
 import { getShippingPricingConfig } from '../src/lib/shipping-config.js';
 import { EMPTY_ACTIVE_LIST } from './fixtures/ebay-trading.js';
+import { resetActiveSkuCache } from '../src/services/ebay-duplicate-check.js';
 
 /**
  * PMC AUTO Phase 1–2 → production source (pmc-work-mvp/automation) integration.
@@ -192,6 +193,7 @@ let logs: string[] = [];
 const flush = () => new Promise(r => setTimeout(r, 20));
 
 beforeEach(() => {
+  resetActiveSkuCache();   // eBay 활성 SKU 색인 캐시는 테스트 간 공유하지 않는다
   store.tables.clear();
   store.nextId.clear();
   store.rowsOf(schema.pricingSettings).push({ id: 1, platform: 'ebay', marginRate: '0.20', exchangeRate: '1300.00', platformFeeRate: '0.18', defaultShippingKrw: '12000', defaultQuantity: 3 });

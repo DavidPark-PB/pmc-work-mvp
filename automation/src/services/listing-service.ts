@@ -18,6 +18,7 @@ import { AlibabaClient } from '../platforms/alibaba/AlibabaClient.js';
 import { ShopeeClient } from '../platforms/shopee/ShopeeClient.js';
 import type { PlatformAdapter, ListingInput } from '../platforms/index.js';
 import { getDescriptionTemplate, buildPlatformDescription } from './description.js';
+import { normalizeImageUrls } from '../lib/image-urls.js';
 
 function getAdapter(platform: string): PlatformAdapter {
   switch (platform) {
@@ -34,6 +35,20 @@ async function generateSku(): Promise<string> {
   const result = await db.execute(sql`SELECT MAX(id) as max_id FROM products`);
   const maxId = (result.rows[0] as any)?.max_id || 0;
   return `PMC-${String(maxId + 1).padStart(5, '0')}`;
+}
+
+/**
+ * 플랫폼에 보낼 이미지 URL — 한 칸에 여러 URL이 붙어 있어도 나눠서 유효한 것만 사용
+ * (eBay는 잘못된 PictureURL 하나에도 AddItem 전체를 거부한다)
+ */
+function productImageUrls(product: { images?: { url?: string | null }[] }): string[] {
+  const raw = (product.images ?? []).map(img => img?.url ?? '');
+  const urls = normalizeImageUrls(raw);
+  //   원래 이미지가 있었는데 전부 형식이 깨진 경우만 차단 (이미지가 아예 없는 기존 동작은 그대로)
+  if (urls.length === 0 && raw.some(url => typeof url === 'string' && url.trim())) {
+    throw new ListingPriceError('IMAGE_URL_INVALID', '상품 이미지 주소 형식이 올바르지 않아 등록하지 않았습니다. CSV 이미지 열을 확인하세요.');
+  }
+  return urls;
 }
 
 /** 신규 USD CSV(toybox) 상품 — metadata.csvImport 가 있는 상품 */
@@ -326,7 +341,8 @@ export async function importFromCrawl(crawlResultId: number): Promise<number> {
 
   // 이미지 저장 (빈 URL 필터링)
   const rawImages = rawData.images || (crawlResult.imageUrl ? [crawlResult.imageUrl] : []);
-  const images = rawImages.filter((url: string) => url && url.trim());
+  //   한 칸에 URL 여러 개가 붙어 오는 CSV가 있어 여기서 나눠 저장한다
+  const images = normalizeImageUrls(Array.isArray(rawImages) ? rawImages : [rawImages]);
   for (let i = 0; i < images.length; i++) {
     await db.insert(productImages).values({
       productId: product.id,
@@ -390,7 +406,7 @@ export async function createListing(
       quantity: defaultQty,
       sku: product.sku,
       condition: product.condition || 'ungraded',
-      imageUrls: product.images.map((img: any) => img.url),
+      imageUrls: productImageUrls(product),
       productType: product.productType || '',
       brand: product.brand || '',
       weight: weightG,
@@ -467,7 +483,7 @@ export async function createListing(
     quantity: defaultQty,
     sku: product.sku,
     condition: product.condition || 'ungraded',
-    imageUrls: product.images.map((img: any) => img.url),
+    imageUrls: productImageUrls(product),
     productType: product.productType || '',
     brand: product.brand || '',
     //   신규 CSV Shopify: 견적에 쓴 적용무게
@@ -548,7 +564,7 @@ export async function retryListing(
         title: product.title,
         description: buildPlatformDescription(product.description || `<p>${product.title}</p>`, retryTemplate, 'ebay'),
         price: pricing.salePrice, shippingCost: pricing.shippingCost, quantity: listing.quantity || 5, sku: product.sku,
-        condition: product.condition || 'ungraded', imageUrls: product.images.map((img: any) => img.url),
+        condition: product.condition || 'ungraded', imageUrls: productImageUrls(product),
         productType: product.productType || '', brand: product.brand || '', weight: weightG, shippingProfileId: pricing.shippingProfileId,
       },
     });
@@ -583,7 +599,7 @@ export async function retryListing(
     quantity: listing.quantity || 5,
     sku: product.sku,
     condition: product.condition || 'ungraded',
-    imageUrls: product.images.map((img: any) => img.url),
+    imageUrls: productImageUrls(product),
     productType: product.productType || '',
     brand: product.brand || '',
     weight: csvProduct && listing.platform === 'shopify' ? csvChargeableWeightG(product, weightG) : weightG,
@@ -715,7 +731,7 @@ export async function relistListing(
         title: product.title,
         description: buildPlatformDescription(product.description || `<p>${product.title}</p>`, relistTemplate, 'ebay'),
         price: pricing.salePrice, shippingCost: pricing.shippingCost, quantity: listing.quantity || 5, sku: product.sku,
-        condition: product.condition || 'ungraded', imageUrls: product.images.map((img: any) => img.url),
+        condition: product.condition || 'ungraded', imageUrls: productImageUrls(product),
         productType: product.productType || '', brand: product.brand || '', weight: weightG, shippingProfileId: pricing.shippingProfileId,
       },
     });
@@ -750,7 +766,7 @@ export async function relistListing(
     quantity: listing.quantity || 5,
     sku: product.sku,
     condition: product.condition || 'ungraded',
-    imageUrls: product.images.map((img: any) => img.url),
+    imageUrls: productImageUrls(product),
     productType: product.productType || '',
     brand: product.brand || '',
     weight: csvProduct && listing.platform === 'shopify' ? csvChargeableWeightG(product, weightG) : weightG,

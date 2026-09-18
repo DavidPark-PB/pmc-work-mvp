@@ -3,6 +3,8 @@
  *
  * - 조회: EbayClient.getActiveSkuIndex (Trading GetMyeBaySelling ActiveList, 기존 inventory-sync와 같은 호출)
  * - job 단위로 한 번만 조회하고 상품별로 재사용 (N+1 없음)
+ * - 조회는 ItemID·SKU만 받아(OutputSelector) 가볍게 한다. 결과를 job 밖으로 캐시하지는 않는다 —
+ *   다른 작업이 방금 올린 상품을 놓치면 중복 등록이 되기 때문
  * - 판정:
  *     · 같은 SKU 상품을 찾음        → 그 Item ID 연결 (AddItem 안 함)
  *     · 같은 SKU 상품이 2개 이상    → EBAY_DUPLICATE_CHECK_FAILED (사람이 확인)
@@ -15,6 +17,9 @@ import { EbayClient } from '../platforms/ebay/EbayClient.js';
 import { ListingPriceError } from './listing-price.js';
 
 export const EBAY_DUPLICATE_CHECK_FAILED = 'EBAY_DUPLICATE_CHECK_FAILED';
+
+/** 테스트 호환용 (교차 job 캐시는 사용하지 않는다) */
+export function resetActiveSkuCache(): void { /* no-op */ }
 
 export interface ActiveSkuSnapshot {
   index: Map<string, string[]>;
@@ -32,7 +37,8 @@ export interface EbayDuplicateChecker {
 }
 
 export function createEbayDuplicateChecker(load?: () => Promise<ActiveSkuSnapshot>): EbayDuplicateChecker {
-  const loader = load ?? (() => new EbayClient().getActiveSkuIndex());
+  const baseLoader = load ?? (() => new EbayClient().getActiveSkuIndex());
+  const loader = baseLoader;
   let pending: Promise<ActiveSkuSnapshot> | null = null;
   let loads = 0;
   /** stale 조회 뒤 한 번 더 확인한 결과 */
@@ -44,7 +50,7 @@ export function createEbayDuplicateChecker(load?: () => Promise<ActiveSkuSnapsho
     if (again) {
       if (!recheck) {
         loads++;
-        recheck = loader();
+        recheck = baseLoader();
         recheck.catch(() => { /* find에서 처리 */ });
       }
       return recheck;

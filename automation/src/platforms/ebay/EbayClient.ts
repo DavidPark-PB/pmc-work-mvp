@@ -523,7 +523,15 @@ export class EbayClient implements PlatformAdapter {
    * 응답이 깨졌으면(Ack 실패, ActiveList 없음, 같은 페이지 반복) 예외.
    * 읽는 도중 판매 종료·신규 노출로 총 건수가 달라지는 것은 정상 상황이라 예외로 막지 않고 stale=true 로 알린다.
    */
-  private async fetchActiveListPages(): Promise<{ items: string[]; totalEntries: number; totalPages: number; stale: boolean }> {
+  private async fetchActiveListPages(fields: 'ALL' | 'SKU_ONLY' = 'ALL'): Promise<{ items: string[]; totalEntries: number; totalPages: number; stale: boolean }> {
+    //   중복 확인은 ItemID·SKU만 필요 — OutputSelector로 응답을 줄이면 페이지당 1MB → 12KB (전체 조회 시간 대폭 단축)
+    const detail = fields === 'SKU_ONLY'
+      ? `
+  <OutputSelector>ActiveList.ItemArray.Item.ItemID</OutputSelector>
+  <OutputSelector>ActiveList.ItemArray.Item.SKU</OutputSelector>
+  <OutputSelector>ActiveList.PaginationResult</OutputSelector>`
+      : `
+  <DetailLevel>ReturnAll</DetailLevel>`;
     const items: string[] = [];
     const seenItemIds = new Set<string>();
     let stale = false;
@@ -539,8 +547,7 @@ export class EbayClient implements PlatformAdapter {
       <EntriesPerPage>200</EntriesPerPage>
       <PageNumber>${pageNumber}</PageNumber>
     </Pagination>
-  </ActiveList>
-  <DetailLevel>ReturnAll</DetailLevel>`);
+  </ActiveList>${detail}`);
 
       const ack = this.extractXmlValue(response, 'Ack');
       if (ack !== 'Success' && ack !== 'Warning') throw new Error(`GetMyeBaySelling 실패 (Ack=${ack || '없음'})`);
@@ -612,7 +619,7 @@ export class EbayClient implements PlatformAdapter {
    * 반환: SKU → Item ID 목록 (같은 SKU가 2개 이상이면 호출자가 자동 연결하지 않는다)
    */
   async getActiveSkuIndex(): Promise<{ index: Map<string, string[]>; stale: boolean }> {
-    const { items, stale } = await this.fetchActiveListPages();
+    const { items, stale } = await this.fetchActiveListPages('SKU_ONLY');
     const index = new Map<string, string[]>();
     for (const itemXml of items) {
       const itemId = this.extractXmlValue(itemXml, 'ItemID');

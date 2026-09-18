@@ -95,6 +95,7 @@ import { listingRoutes } from '../src/routes/listings.js';
 import { PIPELINE_TABS } from '../src/services/product-pipeline.js';
 import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
 import { ShopifyClient } from '../src/platforms/shopify/ShopifyClient.js';
+import { resetActiveSkuCache } from '../src/services/ebay-duplicate-check.js';
 
 store.schema = schema;
 const columnKeys = new Map<unknown, string>();
@@ -119,6 +120,7 @@ function internal(overrides: Partial<InternalProduct> = {}): InternalProduct {
 }
 
 beforeEach(() => {
+  resetActiveSkuCache();   // eBay 활성 SKU 색인 캐시는 테스트 간 공유하지 않는다
   store.tables.clear();
   store.nextId.clear();
   store.writes = [];

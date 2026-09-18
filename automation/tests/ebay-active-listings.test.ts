@@ -17,6 +17,7 @@ vi.mock('../src/db/index.js', () => ({ db: { query: { platformTokens: { findFirs
 import { EbayClient } from '../src/platforms/ebay/EbayClient.js';
 import { createEbayDuplicateChecker } from '../src/services/ebay-duplicate-check.js';
 import { fetchEbayListings } from '../src/services/listing-reconcile.js';
+import { resetActiveSkuCache } from '../src/services/ebay-duplicate-check.js';
 
 /** ActiveList + (페이지마다 반복되는) SoldList/UnsoldList 를 가진 실제 형태의 응답 */
 function sellingResponse(active: { itemId: string; sku?: string; price?: string }[], opts: { page: number; totalPages: number; totalEntries: number; sold?: string[]; ack?: string }) {
@@ -45,6 +46,7 @@ let requestedPages: number[] = [];
 let respond: (page: number) => string;
 
 beforeEach(() => {
+  resetActiveSkuCache();   // eBay 활성 SKU 색인 캐시는 테스트 간 공유하지 않는다
   requestedPages = [];
   respond = makePages(3);
   for (const k of Object.keys(envState)) delete envState[k];
