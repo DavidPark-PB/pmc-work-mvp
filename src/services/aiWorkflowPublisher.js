@@ -71,14 +71,29 @@ function _mergePreset(platform, override = {}) {
 
 /**
  * eBay 등록. base64 썸네일 있으면 EPS 업로드 후 URL 획득해서 함께 전달.
+ *
+ * ── 왜 싱글턴이 아닌가 (2026-09-19) ──────────────────────────────────
+ *   과거 이 파일은 `_ebayInstance` 를 모듈 스코프 싱글턴으로 유지했다.
+ *   `EbayAPI._ensureToken()` 은 인스턴스당 1회만 DB 에서 토큰을 로드하기
+ *   때문에 (`ebayAPI.js:99-113`), 서버 프로세스가 한번 뜬 뒤 만들어진
+ *   싱글턴은 그 뒤로 `refreshAccessToken()` 을 통해서만 자기 캐시를
+ *   갱신했다. 문제는 다른 코드 경로 (competitorMonitor · myListingRefresher ·
+ *   기타 스케줄 등) 가 자기만의 EbayAPI 인스턴스로 refresh 를 돌리면서
+ *   DB 의 refresh_token 을 rotation 시키면, aiWorkflow 싱글턴이 붙들고
+ *   있던 refresh_token 이 무효화되어 다음 AddFixedPriceItem 호출이
+ *   `EBAY_MUTATION_TOKEN_INVALID_UNCERTAIN` 로 fail-closed 되는 사고
+ *   (owner 신고 · 2026-09-18 · N번째 상품 등록부터 계속 실패).
+ *
+ *   AddFixedPriceItem 은 mutation-safe 이므로 fail-closed 자체는
+ *   유지 (`PMC-EXPORT-SAFETY-2F` · 이중 등록 방지). 대신 그 fail-closed
+ *   가 stale singleton 때문에 유발되지 않도록 매 등록마다 새 인스턴스를
+ *   만들어 첫 `callTradingAPI` 진입 시 `_ensureToken()` 이 DB 의 최신
+ *   토큰을 로드하게 한다. 오버헤드는 인스턴스당 DB SELECT 1회 (~50ms) —
+ *   수천 건 등록에도 무시할 수준.
  */
-let _ebayInstance = null;
 function _getEbay() {
-  if (!_ebayInstance) {
-    const EbayAPI = require('../api/ebayAPI');
-    _ebayInstance = new EbayAPI();
-  }
-  return _ebayInstance;
+  const EbayAPI = require('../api/ebayAPI');
+  return new EbayAPI();
 }
 
 function _buildEbayParams(product, preset, thumbnailUrls) {
