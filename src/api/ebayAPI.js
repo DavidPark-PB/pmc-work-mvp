@@ -46,6 +46,38 @@ const BROWSE_CACHE_MAX = Number(process.env.EBAY_BROWSE_CACHE_MAX) || 5000;
 let _browseCacheHits = 0;
 let _browseCacheMisses = 0;
 
+/**
+ * eBay Trading API item-specific value normalizer (2026-09-19).
+ *
+ * Trading API v1355 constraints:
+ *   · each <Value> ≤ 65 characters
+ *   · multi-value aspects need MULTIPLE <Value> tags (not one CSV string)
+ *
+ * Accepts a raw value — string OR array — and returns a clipped array of
+ * strings ready to become one <Value> tag each. Empty/whitespace-only
+ * entries are dropped. Individual values longer than 65 chars are clipped
+ * at 65 (safe truncation — never lengthens, never re-encodes).
+ *
+ * Heuristic for CSV splitting: only when the raw value is a string AND
+ * its total length exceeds 65 AND it contains at least one ", " sequence.
+ * Legitimate single-value strings that happen to be short (like "Set A, B")
+ * stay intact — the length gate prevents accidental over-splitting.
+ */
+function _normalizeItemSpecValues(rawValue) {
+  const MAX_VALUE_LEN = 65;
+  const collect = (arr) => arr
+    .map(v => String(v == null ? '' : v).trim())
+    .filter(v => v.length > 0)
+    .map(v => v.length > MAX_VALUE_LEN ? v.slice(0, MAX_VALUE_LEN) : v);
+  if (Array.isArray(rawValue)) return collect(rawValue);
+  const str = String(rawValue == null ? '' : rawValue).trim();
+  if (!str) return [];
+  if (str.length > MAX_VALUE_LEN && /,\s/.test(str)) {
+    return collect(str.split(/\s*,\s+/));
+  }
+  return collect([str]);
+}
+
 /** 통계 스냅샷 조회 (진단/로그용). */
 function getBrowseCacheStats() {
   const total = _browseCacheHits + _browseCacheMisses;
@@ -745,8 +777,24 @@ class EbayAPI {
       : '';
     const specs = itemSpecifics || {};
     const specsEntries = Object.entries(specs).filter(([_, v]) => v != null && String(v).trim() !== '');
+    //   Trading API rules (v1355):
+    //     · one <Value> tag per value; multi-value aspects need MULTIPLE tags
+    //     · each <Value> max 65 characters (byte-safe cap)
+    //     · aspect NAME max 40 characters
+    //   Browse API joins competitor's multi-value aspects into one long CSV
+    //   string like "Foldable, 3L Retrofit System, Anti-slip silicone pad, ...",
+    //   which our previous single-<Value> emit sent verbatim → eBay rejected
+    //   with "Features's value of \"…\" exceeds allowed length" (owner-reported
+    //   AI 상품제작 · 2026-09-19). Normalize here: arrays become multi-<Value>,
+    //   over-long CSV strings get split, individual values get clipped.
     const specsXml = specsEntries.length > 0
-      ? `<ItemSpecifics>${specsEntries.map(([k, v]) => `<NameValueList><Name>${this.escapeXml(k)}</Name><Value>${this.escapeXml(String(v))}</Value></NameValueList>`).join('')}</ItemSpecifics>`
+      ? `<ItemSpecifics>${specsEntries.map(([k, v]) => {
+          const values = _normalizeItemSpecValues(v);
+          if (!values.length) return '';
+          const name = String(k).trim().slice(0, 40);
+          const valueTags = values.map(vv => `<Value>${this.escapeXml(vv)}</Value>`).join('');
+          return `<NameValueList><Name>${this.escapeXml(name)}</Name>${valueTags}</NameValueList>`;
+        }).filter(Boolean).join('')}</ItemSpecifics>`
       : '';
 
     // GTIN 계열 추출 (case-insensitive · 별칭 허용).
@@ -1790,3 +1838,4 @@ if (require.main === module) {
 module.exports = EbayAPI;
 module.exports.getBrowseCacheStats = getBrowseCacheStats;
 module.exports.clearBrowseCache = clearBrowseCache;
+module.exports._normalizeItemSpecValues = _normalizeItemSpecValues;
