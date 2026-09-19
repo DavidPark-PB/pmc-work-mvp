@@ -6,8 +6,34 @@ const axios = require('axios');
 //   `timeout: config.timeout || 30000`). Comfortably below the 2C lease
 //   ttlSec=180s (leaves ~150s for ProductExporter to catch, classify the
 //   thrown timeout as unknown_may_have_created, persist, and release the
-//   lease). NO retry — exactly ONE POST attempt per createProduct call.
+//   lease).
+//
+//   Retry policy (2026-09-19 · owner-reported AI 상품제작 rate-limit):
+//     · Timeouts (ECONNABORTED / ETIMEDOUT)   → NO retry (may have committed)
+//     · 5xx server errors                     → NO retry (may have committed)
+//     · 429 rate-limit                        → SAFE to retry (Shopify rejects
+//                                                BEFORE any product creation
+//                                                when the leaky-bucket limit
+//                                                is exceeded). Retry with
+//                                                Retry-After header + capped
+//                                                exponential backoff.
+//     · Any other 4xx                         → NO retry (auth/validation)
 const SHOPIFY_CREATE_PRODUCT_TIMEOUT_MS = 30000;
+const SHOPIFY_CREATE_PRODUCT_MAX_429_RETRIES = 4;   // 1s + 2s + 4s + 8s max
+
+//   Proactive throttle — Shopify REST Admin API's leaky-bucket allows 2
+//   calls/second per app-store pair. We track the last createProduct
+//   dispatch time at module scope so rapid successive AI 상품제작 calls
+//   space out at ≥550ms apart (10% margin over the hard 500ms cap) BEFORE
+//   the request goes out, complementing the reactive 429-retry above.
+const _SHOPIFY_MIN_INTERVAL_MS = 550;
+let _lastShopifyCreateDispatchAt = 0;
+async function _waitShopifyThrottle() {
+  const now = Date.now();
+  const wait = _SHOPIFY_MIN_INTERVAL_MS - (now - _lastShopifyCreateDispatchAt);
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  _lastShopifyCreateDispatchAt = Date.now();
+}
 
 /**
  * Shopify Admin API 클래스
@@ -278,15 +304,46 @@ class ShopifyAPI {
       } else if (imageUrl) {
         productData.product.images = [{ src: imageUrl }];
       }
-      //   PMC-EXPORT-SAFETY-2E · finite timeout. Exactly ONE POST attempt.
-      //   No retry loop. If the marketplace side is stuck, axios rejects
-      //   after SHOPIFY_CREATE_PRODUCT_TIMEOUT_MS and the timeout error
-      //   propagates upward (see catch below) so ProductExporter's outer
-      //   catch classifies it as unknown_may_have_created.
-      const response = await axios.post(url, productData, {
-        headers: this.getHeaders(),
-        timeout: SHOPIFY_CREATE_PRODUCT_TIMEOUT_MS,
-      });
+      //   PMC-EXPORT-SAFETY-2E · finite timeout. Exactly ONE POST attempt
+      //   for TIMEOUT + 5xx (may-have-committed).
+      //   PMC-EXPORT-SAFETY-2E · 429-only retry (2026-09-19): Shopify's
+      //   leaky-bucket 429 rejects the request BEFORE any product is
+      //   created, so retry-with-backoff is safe. Timeout and 5xx still
+      //   fail-closed to preserve unknown_may_have_created classification.
+      await _waitShopifyThrottle();
+      let response = null;
+      for (let attempt = 1; attempt <= SHOPIFY_CREATE_PRODUCT_MAX_429_RETRIES; attempt++) {
+        try {
+          response = await axios.post(url, productData, {
+            headers: this.getHeaders(),
+            timeout: SHOPIFY_CREATE_PRODUCT_TIMEOUT_MS,
+          });
+          break;   //   success — exit the retry loop
+        } catch (postErr) {
+          const status = postErr.response?.status;
+          const isRateLimit = status === 429;
+          if (!isRateLimit || attempt === SHOPIFY_CREATE_PRODUCT_MAX_429_RETRIES) {
+            //   Not a 429 OR out of attempts → propagate exactly like before.
+            //   The catch block below preserves the same success:false or
+            //   ECONNABORTED-throw behavior for the caller.
+            throw postErr;
+          }
+          //   Honor Retry-After if present; otherwise capped exponential
+          //   backoff (1s, 2s, 4s, 8s). Small jitter keeps parallel
+          //   retriers from re-colliding.
+          const retryAfterHdr = parseFloat(postErr.response?.headers?.['retry-after']);
+          const baseDelay = Math.pow(2, attempt - 1) * 1000;
+          const delay = Number.isFinite(retryAfterHdr) && retryAfterHdr > 0
+            ? Math.min(retryAfterHdr * 1000, 8000)
+            : baseDelay;
+          const jitter = Math.floor(Math.random() * 150);
+          console.warn(`[shopify createProduct] 429 rate-limited (attempt ${attempt}/${SHOPIFY_CREATE_PRODUCT_MAX_429_RETRIES}) — waiting ${delay + jitter}ms before retry`);
+          await new Promise(r => setTimeout(r, delay + jitter));
+          //   The proactive throttle already spaced this attempt, but after
+          //   a 429 we've effectively lost that window — re-arm.
+          _lastShopifyCreateDispatchAt = Date.now();
+        }
+      }
       const p = response.data.product;
       return {
         success: true,
@@ -465,3 +522,8 @@ class ShopifyAPI {
 }
 
 module.exports = ShopifyAPI;
+module.exports.SHOPIFY_CREATE_PRODUCT_TIMEOUT_MS = SHOPIFY_CREATE_PRODUCT_TIMEOUT_MS;
+module.exports.SHOPIFY_CREATE_PRODUCT_MAX_429_RETRIES = SHOPIFY_CREATE_PRODUCT_MAX_429_RETRIES;
+//   Test-only knob: reset the last-dispatch timestamp so throttle tests
+//   don't have to wait real wall-clock time between runs.
+module.exports._resetShopifyThrottleForTest = () => { _lastShopifyCreateDispatchAt = 0; };
