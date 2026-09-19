@@ -98,6 +98,23 @@ function _getEbay() {
 
 function _buildEbayParams(product, preset, thumbnailUrls) {
   const allImages = [...thumbnailUrls, ...(product.imageUrls || [])].slice(0, 12);
+  //   Merge preset + product aspects, THEN inject any category-required
+  //   aspects the operator/competitor didn't provide. Idempotent — never
+  //   overwrites an existing key. Owner-reported (2026-09-19): Single
+  //   Cards (183454) requires "Card Condition" aspect on top of the
+  //   top-level Trading API conditionId.
+  const { _injectRequiredAspects } = require('../api/ebayAPI');
+  const mergedSpecs = {
+    ...(preset.itemSpecifics || {}),
+    ...(product.itemSpecifics || {}),
+  };
+  const finalSpecs = _injectRequiredAspects(mergedSpecs, preset.categoryId, {
+    conditionString: product.conditionDisplayName
+                     || product.condition
+                     || preset.conditionDisplayName
+                     || '',
+    conditionId:     preset.conditionId,
+  });
   return {
     title: String(product.title || '').slice(0, 80),
     description: product.description || product.title || '',
@@ -108,10 +125,7 @@ function _buildEbayParams(product, preset, thumbnailUrls) {
     conditionId: preset.conditionId,
     imageUrls: allImages,
     currency: preset.currency || 'USD',
-    itemSpecifics: {
-      ...(preset.itemSpecifics || {}),
-      ...(product.itemSpecifics || {}),
-    },
+    itemSpecifics: finalSpecs,
   };
 }
 

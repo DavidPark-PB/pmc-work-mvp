@@ -97,6 +97,65 @@ function _inferEbayConditionId(browseConditionId, browseConditionString, categor
 }
 
 /**
+ * Card Condition aspect value derivation (2026-09-19 · owner-reported
+ * "Card Condition (40001) is a required field" on Single Cards).
+ *
+ * Pokemon Single Cards category (183454) REQUIRES the item aspect
+ * `Card Condition` on top of the top-level Trading API conditionId.
+ * Browse API's competitor listings often omit this aspect from
+ * `localizedAspects`, so we must inject a sensible value on publish.
+ *
+ * Valid values (eBay Trading API enum for Card Condition aspect):
+ *   Mint · Near Mint · Excellent · Very Good · Good · Light Play ·
+ *   Played · Damaged · Heavily Played · Poor
+ *
+ * Derivation order:
+ *   (a) parse `conditionString` for a known keyword (case-insensitive)
+ *   (b) fallback based on top-level conditionId:
+ *         2750 (Graded)   → 'Mint'       (typical for PSA/BGS-graded slabs)
+ *         4000 (Ungraded) → 'Near Mint'  (owner's usual "Near mint or better")
+ *         anything else   → 'Near Mint'  (safest default)
+ */
+function _deriveCardConditionValue(conditionString, conditionId) {
+  const s = String(conditionString || '').toLowerCase();
+  //   Order: most-specific first ("Near Mint" before "Mint", etc.)
+  if (/\bnear\s*mint\b|\bnm\b|\bn\/m\b/.test(s))      return 'Near Mint';
+  if (/\bmint\b/.test(s))                              return 'Mint';
+  if (/\bexcellent\b|\bex\b/.test(s))                  return 'Excellent';
+  if (/\bvery\s*good\b|\bvg\b/.test(s))                return 'Very Good';
+  if (/\blight\s*play|\blp\b/.test(s))                 return 'Light Play';
+  if (/\bheavily\s*played|\bhp\b/.test(s))             return 'Heavily Played';
+  if (/\bplayed\b/.test(s))                            return 'Played';
+  if (/\bdamaged\b/.test(s))                           return 'Damaged';
+  if (/\bpoor\b/.test(s))                              return 'Poor';
+  if (/\bgood\b/.test(s))                              return 'Good';
+  //   No keyword match → conditionId-based default.
+  const cid = String(conditionId || '').trim();
+  if (cid === '2750') return 'Mint';
+  return 'Near Mint';
+}
+
+/**
+ * Inject category-specific REQUIRED item aspects when the caller
+ * didn't provide them. Runs before XML build so the resulting request
+ * always carries whatever eBay's category rules mandate.
+ *
+ * Currently handled categories:
+ *   · 183454  Pokemon Single Cards      → requires "Card Condition"
+ *   (add more here as owner-reported errors surface)
+ *
+ * Idempotent: never overwrites an existing aspect the operator set.
+ */
+function _injectRequiredAspects(itemSpecifics, categoryId, ctx = {}) {
+  const out = { ...(itemSpecifics || {}) };
+  const cat = String(categoryId || '').trim();
+  if (cat === '183454' && !out['Card Condition']) {
+    out['Card Condition'] = _deriveCardConditionValue(ctx.conditionString, ctx.conditionId);
+  }
+  return out;
+}
+
+/**
  * eBay Trading API item-specific value normalizer (2026-09-19).
  *
  * Trading API v1355 constraints:
@@ -1893,3 +1952,5 @@ module.exports.getBrowseCacheStats = getBrowseCacheStats;
 module.exports.clearBrowseCache = clearBrowseCache;
 module.exports._normalizeItemSpecValues = _normalizeItemSpecValues;
 module.exports._inferEbayConditionId    = _inferEbayConditionId;
+module.exports._deriveCardConditionValue = _deriveCardConditionValue;
+module.exports._injectRequiredAspects   = _injectRequiredAspects;

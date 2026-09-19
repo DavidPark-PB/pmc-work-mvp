@@ -1251,6 +1251,9 @@
       // 2026-08-30: 경쟁사 등록 시점 가격을 서버로 전달 · 30일 undercut 감시 baseline 저장에 사용.
       competitorPrice: Number(state.competitor?.price) || null,
       seoKeywords: state.remake?.seoKeywords || [],
+      // 2026-09-19: 경쟁사의 condition 문자열을 서버로 전달 — Single Cards 카테고리에서
+      //   "Card Condition" 필수 aspect 를 이 문자열에서 유도 ('Near mint or better' → 'Near Mint').
+      conditionDisplayName: state.competitor?.conditionDisplayName || '',
     };
 
     const ctrl = new AbortController();
