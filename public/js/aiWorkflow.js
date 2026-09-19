@@ -66,13 +66,35 @@
   //   - categoryId / conditionId : Pokemon Booster Box (183456) 로 고정돼 있어서
   //     Chanel 립스틱을 그 카테고리에 밀어넣어 "item specific Game is missing" 반려.
   //     경쟁사가 실제 등록한 카테고리/컨디션 그대로 사용 · 사용자가 UI 에서 override 가능.
+  //   eBay conditionId defaults per collectible category — owner rule
+  //   (2026-09-19): stale localStorage conditionId (1000 from a prior
+  //   Booster Box test) must NOT ride along when we switch categories.
+  //   When the server-side inference in ebayAPI.js:_inferEbayConditionId
+  //   returns '' AND the localStorage default is not valid for the new
+  //   category, this map picks a sensible baseline the operator can
+  //   override in the preset UI.
+  const CATEGORY_CONDITION_DEFAULTS = {
+    '183454': '4000',   //   Pokemon Single Cards → Ungraded
+    '183455': '1000',   //   Sealed Booster Pack   → New
+    '183456': '1000',   //   Sealed Booster Box    → New
+  };
+
   function mirrorCompetitorToPreset() {
     const c = state.competitor;
     if (!c) return;
     const presets = loadPresets();
     presets.ebay = presets.ebay || {};
-    if (c.categoryId)  presets.ebay.categoryId  = String(c.categoryId);
-    if (c.conditionId) presets.ebay.conditionId = String(c.conditionId);
+    const newCat = c.categoryId ? String(c.categoryId) : '';
+    const catChanged = newCat && newCat !== String(presets.ebay.categoryId || '');
+    if (newCat) presets.ebay.categoryId = newCat;
+    //   Priority: (1) competitor's own conditionId → (2) category default if
+    //   the category changed and the old preset value is now stale.
+    if (c.conditionId) {
+      presets.ebay.conditionId = String(c.conditionId);
+    } else if (catChanged) {
+      const dflt = CATEGORY_CONDITION_DEFAULTS[newCat];
+      if (dflt) presets.ebay.conditionId = dflt;
+    }
     const specs = c.itemSpecifics;
     if (specs && typeof specs === 'object' && Object.keys(specs).length > 0) {
       presets.ebay.itemSpecifics = { ...specs };

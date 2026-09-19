@@ -47,6 +47,56 @@ let _browseCacheHits = 0;
 let _browseCacheMisses = 0;
 
 /**
+ * eBay conditionId inference (2026-09-19).
+ *
+ * Browse API's `conditionId` field is often empty on collectible categories
+ * (Single Cards, Graded slabs). Only `condition` (human string) is present,
+ * so mirrorCompetitorToPreset would inherit whatever stale value sat in
+ * localStorage (typically `1000` = New from a prior Booster Box test). eBay
+ * then rejects Single Cards (category 183454) with conditionId=1000 because
+ * "New" isn't a valid condition in that category.
+ *
+ * This function derives a Trading API conditionId from:
+ *   (a) Browse API's `conditionId` if present (source of truth); else
+ *   (b) `condition` string keyword match; else
+ *   (c) categoryId-aware default (Single Cards → 4000 Ungraded;
+ *       Sealed Booster Box/Pack → 1000 New); else
+ *   (d) '' (empty — caller may fall back to their own default)
+ *
+ * Trading API v1355 canonical values used here:
+ *    1000  New
+ *    1500  New other (see details)
+ *    2750  Graded (Trading Cards)
+ *    3000  Used
+ *    4000  Ungraded (Trading Cards) / Very Good (books)
+ *    5000  Good
+ *    6000  Acceptable
+ *    7000  For parts or not working
+ */
+function _inferEbayConditionId(browseConditionId, browseConditionString, categoryId) {
+  //   (a) trust Browse when it gives a numeric id
+  if (browseConditionId != null && String(browseConditionId).trim() !== '') {
+    return String(browseConditionId).trim();
+  }
+  const cond = String(browseConditionString || '').toLowerCase();
+  //   (b) string keyword match — order matters (specific > generic)
+  if (/graded/.test(cond) && !/ungraded/.test(cond))     return '2750';
+  if (/ungraded|near\s*mint|mint\b|excellent|light\s*play/.test(cond)) return '4000';
+  if (/new\s+other|open\s+box/.test(cond))               return '1500';
+  if (/\bnew\b|brand\s+new|sealed/.test(cond))           return '1000';
+  if (/acceptable|heavily\s+played/.test(cond))          return '6000';
+  if (/\bgood\b/.test(cond))                             return '5000';
+  if (/for\s+parts|not\s+working/.test(cond))            return '7000';
+  if (/used|pre-?owned|played|damaged/.test(cond))       return '3000';
+  //   (c) category-aware default for known collectible categories
+  const cat = String(categoryId || '').trim();
+  if (cat === '183454')            return '4000';   //   Pokemon Single Cards
+  if (cat === '183455' || cat === '183456') return '1000';  //   Sealed Booster Pack / Box
+  //   (d) empty — caller decides fallback
+  return '';
+}
+
+/**
  * eBay Trading API item-specific value normalizer (2026-09-19).
  *
  * Trading API v1355 constraints:
@@ -1536,7 +1586,10 @@ class EbayAPI {
       categoryId: item.categoryId || '',
       categoryName: item.categoryPath || '',
       conditionDisplayName: item.condition || '',
-      conditionId: item.conditionId || '',
+      //   Owner-reported (2026-09-19): Single Cards (183454) rejection when
+      //   Browse omits conditionId and we inherit stale localStorage
+      //   value 1000 (New). Derive from `condition` string + categoryId.
+      conditionId: _inferEbayConditionId(item.conditionId, item.condition, item.categoryId),
       itemSpecifics: specifics,
     };
 
@@ -1839,3 +1892,4 @@ module.exports = EbayAPI;
 module.exports.getBrowseCacheStats = getBrowseCacheStats;
 module.exports.clearBrowseCache = clearBrowseCache;
 module.exports._normalizeItemSpecValues = _normalizeItemSpecValues;
+module.exports._inferEbayConditionId    = _inferEbayConditionId;
