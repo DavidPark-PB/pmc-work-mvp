@@ -134,6 +134,66 @@ test('INJECT-5 · Graded (2750) → "Mint" by default when no string hint', () =
   assert.equal(out['Card Condition'], 'Mint');
 });
 
+//   ─────────────────────────────────────────────────────────────
+//   §2b · widened trigger (2026-09-22)
+//   ─────────────────────────────────────────────────────────────
+
+test('INJECT-6 · newer Pokemon Single Cards categories (2536, 261324) also inject', () => {
+  for (const cat of ['2536', '261324']) {
+    const out = _injectRequiredAspects({}, cat, { conditionId: '4000' });
+    assert.equal(out['Card Condition'], 'Near Mint',
+      `category ${cat} MUST trigger Card Condition injection`);
+  }
+});
+
+test('INJECT-7 · conditionId=4000 (Ungraded) triggers injection on ANY category (Trading-Card signal)', () => {
+  //   Owner-reported repro: even when preset.categoryId drifted, conditionId
+  //   stayed at 4000 (correctly inferred). The widened trigger must catch it.
+  const out = _injectRequiredAspects({ Brand: 'Pokemon' }, 'UNKNOWN_CAT', {
+    conditionString: 'Ungraded - Near mint or better', conditionId: '4000',
+  });
+  assert.equal(out['Card Condition'], 'Near Mint',
+    'conditionId=4000 alone MUST trigger injection regardless of categoryId');
+});
+
+test('INJECT-8 · conditionId=2750 (Graded) also triggers injection on ANY category', () => {
+  const out = _injectRequiredAspects({}, 'UNKNOWN_CAT', {
+    conditionString: 'PSA Graded', conditionId: '2750',
+  });
+  assert.equal(out['Card Condition'], 'Mint',
+    'conditionId=2750 alone MUST trigger injection with default "Mint"');
+});
+
+test('INJECT-9 · "Grade" or "Card Grade" alias is recognized as already-set (no double-emit)', () => {
+  const withGrade = _injectRequiredAspects(
+    { Grade: 'PSA 10' },
+    '183454',
+    { conditionId: '2750' },
+  );
+  //   Do not overwrite the explicit Grade — but also don't add Card Condition
+  //   since operator's Grade covers the required condition signal.
+  assert.equal(withGrade['Card Condition'], undefined,
+    'operator-supplied Grade aspect must count as Card Condition already set');
+  assert.equal(withGrade.Grade, 'PSA 10');
+
+  const withCardGrade = _injectRequiredAspects(
+    { 'Card Grade': 'BGS 9.5' },
+    '183454',
+    { conditionId: '2750' },
+  );
+  assert.equal(withCardGrade['Card Condition'], undefined);
+  assert.equal(withCardGrade['Card Grade'], 'BGS 9.5');
+});
+
+test('INJECT-10 · New (conditionId=1000) on non-Trading-Card category → no injection (correct no-op)', () => {
+  //   Regression guard: Booster Box (183456) + conditionId 1000 must NOT
+  //   grow a spurious Card Condition aspect.
+  const out = _injectRequiredAspects({ Brand: 'Pokemon' }, '183456', {
+    conditionString: 'New', conditionId: '1000',
+  });
+  assert.equal(out['Card Condition'], undefined);
+});
+
 //   ═════════════════════════════════════════════════════════════
 //   §3 · source-level integration guards
 //   ═════════════════════════════════════════════════════════════

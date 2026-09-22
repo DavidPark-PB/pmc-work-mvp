@@ -136,20 +136,45 @@ function _deriveCardConditionValue(conditionString, conditionId) {
 }
 
 /**
- * Inject category-specific REQUIRED item aspects when the caller
- * didn't provide them. Runs before XML build so the resulting request
- * always carries whatever eBay's category rules mandate.
+ * Inject REQUIRED item aspects when the caller didn't provide them.
+ * Runs before XML build so the resulting request always carries
+ * whatever eBay's category rules mandate.
  *
- * Currently handled categories:
- *   · 183454  Pokemon Single Cards      → requires "Card Condition"
- *   (add more here as owner-reported errors surface)
+ * "Card Condition" (aspect id 40001) trigger — WIDENED 2026-09-22:
+ *   Owner reported the previous category-only trigger ('183454' strict)
+ *   still let the field go missing — likely because the actual
+ *   categoryId at publish time drifted (Pokemon TCG has been
+ *   reorganized on eBay's side; different Single Card sub-categories
+ *   exist). Widen the trigger to cover BOTH:
  *
- * Idempotent: never overwrites an existing aspect the operator set.
+ *     (a) known Pokemon-Single-Card category IDs
+ *           183454 · 2536 · 261324
+ *     (b) conditionId in {'4000','2750'} — Trading-Card-only Trading API
+ *         condition IDs (Ungraded / Graded). eBay does not accept these
+ *         values in any non-Trading-Card category, so their presence is
+ *         a reliable signal that we ARE listing a Trading Card and the
+ *         Card Condition aspect is required.
+ *
+ *   Either trigger is sufficient. Neither overwrites an operator-supplied
+ *   value.
+ *
+ * Aspect-title recognition also widened:
+ *   Some competitor Browse-API responses use "Card Grade" / "Grade"
+ *   instead of "Card Condition". Recognize any of these as already-set
+ *   so we don't double-emit — but the value is emitted under the
+ *   canonical name eBay's aspect id 40001 expects: "Card Condition".
  */
 function _injectRequiredAspects(itemSpecifics, categoryId, ctx = {}) {
   const out = { ...(itemSpecifics || {}) };
   const cat = String(categoryId || '').trim();
-  if (cat === '183454' && !out['Card Condition']) {
+  const cid = String(ctx.conditionId || '').trim();
+  const KNOWN_SINGLE_CARD_CATS = new Set(['183454', '2536', '261324']);
+  const TRADING_CARD_CIDS      = new Set(['4000', '2750']);
+  const shouldInject = KNOWN_SINGLE_CARD_CATS.has(cat) || TRADING_CARD_CIDS.has(cid);
+  //   Any of these alias names count as "operator already set it".
+  const CARD_CONDITION_ALIASES = ['Card Condition', 'Card Grade', 'Grade'];
+  const alreadySet = CARD_CONDITION_ALIASES.some(k => out[k] != null && String(out[k]).trim() !== '');
+  if (shouldInject && !alreadySet) {
     out['Card Condition'] = _deriveCardConditionValue(ctx.conditionString, ctx.conditionId);
   }
   return out;
