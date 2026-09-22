@@ -194,6 +194,80 @@ test('INJECT-10 · New (conditionId=1000) on non-Trading-Card category → no in
   assert.equal(out['Card Condition'], undefined);
 });
 
+//   ─────────────────────────────────────────────────────────────
+//   §2c · third-tier STRUCTURAL trigger (owner's third repro, 2026-09-22)
+//   ─────────────────────────────────────────────────────────────
+
+test('INJECT-11 · itemSpecifics with "Card Number" aspect alone → inject (even w/ wrong category + stale conditionId)', () => {
+  //   Worst-case: preset drift left categoryId at Booster Box AND conditionId
+  //   at 1000 (New). Neither trigger (a) nor (b) fires. Structural trigger
+  //   (c) catches it because a Trading Card listing carries "Card Number".
+  const out = _injectRequiredAspects(
+    { 'Card Number': '114/083', Brand: 'Pokemon' },
+    '183456',   //   stale wrong category
+    { conditionId: '1000' },   //   stale wrong condition
+  );
+  assert.equal(out['Card Condition'], 'Near Mint',
+    'structural trigger MUST catch the case where all other signals are stale');
+});
+
+test('INJECT-12 · itemSpecifics with "Rarity"/"Card Type"/"Illustrator" aspect triggers injection', () => {
+  //   Each of these aspects on its own is enough — Trading Card listings
+  //   always carry at least one of them.
+  for (const aspect of ['Rarity', 'Card Type', 'Illustrator']) {
+    const out = _injectRequiredAspects(
+      { [aspect]: 'X' },
+      'UNKNOWN',
+      { conditionId: '' },
+    );
+    assert.equal(out['Card Condition'], 'Near Mint',
+      `structural trigger MUST fire on "${aspect}" aspect alone`);
+  }
+});
+
+test('INJECT-13 · Game containing "TCG" or "Trading Card" triggers injection', () => {
+  const outTCG = _injectRequiredAspects({ Game: 'Pokémon TCG' }, 'UNKNOWN', {});
+  assert.equal(outTCG['Card Condition'], 'Near Mint');
+  const outTC  = _injectRequiredAspects({ Game: 'Trading Card Game' }, 'UNKNOWN', {});
+  assert.equal(outTC['Card Condition'], 'Near Mint');
+  //   Non-TCG Game value MUST NOT trigger.
+  const outFPS = _injectRequiredAspects({ Game: 'First Person Shooter' }, 'UNKNOWN', {});
+  assert.equal(outFPS['Card Condition'], undefined,
+    'non-Trading-Card Game value MUST NOT trigger structural injection');
+});
+
+test('INJECT-14 · Franchise = "Pokémon" or "Pokemon" triggers injection', () => {
+  for (const franchise of ['Pokémon', 'Pokemon', 'POKEMON', 'pokemon']) {
+    const out = _injectRequiredAspects({ Franchise: franchise }, 'UNKNOWN', {});
+    assert.equal(out['Card Condition'], 'Near Mint',
+      `Franchise="${franchise}" MUST trigger`);
+  }
+  //   Unrelated Franchise MUST NOT trigger.
+  const outLego = _injectRequiredAspects({ Franchise: 'LEGO' }, 'UNKNOWN', {});
+  assert.equal(outLego['Card Condition'], undefined);
+});
+
+test('INJECT-15 · Owner exact repro: full competitor aspect set with stale categoryId → still injects', () => {
+  //   The exact aspect set visible in owner's screenshot for the Pikachu Ex
+  //   SAR competitor listing. Even if preset.categoryId ended up wrong AND
+  //   conditionId stayed stale at '1000', structural trigger catches it.
+  const out = _injectRequiredAspects(
+    {
+      Franchise: 'Pokémon',
+      Rarity:    'SAR',
+      Game:      'Pokémon TCG',
+      Illustrator: 'Susumu Maeya',
+      Customized: 'No',
+      'Card Number': '114/083',
+      'Country of Origin': 'South Korea (Republic of Korea)',
+    },
+    'WRONG_CAT',
+    { conditionId: '1000', conditionString: '' },
+  );
+  assert.equal(out['Card Condition'], 'Near Mint',
+    "owner's Pikachu Ex SAR competitor aspect set MUST inject Card Condition regardless of stale ctx");
+});
+
 //   ═════════════════════════════════════════════════════════════
 //   §3 · source-level integration guards
 //   ═════════════════════════════════════════════════════════════

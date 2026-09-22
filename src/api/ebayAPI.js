@@ -170,12 +170,48 @@ function _injectRequiredAspects(itemSpecifics, categoryId, ctx = {}) {
   const cid = String(ctx.conditionId || '').trim();
   const KNOWN_SINGLE_CARD_CATS = new Set(['183454', '2536', '261324']);
   const TRADING_CARD_CIDS      = new Set(['4000', '2750']);
-  const shouldInject = KNOWN_SINGLE_CARD_CATS.has(cat) || TRADING_CARD_CIDS.has(cid);
+  //   Widened trigger 2026-09-22 (third repro after previous two fixes):
+  //   (a) known Pokemon-Single-Card category id
+  //   (b) Trading-Card-only conditionId (4000 / 2750)
+  //   (c) STRUCTURAL SIGNAL — itemSpecifics carries any of the aspects
+  //       eBay Trading Card listings ALWAYS have:
+  //         Card Number · Rarity · Card Type · Illustrator ·
+  //         Game (containing "TCG" or "Trading Card") ·
+  //         Franchise = "Pokémon" or "Pokemon"
+  //       This catches the case where preset.categoryId drifted to an
+  //       unknown/wrong value AND preset.conditionId stayed stale — the
+  //       competitor's own aspects still betray it is a Trading Card.
+  const specKeys = Object.keys(out);
+  const specKeysLower = specKeys.map(k => String(k).toLowerCase());
+  const hasTradingCardAspect =
+    specKeysLower.includes('card number') ||
+    specKeysLower.includes('rarity') ||
+    specKeysLower.includes('card type') ||
+    specKeysLower.includes('illustrator') ||
+    (typeof out['Game'] === 'string'      && /trading\s*card|\btcg\b/i.test(out['Game'])) ||
+    (typeof out['Franchise'] === 'string' && /pok(e|é)mon/i.test(out['Franchise'])) ||
+    (typeof out['Category'] === 'string'  && /single\s*card/i.test(out['Category']));
+  const shouldInject =
+    KNOWN_SINGLE_CARD_CATS.has(cat) ||
+    TRADING_CARD_CIDS.has(cid) ||
+    hasTradingCardAspect;
   //   Any of these alias names count as "operator already set it".
   const CARD_CONDITION_ALIASES = ['Card Condition', 'Card Grade', 'Grade'];
   const alreadySet = CARD_CONDITION_ALIASES.some(k => out[k] != null && String(out[k]).trim() !== '');
   if (shouldInject && !alreadySet) {
-    out['Card Condition'] = _deriveCardConditionValue(ctx.conditionString, ctx.conditionId);
+    const value = _deriveCardConditionValue(ctx.conditionString, ctx.conditionId);
+    out['Card Condition'] = value;
+    //   Diagnostic log — owner can share this from Railway to prove
+    //   injection is happening. Keep concise so it doesn't spam logs.
+    try {
+      console.log(`[ebayAPI._injectRequiredAspects] injected Card Condition="${value}" · trigger={cat:${KNOWN_SINGLE_CARD_CATS.has(cat)},cid:${TRADING_CARD_CIDS.has(cid)},struct:${hasTradingCardAspect}} · categoryId=${cat} · conditionId=${cid}`);
+    } catch (_) {}
+  } else if (!alreadySet && (specKeys.length > 0)) {
+    //   Non-injection path with aspects present — log for diagnostics so
+    //   owner can see WHY the trigger didn't fire (e.g., all signals absent).
+    try {
+      console.log(`[ebayAPI._injectRequiredAspects] no inject · categoryId=${cat} · conditionId=${cid} · triggers=[cat:${KNOWN_SINGLE_CARD_CATS.has(cat)},cid:${TRADING_CARD_CIDS.has(cid)},struct:${hasTradingCardAspect}] · aspect_count=${specKeys.length}`);
+    } catch (_) {}
   }
   return out;
 }
@@ -1037,6 +1073,16 @@ class EbayAPI {
   async createProduct(params) {
     try {
       const requestBody = this._buildItemXml(params);
+      //   Diagnostic (2026-09-22): log the aspect names ACTUALLY sent so
+      //   owner-reported "Card Condition required" failures can be traced.
+      //   Log names only (not values) to keep logs compact and avoid PII.
+      try {
+        const specNames = Object.keys(params.itemSpecifics || {});
+        const hasCC = specNames.includes('Card Condition') ||
+                      specNames.includes('Card Grade') ||
+                      specNames.includes('Grade');
+        console.log(`[eBay createProduct] req · category=${params.categoryId} · conditionId=${params.conditionId} · aspect_count=${specNames.length} · has_card_condition=${hasCC} · aspects=[${specNames.slice(0, 40).join(', ')}]`);
+      } catch (_) {}
       const response = await this.callTradingAPI('AddFixedPriceItem', requestBody);
       console.log('[eBay createProduct] response:', response.substring(0, 3000));
       const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
