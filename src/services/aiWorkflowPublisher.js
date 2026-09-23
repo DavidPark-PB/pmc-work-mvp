@@ -98,22 +98,22 @@ function _getEbay() {
 
 function _buildEbayParams(product, preset, thumbnailUrls) {
   const allImages = [...thumbnailUrls, ...(product.imageUrls || [])].slice(0, 12);
-  //   Merge preset + product aspects, THEN inject any category-required
-  //   aspects the operator/competitor didn't provide. Idempotent — never
-  //   overwrites an existing key. Owner-reported (2026-09-19): Single
-  //   Cards (183454) requires "Card Condition" aspect on top of the
-  //   top-level Trading API conditionId.
+  //   2026-09-23: Card Condition for Trading Cards is NOT an item aspect —
+  //   it lives in <ConditionDescriptors>, a separate Item child. We pass
+  //   the raw condition context (string + id) to _buildItemXml so the
+  //   descriptor block is emitted at the correct XML location.
   const { _injectRequiredAspects } = require('../api/ebayAPI');
   const mergedSpecs = {
     ...(preset.itemSpecifics || {}),
     ...(product.itemSpecifics || {}),
   };
+  const conditionString = product.conditionDisplayName
+                       || product.condition
+                       || preset.conditionDisplayName
+                       || '';
+  const conditionId     = preset.conditionId;
   const finalSpecs = _injectRequiredAspects(mergedSpecs, preset.categoryId, {
-    conditionString: product.conditionDisplayName
-                     || product.condition
-                     || preset.conditionDisplayName
-                     || '',
-    conditionId:     preset.conditionId,
+    conditionString, conditionId,
   });
   return {
     title: String(product.title || '').slice(0, 80),
@@ -122,10 +122,13 @@ function _buildEbayParams(product, preset, thumbnailUrls) {
     quantity: preset.quantity || product.quantity || 1,
     sku: product.sku || _generateSku(product.competitorItemId || product.title),
     categoryId: preset.categoryId,
-    conditionId: preset.conditionId,
+    conditionId,
     imageUrls: allImages,
     currency: preset.currency || 'USD',
     itemSpecifics: finalSpecs,
+    //   Consumed by ebayAPI._buildItemXml → _buildConditionDescriptors to
+    //   emit the <ConditionDescriptors> block for Trading Card categories.
+    conditionDescriptorContext: { conditionString, conditionId },
   };
 }
 

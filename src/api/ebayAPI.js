@@ -136,83 +136,118 @@ function _deriveCardConditionValue(conditionString, conditionId) {
 }
 
 /**
- * Inject REQUIRED item aspects when the caller didn't provide them.
- * Runs before XML build so the resulting request always carries
- * whatever eBay's category rules mandate.
- *
- * "Card Condition" (aspect id 40001) trigger — WIDENED 2026-09-22:
- *   Owner reported the previous category-only trigger ('183454' strict)
- *   still let the field go missing — likely because the actual
- *   categoryId at publish time drifted (Pokemon TCG has been
- *   reorganized on eBay's side; different Single Card sub-categories
- *   exist). Widen the trigger to cover BOTH:
- *
- *     (a) known Pokemon-Single-Card category IDs
- *           183454 · 2536 · 261324
- *     (b) conditionId in {'4000','2750'} — Trading-Card-only Trading API
- *         condition IDs (Ungraded / Graded). eBay does not accept these
- *         values in any non-Trading-Card category, so their presence is
- *         a reliable signal that we ARE listing a Trading Card and the
- *         Card Condition aspect is required.
- *
- *   Either trigger is sufficient. Neither overwrites an operator-supplied
- *   value.
- *
- * Aspect-title recognition also widened:
- *   Some competitor Browse-API responses use "Card Grade" / "Grade"
- *   instead of "Card Condition". Recognize any of these as already-set
- *   so we don't double-emit — but the value is emitted under the
- *   canonical name eBay's aspect id 40001 expects: "Card Condition".
+ * Detect whether a listing carries Trading-Card signals — used by BOTH
+ * `_injectRequiredAspects` (item aspects) and `_buildConditionDescriptors`
+ * (top-level XML block). Owner's GetItemAspectsForCategory response for
+ * 183454 proved "Card Condition" is NOT an item aspect — it's a
+ * ConditionDescriptor. So both paths need the same detection.
  */
-function _injectRequiredAspects(itemSpecifics, categoryId, ctx = {}) {
-  const out = { ...(itemSpecifics || {}) };
+function _isTradingCardContext(itemSpecifics, categoryId, conditionId) {
   const cat = String(categoryId || '').trim();
-  const cid = String(ctx.conditionId || '').trim();
+  const cid = String(conditionId || '').trim();
   const KNOWN_SINGLE_CARD_CATS = new Set(['183454', '2536', '261324']);
   const TRADING_CARD_CIDS      = new Set(['4000', '2750']);
-  //   Widened trigger 2026-09-22 (third repro after previous two fixes):
-  //   (a) known Pokemon-Single-Card category id
-  //   (b) Trading-Card-only conditionId (4000 / 2750)
-  //   (c) STRUCTURAL SIGNAL — itemSpecifics carries any of the aspects
-  //       eBay Trading Card listings ALWAYS have:
-  //         Card Number · Rarity · Card Type · Illustrator ·
-  //         Game (containing "TCG" or "Trading Card") ·
-  //         Franchise = "Pokémon" or "Pokemon"
-  //       This catches the case where preset.categoryId drifted to an
-  //       unknown/wrong value AND preset.conditionId stayed stale — the
-  //       competitor's own aspects still betray it is a Trading Card.
-  const specKeys = Object.keys(out);
-  const specKeysLower = specKeys.map(k => String(k).toLowerCase());
+  const specKeysLower = Object.keys(itemSpecifics || {}).map(k => String(k).toLowerCase());
   const hasTradingCardAspect =
     specKeysLower.includes('card number') ||
     specKeysLower.includes('rarity') ||
     specKeysLower.includes('card type') ||
     specKeysLower.includes('illustrator') ||
-    (typeof out['Game'] === 'string'      && /trading\s*card|\btcg\b/i.test(out['Game'])) ||
-    (typeof out['Franchise'] === 'string' && /pok(e|é)mon/i.test(out['Franchise'])) ||
-    (typeof out['Category'] === 'string'  && /single\s*card/i.test(out['Category']));
-  const shouldInject =
-    KNOWN_SINGLE_CARD_CATS.has(cat) ||
-    TRADING_CARD_CIDS.has(cid) ||
-    hasTradingCardAspect;
-  //   Any of these alias names count as "operator already set it".
-  const CARD_CONDITION_ALIASES = ['Card Condition', 'Card Grade', 'Grade'];
-  const alreadySet = CARD_CONDITION_ALIASES.some(k => out[k] != null && String(out[k]).trim() !== '');
-  if (shouldInject && !alreadySet) {
-    const value = _deriveCardConditionValue(ctx.conditionString, ctx.conditionId);
-    out['Card Condition'] = value;
-    //   Diagnostic log — owner can share this from Railway to prove
-    //   injection is happening. Keep concise so it doesn't spam logs.
-    try {
-      console.log(`[ebayAPI._injectRequiredAspects] injected Card Condition="${value}" · trigger={cat:${KNOWN_SINGLE_CARD_CATS.has(cat)},cid:${TRADING_CARD_CIDS.has(cid)},struct:${hasTradingCardAspect}} · categoryId=${cat} · conditionId=${cid}`);
-    } catch (_) {}
-  } else if (!alreadySet && (specKeys.length > 0)) {
-    //   Non-injection path with aspects present — log for diagnostics so
-    //   owner can see WHY the trigger didn't fire (e.g., all signals absent).
-    try {
-      console.log(`[ebayAPI._injectRequiredAspects] no inject · categoryId=${cat} · conditionId=${cid} · triggers=[cat:${KNOWN_SINGLE_CARD_CATS.has(cat)},cid:${TRADING_CARD_CIDS.has(cid)},struct:${hasTradingCardAspect}] · aspect_count=${specKeys.length}`);
-    } catch (_) {}
-  }
+    (typeof (itemSpecifics || {})['Game'] === 'string'      && /trading\s*card|\btcg\b/i.test(itemSpecifics.Game)) ||
+    (typeof (itemSpecifics || {})['Franchise'] === 'string' && /pok(e|é)mon/i.test(itemSpecifics.Franchise)) ||
+    (typeof (itemSpecifics || {})['Category'] === 'string'  && /single\s*card/i.test(itemSpecifics.Category));
+  return KNOWN_SINGLE_CARD_CATS.has(cat) || TRADING_CARD_CIDS.has(cid) || hasTradingCardAspect;
+}
+
+/**
+ * Build the `<ConditionDescriptors>` XML block eBay Trading API v1355
+ * REQUIRES for Trading Card categories (2026-09-23 root cause).
+ *
+ * Confirmed via GetItemAspectsForCategory response for category 183454
+ * (owner shared 2026-09-23): "Card Condition" does NOT exist in the
+ * item-aspect list. The only required aspect is "Game". The runtime
+ * error "Card Condition (40001) is a required field" therefore refers
+ * to a ConditionDescriptor, not an ItemSpecifics NameValueList.
+ *
+ * XML shape per eBay Trading API AddFixedPriceItem docs:
+ *   <ConditionDescriptors>
+ *     <ConditionDescriptor>
+ *       <Name>40001</Name>      <!-- descriptor id from the error -->
+ *       <Value>Near Mint</Value> <!-- accepts string per newer schema -->
+ *     </ConditionDescriptor>
+ *   </ConditionDescriptors>
+ *
+ * `descriptorId=40001` is what eBay's own error told us. If a future
+ * category surfaces a different descriptor id, extend this function.
+ *
+ * Returns '' if the context is NOT a Trading Card listing OR if
+ * operator/competitor already provided a Grade/Card Grade/Card Condition
+ * item-aspect (kept for backwards compatibility with older listings
+ * that used the ItemSpecifics path).
+ */
+function _buildConditionDescriptors(itemSpecifics, categoryId, ctx = {}) {
+  if (!_isTradingCardContext(itemSpecifics, categoryId, ctx.conditionId)) return '';
+  //   If operator supplied any of these aliases at the item-aspect level,
+  //   trust it as the value to send. Otherwise derive from context.
+  const specs = itemSpecifics || {};
+  const supplied = specs['Card Condition'] || specs['Card Grade'] || specs['Grade'];
+  const raw = supplied != null && String(supplied).trim() !== ''
+    ? String(supplied).trim()
+    : _deriveCardConditionValue(ctx.conditionString, ctx.conditionId);
+  //   Normalize to eBay's Card Condition enum (matches _deriveCardConditionValue
+  //   output). If the supplied value doesn't map cleanly, keep it as-is
+  //   and let eBay tell us via the response what enum values are valid.
+  const value = raw;
+  //   40001 is the descriptor id eBay itself named in the error message.
+  //   Emit the block — string value is accepted by the v1355 schema for
+  //   this descriptor family.
+  return `<ConditionDescriptors>
+      <ConditionDescriptor>
+        <Name>40001</Name>
+        <Value>${_escapeXmlValue(value)}</Value>
+      </ConditionDescriptor>
+    </ConditionDescriptors>`;
+}
+//   Local XML escape — module-scope function needs its own since instance
+//   methods aren't visible here.
+function _escapeXmlValue(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
+ * Inject REQUIRED item aspects when the caller didn't provide them.
+ * Runs before XML build so the resulting request always carries
+ * whatever eBay's category rules mandate.
+ *
+ * NOTE (2026-09-23): "Card Condition" is NOT injected here anymore.
+ * Owner's GetItemAspectsForCategory response for 183454 proved that
+ * aspect does NOT exist in this category's item-aspect list. The
+ * "Card Condition (40001) is a required field" error refers to a
+ * ConditionDescriptor, which is emitted by `_buildConditionDescriptors`
+ * as a separate top-level XML block. This function is kept for future
+ * category-required aspects (currently a no-op for Card Condition —
+ * pass-through only).
+ */
+function _injectRequiredAspects(itemSpecifics, categoryId, ctx = {}) {
+  //   2026-09-23 · owner GetItemAspectsForCategory dump for 183454 proved
+  //   "Card Condition" is NOT an item aspect in this category (only "Game"
+  //   is required). The "Card Condition (40001) is a required field"
+  //   error was actually a missing ConditionDescriptor — now emitted by
+  //   `_buildConditionDescriptors` as a separate top-level XML block.
+  //   Injecting the aspect anyway pollutes ItemSpecifics with an aspect
+  //   name eBay's category schema doesn't accept.
+  //
+  //   Function kept as a pass-through so callers don't need to change and
+  //   future category-required aspects can be added here as they surface.
+  const out = { ...(itemSpecifics || {}) };
+  try {
+    console.log(`[ebayAPI._injectRequiredAspects] pass-through · categoryId=${categoryId} · conditionId=${ctx.conditionId} · aspect_count=${Object.keys(out).length}`);
+  } catch (_) {}
   return out;
 }
 
@@ -940,7 +975,7 @@ class EbayAPI {
    *         ProductListingDetails 에 mirror. UPC 는 없어도 항상 "Does not apply"
    *         (eBay 공식 opt-out 값) 자동 채움 → UPC 없는 상품도 통과.
    */
-  _buildItemXml({ title, description, price, quantity, sku, categoryId, conditionId, imageUrls, imageUrl, currency, itemSpecifics }) {
+  _buildItemXml({ title, description, price, quantity, sku, categoryId, conditionId, imageUrls, imageUrl, currency, itemSpecifics, conditionDescriptorContext }) {
     const allImages = imageUrls || (imageUrl ? [imageUrl] : []);
     const pictureXml = allImages.length > 0
       ? `<PictureDetails>${allImages.map(u => `<PictureURL>${this.escapeXml(u)}</PictureURL>`).join('')}</PictureDetails>`
@@ -983,6 +1018,18 @@ class EbayAPI {
       <UPC>${this.escapeXml(upc || 'Does not apply')}</UPC>${ean ? `\n      <EAN>${this.escapeXml(ean)}</EAN>` : ''}${isbn ? `\n      <ISBN>${this.escapeXml(isbn)}</ISBN>` : ''}
     </ProductListingDetails>`;
 
+    //   2026-09-23 · Trading Card categories require <ConditionDescriptors>
+    //   as a top-level Item child (not an item aspect). Owner-confirmed:
+    //   Card Condition (40001) is a required field but does NOT appear in
+    //   GetItemAspectsForCategory response — it lives here instead.
+    //   Callers pass `conditionDescriptorContext = { conditionString, conditionId }`
+    //   so `_buildConditionDescriptors` can derive the right descriptor value.
+    const cdCtx = conditionDescriptorContext || {};
+    const conditionDescriptorsXml = _buildConditionDescriptors(
+      itemSpecifics,
+      categoryId,
+      { conditionString: cdCtx.conditionString, conditionId: cdCtx.conditionId || conditionId },
+    );
     return `
   <Item>
     <Title>${this.escapeXml(title)}</Title>
@@ -992,6 +1039,7 @@ class EbayAPI {
     </PrimaryCategory>
     <StartPrice currencyID="${currency || 'USD'}">${price}</StartPrice>
     <ConditionID>${conditionId || '1000'}</ConditionID>
+    ${conditionDescriptorsXml}
     <CategoryMappingAllowed>true</CategoryMappingAllowed>
     <Country>KR</Country>
     <Location>Seoul, Korea</Location>
@@ -2037,3 +2085,5 @@ module.exports._normalizeItemSpecValues = _normalizeItemSpecValues;
 module.exports._inferEbayConditionId    = _inferEbayConditionId;
 module.exports._deriveCardConditionValue = _deriveCardConditionValue;
 module.exports._injectRequiredAspects   = _injectRequiredAspects;
+module.exports._buildConditionDescriptors = _buildConditionDescriptors;
+module.exports._isTradingCardContext    = _isTradingCardContext;

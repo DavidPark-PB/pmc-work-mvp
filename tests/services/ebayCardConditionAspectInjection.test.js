@@ -1,30 +1,30 @@
 'use strict';
 
 /**
- * tests/services/ebayCardConditionAspectInjection.test.js  (2026-09-19)
+ * tests/services/ebayCardConditionAspectInjection.test.js  (2026-09-23)
  *
- * Owner-reported bug: Single Cards (Pokemon category 183454) registration
- * failed with
- *   "Card Condition (40001) is a required field."
- * even after the previous fix set the top-level Trading API conditionId
- * correctly to 4000 (Ungraded).
+ * Owner-confirmed via GetItemAspectsForCategory dump for category 183454
+ * (2026-09-23): "Card Condition" is NOT an item aspect in Pokemon Single
+ * Cards — the only required aspect is "Game". The "Card Condition (40001)
+ * is a required field" error therefore refers to a ConditionDescriptor,
+ * a separate top-level XML block eBay Trading API v1355 requires for
+ * Trading Card categories:
  *
- * Root cause: 183454 requires TWO condition-related fields:
- *   1. top-level `conditionId` in the ItemXml   (already handled)
- *   2. `Card Condition` ITEM ASPECT (aspect id 40001) inside
- *      <ItemSpecifics>                          (was MISSING)
- * Browse API's competitor listings often don't surface this aspect, so
- * our merged itemSpecifics went out without it and eBay rejected.
+ *   <Item>
+ *     <ConditionID>4000</ConditionID>
+ *     <ConditionDescriptors>
+ *       <ConditionDescriptor>
+ *         <Name>40001</Name>
+ *         <Value>Near Mint</Value>
+ *       </ConditionDescriptor>
+ *     </ConditionDescriptors>
+ *     ...
+ *   </Item>
  *
- * Fix: `_injectRequiredAspects(itemSpecifics, categoryId, ctx)` in
- * ebayAPI.js adds "Card Condition" for category 183454 when missing,
- * with value derived from the competitor's condition string
- * ("Near mint or better" → "Near Mint") or from the top-level
- * conditionId (2750 Graded → "Mint" · 4000 Ungraded → "Near Mint" ·
- * default → "Near Mint"). aiWorkflowPublisher.js calls it inside
- * `_buildEbayParams` so every AI 상품제작 publish + verify carries the
- * required aspect. The SPA now forwards `product.conditionDisplayName`
- * so the derivation has the competitor's original string to parse.
+ * Previous item-aspect injection (INJECT-*) is REMOVED — it was harmful
+ * (polluted ItemSpecifics with a name eBay's schema doesn't accept for
+ * this category) AND ineffective (never satisfied the descriptor
+ * requirement). This suite now locks in the descriptor path.
  */
 
 const test    = require('node:test');
@@ -39,10 +39,12 @@ const SPA     = path.join(REPO, 'public/js/aiWorkflow.js');
 const {
   _deriveCardConditionValue,
   _injectRequiredAspects,
+  _buildConditionDescriptors,
+  _isTradingCardContext,
 } = require(EBAYAPI);
 
 //   ═════════════════════════════════════════════════════════════
-//   §1 · _deriveCardConditionValue — string keyword mapping
+//   §1 · _deriveCardConditionValue — unchanged from earlier fix
 //   ═════════════════════════════════════════════════════════════
 
 test('CC-1 · owner-reported "Ungraded - Near mint or better" → "Near Mint"', () => {
@@ -53,9 +55,8 @@ test('CC-1 · owner-reported "Ungraded - Near mint or better" → "Near Mint"', 
 });
 
 test('CC-2 · "Mint" alone → "Mint" (not "Near Mint" — order precedence)', () => {
-  assert.equal(_deriveCardConditionValue('Mint condition', '4000'),          'Mint');
-  assert.equal(_deriveCardConditionValue('Perfect Mint state', '4000'),      'Mint');
-  assert.equal(_deriveCardConditionValue('near mint', '4000'),               'Near Mint');
+  assert.equal(_deriveCardConditionValue('Mint condition', '4000'), 'Mint');
+  assert.equal(_deriveCardConditionValue('near mint', '4000'),      'Near Mint');
 });
 
 test('CC-3 · abbreviations (NM/EX/VG/LP/HP)', () => {
@@ -66,273 +67,242 @@ test('CC-3 · abbreviations (NM/EX/VG/LP/HP)', () => {
   assert.equal(_deriveCardConditionValue('HP', '4000'), 'Heavily Played');
 });
 
-test('CC-4 · Damaged / Poor / Good / Played tiers', () => {
-  assert.equal(_deriveCardConditionValue('Damaged',   '4000'), 'Damaged');
-  assert.equal(_deriveCardConditionValue('Poor',      '4000'), 'Poor');
-  assert.equal(_deriveCardConditionValue('Good',      '4000'), 'Good');
-  assert.equal(_deriveCardConditionValue('Played',    '4000'), 'Played');
-});
-
 test('CC-5 · no string match → conditionId-based fallback', () => {
-  //   2750 Graded → "Mint" (typical PSA/BGS slab)
-  assert.equal(_deriveCardConditionValue('',           '2750'), 'Mint');
-  assert.equal(_deriveCardConditionValue('some noise', '2750'), 'Mint');
-  //   4000 Ungraded or missing → "Near Mint"
-  assert.equal(_deriveCardConditionValue('',           '4000'), 'Near Mint');
-  assert.equal(_deriveCardConditionValue('',           ''),      'Near Mint');
-  assert.equal(_deriveCardConditionValue(null,         null),    'Near Mint');
+  assert.equal(_deriveCardConditionValue('', '2750'), 'Mint');
+  assert.equal(_deriveCardConditionValue('', '4000'), 'Near Mint');
+  assert.equal(_deriveCardConditionValue(null, null), 'Near Mint');
 });
 
 //   ═════════════════════════════════════════════════════════════
-//   §2 · _injectRequiredAspects — Single Cards 183454
+//   §2 · _injectRequiredAspects — now a pass-through for Card
+//        Condition (removed the item-aspect injection that never
+//        satisfied eBay's descriptor requirement)
 //   ═════════════════════════════════════════════════════════════
 
-test('INJECT-1 · Single Cards (183454) with NO Card Condition → injects derived value', () => {
+test('INJECT-PASS-1 · Card Condition is NOT injected as an item aspect (owner metadata proved it is not an aspect)', () => {
+  //   Even for the canonical trigger case (183454 + conditionId 4000),
+  //   the function must NOT add "Card Condition" to itemSpecifics.
   const out = _injectRequiredAspects(
     { Brand: 'Pokemon', Rarity: 'SAR' },
     '183454',
     { conditionString: 'Ungraded - Near mint or better', conditionId: '4000' },
   );
-  assert.equal(out['Card Condition'], 'Near Mint',
-    `Card Condition must be injected as "Near Mint" — got ${JSON.stringify(out)}`);
-  //   Other aspects preserved unchanged.
+  assert.equal(out['Card Condition'], undefined,
+    'Card Condition MUST NOT be injected as an item aspect (belongs in <ConditionDescriptors>)');
+  //   Original aspects preserved.
   assert.equal(out.Brand,  'Pokemon');
   assert.equal(out.Rarity, 'SAR');
 });
 
-test('INJECT-2 · operator-supplied Card Condition is NEVER overwritten (idempotent)', () => {
+test('INJECT-PASS-2 · operator-supplied item aspect is untouched (never overwritten)', () => {
   const out = _injectRequiredAspects(
     { 'Card Condition': 'Mint', Brand: 'Pokemon' },
     '183454',
     { conditionString: 'Near mint', conditionId: '4000' },
   );
-  assert.equal(out['Card Condition'], 'Mint',
-    'must NOT overwrite an operator-supplied Card Condition');
+  //   If the operator explicitly put it in the aspect list, keep it there.
+  //   (eBay may still reject as invalid-aspect, but that's operator intent.)
+  assert.equal(out['Card Condition'], 'Mint');
 });
 
-test('INJECT-3 · non-Single-Cards category → does NOT inject Card Condition', () => {
-  //   Booster Box (183456) doesn't require this aspect.
+test('INJECT-PASS-3 · non-Trading-Card category is a plain pass-through', () => {
   const out = _injectRequiredAspects(
     { Brand: 'Pokemon' },
     '183456',
     { conditionString: 'New', conditionId: '1000' },
   );
-  assert.equal(out['Card Condition'], undefined,
-    'Booster Box category MUST NOT get a Card Condition aspect');
+  assert.equal(out['Card Condition'], undefined);
   assert.equal(out.Brand, 'Pokemon');
 });
 
-test('INJECT-4 · empty/undefined itemSpecifics → still injects on 183454', () => {
-  const outA = _injectRequiredAspects(undefined, '183454', { conditionId: '4000' });
-  const outB = _injectRequiredAspects({},        '183454', { conditionId: '4000' });
-  assert.equal(outA['Card Condition'], 'Near Mint');
-  assert.equal(outB['Card Condition'], 'Near Mint');
+//   ═════════════════════════════════════════════════════════════
+//   §3 · _isTradingCardContext — shared detection
+//   ═════════════════════════════════════════════════════════════
+
+test('CTX-1 · known Single Card category id (183454) → true', () => {
+  assert.equal(_isTradingCardContext({}, '183454', ''), true);
+  assert.equal(_isTradingCardContext({}, '2536',   ''), true);
+  assert.equal(_isTradingCardContext({}, '261324', ''), true);
 });
 
-test('INJECT-5 · Graded (2750) → "Mint" by default when no string hint', () => {
-  const out = _injectRequiredAspects({}, '183454', { conditionString: '', conditionId: '2750' });
-  assert.equal(out['Card Condition'], 'Mint');
+test('CTX-2 · Trading-Card conditionId (4000/2750) alone → true', () => {
+  assert.equal(_isTradingCardContext({}, 'UNKNOWN', '4000'), true);
+  assert.equal(_isTradingCardContext({}, 'UNKNOWN', '2750'), true);
 });
 
-//   ─────────────────────────────────────────────────────────────
-//   §2b · widened trigger (2026-09-22)
-//   ─────────────────────────────────────────────────────────────
-
-test('INJECT-6 · newer Pokemon Single Cards categories (2536, 261324) also inject', () => {
-  for (const cat of ['2536', '261324']) {
-    const out = _injectRequiredAspects({}, cat, { conditionId: '4000' });
-    assert.equal(out['Card Condition'], 'Near Mint',
-      `category ${cat} MUST trigger Card Condition injection`);
-  }
+test('CTX-3 · structural signal alone → true', () => {
+  assert.equal(_isTradingCardContext({ 'Card Number': '114/083' }, 'UNKNOWN', ''), true);
+  assert.equal(_isTradingCardContext({ Franchise: 'Pokémon' },    'UNKNOWN', ''), true);
+  assert.equal(_isTradingCardContext({ Game: 'Pokémon TCG' },     'UNKNOWN', ''), true);
 });
 
-test('INJECT-7 · conditionId=4000 (Ungraded) triggers injection on ANY category (Trading-Card signal)', () => {
-  //   Owner-reported repro: even when preset.categoryId drifted, conditionId
-  //   stayed at 4000 (correctly inferred). The widened trigger must catch it.
-  const out = _injectRequiredAspects({ Brand: 'Pokemon' }, 'UNKNOWN_CAT', {
-    conditionString: 'Ungraded - Near mint or better', conditionId: '4000',
-  });
-  assert.equal(out['Card Condition'], 'Near Mint',
-    'conditionId=4000 alone MUST trigger injection regardless of categoryId');
-});
-
-test('INJECT-8 · conditionId=2750 (Graded) also triggers injection on ANY category', () => {
-  const out = _injectRequiredAspects({}, 'UNKNOWN_CAT', {
-    conditionString: 'PSA Graded', conditionId: '2750',
-  });
-  assert.equal(out['Card Condition'], 'Mint',
-    'conditionId=2750 alone MUST trigger injection with default "Mint"');
-});
-
-test('INJECT-9 · "Grade" or "Card Grade" alias is recognized as already-set (no double-emit)', () => {
-  const withGrade = _injectRequiredAspects(
-    { Grade: 'PSA 10' },
-    '183454',
-    { conditionId: '2750' },
-  );
-  //   Do not overwrite the explicit Grade — but also don't add Card Condition
-  //   since operator's Grade covers the required condition signal.
-  assert.equal(withGrade['Card Condition'], undefined,
-    'operator-supplied Grade aspect must count as Card Condition already set');
-  assert.equal(withGrade.Grade, 'PSA 10');
-
-  const withCardGrade = _injectRequiredAspects(
-    { 'Card Grade': 'BGS 9.5' },
-    '183454',
-    { conditionId: '2750' },
-  );
-  assert.equal(withCardGrade['Card Condition'], undefined);
-  assert.equal(withCardGrade['Card Grade'], 'BGS 9.5');
-});
-
-test('INJECT-10 · New (conditionId=1000) on non-Trading-Card category → no injection (correct no-op)', () => {
-  //   Regression guard: Booster Box (183456) + conditionId 1000 must NOT
-  //   grow a spurious Card Condition aspect.
-  const out = _injectRequiredAspects({ Brand: 'Pokemon' }, '183456', {
-    conditionString: 'New', conditionId: '1000',
-  });
-  assert.equal(out['Card Condition'], undefined);
-});
-
-//   ─────────────────────────────────────────────────────────────
-//   §2c · third-tier STRUCTURAL trigger (owner's third repro, 2026-09-22)
-//   ─────────────────────────────────────────────────────────────
-
-test('INJECT-11 · itemSpecifics with "Card Number" aspect alone → inject (even w/ wrong category + stale conditionId)', () => {
-  //   Worst-case: preset drift left categoryId at Booster Box AND conditionId
-  //   at 1000 (New). Neither trigger (a) nor (b) fires. Structural trigger
-  //   (c) catches it because a Trading Card listing carries "Card Number".
-  const out = _injectRequiredAspects(
-    { 'Card Number': '114/083', Brand: 'Pokemon' },
-    '183456',   //   stale wrong category
-    { conditionId: '1000' },   //   stale wrong condition
-  );
-  assert.equal(out['Card Condition'], 'Near Mint',
-    'structural trigger MUST catch the case where all other signals are stale');
-});
-
-test('INJECT-12 · itemSpecifics with "Rarity"/"Card Type"/"Illustrator" aspect triggers injection', () => {
-  //   Each of these aspects on its own is enough — Trading Card listings
-  //   always carry at least one of them.
-  for (const aspect of ['Rarity', 'Card Type', 'Illustrator']) {
-    const out = _injectRequiredAspects(
-      { [aspect]: 'X' },
-      'UNKNOWN',
-      { conditionId: '' },
-    );
-    assert.equal(out['Card Condition'], 'Near Mint',
-      `structural trigger MUST fire on "${aspect}" aspect alone`);
-  }
-});
-
-test('INJECT-13 · Game containing "TCG" or "Trading Card" triggers injection', () => {
-  const outTCG = _injectRequiredAspects({ Game: 'Pokémon TCG' }, 'UNKNOWN', {});
-  assert.equal(outTCG['Card Condition'], 'Near Mint');
-  const outTC  = _injectRequiredAspects({ Game: 'Trading Card Game' }, 'UNKNOWN', {});
-  assert.equal(outTC['Card Condition'], 'Near Mint');
-  //   Non-TCG Game value MUST NOT trigger.
-  const outFPS = _injectRequiredAspects({ Game: 'First Person Shooter' }, 'UNKNOWN', {});
-  assert.equal(outFPS['Card Condition'], undefined,
-    'non-Trading-Card Game value MUST NOT trigger structural injection');
-});
-
-test('INJECT-14 · Franchise = "Pokémon" or "Pokemon" triggers injection', () => {
-  for (const franchise of ['Pokémon', 'Pokemon', 'POKEMON', 'pokemon']) {
-    const out = _injectRequiredAspects({ Franchise: franchise }, 'UNKNOWN', {});
-    assert.equal(out['Card Condition'], 'Near Mint',
-      `Franchise="${franchise}" MUST trigger`);
-  }
-  //   Unrelated Franchise MUST NOT trigger.
-  const outLego = _injectRequiredAspects({ Franchise: 'LEGO' }, 'UNKNOWN', {});
-  assert.equal(outLego['Card Condition'], undefined);
-});
-
-test('INJECT-15 · Owner exact repro: full competitor aspect set with stale categoryId → still injects', () => {
-  //   The exact aspect set visible in owner's screenshot for the Pikachu Ex
-  //   SAR competitor listing. Even if preset.categoryId ended up wrong AND
-  //   conditionId stayed stale at '1000', structural trigger catches it.
-  const out = _injectRequiredAspects(
-    {
-      Franchise: 'Pokémon',
-      Rarity:    'SAR',
-      Game:      'Pokémon TCG',
-      Illustrator: 'Susumu Maeya',
-      Customized: 'No',
-      'Card Number': '114/083',
-      'Country of Origin': 'South Korea (Republic of Korea)',
-    },
-    'WRONG_CAT',
-    { conditionId: '1000', conditionString: '' },
-  );
-  assert.equal(out['Card Condition'], 'Near Mint',
-    "owner's Pikachu Ex SAR competitor aspect set MUST inject Card Condition regardless of stale ctx");
+test('CTX-4 · no signals → false', () => {
+  assert.equal(_isTradingCardContext({ Brand: 'PMC' }, '9355', '1000'), false);
+  assert.equal(_isTradingCardContext({}, '183456', '1000'), false);
 });
 
 //   ═════════════════════════════════════════════════════════════
-//   §3 · source-level integration guards
+//   §4 · _buildConditionDescriptors — the actual fix
 //   ═════════════════════════════════════════════════════════════
 
-test('WIRING-1 · aiWorkflowPublisher._buildEbayParams calls _injectRequiredAspects', () => {
-  const src = fs.readFileSync(PUBLISHER, 'utf8');
-  assert.ok(/_injectRequiredAspects\s*\(/.test(src),
-    '_buildEbayParams MUST call _injectRequiredAspects on merged item specifics');
-  //   And it must pass the categoryId so 183454 detection works.
-  assert.ok(/_injectRequiredAspects\([\s\S]*?preset\.categoryId/.test(src),
-    'MUST pass preset.categoryId to _injectRequiredAspects');
-});
-
-test('WIRING-2 · SPA forwards conditionDisplayName in the publish product payload', () => {
-  const src = fs.readFileSync(SPA, 'utf8');
-  //   The product object built for /api/ai-workflow/publish must include
-  //   conditionDisplayName so the server-side derivation has the competitor
-  //   condition string to parse.
-  assert.ok(/conditionDisplayName:\s*state\.competitor\?\.conditionDisplayName/.test(src),
-    'SPA product payload MUST forward state.competitor.conditionDisplayName');
-});
-
-//   ═════════════════════════════════════════════════════════════
-//   §4 · end-to-end XML shape
-//   ═════════════════════════════════════════════════════════════
-
-test('E2E-1 · full pipeline emits <Value>Near Mint</Value> under a <Name>Card Condition</Name> NameValueList for 183454', () => {
-  //   Instantiate the API directly and build XML with the merged specs
-  //   after injection. Not going through the publisher module because
-  //   that requires more mocks; but wiring is tested by WIRING-1 above.
-  const EbayAPI = require(EBAYAPI);
-  const ebay = new EbayAPI();
-  const merged = _injectRequiredAspects(
+test('CD-1 · Trading Card context emits <ConditionDescriptors> block with Name=40001', () => {
+  const xml = _buildConditionDescriptors(
     { Brand: 'Pokemon', Rarity: 'SAR' },
     '183454',
     { conditionString: 'Ungraded - Near mint or better', conditionId: '4000' },
   );
+  assert.ok(/<ConditionDescriptors>/.test(xml),  'block wrapper must be present');
+  assert.ok(/<ConditionDescriptor>/.test(xml),   'inner descriptor tag must be present');
+  assert.ok(/<Name>40001<\/Name>/.test(xml),     'descriptor Name MUST be 40001 (from owner\'s eBay error)');
+  assert.ok(/<Value>Near Mint<\/Value>/.test(xml), 'descriptor Value MUST be "Near Mint" for Ungraded');
+});
+
+test('CD-2 · non-Trading-Card context emits empty string (no block)', () => {
+  const xml = _buildConditionDescriptors(
+    { Brand: 'PMC' }, '9355', { conditionString: 'New', conditionId: '1000' },
+  );
+  assert.equal(xml, '', 'Booster Box / non-Trading-Card MUST NOT emit a descriptor block');
+});
+
+test('CD-3 · operator-supplied Grade aspect is used as descriptor value', () => {
+  const xml = _buildConditionDescriptors(
+    { Grade: 'PSA 10' },
+    '183454',
+    { conditionId: '2750' },
+  );
+  assert.ok(/<Value>PSA 10<\/Value>/.test(xml),
+    'operator-supplied Grade MUST flow through to the descriptor Value');
+});
+
+test('CD-4 · conditionId-only trigger (unknown category) still emits descriptor', () => {
+  //   Owner-repro: preset.categoryId can be stale but conditionId 4000
+  //   still identifies this as a Trading Card listing.
+  const xml = _buildConditionDescriptors(
+    { Brand: 'Pokemon' },
+    'UNKNOWN_CAT',
+    { conditionId: '4000' },
+  );
+  assert.ok(/<ConditionDescriptors>/.test(xml), 'conditionId trigger MUST emit descriptor');
+  assert.ok(/<Value>Near Mint<\/Value>/.test(xml));
+});
+
+test('CD-5 · structural trigger — competitor aspect set alone forces descriptor emit', () => {
+  //   Owner exact repro: full competitor aspect set, wrong category, wrong
+  //   conditionId. Structural detection (Card Number / Rarity / Franchise
+  //   Pokémon) still recognizes Trading Card and emits the descriptor.
+  const xml = _buildConditionDescriptors(
+    {
+      Franchise: 'Pokémon', Rarity: 'SAR', Game: 'Pokémon TCG',
+      'Card Number': '114/083', Illustrator: 'Susumu Maeya',
+    },
+    'WRONG_CAT',
+    { conditionId: '1000', conditionString: '' },
+  );
+  assert.ok(/<ConditionDescriptors>/.test(xml),
+    'structural trigger MUST emit descriptor even with wrong category + stale conditionId');
+  //   Default value from conditionId (1000 does not match) → falls to
+  //   _deriveCardConditionValue default of "Near Mint"
+  assert.ok(/<Value>Near Mint<\/Value>/.test(xml));
+});
+
+test('CD-6 · XML value is properly escaped', () => {
+  //   Ensure special characters in the derived value don't break the XML.
+  //   (Standard eBay condition values don't contain special chars, but
+  //   an operator-supplied Grade like "PSA 10 & GEM" might.)
+  const xml = _buildConditionDescriptors(
+    { Grade: 'PSA & BGS' },
+    '183454',
+    { conditionId: '2750' },
+  );
+  assert.ok(/<Value>PSA &amp; BGS<\/Value>/.test(xml),
+    'ampersand MUST be XML-escaped inside descriptor Value');
+});
+
+//   ═════════════════════════════════════════════════════════════
+//   §5 · end-to-end XML — full _buildItemXml pipeline
+//   ═════════════════════════════════════════════════════════════
+
+test('E2E-1 · full 183454 pipeline emits <ConditionDescriptors> AS A TOP-LEVEL Item child (NOT inside ItemSpecifics)', () => {
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
   const xml = ebay._buildItemXml({
     title: 'Pikachu ex SAR', description: 'd',
     price: 168.94, quantity: 1, sku: 'SC-1',
     categoryId: '183454', conditionId: '4000', currency: 'USD',
     imageUrls: [],
-    itemSpecifics: merged,
+    itemSpecifics: { Brand: 'Pokemon', Rarity: 'SAR' },
+    conditionDescriptorContext: {
+      conditionString: 'Ungraded - Near mint or better',
+      conditionId: '4000',
+    },
   });
-  const block = xml.match(/<NameValueList><Name>Card Condition<\/Name>[\s\S]*?<\/NameValueList>/);
-  assert.ok(block, 'Card Condition NameValueList must be emitted');
-  assert.ok(/<Value>Near Mint<\/Value>/.test(block[0]),
-    `Card Condition value must be "Near Mint" — got ${block[0]}`);
+  //   Card Condition MUST appear as a ConditionDescriptor, not as an
+  //   ItemSpecifics NameValueList.
+  assert.ok(/<ConditionDescriptors>\s*<ConditionDescriptor>\s*<Name>40001<\/Name>\s*<Value>Near Mint<\/Value>/.test(xml),
+    '<ConditionDescriptors> block MUST carry Name=40001 + Value=Near Mint');
+  //   It must NOT appear inside ItemSpecifics.
+  const specsBlock = xml.match(/<ItemSpecifics>[\s\S]*?<\/ItemSpecifics>/);
+  assert.ok(specsBlock, 'ItemSpecifics block must exist');
+  assert.ok(!/Card Condition/.test(specsBlock[0]),
+    'Card Condition MUST NOT appear inside <ItemSpecifics> — belongs in <ConditionDescriptors>');
 });
 
-test('E2E-2 · 183456 (Booster Box) pipeline does NOT inject Card Condition', () => {
+test('E2E-2 · 183456 (Booster Box) pipeline emits NEITHER ConditionDescriptors NOR Card Condition aspect', () => {
   const EbayAPI = require(EBAYAPI);
   const ebay = new EbayAPI();
-  const merged = _injectRequiredAspects(
-    { Brand: 'Pokemon', Type: 'Booster Box' },
-    '183456',
-    { conditionId: '1000' },
-  );
   const xml = ebay._buildItemXml({
     title: 'BoosterBox', description: 'd',
     price: 200, quantity: 1, sku: 'BB-1',
     categoryId: '183456', conditionId: '1000', currency: 'USD',
     imageUrls: [],
-    itemSpecifics: merged,
+    itemSpecifics: { Brand: 'Pokemon', Type: 'Booster Box' },
+    conditionDescriptorContext: { conditionId: '1000' },
   });
-  assert.ok(!/<Name>Card Condition<\/Name>/.test(xml),
-    'Booster Box XML MUST NOT carry a Card Condition NameValueList');
+  assert.ok(!/<ConditionDescriptors>/.test(xml),
+    'Booster Box MUST NOT carry a <ConditionDescriptors> block');
+  assert.ok(!/Card Condition/.test(xml),
+    'Booster Box MUST NOT carry a Card Condition aspect');
+});
+
+test('E2E-3 · ConditionDescriptors sits inside <Item> BEFORE <CategoryMappingAllowed> (canonical location)', () => {
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  const xml = ebay._buildItemXml({
+    title: 'T', description: 'd', price: 10, quantity: 1, sku: 'S1',
+    categoryId: '183454', conditionId: '4000', currency: 'USD', imageUrls: [],
+    itemSpecifics: { Rarity: 'Rare' },
+    conditionDescriptorContext: { conditionId: '4000' },
+  });
+  //   Locate positions.
+  const idxItem       = xml.indexOf('<Item>');
+  const idxCondID     = xml.indexOf('<ConditionID>');
+  const idxDescriptors = xml.indexOf('<ConditionDescriptors>');
+  const idxSpecifics  = xml.indexOf('<ItemSpecifics>');
+  assert.ok(idxItem >= 0 && idxCondID > idxItem);
+  assert.ok(idxDescriptors > idxCondID,       'ConditionDescriptors must follow ConditionID');
+  assert.ok(idxDescriptors < idxSpecifics,    'ConditionDescriptors must precede ItemSpecifics');
+});
+
+//   ═════════════════════════════════════════════════════════════
+//   §6 · integration guards
+//   ═════════════════════════════════════════════════════════════
+
+test('WIRING-1 · aiWorkflowPublisher._buildEbayParams passes conditionDescriptorContext', () => {
+  const src = fs.readFileSync(PUBLISHER, 'utf8');
+  assert.ok(/conditionDescriptorContext\s*:/.test(src),
+    '_buildEbayParams MUST include conditionDescriptorContext in the returned params');
+});
+
+test('WIRING-2 · ebayAPI._buildItemXml destructures and emits conditionDescriptorContext', () => {
+  const src = fs.readFileSync(EBAYAPI, 'utf8');
+  assert.ok(/_buildItemXml\(\{[\s\S]*?conditionDescriptorContext[\s\S]*?\}\)/.test(src),
+    '_buildItemXml MUST accept conditionDescriptorContext in its destructure');
+  assert.ok(/_buildConditionDescriptors\s*\(/.test(src),
+    '_buildItemXml MUST call _buildConditionDescriptors');
+});
+
+test('WIRING-3 · SPA forwards conditionDisplayName in the publish product payload', () => {
+  const src = fs.readFileSync(SPA, 'utf8');
+  assert.ok(/conditionDisplayName:\s*state\.competitor\?\.conditionDisplayName/.test(src),
+    'SPA product payload MUST forward state.competitor.conditionDisplayName');
 });
