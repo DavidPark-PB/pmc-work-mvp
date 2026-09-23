@@ -1082,9 +1082,21 @@ class EbayAPI {
                       specNames.includes('Card Grade') ||
                       specNames.includes('Grade');
         console.log(`[eBay createProduct] req · category=${params.categoryId} · conditionId=${params.conditionId} · aspect_count=${specNames.length} · has_card_condition=${hasCC} · aspects=[${specNames.slice(0, 40).join(', ')}]`);
+        //   Additional diagnostic (2026-09-23): dump the exact <ItemSpecifics>
+        //   XML block being sent so we can confirm each NameValueList form,
+        //   including the Card Condition entry and its value. eBay-side
+        //   rejection of a field we know we sent means aspect name/value
+        //   metadata mismatch — this dump gives us the exact byte content.
+        const specsMatch = requestBody.match(/<ItemSpecifics>[\s\S]*?<\/ItemSpecifics>/);
+        if (specsMatch) {
+          const cardCondFragment = specsMatch[0].match(/<NameValueList><Name>Card Condition[\s\S]*?<\/NameValueList>/);
+          console.log(`[eBay createProduct] req XML · card_condition_fragment=${cardCondFragment ? cardCondFragment[0] : '(not present in XML!)'}`);
+        }
       } catch (_) {}
       const response = await this.callTradingAPI('AddFixedPriceItem', requestBody);
-      console.log('[eBay createProduct] response:', response.substring(0, 3000));
+      //   Response substring bumped from 3000 → 8000 so the <Errors> block
+      //   with <ErrorParameters> is always captured for diagnosis.
+      console.log('[eBay createProduct] response:', response.substring(0, 8000));
       const ackMatch = response.match(/<Ack>(.*?)<\/Ack>/);
       const ack = ackMatch ? ackMatch[1] : 'Unknown';
       const itemIdMatch = response.match(/<ItemID>(.*?)<\/ItemID>/);
