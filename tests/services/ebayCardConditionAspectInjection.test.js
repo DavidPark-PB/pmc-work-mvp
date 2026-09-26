@@ -366,21 +366,26 @@ test('FALLBACK-1 · hardcoded map returns 100X series for common Card Condition 
   const ebay = new EbayAPI();
   ebay.getItemConditionPolicies = async () => null;
   //   Case-insensitive lookup against the fallback keys.
-  //   Anchored on eBay's ParamID=2 hint (2026-09-26): Near Mint → 1004.
-  //   Other tiers are ±1 guesses relative to that anchor.
+  //   CONFIRMED from owner's raw JSON dump (2026-09-26 · category 183454):
+  //   eBay's descriptor 40001 has EXACTLY 4 value IDs — 400010, 400015,
+  //   400016, 400017. Our fallback map bins each of our derived names
+  //   into one of these 4 tiers.
   const cases = [
-    ['Near Mint',      '1004'],
-    ['near mint',      '1004'],
-    ['NEAR MINT',      '1004'],
-    ['Mint',           '1005'],
-    ['Excellent',      '1003'],
-    ['Very Good',      '1002'],
-    ['Good',           '1002'],
-    ['Light Play',     '1001'],
-    ['Played',         '1000'],
-    ['Damaged',        '1000'],
-    ['Heavily Played', '1000'],
-    ['Poor',           '1000'],
+    ['Near Mint',      '400010'],   //   "Near mint or better"
+    ['near mint',      '400010'],
+    ['NEAR MINT',      '400010'],
+    ['NM',             '400010'],
+    ['Mint',           '400010'],   //   eBay collapses Mint into "or better"
+    ['Excellent',      '400015'],   //   "Lightly played (Excellent)"
+    ['Light Play',     '400015'],
+    ['LP',             '400015'],
+    ['Very Good',      '400016'],   //   "Moderately played (Very good)"
+    ['Good',           '400016'],
+    ['Played',         '400016'],
+    ['Heavily Played', '400017'],   //   "Heavily played (Poor)"
+    ['HP',             '400017'],
+    ['Damaged',        '400017'],
+    ['Poor',           '400017'],
   ];
   for (const [name, expected] of cases) {
     const id = await ebay.resolveConditionDescriptorValueId('183454', '40001', name);
@@ -413,4 +418,55 @@ test('FALLBACK-3 · resolver walks nested itemConditionPolicies[].conditionDescr
   });
   const id = await ebay.resolveConditionDescriptorValueId('183454', '40001', 'Near Mint');
   assert.equal(id, '5001', 'nested itemConditionPolicies[].conditionDescriptors path MUST be walked');
+});
+
+test('FALLBACK-4 · resolver walks itemConditions[].conditionDescriptors[] (eBay ACTUAL shape for 183454)', async () => {
+  //   The exact shape confirmed from owner's raw JSON dump (2026-09-26).
+  //   Descriptors nest under itemConditions[i].conditionDescriptors[].
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  ebay.getItemConditionPolicies = async () => ({
+    itemConditionPolicies: [{
+      categoryId: '183454',
+      itemConditionRequired: true,
+      itemConditions: [
+        { conditionId: '2750', conditionDescription: 'Graded', conditionDescriptors: [
+          { conditionDescriptorId: '27501', conditionDescriptorName: 'Professional Grader',
+            conditionDescriptorValues: [{ conditionDescriptorValueId: '275010', conditionDescriptorValueName: 'PSA' }] },
+        ]},
+        { conditionId: '4000', conditionDescription: 'Ungraded', conditionDescriptors: [
+          { conditionDescriptorId: '40001', conditionDescriptorName: 'Card Condition',
+            conditionDescriptorValues: [
+              { conditionDescriptorValueId: '400010', conditionDescriptorValueName: 'Near mint or better' },
+              { conditionDescriptorValueId: '400015', conditionDescriptorValueName: 'Lightly played (Excellent)' },
+              { conditionDescriptorValueId: '400016', conditionDescriptorValueName: 'Moderately played (Very good)' },
+              { conditionDescriptorValueId: '400017', conditionDescriptorValueName: 'Heavily played (Poor)' },
+            ] },
+        ]},
+      ],
+    }],
+  });
+  //   "Near Mint" → matched via substring to "Near mint or better" → 400010
+  const id = await ebay.resolveConditionDescriptorValueId('183454', '40001', 'Near Mint');
+  assert.equal(id, '400010', 'API lookup MUST resolve "Near Mint" → 400010 via substring match to "Near mint or better"');
+});
+
+test('FALLBACK-5 · resolver tolerates parenthesized eBay names ("Lightly played (Excellent)")', async () => {
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  ebay.getItemConditionPolicies = async () => ({
+    itemConditionPolicies: [{
+      itemConditions: [
+        { conditionId: '4000', conditionDescriptors: [
+          { conditionDescriptorId: '40001', conditionDescriptorValues: [
+            { conditionDescriptorValueId: '400015', conditionDescriptorValueName: 'Lightly played (Excellent)' },
+            { conditionDescriptorValueId: '400016', conditionDescriptorValueName: 'Moderately played (Very good)' },
+          ] },
+        ]},
+      ],
+    }],
+  });
+  //   "Excellent" MUST match "Lightly played (Excellent)" via normalized name
+  const id = await ebay.resolveConditionDescriptorValueId('183454', '40001', 'Excellent');
+  assert.equal(id, '400015', 'parenthesized eBay name MUST match via normalized substring');
 });

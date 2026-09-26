@@ -54,39 +54,42 @@ const CONDITION_POLICY_TTL_MS = 60 * 60 * 1000;
 
 //   Hardcoded fallback map for descriptor 40001 (Card Condition).
 //   ────────────────────────────────────────────────────────────────
-//   Update (2026-09-26 second repro):
-//   The Sell Metadata API for category 183454 returned ONLY descriptors
-//   27501 + 27502 (grader + grade — Graded-card path). Descriptor 40001
-//   (the one eBay demands at runtime for our Ungraded conditionId=4000)
-//   was NOT in the response — meaning the metadata endpoint doesn't
-//   expose the Ungraded descriptor at all. So the hardcoded map is our
-//   only source until we find the right eBay endpoint.
+//   2026-09-26 · CONFIRMED from owner's raw JSON dump.
+//   eBay's Sell Metadata API for category 183454 returns descriptor
+//   40001 nested under `itemConditions[].conditionDescriptors[]` (my
+//   previous walker missed this path). Descriptor 40001 has EXACTLY
+//   4 accepted values for Ungraded cards:
 //
-//   eBay's own error XML from the previous attempt carried
-//   <ErrorParameters ParamID="2"><Value>1004</Value></ErrorParameters>
-//   for a rejected "Near Mint" send. eBay's ParamID=2 convention on
-//   condition-descriptor errors typically names the EXPECTED value id
-//   for the label we sent. Interpretation: eBay expected 1004 for
-//   "Near Mint".
+//     Value ID   Value Name                          Fits our terms
+//     400010     "Near mint or better"               Mint, Near Mint
+//     400015     "Lightly played (Excellent)"        Excellent, Light Play
+//     400016     "Moderately played (Very good)"     Very Good, Good, Played
+//     400017     "Heavily played (Poor)"             Heavily Played, Damaged, Poor
 //
-//   Rebuild the map anchored on that datapoint:
-//     Near Mint → 1004 (eBay-confirmed)
-//   Other tiers use plausible ±1 offsets. As eBay rejects each with
-//   its own ParamID=2 hint, tighten the map row-by-row.
+//   The previous "1004" I guessed was wrong — that ParamID=2 value in
+//   eBay's error was an internal error code, NOT the expected value id.
+//   With the walker fixed, the API lookup path succeeds on its own and
+//   this map is just insurance for when metadata is unavailable.
 const CARD_CONDITION_DESCRIPTOR_40001_FALLBACK = {
-  //   Anchored by eBay's ParamID=2 hint (2026-09-26).
-  'near mint':      '1004',
-  //   ±1 guesses around the anchor — will be corrected as eBay's errors
-  //   name each expected value. Kept as strings for XML consistency.
-  'mint':           '1005',
-  'excellent':      '1003',
-  'very good':      '1002',
-  'good':           '1002',
-  'light play':     '1001',
-  'played':         '1000',
-  'damaged':        '1000',
-  'heavily played': '1000',
-  'poor':           '1000',
+  //   Best tier — includes Mint since eBay collapses it into "or better".
+  'mint':           '400010',
+  'near mint':      '400010',
+  'nm':             '400010',
+  //   Lightly played tier.
+  'excellent':      '400015',
+  'light play':     '400015',
+  'lightly played': '400015',
+  'lp':             '400015',
+  //   Moderately played tier.
+  'very good':      '400016',
+  'good':           '400016',
+  'played':         '400016',
+  'vg':             '400016',
+  //   Heavily played tier.
+  'heavily played': '400017',
+  'damaged':        '400017',
+  'poor':           '400017',
+  'hp':             '400017',
 };
 
 /**
@@ -511,13 +514,12 @@ class EbayAPI {
    */
   async resolveConditionDescriptorValueId(categoryId, descriptorId, valueName) {
     const policy = await this.getItemConditionPolicies(categoryId);
-    //   2026-09-26 · walk MULTIPLE possible response shapes because eBay's
-    //   API returns the descriptors under different nesting depending on
-    //   version:
-    //     · policy.itemConditionDescriptorGroups[].conditionDescriptors[]
-    //     · policy.itemConditionDescriptors[]                    (flat)
-    //     · policy.conditionDescriptors[]                        (flatter)
-    //     · policy.itemConditionPolicies[0].conditionDescriptors[] (double-nested)
+    //   2026-09-26 · Owner's raw JSON dump revealed the ACTUAL nesting:
+    //     policy.itemConditions[].conditionDescriptors[]
+    //   Each entry in itemConditions has a `conditionId` (like "2750"
+    //   for Graded, "4000" for Ungraded) and its own `conditionDescriptors[]`.
+    //   We collect descriptors across ALL condition branches and let the
+    //   caller filter by descriptor id.
     function _collectDescriptors(p) {
       if (!p || typeof p !== 'object') return [];
       const out = [];
@@ -526,6 +528,12 @@ class EbayAPI {
       if (Array.isArray(p.itemConditionDescriptorGroups)) {
         for (const g of p.itemConditionDescriptorGroups) {
           if (Array.isArray(g?.conditionDescriptors)) out.push(...g.conditionDescriptors);
+        }
+      }
+      //   ⭐ New path (2026-09-26): itemConditions[].conditionDescriptors[]
+      if (Array.isArray(p.itemConditions)) {
+        for (const c of p.itemConditions) {
+          if (Array.isArray(c?.conditionDescriptors)) out.push(...c.conditionDescriptors);
         }
       }
       if (Array.isArray(p.itemConditionPolicies)) {
@@ -538,12 +546,36 @@ class EbayAPI {
       const descriptors = _collectDescriptors(policy);
       const desc = descriptors.find(d => String(d.conditionDescriptorId ?? d.descriptorId ?? d.id) === String(descriptorId));
       if (desc) {
-        const target = String(valueName || '').toLowerCase();
         const values = desc.conditionDescriptorValues || desc.descriptorValues || desc.values || [];
-        const val = values.find(v => String(v.conditionDescriptorValueName ?? v.valueName ?? v.name ?? '').toLowerCase() === target);
+        //   2026-09-26 · eBay's descriptor 40001 uses LONG value names
+        //   like "Near mint or better", "Lightly played (Excellent)". Our
+        //   derivation gives short names ("Near Mint", "Excellent").
+        //   Match tolerantly: exact → substring (both directions) →
+        //   normalized (strip punctuation + parenthesized suffixes).
+        const _norm = (s) => String(s || '').toLowerCase()
+          .replace(/\s*\([^)]*\)\s*/g, ' ')   //   strip "(Excellent)" style suffix
+          .replace(/[^a-z0-9 ]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const target = _norm(valueName);
+        const val = values.find(v => {
+          const vn = String(v.conditionDescriptorValueName ?? v.valueName ?? v.name ?? '');
+          const vnLower = vn.toLowerCase();
+          const inputLower = String(valueName || '').toLowerCase();
+          //   Exact
+          if (vnLower === inputLower) return true;
+          //   Substring (either direction, case-insensitive)
+          if (vnLower.includes(inputLower) && inputLower.length >= 3) return true;
+          if (inputLower.includes(vnLower) && vnLower.length >= 3) return true;
+          //   Normalized (strip parens) exact
+          if (_norm(vn) === target) return true;
+          if (_norm(vn).includes(target) && target.length >= 3) return true;
+          if (target.includes(_norm(vn)) && _norm(vn).length >= 3) return true;
+          return false;
+        });
         if (val) {
           resolved = String(val.conditionDescriptorValueId ?? val.valueId ?? val.id);
-          console.log(`[eBay resolveConditionDescriptorValueId] categoryId=${categoryId} descriptor=${descriptorId} "${valueName}" → ${resolved} (from API)`);
+          console.log(`[eBay resolveConditionDescriptorValueId] categoryId=${categoryId} descriptor=${descriptorId} "${valueName}" → ${resolved} (from API · matched "${val.conditionDescriptorValueName}")`);
         } else {
           const acceptedNames = values.map(v => v.conditionDescriptorValueName ?? v.valueName ?? v.name).slice(0, 30);
           console.warn(`[eBay resolveConditionDescriptorValueId] "${valueName}" NOT in accepted values for descriptor ${descriptorId} · accepted=[${acceptedNames.join(', ')}]`);
