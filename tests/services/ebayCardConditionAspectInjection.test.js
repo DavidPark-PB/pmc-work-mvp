@@ -357,3 +357,56 @@ test('WIRING-5 · EbayAPI exposes getItemConditionPolicies + resolveConditionDes
   assert.equal(typeof ebay.getItemConditionPolicies, 'function');
   assert.equal(typeof ebay.resolveConditionDescriptorValueId, 'function');
 });
+
+test('FALLBACK-1 · hardcoded map returns 100X series for common Card Condition names', async () => {
+  //   Force the API path to return null by stubbing getItemConditionPolicies.
+  //   The resolver must then consult the CARD_CONDITION_DESCRIPTOR_40001_FALLBACK
+  //   map and return a numeric ID from the 100X series.
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  ebay.getItemConditionPolicies = async () => null;
+  //   Case-insensitive lookup against the fallback keys.
+  const cases = [
+    ['Near Mint',      '1007'],
+    ['near mint',      '1007'],
+    ['NEAR MINT',      '1007'],
+    ['Mint',           '1008'],
+    ['Excellent',      '1005'],
+    ['Light Play',     '1004'],
+    ['Played',         '1003'],
+    ['Heavily Played', '1002'],
+    ['Damaged',        '1001'],
+    ['Poor',           '1000'],
+  ];
+  for (const [name, expected] of cases) {
+    const id = await ebay.resolveConditionDescriptorValueId('183454', '40001', name);
+    assert.equal(id, expected, `"${name}" MUST map to ${expected} via fallback`);
+  }
+});
+
+test('FALLBACK-2 · unknown value name returns null (never returns a wild guess)', async () => {
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  ebay.getItemConditionPolicies = async () => null;
+  const id = await ebay.resolveConditionDescriptorValueId('183454', '40001', 'SomethingWeird');
+  assert.equal(id, null, 'unknown value MUST return null so caller falls back to string');
+});
+
+test('FALLBACK-3 · resolver walks nested itemConditionPolicies[].conditionDescriptors when present', async () => {
+  //   Simulate one of the alternative response shapes.
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  ebay.getItemConditionPolicies = async () => ({
+    itemConditionPolicies: [{
+      categoryId: '183454',
+      conditionDescriptors: [{
+        conditionDescriptorId: '40001',
+        conditionDescriptorValues: [
+          { conditionDescriptorValueId: '5001', conditionDescriptorValueName: 'Near Mint' },
+        ],
+      }],
+    }],
+  });
+  const id = await ebay.resolveConditionDescriptorValueId('183454', '40001', 'Near Mint');
+  assert.equal(id, '5001', 'nested itemConditionPolicies[].conditionDescriptors path MUST be walked');
+});

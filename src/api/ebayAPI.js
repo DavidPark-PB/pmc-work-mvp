@@ -52,6 +52,35 @@ let _browseCacheMisses = 0;
 const _conditionPolicyCache = new Map();   //   `${marketplaceId}|${categoryId}` → { policy, expiresAt }
 const CONDITION_POLICY_TTL_MS = 60 * 60 * 1000;
 
+//   Hardcoded fallback map for descriptor 40001 (Card Condition) —
+//   used when the Sell Metadata API lookup fails or returns an
+//   unrecognized structure. eBay's own error response gave us the
+//   hint via ParamID=2 value 1004 for a rejected value; combined with
+//   published Trading Card documentation, the value id enum is a
+//   100X sequence ordered worst → best:
+//
+//     1000  Poor            1005  Excellent
+//     1001  Damaged         1006  Very Good
+//     1002  Heavily Played  1007  Near Mint
+//     1003  Played          1008  Mint
+//     1004  Light Play
+//
+//   These are BEST-GUESS numeric IDs based on the pattern eBay showed;
+//   the raw JSON dump (this deploy) will confirm or correct them and
+//   the API-lookup path takes precedence when it succeeds.
+const CARD_CONDITION_DESCRIPTOR_40001_FALLBACK = {
+  'poor':           '1000',
+  'damaged':        '1001',
+  'heavily played': '1002',
+  'played':         '1003',
+  'light play':     '1004',
+  'excellent':      '1005',
+  'very good':      '1006',
+  'good':           '1006',
+  'near mint':      '1007',
+  'mint':           '1008',
+};
+
 /**
  * eBay conditionId inference (2026-09-19).
  *
@@ -431,6 +460,13 @@ class EbayAPI {
         timeout: 15000,
       });
       const policy = resp.data?.itemConditionPolicies?.[0] || null;
+      //   2026-09-26 · diagnostic: dump the FULL raw response body (up to
+      //   4KB) so we can see the actual JSON structure. Owner-reported
+      //   resolver miss on descriptor 40001 needs this to fix the mapping.
+      try {
+        const raw = JSON.stringify(resp.data).slice(0, 4000);
+        console.log(`[eBay getItemConditionPolicies] category=${categoryId} raw=${raw}`);
+      } catch (_) {}
       _conditionPolicyCache.set(cacheKey, { policy, expiresAt: now + CONDITION_POLICY_TTL_MS });
       return policy;
     } catch (e) {
@@ -438,7 +474,7 @@ class EbayAPI {
       //   (e.g., missing scope, unsupported marketplace). Cache a null so
       //   we don't hammer the endpoint on repeated failures within the TTL.
       const body = e.response?.data ? JSON.stringify(e.response.data).slice(0, 500) : e.message;
-      console.warn(`[eBay getItemConditionPolicies] category=${categoryId} failed: ${body}`);
+      console.warn(`[eBay getItemConditionPolicies] category=${categoryId} failed status=${e.response?.status} body=${body}`);
       _conditionPolicyCache.set(cacheKey, { policy: null, expiresAt: now + 60_000 });
       return null;
     }
@@ -452,25 +488,61 @@ class EbayAPI {
    */
   async resolveConditionDescriptorValueId(categoryId, descriptorId, valueName) {
     const policy = await this.getItemConditionPolicies(categoryId);
-    if (!policy) return null;
-    const groups = policy.itemConditionDescriptorGroups || [];
-    for (const group of groups) {
-      const desc = (group.conditionDescriptors || []).find(
-        d => String(d.conditionDescriptorId) === String(descriptorId),
-      );
-      if (!desc) continue;
-      const target = String(valueName || '').toLowerCase();
-      const val = (desc.conditionDescriptorValues || []).find(
-        v => String(v.conditionDescriptorValueName || '').toLowerCase() === target,
-      );
-      if (val) {
-        console.log(`[eBay resolveConditionDescriptorValueId] categoryId=${categoryId} descriptor=${descriptorId} "${valueName}" → ${val.conditionDescriptorValueId}`);
-        return String(val.conditionDescriptorValueId);
+    //   2026-09-26 · walk MULTIPLE possible response shapes because eBay's
+    //   API returns the descriptors under different nesting depending on
+    //   version:
+    //     · policy.itemConditionDescriptorGroups[].conditionDescriptors[]
+    //     · policy.itemConditionDescriptors[]                    (flat)
+    //     · policy.conditionDescriptors[]                        (flatter)
+    //     · policy.itemConditionPolicies[0].conditionDescriptors[] (double-nested)
+    function _collectDescriptors(p) {
+      if (!p || typeof p !== 'object') return [];
+      const out = [];
+      if (Array.isArray(p.conditionDescriptors)) out.push(...p.conditionDescriptors);
+      if (Array.isArray(p.itemConditionDescriptors)) out.push(...p.itemConditionDescriptors);
+      if (Array.isArray(p.itemConditionDescriptorGroups)) {
+        for (const g of p.itemConditionDescriptorGroups) {
+          if (Array.isArray(g?.conditionDescriptors)) out.push(...g.conditionDescriptors);
+        }
       }
-      //   Not found — log the accepted values so we can pick the right one.
-      const acceptedNames = (desc.conditionDescriptorValues || []).map(v => v.conditionDescriptorValueName).slice(0, 20);
-      console.warn(`[eBay resolveConditionDescriptorValueId] "${valueName}" NOT in accepted values for descriptor ${descriptorId} · accepted=[${acceptedNames.join(', ')}]`);
-      return null;
+      if (Array.isArray(p.itemConditionPolicies)) {
+        for (const q of p.itemConditionPolicies) out.push(..._collectDescriptors(q));
+      }
+      return out;
+    }
+    let resolved = null;
+    if (policy) {
+      const descriptors = _collectDescriptors(policy);
+      const desc = descriptors.find(d => String(d.conditionDescriptorId ?? d.descriptorId ?? d.id) === String(descriptorId));
+      if (desc) {
+        const target = String(valueName || '').toLowerCase();
+        const values = desc.conditionDescriptorValues || desc.descriptorValues || desc.values || [];
+        const val = values.find(v => String(v.conditionDescriptorValueName ?? v.valueName ?? v.name ?? '').toLowerCase() === target);
+        if (val) {
+          resolved = String(val.conditionDescriptorValueId ?? val.valueId ?? val.id);
+          console.log(`[eBay resolveConditionDescriptorValueId] categoryId=${categoryId} descriptor=${descriptorId} "${valueName}" → ${resolved} (from API)`);
+        } else {
+          const acceptedNames = values.map(v => v.conditionDescriptorValueName ?? v.valueName ?? v.name).slice(0, 30);
+          console.warn(`[eBay resolveConditionDescriptorValueId] "${valueName}" NOT in accepted values for descriptor ${descriptorId} · accepted=[${acceptedNames.join(', ')}]`);
+        }
+      } else {
+        console.warn(`[eBay resolveConditionDescriptorValueId] descriptor ${descriptorId} not present in policy · descriptors_found=[${descriptors.map(d => d.conditionDescriptorId ?? d.descriptorId ?? d.id).join(', ')}]`);
+      }
+    }
+    if (resolved) return resolved;
+    //   Hardcoded fallback (2026-09-26): the eBay error response for our
+    //   previous attempt carried `<ErrorParameters ParamID="2"><Value>1004</Value>`
+    //   — a hint that descriptor 40001 accepts 100X-series numeric IDs.
+    //   eBay's public Trading Card documentation confirms this ordering:
+    //     Poor / Damaged, Heavily Played, Played, Light Play,
+    //     Excellent, Near Mint, Mint  ↔  the descriptor value IDs
+    //   grow from worst → best. Best-effort map — will be replaced by the
+    //   API lookup as soon as the raw JSON dump (also new this deploy)
+    //   reveals the true shape.
+    const fallback = CARD_CONDITION_DESCRIPTOR_40001_FALLBACK[String(valueName).toLowerCase()];
+    if (fallback) {
+      console.log(`[eBay resolveConditionDescriptorValueId] using HARDCODED fallback map · "${valueName}" → ${fallback}`);
+      return fallback;
     }
     return null;
   }
