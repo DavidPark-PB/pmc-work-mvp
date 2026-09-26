@@ -1235,10 +1235,22 @@ class EbayAPI {
     //   Callers pass `conditionDescriptorContext = { conditionString, conditionId }`
     //   so `_buildConditionDescriptors` can derive the right descriptor value.
     const cdCtx = conditionDescriptorContext || {};
+    //   2026-09-26 · CRITICAL: forward `resolvedDescriptorValueId` in
+    //   addition to conditionString / conditionId. Previous code created
+    //   a fresh object with only 2 fields, silently dropping the
+    //   numeric id resolved by `resolveConditionDescriptorValueId` —
+    //   so `_buildConditionDescriptors` fell back to the string name
+    //   even when the numeric ID was available. That was the reason
+    //   the resolver reported "→ 400010" but the XML still went out
+    //   as `<Value>Near Mint</Value>`.
     const conditionDescriptorsXml = _buildConditionDescriptors(
       itemSpecifics,
       categoryId,
-      { conditionString: cdCtx.conditionString, conditionId: cdCtx.conditionId || conditionId },
+      {
+        conditionString: cdCtx.conditionString,
+        conditionId:     cdCtx.conditionId || conditionId,
+        resolvedDescriptorValueId: cdCtx.resolvedDescriptorValueId,
+      },
     );
     return `
   <Item>

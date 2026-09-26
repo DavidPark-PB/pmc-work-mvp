@@ -222,6 +222,34 @@ test('CD-6 · XML value is properly escaped', () => {
 //   §5 · end-to-end XML — full _buildItemXml pipeline
 //   ═════════════════════════════════════════════════════════════
 
+test('E2E-0 · REGRESSION · _buildItemXml MUST forward resolvedDescriptorValueId through to _buildConditionDescriptors', () => {
+  //   Owner-reported bug (2026-09-26 fourth repro): resolver correctly
+  //   returned "Near Mint" → 400010 but the XML still emitted
+  //   <Value>Near Mint</Value>. Root cause: _buildItemXml built a fresh
+  //   ctx object with only { conditionString, conditionId } and dropped
+  //   `resolvedDescriptorValueId`. This test locks the field-forwarding
+  //   in place so nobody accidentally drops it again.
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  const xml = ebay._buildItemXml({
+    title: 'T', description: 'd', price: 10, quantity: 1, sku: 'S1',
+    categoryId: '183454', conditionId: '4000', currency: 'USD',
+    imageUrls: [],
+    itemSpecifics: { Rarity: 'SAR' },
+    conditionDescriptorContext: {
+      conditionString: 'Near Mint',
+      conditionId:     '4000',
+      resolvedDescriptorValueId: '400010',   //   the resolver hit
+    },
+  });
+  //   The numeric id MUST be inside <Value> (not the string).
+  assert.ok(/<ConditionDescriptor>\s*<Name>40001<\/Name>\s*<Value>400010<\/Value>/.test(xml),
+    `<Value>400010</Value> MUST be emitted (resolver hit MUST NOT be dropped by _buildItemXml). Got: ${xml.match(/<ConditionDescriptors>[\s\S]*?<\/ConditionDescriptors>/)?.[0]}`);
+  //   The string name MUST NOT be emitted when the numeric id is present.
+  assert.ok(!/<Value>Near Mint<\/Value>/.test(xml),
+    'string "Near Mint" MUST NOT be emitted when resolvedDescriptorValueId is present');
+});
+
 test('E2E-1 · full 183454 pipeline emits <ConditionDescriptors> AS A TOP-LEVEL Item child (NOT inside ItemSpecifics)', () => {
   const EbayAPI = require(EBAYAPI);
   const ebay = new EbayAPI();
