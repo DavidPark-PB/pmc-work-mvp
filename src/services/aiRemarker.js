@@ -37,6 +37,70 @@ US: DDP (no extra fees) | EU: VAT collected via IOSS | Other: buyer pays duties
 
 All items 100% authentic & officially licensed. Questions? Send us a message anytime.`;
 
+/**
+ * Robust JSON extractor for Gemini/AI responses (2026-09-26).
+ *
+ * Owner-reported: "AI 응답에서 JSON을 찾을 수 없음" — the previous
+ * parser tried plain `JSON.parse(text)` then a single greedy
+ * `{[\s\S]*}` regex, and threw a naked message on any miss so the
+ * operator had NO diagnostic info to fix the underlying AI response.
+ *
+ * This helper tries MULTIPLE extraction patterns in order:
+ *   1. plain JSON.parse (AI followed the "pure JSON" instruction)
+ *   2. strip ```json…``` markdown fences, then JSON.parse
+ *   3. greedy `{…}` brace match (handles preambles like "Here's the JSON:")
+ *   4. greedy `[…]` bracket match (some prompts return arrays)
+ *   5. smallest-object rescue: find the LAST valid balanced `{…}` in the text
+ *
+ * On complete miss, logs the ENTIRE AI response (not just 100 chars)
+ * to Railway so we can see what the AI actually returned — safety-filter
+ * refusals, empty responses, incomplete truncations, etc. Throws an
+ * actionable Korean error naming the label (`remake`/`reconstruct`) so
+ * the caller knows which prompt failed.
+ */
+function _extractJsonFromAiResponse(rawText, label) {
+  const text = String(rawText || '');
+  //   Attempt 1 — the AI followed instructions perfectly.
+  try { return JSON.parse(text); } catch (_) {}
+  //   Attempt 2 — strip common markdown fences and retry.
+  const stripped = text
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*$/gm, '')
+    .replace(/```\s*/g, '')
+    .trim();
+  try { return JSON.parse(stripped); } catch (_) {}
+  //   Attempt 3 — greedy brace slice.
+  const braceMatch = stripped.match(/\{[\s\S]*\}/);
+  if (braceMatch) {
+    try { return JSON.parse(braceMatch[0]); } catch (_) {}
+  }
+  //   Attempt 4 — greedy array slice.
+  const arrayMatch = stripped.match(/\[[\s\S]*\]/);
+  if (arrayMatch) {
+    try { return JSON.parse(arrayMatch[0]); } catch (_) {}
+  }
+  //   Attempt 5 — LAST balanced-brace rescue. Walk from the last `}`
+  //   backward, counting braces, to find the smallest complete object.
+  const lastBrace = stripped.lastIndexOf('}');
+  if (lastBrace > 0) {
+    let depth = 0;
+    for (let i = lastBrace; i >= 0; i--) {
+      const ch = stripped[i];
+      if (ch === '}') depth++;
+      else if (ch === '{') {
+        depth--;
+        if (depth === 0) {
+          try { return JSON.parse(stripped.slice(i, lastBrace + 1)); } catch (_) {}
+        }
+      }
+    }
+  }
+  //   Total miss — dump the full response so the next repro is diagnosable.
+  console.error(`[aiRemarker._extractJsonFromAiResponse:${label}] FAILED to extract JSON. Full AI response follows:\n----- BEGIN -----\n${text}\n----- END -----`);
+  const preview = text.length > 300 ? text.slice(0, 300) + '…' : text;
+  throw new Error(`AI 응답에서 JSON을 찾을 수 없음 (${label}): ${preview}`);
+}
+
 class AIRemarker {
   constructor() {
     // 기존 apiKey 필드는 유지 (호출 코드 호환) — 실제 인증은 geminiClient 가 GEMINI_API_KEY 로.
@@ -311,21 +375,7 @@ ${jsonSchema}`;
 
   _parseReconstructResponse(text, data) {
     console.log('AI reconstruct 응답 길이:', text.length);
-
-    let cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch {
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try { parsed = JSON.parse(jsonMatch[0]); }
-        catch { throw new Error('AI 응답 JSON 파싱 실패'); }
-      } else {
-        throw new Error('AI 응답에서 JSON을 찾을 수 없음: ' + cleaned.substring(0, 100));
-      }
-    }
+    const parsed = _extractJsonFromAiResponse(text, 'reconstruct');
 
     const lang = data.lang || 'en';
     const isFast = data.mode === 'fast';
@@ -364,22 +414,7 @@ ${jsonSchema}`;
   }
 
   _parseResponse(text, original) {
-    let parsed;
-
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          parsed = JSON.parse(jsonMatch[0]);
-        } catch {
-          throw new Error('AI 응답 JSON 파싱 실패');
-        }
-      } else {
-        throw new Error('AI 응답에서 JSON을 찾을 수 없음');
-      }
-    }
+    const parsed = _extractJsonFromAiResponse(text, 'remake');
 
     return {
       title: parsed.title || original.title,
@@ -404,3 +439,4 @@ ${jsonSchema}`;
 }
 
 module.exports = AIRemarker;
+module.exports._extractJsonFromAiResponse = _extractJsonFromAiResponse;
