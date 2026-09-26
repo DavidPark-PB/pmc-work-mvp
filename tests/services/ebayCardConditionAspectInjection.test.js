@@ -366,16 +366,20 @@ test('FALLBACK-1 · hardcoded map returns 100X series for common Card Condition 
   const ebay = new EbayAPI();
   ebay.getItemConditionPolicies = async () => null;
   //   Case-insensitive lookup against the fallback keys.
+  //   Anchored on eBay's ParamID=2 hint (2026-09-26): Near Mint → 1004.
+  //   Other tiers are ±1 guesses relative to that anchor.
   const cases = [
-    ['Near Mint',      '1007'],
-    ['near mint',      '1007'],
-    ['NEAR MINT',      '1007'],
-    ['Mint',           '1008'],
-    ['Excellent',      '1005'],
-    ['Light Play',     '1004'],
-    ['Played',         '1003'],
-    ['Heavily Played', '1002'],
-    ['Damaged',        '1001'],
+    ['Near Mint',      '1004'],
+    ['near mint',      '1004'],
+    ['NEAR MINT',      '1004'],
+    ['Mint',           '1005'],
+    ['Excellent',      '1003'],
+    ['Very Good',      '1002'],
+    ['Good',           '1002'],
+    ['Light Play',     '1001'],
+    ['Played',         '1000'],
+    ['Damaged',        '1000'],
+    ['Heavily Played', '1000'],
     ['Poor',           '1000'],
   ];
   for (const [name, expected] of cases) {

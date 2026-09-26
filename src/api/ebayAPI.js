@@ -52,33 +52,41 @@ let _browseCacheMisses = 0;
 const _conditionPolicyCache = new Map();   //   `${marketplaceId}|${categoryId}` → { policy, expiresAt }
 const CONDITION_POLICY_TTL_MS = 60 * 60 * 1000;
 
-//   Hardcoded fallback map for descriptor 40001 (Card Condition) —
-//   used when the Sell Metadata API lookup fails or returns an
-//   unrecognized structure. eBay's own error response gave us the
-//   hint via ParamID=2 value 1004 for a rejected value; combined with
-//   published Trading Card documentation, the value id enum is a
-//   100X sequence ordered worst → best:
+//   Hardcoded fallback map for descriptor 40001 (Card Condition).
+//   ────────────────────────────────────────────────────────────────
+//   Update (2026-09-26 second repro):
+//   The Sell Metadata API for category 183454 returned ONLY descriptors
+//   27501 + 27502 (grader + grade — Graded-card path). Descriptor 40001
+//   (the one eBay demands at runtime for our Ungraded conditionId=4000)
+//   was NOT in the response — meaning the metadata endpoint doesn't
+//   expose the Ungraded descriptor at all. So the hardcoded map is our
+//   only source until we find the right eBay endpoint.
 //
-//     1000  Poor            1005  Excellent
-//     1001  Damaged         1006  Very Good
-//     1002  Heavily Played  1007  Near Mint
-//     1003  Played          1008  Mint
-//     1004  Light Play
+//   eBay's own error XML from the previous attempt carried
+//   <ErrorParameters ParamID="2"><Value>1004</Value></ErrorParameters>
+//   for a rejected "Near Mint" send. eBay's ParamID=2 convention on
+//   condition-descriptor errors typically names the EXPECTED value id
+//   for the label we sent. Interpretation: eBay expected 1004 for
+//   "Near Mint".
 //
-//   These are BEST-GUESS numeric IDs based on the pattern eBay showed;
-//   the raw JSON dump (this deploy) will confirm or correct them and
-//   the API-lookup path takes precedence when it succeeds.
+//   Rebuild the map anchored on that datapoint:
+//     Near Mint → 1004 (eBay-confirmed)
+//   Other tiers use plausible ±1 offsets. As eBay rejects each with
+//   its own ParamID=2 hint, tighten the map row-by-row.
 const CARD_CONDITION_DESCRIPTOR_40001_FALLBACK = {
+  //   Anchored by eBay's ParamID=2 hint (2026-09-26).
+  'near mint':      '1004',
+  //   ±1 guesses around the anchor — will be corrected as eBay's errors
+  //   name each expected value. Kept as strings for XML consistency.
+  'mint':           '1005',
+  'excellent':      '1003',
+  'very good':      '1002',
+  'good':           '1002',
+  'light play':     '1001',
+  'played':         '1000',
+  'damaged':        '1000',
+  'heavily played': '1000',
   'poor':           '1000',
-  'damaged':        '1001',
-  'heavily played': '1002',
-  'played':         '1003',
-  'light play':     '1004',
-  'excellent':      '1005',
-  'very good':      '1006',
-  'good':           '1006',
-  'near mint':      '1007',
-  'mint':           '1008',
 };
 
 /**
@@ -461,11 +469,26 @@ class EbayAPI {
       });
       const policy = resp.data?.itemConditionPolicies?.[0] || null;
       //   2026-09-26 · diagnostic: dump the FULL raw response body (up to
-      //   4KB) so we can see the actual JSON structure. Owner-reported
-      //   resolver miss on descriptor 40001 needs this to fix the mapping.
+      //   16KB) so we can see the actual JSON structure. Owner-reported
+      //   4KB was truncating before descriptor 40001 came into view.
+      //   Also log a compact descriptor summary (id + name + value count)
+      //   so we can spot 40001 without scrolling the raw dump.
       try {
-        const raw = JSON.stringify(resp.data).slice(0, 4000);
+        const raw = JSON.stringify(resp.data).slice(0, 16000);
         console.log(`[eBay getItemConditionPolicies] category=${categoryId} raw=${raw}`);
+        const summary = [];
+        for (const p of resp.data?.itemConditionPolicies || []) {
+          for (const g of p.itemConditionDescriptorGroups || []) {
+            for (const d of g.conditionDescriptors || []) {
+              summary.push(`${d.conditionDescriptorId}:"${d.conditionDescriptorName}"(${(d.conditionDescriptorValues||[]).length}v)`);
+            }
+          }
+          //   also scan direct conditionDescriptors if present
+          for (const d of p.conditionDescriptors || []) {
+            summary.push(`${d.conditionDescriptorId}:"${d.conditionDescriptorName}"(${(d.conditionDescriptorValues||[]).length}v)`);
+          }
+        }
+        console.log(`[eBay getItemConditionPolicies] category=${categoryId} descriptors=[${summary.join(', ')}]`);
       } catch (_) {}
       _conditionPolicyCache.set(cacheKey, { policy, expiresAt: now + CONDITION_POLICY_TTL_MS });
       return policy;
