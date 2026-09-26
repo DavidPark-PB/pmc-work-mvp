@@ -306,3 +306,54 @@ test('WIRING-3 · SPA forwards conditionDisplayName in the publish product paylo
   assert.ok(/conditionDisplayName:\s*state\.competitor\?\.conditionDisplayName/.test(src),
     'SPA product payload MUST forward state.competitor.conditionDisplayName');
 });
+
+//   ═════════════════════════════════════════════════════════════
+//   §7 · numeric descriptor value ID resolution (2026-09-26)
+//   ═════════════════════════════════════════════════════════════
+
+test('RESOLVE-1 · when resolvedDescriptorValueId is provided, XML Value uses the numeric id', () => {
+  const xml = _buildConditionDescriptors(
+    { Brand: 'Pokemon' },
+    '183454',
+    {
+      conditionString: 'Near Mint', conditionId: '4000',
+      resolvedDescriptorValueId: '4000000',   //   pretend eBay returned this
+    },
+  );
+  assert.ok(/<Name>40001<\/Name>/.test(xml));
+  assert.ok(/<Value>4000000<\/Value>/.test(xml),
+    'when the resolver hit succeeds, the numeric ID MUST be emitted (not the string)');
+  assert.ok(!/<Value>Near Mint<\/Value>/.test(xml),
+    'string value MUST NOT be emitted when the numeric id is known');
+});
+
+test('RESOLVE-2 · when resolvedDescriptorValueId is absent, falls back to string name (diagnostic)', () => {
+  const xml = _buildConditionDescriptors(
+    { Brand: 'Pokemon' },
+    '183454',
+    { conditionString: 'Near Mint', conditionId: '4000' },   //   no resolvedDescriptorValueId
+  );
+  assert.ok(/<Value>Near Mint<\/Value>/.test(xml),
+    'without a resolved id, fall back to the string name so eBay names accepted values in error');
+});
+
+test('WIRING-4 · aiWorkflowPublisher publishToEbay AND verifyEbay both call _resolveTradingCardDescriptor', () => {
+  const src = fs.readFileSync(PUBLISHER, 'utf8');
+  //   The helper must be defined and referenced in both flows.
+  assert.ok(/function\s+_resolveTradingCardDescriptor\s*\(/.test(src),
+    '_resolveTradingCardDescriptor helper MUST be defined');
+  //   publishToEbay body should call it.
+  const publishBody = src.match(/async function publishToEbay[\s\S]+?const result = await ebay\.createProduct/);
+  assert.ok(publishBody && /_resolveTradingCardDescriptor\s*\(\s*params\s*,\s*ebay\s*\)/.test(publishBody[0]),
+    'publishToEbay MUST await _resolveTradingCardDescriptor before createProduct');
+  const verifyBody = src.match(/async function verifyEbay[\s\S]+?const r = await ebay\.verifyProduct/);
+  assert.ok(verifyBody && /_resolveTradingCardDescriptor\s*\(\s*params\s*,\s*ebay\s*\)/.test(verifyBody[0]),
+    'verifyEbay MUST await _resolveTradingCardDescriptor before verifyProduct');
+});
+
+test('WIRING-5 · EbayAPI exposes getItemConditionPolicies + resolveConditionDescriptorValueId', () => {
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  assert.equal(typeof ebay.getItemConditionPolicies, 'function');
+  assert.equal(typeof ebay.resolveConditionDescriptorValueId, 'function');
+});

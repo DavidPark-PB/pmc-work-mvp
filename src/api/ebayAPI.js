@@ -46,6 +46,12 @@ const BROWSE_CACHE_MAX = Number(process.env.EBAY_BROWSE_CACHE_MAX) || 5000;
 let _browseCacheHits = 0;
 let _browseCacheMisses = 0;
 
+//   Condition-descriptor policy cache (2026-09-26).
+//   eBay Sell Metadata API's get_item_condition_policies is stable per
+//   (marketplace, categoryId) and rate-limited. Cache 1h per key.
+const _conditionPolicyCache = new Map();   //   `${marketplaceId}|${categoryId}` → { policy, expiresAt }
+const CONDITION_POLICY_TTL_MS = 60 * 60 * 1000;
+
 /**
  * eBay conditionId inference (2026-09-19).
  *
@@ -188,19 +194,24 @@ function _isTradingCardContext(itemSpecifics, categoryId, conditionId) {
 function _buildConditionDescriptors(itemSpecifics, categoryId, ctx = {}) {
   if (!_isTradingCardContext(itemSpecifics, categoryId, ctx.conditionId)) return '';
   //   If operator supplied any of these aliases at the item-aspect level,
-  //   trust it as the value to send. Otherwise derive from context.
+  //   trust it as the value name to look up. Otherwise derive from context.
   const specs = itemSpecifics || {};
   const supplied = specs['Card Condition'] || specs['Card Grade'] || specs['Grade'];
-  const raw = supplied != null && String(supplied).trim() !== ''
+  const nameForLookup = supplied != null && String(supplied).trim() !== ''
     ? String(supplied).trim()
     : _deriveCardConditionValue(ctx.conditionString, ctx.conditionId);
-  //   Normalize to eBay's Card Condition enum (matches _deriveCardConditionValue
-  //   output). If the supplied value doesn't map cleanly, keep it as-is
-  //   and let eBay tell us via the response what enum values are valid.
-  const value = raw;
+  //   2026-09-26 · eBay rejects string values ("Near Mint") for descriptor
+  //   40001 — accepts only the numeric conditionDescriptorValueId from its
+  //   Sell Metadata API. If the caller pre-resolved the numeric ID (via
+  //   resolveConditionDescriptorValueId), use it. Otherwise fall back to
+  //   the string (will error, but the eBay response tells us what's
+  //   accepted so the log is diagnostic).
+  const resolvedId = ctx.resolvedDescriptorValueId;
+  const value = resolvedId != null && String(resolvedId).trim() !== ''
+    ? String(resolvedId).trim()
+    : nameForLookup;
+  console.log(`[ebayAPI._buildConditionDescriptors] descriptor 40001 · nameForLookup="${nameForLookup}" · resolvedId=${resolvedId ?? '(none)'} · emitted_value=${value}`);
   //   40001 is the descriptor id eBay itself named in the error message.
-  //   Emit the block — string value is accepted by the v1355 schema for
-  //   this descriptor family.
   return `<ConditionDescriptors>
       <ConditionDescriptor>
         <Name>40001</Name>
@@ -390,6 +401,78 @@ class EbayAPI {
       console.error('eBay Application Token 발급 실패:', errData?.error_description || error.message);
       throw error;
     }
+  }
+
+  /**
+   * eBay Sell Metadata API — get_item_condition_policies (2026-09-26).
+   *
+   * Owner-reported: `Condition descriptor value Near Mint is not valid
+   * for condition descriptor 40001` — descriptor 40001 accepts NUMERIC
+   * value IDs only, not the human-readable string. eBay's Sell Metadata
+   * API returns the enum: `{conditionDescriptorId, conditionDescriptorValues:
+   * [{conditionDescriptorValueId, conditionDescriptorValueName}, ...]}`.
+   *
+   * Cached per (marketplaceId, categoryId) with a 1h TTL — this metadata
+   * is stable per category, and eBay rate-limits the endpoint.
+   */
+  async getItemConditionPolicies(categoryId, { marketplaceId = 'EBAY_US' } = {}) {
+    const cacheKey = `${marketplaceId}|${categoryId}`;
+    const now = Date.now();
+    const cached = _conditionPolicyCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) return cached.policy;
+    const token = await this.getApplicationToken();
+    const url = `https://api.ebay.com/sell/metadata/v1/marketplace/${marketplaceId}/get_item_condition_policies?filter=categoryIds:%7B${encodeURIComponent(categoryId)}%7D`;
+    try {
+      const resp = await axios.get(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept-Language': 'en-US',
+        },
+        timeout: 15000,
+      });
+      const policy = resp.data?.itemConditionPolicies?.[0] || null;
+      _conditionPolicyCache.set(cacheKey, { policy, expiresAt: now + CONDITION_POLICY_TTL_MS });
+      return policy;
+    } catch (e) {
+      //   Diagnostic: log the eBay error body so we can see what went wrong
+      //   (e.g., missing scope, unsupported marketplace). Cache a null so
+      //   we don't hammer the endpoint on repeated failures within the TTL.
+      const body = e.response?.data ? JSON.stringify(e.response.data).slice(0, 500) : e.message;
+      console.warn(`[eBay getItemConditionPolicies] category=${categoryId} failed: ${body}`);
+      _conditionPolicyCache.set(cacheKey, { policy: null, expiresAt: now + 60_000 });
+      return null;
+    }
+  }
+
+  /**
+   * Resolve a Trading Card descriptor value string ("Near Mint") to eBay's
+   * numeric conditionDescriptorValueId for the given category + descriptor.
+   * Returns null when the mapping is unknown (owner-visible so we can
+   * add a fallback map).
+   */
+  async resolveConditionDescriptorValueId(categoryId, descriptorId, valueName) {
+    const policy = await this.getItemConditionPolicies(categoryId);
+    if (!policy) return null;
+    const groups = policy.itemConditionDescriptorGroups || [];
+    for (const group of groups) {
+      const desc = (group.conditionDescriptors || []).find(
+        d => String(d.conditionDescriptorId) === String(descriptorId),
+      );
+      if (!desc) continue;
+      const target = String(valueName || '').toLowerCase();
+      const val = (desc.conditionDescriptorValues || []).find(
+        v => String(v.conditionDescriptorValueName || '').toLowerCase() === target,
+      );
+      if (val) {
+        console.log(`[eBay resolveConditionDescriptorValueId] categoryId=${categoryId} descriptor=${descriptorId} "${valueName}" → ${val.conditionDescriptorValueId}`);
+        return String(val.conditionDescriptorValueId);
+      }
+      //   Not found — log the accepted values so we can pick the right one.
+      const acceptedNames = (desc.conditionDescriptorValues || []).map(v => v.conditionDescriptorValueName).slice(0, 20);
+      console.warn(`[eBay resolveConditionDescriptorValueId] "${valueName}" NOT in accepted values for descriptor ${descriptorId} · accepted=[${acceptedNames.join(', ')}]`);
+      return null;
+    }
+    return null;
   }
 
   /**

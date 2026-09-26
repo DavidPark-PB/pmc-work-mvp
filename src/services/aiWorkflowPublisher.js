@@ -96,6 +96,38 @@ function _getEbay() {
   return new EbayAPI();
 }
 
+/**
+ * Pre-resolve the Card Condition (descriptor 40001) numeric value id
+ * before AddFixedPriceItem / VerifyAddFixedPriceItem — owner-reported
+ * (2026-09-26) eBay rejects the string "Near Mint" for descriptor 40001
+ * and accepts only the numeric conditionDescriptorValueId from its Sell
+ * Metadata API. Best-effort: if the lookup fails, we emit the string
+ * anyway and eBay's response tells us the accepted enum for the next fix.
+ */
+async function _resolveTradingCardDescriptor(params, ebay) {
+  const { _isTradingCardContext, _deriveCardConditionValue } = require('../api/ebayAPI');
+  const cdCtx = params.conditionDescriptorContext || {};
+  if (!_isTradingCardContext(params.itemSpecifics, params.categoryId, cdCtx.conditionId)) return;
+  const specs = params.itemSpecifics || {};
+  const supplied = specs['Card Condition'] || specs['Card Grade'] || specs['Grade'];
+  const nameForLookup = supplied != null && String(supplied).trim() !== ''
+    ? String(supplied).trim()
+    : _deriveCardConditionValue(cdCtx.conditionString, cdCtx.conditionId);
+  try {
+    const resolvedId = await ebay.resolveConditionDescriptorValueId(
+      params.categoryId, '40001', nameForLookup,
+    );
+    if (resolvedId) {
+      params.conditionDescriptorContext = { ...cdCtx, resolvedDescriptorValueId: resolvedId };
+      console.log(`[aiWfPublish] resolved Card Condition "${nameForLookup}" → ${resolvedId} for category ${params.categoryId}`);
+    } else {
+      console.warn(`[aiWfPublish] could not resolve Card Condition "${nameForLookup}" — falling back to string (eBay will name accepted values in response)`);
+    }
+  } catch (e) {
+    console.warn(`[aiWfPublish] resolveConditionDescriptorValueId threw: ${e.message}`);
+  }
+}
+
 function _buildEbayParams(product, preset, thumbnailUrls) {
   const allImages = [...thumbnailUrls, ...(product.imageUrls || [])].slice(0, 12);
   //   2026-09-23: Card Condition for Trading Cards is NOT an item aspect —
@@ -140,6 +172,10 @@ async function verifyEbay(product, preset, { skipImageUpload = true } = {}) {
   const ebay = _getEbay();
   const t0 = Date.now();
   const params = _buildEbayParams(product, preset, skipImageUpload ? (product.imageUrls || []).slice(0, 1) : []);
+  //   Trading Card descriptor value ID resolution — same as publishToEbay.
+  //   VerifyAddFixedPriceItem enforces the same schema, so the numeric ID
+  //   is required here too.
+  await _resolveTradingCardDescriptor(params, ebay);
   const r = await ebay.verifyProduct(params);
   return {
     platform: 'ebay',
@@ -170,6 +206,7 @@ async function publishToEbay(product, preset) {
   }
 
   const params = _buildEbayParams(product, preset, thumbnailUrls);
+  await _resolveTradingCardDescriptor(params, ebay);
   const result = await ebay.createProduct(params);
 
   return {

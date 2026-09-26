@@ -74,7 +74,7 @@ test('AI-EBAY-A2 · _getEbay() MUST return a fresh EbayAPI per call (new EbayAPI
 //   object that will re-read DB on its first Trading call.
 //   ─────────────────────────────────────────────────────────────
 
-test('AI-EBAY-B1 · runtime · two _getEbay() calls yield distinct EbayAPI instances', () => {
+test('AI-EBAY-B1 · runtime · two _getEbay() calls yield distinct EbayAPI instances', async () => {
   //   Load the module in isolation with the real EbayAPI class.
   //   We do NOT trigger any DB call — just verify object identity differs.
   //   Purge require caches to guarantee a clean module load.
@@ -122,14 +122,18 @@ test('AI-EBAY-B1 · runtime · two _getEbay() calls yield distinct EbayAPI insta
     await this._ensureToken();
     return { success: true, ack: 'Success', errors: [], criticalErrors: [], warnings: [] };
   };
+  //   2026-09-26 · fixed: previously `return Promise.all(...).then(...)` inside
+  //   a try/finally restored the prototype BEFORE the calls resolved, so
+  //   verifyProduct ran on the ORIGINAL (non-monkey-patched) prototype and
+  //   never bumped the counter. Await the Promise inside `try` so `finally`
+  //   only runs after both calls complete.
   try {
-    return Promise.all([
+    await Promise.all([
       publisher.verifyEbay({ title: 'T1', price: 10, sku: 'S1' }, { categoryId: '183456' }),
       publisher.verifyEbay({ title: 'T2', price: 10, sku: 'S2' }, { categoryId: '183456' }),
-    ]).then(() => {
-      assert.equal(ensureCallCount, 2,
-        `_ensureToken MUST fire per call (2 verifies → 2 fresh instances → 2 _ensureToken calls). Got ${ensureCallCount}.`);
-    });
+    ]);
+    assert.equal(ensureCallCount, 2,
+      `_ensureToken MUST fire per call (2 verifies → 2 fresh instances → 2 _ensureToken calls). Got ${ensureCallCount}.`);
   } finally {
     EbayAPI.prototype.verifyProduct = origVerify;
     EbayAPI.prototype._ensureToken  = origEnsure;
