@@ -250,6 +250,67 @@ test('E2E-0 · REGRESSION · _buildItemXml MUST forward resolvedDescriptorValueI
     'string "Near Mint" MUST NOT be emitted when resolvedDescriptorValueId is present');
 });
 
+test('E2E-GUARD-1 · Trading Card context with invalid ConditionID (1000) → coerced to 4000', () => {
+  //   Owner-reported (2026-10-06): descriptor value fix finally landed but
+  //   eBay still rejected with "The Condition descriptor 40001 is not
+  //   valid for condition INVALID_CONDITION." — because the top-level
+  //   <ConditionID> was 1000 (New) which Trading Card categories don't
+  //   accept alongside descriptor 40001. Defensive guard: if the context
+  //   emits a ConditionDescriptors block, force the top-level ConditionID
+  //   into the valid Trading-Card set.
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  const xml = ebay._buildItemXml({
+    title: 'T', description: 'd', price: 10, quantity: 1, sku: 'S1',
+    categoryId: '183454', conditionId: '1000',   //   wrong! would be rejected
+    currency: 'USD', imageUrls: [],
+    itemSpecifics: { Rarity: 'SAR' },
+    conditionDescriptorContext: {
+      conditionString: 'Near Mint',
+      conditionId: '1000',
+      resolvedDescriptorValueId: '400010',
+    },
+  });
+  assert.ok(/<ConditionID>4000<\/ConditionID>/.test(xml),
+    'guard MUST coerce stale ConditionID=1000 → 4000 (Ungraded) for Trading Card listings');
+  assert.ok(!/<ConditionID>1000<\/ConditionID>/.test(xml),
+    'original 1000 (New) MUST NOT leak into the XML');
+});
+
+test('E2E-GUARD-2 · Trading Card context with ConditionID=4000 is kept as-is (valid)', () => {
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  const xml = ebay._buildItemXml({
+    title: 'T', description: 'd', price: 10, quantity: 1, sku: 'S1',
+    categoryId: '183454', conditionId: '4000',
+    currency: 'USD', imageUrls: [],
+    itemSpecifics: { Rarity: 'SAR' },
+    conditionDescriptorContext: {
+      conditionString: 'Near Mint',
+      conditionId: '4000',
+      resolvedDescriptorValueId: '400010',
+    },
+  });
+  assert.ok(/<ConditionID>4000<\/ConditionID>/.test(xml));
+});
+
+test('E2E-GUARD-3 · non-Trading-Card context keeps ConditionID as-is (no coercion)', () => {
+  //   Booster Box (183456) + ConditionID=1000 (New) is CORRECT. Guard
+  //   must not touch non-Trading-Card contexts.
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  const xml = ebay._buildItemXml({
+    title: 'BoosterBox', description: 'd', price: 200, quantity: 1, sku: 'BB-1',
+    categoryId: '183456', conditionId: '1000',
+    currency: 'USD', imageUrls: [],
+    itemSpecifics: { Brand: 'Pokemon', Type: 'Booster Box' },
+    conditionDescriptorContext: { conditionId: '1000' },
+  });
+  assert.ok(/<ConditionID>1000<\/ConditionID>/.test(xml),
+    'Booster Box MUST keep ConditionID=1000 (no Trading-Card guard applies)');
+  assert.ok(!/<ConditionDescriptors>/.test(xml), 'Booster Box MUST NOT emit descriptors');
+});
+
 test('E2E-1 · full 183454 pipeline emits <ConditionDescriptors> AS A TOP-LEVEL Item child (NOT inside ItemSpecifics)', () => {
   const EbayAPI = require(EBAYAPI);
   const ebay = new EbayAPI();
