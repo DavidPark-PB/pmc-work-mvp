@@ -1930,7 +1930,10 @@ class EbayAPI {
     };
 
     try {
-      const response = await axios.get(url, { headers, timeout: 15000 });
+      //   2026-10-06 · bumped 15s → 45s. Large electronic listings (owner-reported:
+      //   LG StandbyME item 377493084132) with many variants + large aspect
+      //   payloads were hitting the 15s cap on slow eBay-API days.
+      const response = await axios.get(url, { headers, timeout: 45000 });
       item = response.data;
       variants = [item];
     } catch (err) {
@@ -1941,7 +1944,8 @@ class EbayAPI {
       if (errMsg.includes('item_group') || errMsg.includes('item group')) {
         try {
           const groupUrl = `https://api.ebay.com/buy/browse/v1/item/get_items_by_item_group?item_group_id=${itemId}`;
-          const groupResp = await axios.get(groupUrl, { headers, timeout: 15000 });
+          //   Same bump — group endpoint is even heavier (returns ALL variants).
+          const groupResp = await axios.get(groupUrl, { headers, timeout: 45000 });
           const items = groupResp.data?.items;
           if (items && items.length > 0) {
             variants = items;

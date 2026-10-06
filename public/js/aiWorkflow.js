@@ -412,8 +412,11 @@
     const status = document.getElementById('wf-step1-status');
     if (btn) { btn.disabled = true; btn.textContent = '가져오는 중…'; }
     if (status) status.textContent = '경쟁사 페이지 호출 중…';
+    //   2026-10-06 · bumped 30s → 60s. Server-side Browse API axios timeout
+    //   was also raised to 45s (ebayAPI.js:1933/1944) for large electronic
+    //   listings with many variants; client needs headroom above that.
     const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 30000);
+    const to = setTimeout(() => ctrl.abort(), 60000);
     try {
       const res = await fetch('/api/remarker/fetch', {
         method: 'POST',
@@ -455,9 +458,24 @@
       state.selectedImageUrls = new Set(state.competitor.images);
       // 2026-08-30: 경쟁사 item specifics 를 preset UI 에 즉시 반영 (하드코딩 template 대체)
       mirrorCompetitorToPreset();
+      //   2026-10-06 · explicitly clear any prior error BEFORE renderStep1
+      //   so a stale timeout message from a failed previous attempt can't
+      //   remain visible when the retry succeeds.
+      if (status) status.textContent = '';
       renderStep1();
     } catch (e) {
-      const msg = e.name === 'AbortError' ? '30초 timeout' : e.message;
+      //   2026-10-06 · surface Browse-API-side timeouts (axios "timeout of
+      //   Nms exceeded") with a helpful Korean sentence pointing at the
+      //   likely cause (slow eBay API for large listings) + the suggested
+      //   retry action, rather than echoing the raw axios message.
+      let msg;
+      if (e.name === 'AbortError') {
+        msg = '60초 timeout — eBay 응답이 느립니다. 잠시 뒤 다시 시도해 주세요.';
+      } else if (/timeout of \d+ms exceeded/i.test(e.message || '')) {
+        msg = `eBay Browse API 응답 지연 (${e.message}) — 변형이 많은 상품은 10초 뒤 다시 눌러주세요.`;
+      } else {
+        msg = e.message;
+      }
       if (status) status.textContent = '에러: ' + msg;
     } finally {
       clearTimeout(to);
