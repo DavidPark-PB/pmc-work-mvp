@@ -72,11 +72,12 @@ test('EXT-8 · safety-refusal text throws with the refusal preview', () => {
     (e) => e.message.includes('reconstruct') && e.message.includes('I cannot help with that'));
 });
 
-test('EXT-9 · truncated JSON (cut off mid-object) throws with a preview', () => {
+test('EXT-9 · truncated JSON (cut off mid-object) throws with a preview + "응답이 중간에 잘렸습니다" hint', () => {
   //   Common when the AI hits its maxTokens limit.
   const truncated = '{"title":"Pikachu","description":"very long text that got cut off';
   assert.throws(() => _extractJsonFromAiResponse(truncated, 'remake'),
-    (e) => /AI 응답에서 JSON을 찾을 수 없음/.test(e.message));
+    (e) => /AI 응답에서 JSON을 찾을 수 없음/.test(e.message) &&
+           /응답이 중간에 잘렸습니다/.test(e.message));
 });
 
 test('EXT-10 · nested JSON inside code fence with ```json language tag', () => {

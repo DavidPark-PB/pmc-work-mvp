@@ -95,10 +95,20 @@ function _extractJsonFromAiResponse(rawText, label) {
       }
     }
   }
+  //   Diagnostic: detect truncation specifically (open braces > close braces,
+  //   or ends mid-string) so the operator-facing error points at the real
+  //   cause instead of a generic "JSON not found" that invites more retries.
+  const openBraces  = (text.match(/\{/g) || []).length;
+  const closeBraces = (text.match(/\}/g) || []).length;
+  const endsMidString = /[^\\]"[^"]*$/.test(text) && !text.trimEnd().endsWith('"');
+  const likelyTruncated = openBraces > closeBraces || endsMidString;
   //   Total miss — dump the full response so the next repro is diagnosable.
-  console.error(`[aiRemarker._extractJsonFromAiResponse:${label}] FAILED to extract JSON. Full AI response follows:\n----- BEGIN -----\n${text}\n----- END -----`);
+  console.error(`[aiRemarker._extractJsonFromAiResponse:${label}] FAILED to extract JSON. open=${openBraces} close=${closeBraces} likelyTruncated=${likelyTruncated}. Full AI response follows:\n----- BEGIN -----\n${text}\n----- END -----`);
   const preview = text.length > 300 ? text.slice(0, 300) + '…' : text;
-  throw new Error(`AI 응답에서 JSON을 찾을 수 없음 (${label}): ${preview}`);
+  const suffix = likelyTruncated
+    ? ' — 응답이 중간에 잘렸습니다 (maxTokens 한도 초과 가능). 다시 시도하거나 상품을 더 단순한 것으로 바꿔보세요.'
+    : '';
+  throw new Error(`AI 응답에서 JSON을 찾을 수 없음 (${label})${suffix}: ${preview}`);
 }
 
 class AIRemarker {
@@ -116,9 +126,15 @@ class AIRemarker {
     }
 
     const prompt = this._buildPrompt(data);
+    //   2026-10-06 · bumped 4000 → 8000. Owner-reported truncation on
+    //   LG StandbyME (6 images, long HTML description with inline styles):
+    //   Gemini hit the 4000-token cap mid-string, response ended mid-`\"`,
+    //   our 5-pass JSON extractor couldn't find a complete balanced
+    //   object. 8000 is near Gemini 2.0 Flash output ceiling and covers
+    //   even heavy electronic listings.
     const r = await geminiClient.callGemini({
       prompt,
-      maxTokens: 4000,
+      maxTokens: 8000,
       expectJson: true,
       errCodePrefix: 'aiRemarker',
     });
@@ -220,7 +236,10 @@ RESPOND IN PURE JSON ONLY (no markdown, no explanation):
       base64: img.base64,
     }));
 
-    const maxTokens = isFast ? 1500 : 4000;
+    //   2026-10-06 · reconstruct path bumped to match remake (4000 → 8000)
+    //   so heavy electronic listings don't truncate mid-JSON. "Fast" mode
+    //   bumped 1500 → 3000 for the same safety margin.
+    const maxTokens = isFast ? 3000 : 8000;
 
     const r = await geminiClient.callGemini({
       prompt,
