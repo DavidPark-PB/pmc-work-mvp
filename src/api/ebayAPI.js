@@ -319,12 +319,43 @@ function _injectRequiredAspects(itemSpecifics, categoryId, ctx = {}) {
  * Legitimate single-value strings that happen to be short (like "Set A, B")
  * stay intact — the length gate prevents accidental over-splitting.
  */
-function _normalizeItemSpecValues(rawValue) {
+//   2026-10-06 · aspects eBay treats as STRICTLY single-value — a comma
+//   in the value is almost always Browse-API joining a part number with
+//   a human-readable description. Owner-reported MPN rejection:
+//     MPN has an invalid value of "AAN00847302, LG StanbyMe 2 One Click Stand"
+//   For these aspects, split on first ", " and keep ONLY the first token
+//   (the actual part number / identifier), regardless of length.
+//   Match is case-insensitive on the aspect name.
+const _STRICT_SINGLE_VALUE_ASPECTS = new Set([
+  'mpn',
+  'gtin',
+  'upc',
+  'ean',
+  'isbn',
+  'sku',
+  'part number',
+  'manufacturer part number',
+  'oe/oem part number',
+]);
+
+function _normalizeItemSpecValues(rawValue, aspectName) {
   const MAX_VALUE_LEN = 65;
   const collect = (arr) => arr
     .map(v => String(v == null ? '' : v).trim())
     .filter(v => v.length > 0)
     .map(v => v.length > MAX_VALUE_LEN ? v.slice(0, MAX_VALUE_LEN) : v);
+  //   Strict single-value aspects: if the raw string carries a ", "
+  //   separator, Browse API almost always joined "<identifier>, <description>".
+  //   Keep only the first token so eBay accepts the clean part number.
+  const nameKey = String(aspectName || '').trim().toLowerCase();
+  if (!Array.isArray(rawValue) && _STRICT_SINGLE_VALUE_ASPECTS.has(nameKey)) {
+    const str = String(rawValue == null ? '' : rawValue).trim();
+    if (!str) return [];
+    //   Take first token split by ", " (comma + space). Preserve commas
+    //   that aren't followed by a space (e.g., "A,B" stays "A,B").
+    const first = str.split(/\s*,\s+/)[0].trim();
+    return collect([first]);
+  }
   if (Array.isArray(rawValue)) return collect(rawValue);
   const str = String(rawValue == null ? '' : rawValue).trim();
   if (!str) return [];
@@ -1204,7 +1235,7 @@ class EbayAPI {
     //   over-long CSV strings get split, individual values get clipped.
     const specsXml = specsEntries.length > 0
       ? `<ItemSpecifics>${specsEntries.map(([k, v]) => {
-          const values = _normalizeItemSpecValues(v);
+          const values = _normalizeItemSpecValues(v, k);
           if (!values.length) return '';
           const name = String(k).trim().slice(0, 40);
           const valueTags = values.map(vv => `<Value>${this.escapeXml(vv)}</Value>`).join('');

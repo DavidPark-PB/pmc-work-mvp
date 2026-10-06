@@ -170,6 +170,88 @@ test('E2E-2 · array-valued itemSpecifics emit multiple <Value> tags natively', 
   assert.ok(values[2].includes('Anti-slip'));
 });
 
+//   ─────────────────────────────────────────────────────────────
+//   Level D · 2026-10-06 · strict single-value aspects (MPN, GTIN,
+//   UPC, EAN, ISBN, Brand, Manufacturer).
+//
+//   Owner-reported bug — AI 상품제작 (LG StanbyMe 2):
+//     "MPN has an invalid value of 'AAN00847302, LG StanbyMe 2 One
+//      Click Stand'. Enter a valid value and try again."
+//
+//   Root cause — Browse API returns the aspect joined as
+//   "<part number>, <human description>" (42 chars, under the 65-char
+//   length gate), so `_normalizeItemSpecValues` passed it through
+//   whole. eBay rejects because MPN is a strict single-identifier
+//   aspect. Fix: for these aspects, split on ", " and keep only the
+//   first element regardless of length.
+//   ─────────────────────────────────────────────────────────────
+
+test('MPN-1 · owner-reported LG StanbyMe MPN keeps only part number', () => {
+  const raw = 'AAN00847302, LG StanbyMe 2 One Click Stand';
+  const out = _normalizeItemSpecValues(raw, 'MPN');
+  assert.deepEqual(out, ['AAN00847302'],
+    'MPN must be stripped to the part number before the ", " separator');
+});
+
+test('MPN-2 · aspect-name match is case-insensitive', () => {
+  const raw = 'ABC123, Model Description';
+  assert.deepEqual(_normalizeItemSpecValues(raw, 'mpn'),         ['ABC123']);
+  assert.deepEqual(_normalizeItemSpecValues(raw, 'Mpn'),         ['ABC123']);
+  assert.deepEqual(_normalizeItemSpecValues(raw, 'MPN  '),       ['ABC123']);
+});
+
+test('MPN-3 · same first-element rule covers GTIN / UPC / EAN / ISBN', () => {
+  for (const name of ['GTIN', 'UPC', 'EAN', 'ISBN']) {
+    assert.deepEqual(
+      _normalizeItemSpecValues('0123456789012, description text', name),
+      ['0123456789012'],
+      `${name} must take first element`);
+  }
+});
+
+test('MPN-4 · single-value aspect without comma passes through unchanged', () => {
+  assert.deepEqual(_normalizeItemSpecValues('AAN00847302', 'MPN'), ['AAN00847302']);
+  //   Over-length single part number is still clipped by MAX_VALUE_LEN.
+  const longPn = 'A'.repeat(100);
+  const out = _normalizeItemSpecValues(longPn, 'MPN');
+  assert.equal(out.length, 1);
+  assert.equal(out[0].length, 65);
+});
+
+test('MPN-5 · comma without space is NOT split (preserves "A,B" part numbers)', () => {
+  //   Some manufacturers use commas inside the identifier itself. Only
+  //   split on ", " (comma + whitespace), the Browse-API join signature.
+  assert.deepEqual(_normalizeItemSpecValues('ABC,123', 'MPN'), ['ABC,123']);
+});
+
+test('MPN-6 · non-strict aspect name retains CSV-split behavior', () => {
+  //   Features / Material / etc. SHOULD still split long CSV strings.
+  const raw = 'Foldable, Height adjustable, Anti-slip silicone pad, Pure transparent acrylic, Strong & smooth hinge';
+  const values = _normalizeItemSpecValues(raw, 'Features');
+  assert.ok(values.length >= 4, 'Features aspect must still split');
+});
+
+test('MPN-E2E · _buildItemXml emits clean MPN from "part, description" CSV', () => {
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  const xml = ebay._buildItemXml({
+    title: 'LG StanbyMe 2 One Click Stand',
+    description: 'd', price: 999, quantity: 1, sku: 'LGS2',
+    categoryId: '293', conditionId: '1000', currency: 'USD',
+    imageUrls: [],
+    itemSpecifics: {
+      Brand: 'LG',
+      MPN:   'AAN00847302, LG StanbyMe 2 One Click Stand',
+    },
+  });
+  const mpnBlock = xml.match(/<NameValueList><Name>MPN<\/Name>[\s\S]*?<\/NameValueList>/);
+  assert.ok(mpnBlock, 'MPN NameValueList must be present');
+  const values = mpnBlock[0].match(/<Value>[\s\S]*?<\/Value>/g) || [];
+  assert.equal(values.length, 1, 'MPN must emit exactly ONE <Value>');
+  assert.equal(values[0], '<Value>AAN00847302</Value>',
+    'MPN <Value> must be the clean part number only');
+});
+
 test('E2E-3 · empty / whitespace-only aspect values are DROPPED from XML', () => {
   const EbayAPI = require(EBAYAPI);
   const ebay = new EbayAPI();
