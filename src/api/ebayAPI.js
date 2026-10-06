@@ -1252,22 +1252,35 @@ class EbayAPI {
         resolvedDescriptorValueId: cdCtx.resolvedDescriptorValueId,
       },
     );
-    //   2026-10-06 · Trading Card categories accept ONLY these ConditionIDs:
-    //     2750 (Graded) · 3000 (Used) · 4000 (Ungraded)
-    //   Any other value (including the default 1000 "New" or empty) is
-    //   rejected by eBay with "INVALID_CONDITION" when the <ConditionDescriptors>
-    //   block is also present. Owner-reported (2026-10-06 after Card
-    //   Condition value fix finally landed): descriptor 40001 now goes
-    //   through but ConditionID was mismatched. Defensive guard: when
-    //   the context says Trading Card, coerce ConditionID into the
-    //   valid set, defaulting to 4000 (Ungraded) which matches the
-    //   descriptor 40001 family.
+    //   2026-10-06 · Trading Card ConditionID ↔ Descriptor COUPLING.
+    //   eBay Trading Card categories bind the top-level <ConditionID> to
+    //   the descriptor family that MUST accompany it:
+    //
+    //     ConditionID 2750 (Graded)   → requires descriptors 27501 + 27502
+    //     ConditionID 3000 (Used)     → no descriptors
+    //     ConditionID 4000 (Ungraded) → requires descriptor 40001
+    //
+    //   Our current `_buildConditionDescriptors` ONLY emits descriptor
+    //   40001 (Ungraded Card Condition). Graded listings (27501/27502)
+    //   are not yet supported. So when we're emitting 40001, the paired
+    //   ConditionID MUST be 4000 — otherwise eBay says either
+    //   "INVALID_CONDITION" (previous error) or demands the Graded
+    //   descriptors like "Professional Grader (27501) is a required
+    //   field" (owner-reported 2026-10-06).
+    //
+    //   Guard: if the descriptor block emits (always descriptor 40001),
+    //   force ConditionID to 4000 regardless of what the preset/caller
+    //   sent. Log the correction so the operator sees the coercion.
+    //
+    //   TODO: Graded listing support — detect graded intent via
+    //   condition string ("PSA 10", "BGS 9.5", explicit Grade aspect)
+    //   and emit descriptors 27501 + 27502 alongside ConditionID 2750.
     let safeConditionId = conditionId;
     const isTradingCard = conditionDescriptorsXml && conditionDescriptorsXml.length > 0;
     if (isTradingCard) {
       const sid = String(conditionId || '').trim();
-      if (sid !== '2750' && sid !== '3000' && sid !== '4000') {
-        console.warn(`[eBay _buildItemXml] Trading Card context but ConditionID="${conditionId}" is not {2750,3000,4000} — forcing to 4000 (Ungraded) to match descriptor 40001`);
+      if (sid !== '4000') {
+        console.warn(`[eBay _buildItemXml] descriptor 40001 (Ungraded) MUST pair with ConditionID=4000 · caller sent="${conditionId}" · forcing to 4000`);
         safeConditionId = '4000';
       }
     }

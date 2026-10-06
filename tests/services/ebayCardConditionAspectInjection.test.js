@@ -294,6 +294,31 @@ test('E2E-GUARD-2 · Trading Card context with ConditionID=4000 is kept as-is (v
   assert.ok(/<ConditionID>4000<\/ConditionID>/.test(xml));
 });
 
+test('E2E-GUARD-2b · Trading Card context with ConditionID=2750 (Graded) is COERCED to 4000 (owner-reported 2026-10-06)', () => {
+  //   Owner-reported: preset drift to conditionId=2750 while the context
+  //   emits descriptor 40001 (Ungraded) causes
+  //     "Professional Grader (27501) is a required field."
+  //   because eBay expects Graded descriptors (27501+27502) when
+  //   ConditionID=2750. Since our builder only emits 40001, we must
+  //   force ConditionID to 4000 to match the descriptor family.
+  const EbayAPI = require(EBAYAPI);
+  const ebay = new EbayAPI();
+  const xml = ebay._buildItemXml({
+    title: 'T', description: 'd', price: 10, quantity: 1, sku: 'S1',
+    categoryId: '183454', conditionId: '2750',   //   caller says Graded
+    currency: 'USD', imageUrls: [],
+    itemSpecifics: { Rarity: 'SAR' },
+    conditionDescriptorContext: {
+      conditionString: 'Near Mint', conditionId: '2750',
+      resolvedDescriptorValueId: '400010',   //   but descriptor is Ungraded
+    },
+  });
+  assert.ok(/<ConditionID>4000<\/ConditionID>/.test(xml),
+    'ConditionID 2750 (Graded) MUST be coerced to 4000 when only descriptor 40001 (Ungraded) is emitted');
+  assert.ok(!/<ConditionID>2750<\/ConditionID>/.test(xml),
+    '2750 MUST NOT leak into XML — would trigger "Professional Grader required" error');
+});
+
 test('E2E-GUARD-3 · non-Trading-Card context keeps ConditionID as-is (no coercion)', () => {
   //   Booster Box (183456) + ConditionID=1000 (New) is CORRECT. Guard
   //   must not touch non-Trading-Card contexts.
