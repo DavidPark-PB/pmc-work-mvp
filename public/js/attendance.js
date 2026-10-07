@@ -50,9 +50,14 @@
       </div>
 
       <div style="background:#1a1a2e;border:1px solid #2a2a4a;border-radius:12px;padding:20px;margin-bottom:16px;">
-        <h3 style="color:#fff;margin-bottom:12px;">✏️ 수동 입력 / 수정</h3>
+        <h3 style="color:#fff;margin-bottom:12px;">✏️ 수동 입력 / 수정${user.isAdmin ? ' <span style="color:#888;font-weight:400;font-size:11px;">(직원 + 날짜 선택 → 기존 기록 있으면 수정 모드 · 없으면 신규 입력)</span>' : ''}</h3>
         <form id="att-form">
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:10px;">
+          <div style="display:grid;grid-template-columns:${user.isAdmin ? 'minmax(160px,1.4fr) ' : ''}repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:10px;">
+            ${user.isAdmin ? `
+            <select id="att-form-emp" onchange="pmcAttendance.onFormEmpChange()" style="padding:10px;background:#0f0f23;border:1px solid #7c4dff;border-radius:6px;color:#fff;font-weight:600;" title="수정/입력 대상 직원">
+              <option value="${user.id}">👤 ${esc(user.displayName)} (본인)</option>
+              ${staffOptions}
+            </select>` : ''}
             <input type="date" id="att-date" required style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
             <select id="att-status" onchange="pmcAttendance.onStatusChange()" style="padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;">
               <option value="regular">✅ 정상</option>
@@ -67,7 +72,10 @@
           <input type="text" id="att-note" placeholder="메모 / 사유" maxlength="500" style="width:100%;padding:10px;background:#0f0f23;border:1px solid #333;border-radius:6px;color:#fff;margin-bottom:6px;">
           <div id="att-note-hint" style="font-size:11px;color:#888;margin-bottom:10px;display:none;">지각/조퇴/결근은 사유를 반드시 입력해야 합니다.</div>
           <div id="att-edit-banner" style="display:none;padding:8px 12px;background:#1a3a5a;border:1px solid #2a5a8a;border-radius:6px;color:#81d4fa;font-size:12px;margin-bottom:8px;">
-            ✏️ <strong id="att-edit-date"></strong> 기록 수정 모드
+            <span id="att-edit-banner-text">✏️ 기록 수정 모드</span>
+          </div>
+          <div id="att-new-banner" style="display:none;padding:8px 12px;background:#1a3a1a;border:1px solid #2a6a2a;border-radius:6px;color:#a5d6a7;font-size:12px;margin-bottom:8px;">
+            <span id="att-new-banner-text">➕ 신규 기록 입력 모드</span>
           </div>
           <div id="att-time-buttons" style="display:flex;gap:8px;flex-wrap:wrap;">
             <button type="button" onclick="pmcAttendance.fillNow('att-in')" style="padding:8px 14px;background:#2a2a4a;border:0;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">▶ 출근 지금</button>
@@ -185,6 +193,12 @@
     document.getElementById('att-date').value = todayStr();
     document.getElementById('att-form').addEventListener('submit', submitAtt);
     document.getElementById('filter-month').addEventListener('change', refresh);
+    //   날짜 바꾸면 "그 직원 + 그 날짜" 기록 유무 재판정
+    //   (기록 있음 → 수정 모드, 없음 → 신규 입력 모드로 banner/버튼 전환)
+    document.getElementById('att-date').addEventListener('change', () => {
+      editingId = null; // 날짜 바뀌면 이전 수정 모드 해제
+      autoEnterEditIfExists();
+    });
     // 📅 일정 · 시작일 default = 오늘 · form submit 바인딩 · 리스트 로드
     const schStart = document.getElementById('sch-start');
     if (schStart) schStart.value = todayStr();
@@ -346,13 +360,63 @@
     } catch (e) { alert('퇴근 실패: ' + e.message); }
   }
 
+  //   선택된 (직원, 날짜) 조합에 기록이 있으면 수정 모드로,
+  //   없으면 신규 입력 모드로 UI 를 명확히 전환.
+  //   - staff: 본인 ID 기준
+  //   - admin: 폼의 "att-form-emp" 셀렉터 값 기준 (본인 또는 다른 직원)
   function autoEnterEditIfExists() {
-    if (editingId) return; // 이미 편집 중이면 유지
-    if (!user.isAdmin) return; // 직원은 수정 불가 — 자동 편집 모드 진입 안 함
+    if (editingId) return; // 이미 편집 중이면 유지 (사용자가 편집 중일 때 덮어쓰기 방지)
     const selDate = document.getElementById('att-date')?.value;
     if (!selDate) return;
-    const myRec = cachedItems.find(r => r.employee_id === user.id && r.date === selDate);
-    if (myRec) startEdit(myRec);
+    const targetEmpId = user.isAdmin
+      ? (parseInt(document.getElementById('att-form-emp')?.value, 10) || user.id)
+      : user.id;
+    const rec = cachedItems.find(r => r.employee_id === targetEmpId && r.date === selDate);
+    if (rec) {
+      startEdit(rec);
+    } else if (user.isAdmin) {
+      //   admin + 기록 없음 → "신규 입력" 모드 명시
+      enterNewMode(targetEmpId, selDate);
+    }
+  }
+
+  //   admin 전용: 수동 폼에서 직원 셀렉터 바꾸면 그 직원의 선택 날짜 기록 재판정.
+  //   또한 상단 "직원별 조회" 필터와 양방향 동기화해서 테이블도 그 직원 기준으로 리프레시.
+  function onFormEmpChange() {
+    editingId = null; // 다른 직원 선택했으면 이전 수정 세션 해제
+    const empId = document.getElementById('att-form-emp')?.value || '';
+    //   상단 "직원별 조회" 필터 sync (admin UI만 존재)
+    const filterSel = document.getElementById('filter-emp');
+    if (filterSel) {
+      //   본인 ID는 필터에 "전체" 로 매핑 (본인 opt은 filter-emp에 없음)
+      const matchVal = String(empId) === String(user.id) ? '' : empId;
+      if (filterSel.value !== matchVal) {
+        filterSel.value = matchVal;
+        //   onEmpChange 는 saveRate 패널까지 토글하므로 수동 호출
+        onEmpChange();
+        return; // refresh 는 onEmpChange 안에서
+      }
+    }
+    autoEnterEditIfExists();
+  }
+
+  //   신규 입력 모드 UI — "✏️ 수정 저장" → "✓ 기록" 로 되돌리고,
+  //   초록색 banner 로 "➕ 신규 기록 입력 (강문석 · 2026-09-02)" 안내.
+  function enterNewMode(empId, date) {
+    editingId = null;
+    //   폼 값은 유지 (사장님이 날짜만 바꿔가며 입력할 때 리셋 방해 안 되게)
+    const editBanner = document.getElementById('att-edit-banner');
+    if (editBanner) editBanner.style.display = 'none';
+    const newBanner = document.getElementById('att-new-banner');
+    const newText = document.getElementById('att-new-banner-text');
+    if (newBanner && newText) {
+      const empLabel = (staffList.find(s => s.id === empId)?.display_name)
+        || (empId === user.id ? user.displayName : `직원#${empId}`);
+      newText.textContent = `➕ 신규 기록 입력 — ${empLabel} · ${date}`;
+      newBanner.style.display = 'block';
+    }
+    ['att-submit-btn', 'att-submit-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '✓ 기록'; });
+    ['att-cancel-btn', 'att-cancel-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
   }
 
   function startEdit(rec) {
@@ -362,16 +426,23 @@
     document.getElementById('att-in').value = rec.clock_in || '';
     document.getElementById('att-out').value = rec.clock_out || '';
     document.getElementById('att-note').value = rec.note || '';
+    //   admin 폼: 셀렉터를 그 기록 소유 직원으로 맞춤 (혼동 방지)
+    const formEmp = document.getElementById('att-form-emp');
+    if (formEmp && rec.employee_id != null) formEmp.value = String(rec.employee_id);
     onStatusChange();
-    // banner / button text
-    const b = document.getElementById('att-edit-banner');
-    if (b) {
-      b.style.display = 'block';
-      document.getElementById('att-edit-date').textContent = rec.date + (rec.employee?.display_name ? ' (' + rec.employee.display_name + ')' : '');
+    //   banner / button text
+    const editBanner = document.getElementById('att-edit-banner');
+    const editText = document.getElementById('att-edit-banner-text');
+    if (editBanner && editText) {
+      editBanner.style.display = 'block';
+      const empLabel = rec.employee?.display_name || (staffList.find(s => s.id === rec.employee_id)?.display_name) || '';
+      editText.textContent = `✏️ 기록 수정 모드 — ${empLabel ? empLabel + ' · ' : ''}${rec.date}`;
     }
+    const newBanner = document.getElementById('att-new-banner');
+    if (newBanner) newBanner.style.display = 'none';
     ['att-submit-btn', 'att-submit-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '✓ 수정 저장'; });
     ['att-cancel-btn', 'att-cancel-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = ''; });
-    // 화면 상단으로 스크롤
+    //   화면 상단으로 스크롤
     document.getElementById('att-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
@@ -380,11 +451,21 @@
     document.getElementById('att-form').reset();
     document.getElementById('att-date').value = todayStr();
     document.getElementById('att-status').value = 'regular';
+    //   폼 직원 셀렉터는 현재 조회 중인 직원 유지 (셀렉터 리셋 금지 — 사장님 UX)
+    const formEmp = document.getElementById('att-form-emp');
+    const filterSel = document.getElementById('filter-emp');
+    if (formEmp && filterSel) {
+      formEmp.value = filterSel.value || String(user.id);
+    }
     onStatusChange();
-    const b = document.getElementById('att-edit-banner');
-    if (b) b.style.display = 'none';
+    const editBanner = document.getElementById('att-edit-banner');
+    if (editBanner) editBanner.style.display = 'none';
+    const newBanner = document.getElementById('att-new-banner');
+    if (newBanner) newBanner.style.display = 'none';
     ['att-submit-btn', 'att-submit-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '✓ 기록'; });
     ['att-cancel-btn', 'att-cancel-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+    //   다시 "선택된 직원 + 오늘" 기준으로 모드 재판정
+    autoEnterEditIfExists();
   }
 
   function renderRows(items) {
@@ -632,11 +713,18 @@
     if (editingId) {
       url = '/api/attendance/' + editingId;
       method = 'PATCH';
-      // PATCH는 date 변경 안 함
+      // PATCH는 date / employee_id 변경 안 함 (서버 측에서도 미지원)
     } else {
       url = '/api/attendance';
       method = 'POST';
       payload.date = document.getElementById('att-date').value;
+      //   admin: 폼의 "att-form-emp" 셀렉터로 선택된 직원 ID 포함.
+      //   미설정이면 서버에서 req.user.id 로 fallback (본인 입력).
+      if (user.isAdmin) {
+        const empSel = document.getElementById('att-form-emp');
+        const empIdVal = empSel ? parseInt(empSel.value, 10) : null;
+        if (Number.isFinite(empIdVal)) payload.employeeId = empIdVal;
+      }
     }
 
     const res = await fetch(url, {
@@ -653,11 +741,17 @@
       return;
     }
     editingId = null;
+    //   폼 reset 전에 "현재 선택된 직원" 보존 (다른 직원 연속 입력 UX 유지)
+    const formEmp = document.getElementById('att-form-emp');
+    const keepEmpId = formEmp ? formEmp.value : null;
     document.getElementById('att-form').reset();
     document.getElementById('att-date').value = todayStr();
+    if (formEmp && keepEmpId) formEmp.value = keepEmpId;
     onStatusChange();
-    const b = document.getElementById('att-edit-banner');
-    if (b) b.style.display = 'none';
+    const editBanner = document.getElementById('att-edit-banner');
+    if (editBanner) editBanner.style.display = 'none';
+    const newBanner = document.getElementById('att-new-banner');
+    if (newBanner) newBanner.style.display = 'none';
     ['att-submit-btn', 'att-submit-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = '✓ 기록'; });
     ['att-cancel-btn', 'att-cancel-btn-2'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
     refresh();
@@ -704,6 +798,13 @@
       editor.style.display = 'flex';
     } else {
       editor.style.display = 'none';
+    }
+    //   수동 폼 셀렉터도 sync: "전체"면 본인(사장) 으로, 특정 직원이면 그 직원으로.
+    //   (사용자가 다른 직원 조회하다가 수동 입력하면 자동으로 그 직원 기록 생성되게)
+    const formEmp = document.getElementById('att-form-emp');
+    if (formEmp) {
+      formEmp.value = sel.value || String(user.id);
+      editingId = null; // 다른 직원 보기 → 이전 수정 세션 해제
     }
     refresh();
   }
@@ -842,5 +943,5 @@
     document.head.appendChild(st);
   })();
 
-  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, saveRate, onStatusChange, togglePayroll, editRow, cancelEdit, clockIn, clockOut, openRecalculateModal, deleteSchedule };
+  window.pmcAttendance = { load, refresh, fillNow, del, onEmpChange, onFormEmpChange, saveRate, onStatusChange, togglePayroll, editRow, cancelEdit, clockIn, clockOut, openRecalculateModal, deleteSchedule };
 })();
