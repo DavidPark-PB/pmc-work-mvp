@@ -259,18 +259,28 @@ router.get('/matches', async (req, res) => {
   }
 });
 
-/** PATCH /matches/:id/approve — 승인 */
+/** PATCH /matches/:id/approve — 승인
+ *
+ *  PR-A (2026-10-20): 인증된 사용자만. 과거 `|| 'admin'` 폴백은 제거 (DB CHECK
+ *  제약 product_matches_approved_by_human_only 가 그 값 자체를 거부함).
+ *  req.user?.username 이 없거나 비정상 값이면 401 반환.
+ */
 router.patch('/matches/:id/approve', async (req, res) => {
   try {
     const db = getClient();
     const id = req.params.id;
 
+    const approver = req.user?.username;
+    if (!approver || typeof approver !== 'string' || !approver.trim()) {
+      return res.status(401).json({ error: '승인 권한이 없습니다. 로그인 후 재시도하세요.' });
+    }
+
     const { data, error } = await db
       .from('product_matches')
       .update({
-        status: 'approved',
+        status:      'approved',
         approved_at: new Date().toISOString(),
-        approved_by: req.user?.username || 'admin',
+        approved_by: approver.trim(),
       })
       .eq('id', id)
       .select()

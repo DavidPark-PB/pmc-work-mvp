@@ -159,57 +159,23 @@ async function processReject({ sku, chatId, messageId, userName }) {
  * 매핑 승인 처리 (map:yes)
  * myId / compId 는 UUID 앞 8자 shortId 또는 실제 ID
  */
+// PR-A (2026-10-20): Telegram 매칭 승인 경로는 폐기됨.
+//   사장님 지침: "텔레그램 승인 경로는 폐기하고 Slack으로 재설계. telegramWebhook.js
+//   의 매칭 승인 쓰기는 allowlist 만들지 말고 제거. 410 응답 + 로그만."
+//   Slack 재설계는 PR-S 참조. 텔레그램 알림 송신 자체는 PR-S 머지 전까지 유지.
 async function processMapYes({ myId, compId, seller, chatId, messageId, userName }) {
-  const db = getClient();
+  console.warn(
+    '[TgWebhook] processMapYes · 410 GONE · deprecated path reached · '
+    + `user=${userName} myId=${myId} compId=${compId} seller=${seller || ''}`
+  );
+  //   사용자에게도 안내 (Telegram UI 상)
   try {
-    // product_matches에서 shortId로 찾기
-    const { data: match } = await db
-      .from('product_matches')
-      .select('id, our_sku, competitor_item_id, seller_id')
-      .or(`id.like.${myId}%,our_sku.eq.${myId}`)
-      .eq('status', 'pending')
-      .limit(1)
-      .single()
-      .catch(() => ({ data: null }));
-
-    if (match) {
-      // 기존 pending 매치 승인
-      await db.from('product_matches').update({
-        status: 'approved',
-        approved_by: userName,
-        approved_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }).eq('id', match.id);
-
-      await telegram.editMessage(chatId, messageId,
-        `✅ 매핑 승인 완료\n\n내 SKU: ${match.our_sku}\n경쟁상품: ${match.competitor_item_id}\n승인: ${userName}`,
-        []
-      );
-    } else {
-      // 직접 product_matches에 insert (수동 매핑)
-      await db.from('product_matches').insert({
-        our_sku: myId,
-        competitor_item_id: compId,
-        seller_id: seller || '',
-        confidence: 1.0,
-        method: 'manual',
-        status: 'approved',
-        approved_by: userName,
-        approved_at: new Date().toISOString(),
-      }).onConflict('our_sku,competitor_item_id').merge();
-
-      await telegram.editMessage(chatId, messageId,
-        `✅ 매핑 수동 등록 완료\n\n내 SKU: ${myId}\n경쟁상품: ${compId}\n등록: ${userName}`,
-        []
-      );
-    }
-  } catch (e) {
-    console.error('[TgWebhook] processMapYes error:', e.message);
     await telegram.editMessage(chatId, messageId,
-      `❌ 매핑 등록 실패\n${e.message}`,
+      '⛔ 텔레그램 매칭 승인은 폐기되었습니다 (PR-A 2026-10-20).\n'
+      + 'Slack 매칭 검수 채널(#매칭-검수)에서 승인하세요. 자세한 안내는 사장님께 문의.',
       []
-    ).catch(() => {});
-  }
+    );
+  } catch (_) { /* ignore edit failure — audit log already emitted */ }
 }
 
 /**

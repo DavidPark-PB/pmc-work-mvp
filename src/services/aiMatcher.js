@@ -26,8 +26,10 @@ const telegram = require('./telegramBot');
 // ─────────────────────────────────────────────────────────────────────────────
 // 상수
 // ─────────────────────────────────────────────────────────────────────────────
-const AUTO_APPROVE_THRESHOLD = 0.95;  // 이상이면 자동 승인
-const PENDING_THRESHOLD      = 0.45;  // 이상이면 pending (텔레그램 확인)
+// PR-A (2026-10-20): AUTO_APPROVE_THRESHOLD 제거 (사장님 지침).
+//   AI/title_sim 은 항상 'suggested' 로만 생성. approved 전환은 사람이
+//   UI/Slack 에서 승인할 때만. DB 레벨 CHECK 가 경로 폐쇄 보장.
+const SUGGEST_THRESHOLD      = 0.45;  // 이상이면 suggested 로 저장 (사람 검수 큐)
 const SIM_FILTER_THRESHOLD   = 0.25;  // 1차 유사도 필터 컷오프
 const TOP_CANDIDATES         = 5;     // AI에 넘길 최대 후보 수
 const MAX_TELEGRAM_PER_RUN   = 10;    // 한 번에 텔레그램 요청 최대 건수
@@ -161,7 +163,7 @@ async function matchWithAI(compListing, ourProducts) {
     if (!top) return null;
     return {
       sku:             top.sku || top.item_id,
-      is_same_product: top._score >= PENDING_THRESHOLD,
+      is_same_product: top._score >= SUGGEST_THRESHOLD,
       confidence:      +top._score.toFixed(4),
       reason:          `title_similarity fallback (score=${top._score.toFixed(3)})`,
       method:          'title_sim',
@@ -284,13 +286,15 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false, maxCalls
 
     const { sku, confidence, reason, method } = matchResult;
 
-    if (confidence < PENDING_THRESHOLD) {
+    if (confidence < SUGGEST_THRESHOLD) {
       skipped++;
       continue;
     }
 
     // ── 4. product_matches 저장 ─────────────────────────────────────────────
-    const status = confidence >= AUTO_APPROVE_THRESHOLD ? 'approved' : 'pending';
+    // PR-A (2026-10-20): AI / title_sim 은 항상 'suggested' 로만.
+    //   approved 전환은 사람이 UI 또는 Slack 에서 승인할 때만 (approved_by
+    //   필수). DB 레벨 CHECK 제약 (migration 119) 이 경로 폐쇄 보장.
     const matchRow = {
       our_sku:      sku,
       competitor_item_id: listing.ebay_item_id,
@@ -298,7 +302,7 @@ async function runMatcher({ hours = 25, silent = false, dryRun = false, maxCalls
       confidence:   +confidence.toFixed(4),
       ai_reason:    reason ?? '',
       method:       method ?? 'ai',
-      status,
+      status:       'suggested',
       created_at:   new Date().toISOString(),
     };
 
