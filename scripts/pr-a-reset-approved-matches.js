@@ -185,8 +185,30 @@ async function updateAemaehamToPendingReview() {
   });
 }
 
+async function assertBackupExists() {
+  //   2026-10-21 사장님 지시: LIVE 전환 전에 product_matches_backup_20261021
+  //   존재 확인. 없으면 중단.
+  const { error } = await db
+    .from('product_matches_backup_20261021')
+    .select('id', { count: 'exact', head: true });
+  if (error) {
+    console.error('[FAIL] product_matches_backup_20261021 테이블 없음.');
+    console.error('       먼저 Supabase SQL Editor 에서 다음을 실행하세요:');
+    console.error('         scripts/pr-a-backup-product-matches.sql');
+    console.error('       (DRY_RUN 은 백업 없이도 돌지만 LIVE 는 백업 필수)');
+    process.exit(3);
+  }
+}
+
 async function main() {
   log(`시작 · DRY_RUN=${DRY_RUN}`);
+
+  //   LIVE 모드일 때만 백업 테이블 사전 체크
+  if (!DRY_RUN) {
+    log('[0/5] 백업 테이블 존재 확인...');
+    await assertBackupExists();
+    log('  → product_matches_backup_20261021 OK');
+  }
 
   log('[1/5] approved 전부 로드...');
   const approved = await fetchAllApproved();
