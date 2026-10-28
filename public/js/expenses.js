@@ -497,12 +497,32 @@
     }
   }
 
+  // 서명 URL 로 파일 받기.
+  //
+  // window.open(url, '_blank') 을 쓰면 안 된다. 서명 URL 은 fetch 로 받아온 뒤
+  // (= await 한 번 거친 뒤) 열리는데, 그 시점엔 이미 사용자 클릭 콜스택을 벗어나서
+  // 브라우저가 팝업으로 간주해 차단한다. 에러도 안 뜨고 조용히 아무 일도 안 일어나서
+  // 직원들이 "다운로드가 안 된다" 고 신고한 증상이 이것이다 (팝업 허용을 해둔
+  // 계정에서는 멀쩡히 동작해서 더 눈에 안 띄었다).
+  //
+  // 앵커 클릭은 팝업 차단 대상이 아니다. 서버가 서명 URL 을 발급할 때
+  // Content-Disposition: attachment 를 붙이므로 실제 저장까지 이어진다.
+  function downloadSignedUrl(signedUrl, fileName) {
+    const a = document.createElement('a');
+    a.href = signedUrl;
+    if (fileName) a.download = fileName;   // 동일 출처가 아니면 무시되지만, 서버 헤더가 처리
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 1000);
+  }
+
   async function viewReceipt(id) {
     try {
       const res = await fetch('/api/expenses/' + id + '/receipt/url');
       const data = await res.json();
       if (!res.ok) { alert(data.error || '영수증 조회 실패'); return; }
-      window.open(data.signedUrl, '_blank');
+      downloadSignedUrl(data.signedUrl, data.fileName);
     } catch (e) { alert('실패: ' + e.message); }
   }
 
@@ -628,7 +648,7 @@
       const res = await fetch(url);
       const data = await res.json();
       if (!res.ok) { alert(data.error || '영수증 조회 실패'); return; }
-      window.open(data.signedUrl, '_blank');
+      downloadSignedUrl(data.signedUrl, data.fileName);
     } catch (e) { alert('실패: ' + e.message); }
   }
 
@@ -1879,7 +1899,7 @@
       const r = await fetch('/api/inventory-purchases/' + id + '/receipt/url');
       const j = await r.json();
       if (!r.ok) { alert(j.error || '실패'); return; }
-      window.open(j.signedUrl, '_blank');
+      downloadSignedUrl(j.signedUrl, j.fileName);
     } catch (e) { alert('실패: ' + e.message); }
   }
 
